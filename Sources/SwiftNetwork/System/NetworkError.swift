@@ -19,6 +19,8 @@ internal import Logging
 internal import os
 #endif
 
+/// Test comment
+
 /// `NetworkDomainSpecificError` allows a protocol implementation to define its own set of errors.
 ///
 /// It consists of a domain, a code, an optional category, and a description.
