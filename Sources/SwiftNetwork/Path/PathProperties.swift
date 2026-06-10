@@ -245,6 +245,7 @@ public struct PathProperties: CustomStringConvertible {
         static public let useLinkHeuristics = Flags(rawValue: 1 << 31)
         static public let hasOverrideTrafficClass = Flags(rawValue: 1 << 32)
         static public let fallbackIsOpportunistic = Flags(rawValue: 1 << 33)
+        static public let hasMigrationInfoFlag = Flags(rawValue: 1 << 34)
     }
 
     /// The link quality measurement of the link-layer network attachment.
@@ -361,6 +362,12 @@ public struct PathProperties: CustomStringConvertible {
         get { flags.contains(.fallbackIsOpportunistic) }
         set { if newValue { flags.insert(.fallbackIsOpportunistic) } else { flags.remove(.fallbackIsOpportunistic) } }
     }
+    #if !(NETWORK_PRIVATE || NETWORK_DRIVERKIT)
+    var hasMigrationInfo: Bool {
+        get { flags.contains(.hasMigrationInfoFlag) }
+        set { if newValue { flags.insert(.hasMigrationInfoFlag) } else { flags.remove(.hasMigrationInfoFlag) } }
+    }
+    #endif
     var fallbackIsForced: Bool {
         get { flags.contains(.fallbackIsForced) }
         set { if newValue { flags.insert(.fallbackIsForced) } else { flags.remove(.fallbackIsForced) } }
