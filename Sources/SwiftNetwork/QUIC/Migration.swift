@@ -156,8 +156,7 @@ extension QUICConnection {
         event: MultiplexingPathEvent,
         isPrimary: Bool
     ) {
-        guard !migration.activeMigrationDisabled else {
-            // Ignore if migration is disabled
+        guard !migration.activeMigrationDisabled || isServer else {
             return
         }
 
@@ -183,6 +182,13 @@ extension QUICConnection {
             if !path.isRouteEstablished {
                 path.changeState(to: .routeEstablished)
             }
+            if isServer, path != currentPath, !path.isValidated {
+                if path.pathHasMigrationInfo {
+                    path.useSlowProbeInterval = true
+                }
+                path.beginValidation()
+                sendFrames(on: path)
+            }
             break
         case .unavailable:
             if path.isOpenForSending, let dcid = path.dcid,
@@ -197,6 +203,12 @@ extension QUICConnection {
             }
             path.changeState(to: .routeUnavailable)
             break
+        }
+
+        if isServer {
+            for (id, path) in multiplexingPaths where path.state == .routeUnavailable {
+                multiplexingPaths.removeValue(forKey: id)
+            }
         }
 
         log.debug("Existing paths:")

@@ -240,6 +240,7 @@ public protocol MultiplexingPath: UpperProtocolHandler {
     var identifier: MultiplexingPathIdentifier { get }
     init(parent: ParentProtocol)
     var pathIsPrimary: Bool { get set }
+    var pathHasMigrationInfo: Bool { get set }
 }
 
 @_spi(ProtocolProvider)
@@ -932,8 +933,13 @@ extension ManyToManyDatapathProtocol where Path.ParentProtocol == Self, Path: In
             parameters: parameters,
             path: path
         )
-        if multiplexingPaths.isEmpty { newPath.pathIsPrimary = true }
+        let isFirstPath = multiplexingPaths.isEmpty
+        if isFirstPath { newPath.pathIsPrimary = true }
+        if path?.hasMigrationInfo == true { newPath.pathHasMigrationInfo = true }
         multiplexingPaths[newPath.identifier] = newPath
+        if !isFirstPath {
+            handlePathChanged(path: newPath.identifier, event: .available, isPrimary: newPath.pathIsPrimary)
+        }
     }
 }
 
@@ -1953,6 +1959,7 @@ open class MultiplexingDatagramPath<ParentProtocol: ManyToManyOutboundDatagramPr
     public var lowerReceiveQueue = FrameArray()
 
     public var pathIsPrimary: Bool = false
+    public var pathHasMigrationInfo: Bool = false
 
     @_optimize(speed)
     public var reference: ProtocolInstanceReference {
