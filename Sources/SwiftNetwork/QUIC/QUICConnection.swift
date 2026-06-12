@@ -2471,18 +2471,18 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         if case .allFlows = flowID {
             let metadata = QUICProtocol.metadata()
-            metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
+            metadata.connectionMetadata = self.connectionMetadata
             return metadata as? ProtocolMetadata<P>
         }
 
         if let datagramFlow = secondaryFlow(for: flowID) {
             let metadata = QUICProtocol.metadata()
-            metadata.perProtocolMetadata?.datagramFlowID = datagramFlow.flowID
-            metadata.perProtocolMetadata?.usableDatagramFrameSize = UInt16(
+            metadata.datagramFlowID = datagramFlow.flowID
+            metadata.usableDatagramFrameSize = UInt16(
                 datagramFlow.usableDatagramSize
             )
-            metadata.perProtocolMetadata?.isDatagramFlow = true
-            metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
+            metadata.isDatagram = true
+            metadata.connectionMetadata = self.connectionMetadata
             return metadata as? ProtocolMetadata<P>
         }
 
@@ -2493,11 +2493,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         let metadata = QUICProtocol.metadata()
-        metadata.perProtocolMetadata = stream.streamMetadata
-        metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
-        metadata.perProtocolMetadata?.streamID = streamID.value
+        //metadata.perProtocolMetadata = stream.streamMetadata
+        metadata.connectionMetadata = self.connectionMetadata
+        metadata.streamID = streamID.value
         if let streamType = stream.streamType {
-            metadata.perProtocolMetadata?.streamType = streamType
+            metadata.streamType = streamType
         }
         return metadata as? ProtocolMetadata<P>
     }
@@ -2590,7 +2590,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             streamID = nil
         }
 
-        stream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
+        stream.streamMetadata.connectionMetadata = self.connectionMetadata
         stream.setup(streamID: streamID, logPrefixer: logPrefixer)
 
         if let remoteTransportParameters {
@@ -5376,7 +5376,7 @@ extension QUICConnection {
             // create all the missing streams and flows. All will be left invalid until payload or application
             // triggers a transition to active
             let newStream = QUICStreamInstance(parent: self, inbound: true)
-            newStream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
+            newStream.streamMetadata.connectionMetadata = self.connectionMetadata
 
             let newFlowIdentifier = newStream.identifier
             multiplexedFlows[newFlowIdentifier] = newStream
@@ -5388,12 +5388,7 @@ extension QUICConnection {
             )
             newStream.unidirectional = newStreamID.isUnidirectional
 
-            let abstractMetadata: AbstractProtocolMetadata = ProtocolMetadata<QUICStreamProtocol>(
-                protocolIdentifier: QUICStreamProtocol.identifier,
-                perProtocolMetadata: newStream.streamMetadata,
-                messageIdentifier: SystemUUID(insecure: true)
-            )
-            deliverNewInboundFlowEvent(newStream.reference, flowMetadata: abstractMetadata)
+            deliverNewInboundFlowEvent(newStream.reference, flowMetadata: newStream.streamMetadata)
 
             log.debug(
                 "set stream \(newStreamID.description) for flow \(newFlowIdentifier.debugDescription)"

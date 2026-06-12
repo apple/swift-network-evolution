@@ -708,11 +708,14 @@ public struct Frame: ~Copyable {
 
     #if !NETWORK_EMBEDDED
     public mutating func setMetadata(metadata: AbstractProtocolMetadata?, isInput: Bool, isComplete: Bool) {
-        if let metadata = metadata as? ProtocolMetadata<IPProtocol>, let ipMetadata = metadata.perProtocolMetadata {
-            ecnFlag = ipMetadata.ecnFlag
-            dscpValue = ipMetadata.dscpValue
-            serviceClass = ipMetadata.serviceClass
-            fragmentationOverride = ipMetadata.fragmentationEnabled
+        if let metadata = metadata as? ProtocolMetadata<IPProtocol> {
+            metadata.withPerProtocolMetadata { ipMetadata in
+                guard let ipMetadata else { return }
+                ecnFlag = ipMetadata.ecnFlag
+                dscpValue = ipMetadata.dscpValue
+                serviceClass = ipMetadata.serviceClass
+                fragmentationOverride = ipMetadata.fragmentationEnabled
+            }
         }
 
         if protocolMetadatas.isEmpty {

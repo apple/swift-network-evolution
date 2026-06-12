@@ -269,7 +269,7 @@ public struct QUICStreamProtocol: NetworkProtocol {
 
     // QUICStreamMetadata -
 
-    public final class QUICStreamMetadata: PerProtocolMetadata {
+    public struct QUICStreamMetadata: ~Copyable, PerProtocolMetadata {
 
         var streamID: UInt64 = 0
 
@@ -295,15 +295,27 @@ public struct QUICStreamProtocol: NetworkProtocol {
 
         public init() {}
 
-        public func isEqual(to other: QUICStreamMetadata, for: ProtocolCompareMode) -> Bool {
+        public func isEqual(to other: borrowing QUICStreamMetadata, for: ProtocolCompareMode) -> Bool {
             true
         }
 
         func deepCopy() -> Self {
-            self
+            var explicitCopy = QUICStreamMetadata()
+            explicitCopy.streamID = self.streamID
+            explicitCopy.datagramFlowID = self.datagramFlowID
+            explicitCopy.applicationError = self.applicationError
+            explicitCopy.reliableSize = self.reliableSize
+            #if !NETWORK_EMBEDDED
+            explicitCopy.setApplicationErrorHandler = self.setApplicationErrorHandler
+            #endif
+            explicitCopy.quicConnectionMetadata = self.quicConnectionMetadata
+            explicitCopy.usableDatagramFrameSize = self.usableDatagramFrameSize
+            explicitCopy.streamType = self.streamType
+            explicitCopy.isDatagramFlow = self.isDatagramFlow
+            return explicitCopy
         }
 
-        static public func == (lhs: QUICStreamMetadata, rhs: QUICStreamMetadata) -> Bool {
+        static public func == (lhs: borrowing QUICStreamMetadata, rhs: borrowing QUICStreamMetadata) -> Bool {
             if lhs.streamID == rhs.streamID && lhs.datagramFlowID == rhs.datagramFlowID
                 && lhs.applicationError == rhs.applicationError
                 && lhs.quicConnectionMetadata == rhs.quicConnectionMetadata
@@ -329,7 +341,7 @@ public struct QUICStreamProtocol: NetworkProtocol {
             }
         }
 
-        func setConnectionMetadata(connectionMetadata: QUICConnectionProtocol.QUICConnectionMetadata) {
+        mutating func setConnectionMetadata(connectionMetadata: QUICConnectionProtocol.QUICConnectionMetadata) {
             mutex.withLock { _ in
                 self.quicConnectionMetadata = connectionMetadata
             }
@@ -344,7 +356,7 @@ public struct QUICStreamProtocol: NetworkProtocol {
             }
         }
 
-        func setApplicationError(handler: @escaping QUICMetadataSetterHandler) {
+        mutating func setApplicationError(handler: @escaping QUICMetadataSetterHandler) {
             mutex.withLock { _ in
                 self.setApplicationErrorHandler = handler
             }
@@ -413,16 +425,43 @@ extension ProtocolOptions<QUICProtocol> {
 }
 
 extension ProtocolMetadata<QUICProtocol> {
-    public var streamID: UInt64? { perProtocolMetadata?.streamID }
-    public var datagramFlowID: UInt64? { perProtocolMetadata?.datagramFlowID }
-    public var applicationError: UInt64? {
-        get { perProtocolMetadata?.applicationError }
-        set { perProtocolMetadata?.applicationError = newValue }
+    public internal(set) var streamID: UInt64? {
+        get { mutablePerProtocolMetadata { $0?.streamID } }
+        set {
+            mutablePerProtocolMetadata {
+                guard let newValue else { return }
+                $0?.streamID = newValue
+            }
+        }
     }
-    public var isDatagram: Bool { perProtocolMetadata?.isDatagramFlow ?? false }
-    public var isBidirectional: Bool { !isDatagram && perProtocolMetadata?.streamType == .bidirectional }
-    public var isUnidirectional: Bool { !isDatagram && perProtocolMetadata?.streamType == .unidirectional }
-    public var connectionMetadata: QUICConnectionProtocol.QUICConnectionMetadata? {
-        perProtocolMetadata?.quicConnectionMetadata
+    public var applicationError: UInt64? {
+        get { mutablePerProtocolMetadata { $0?.applicationError } }
+        set { mutablePerProtocolMetadata { $0?.applicationError = newValue } }
+    }
+    public var isBidirectional: Bool {
+        !isDatagram && (mutablePerProtocolMetadata { $0?.streamType == .bidirectional })
+    }
+    public var isUnidirectional: Bool {
+        !isDatagram && (mutablePerProtocolMetadata { $0?.streamType == .unidirectional })
+    }
+    public internal(set) var connectionMetadata: QUICConnectionProtocol.QUICConnectionMetadata? {
+        get { mutablePerProtocolMetadata { $0?.quicConnectionMetadata } }
+        set { mutablePerProtocolMetadata { $0?.quicConnectionMetadata = newValue } }
+    }
+    public internal(set) var streamType: QUICStreamType {
+        get { mutablePerProtocolMetadata { $0?.streamType ?? .bidirectional } }
+        set { mutablePerProtocolMetadata { $0?.streamType = newValue } }
+    }
+    public internal(set) var datagramFlowID: UInt64? {
+        get { mutablePerProtocolMetadata { $0?.datagramFlowID } }
+        set { mutablePerProtocolMetadata { $0?.datagramFlowID = newValue } }
+    }
+    public internal(set) var usableDatagramFrameSize: UInt16 {
+        get { mutablePerProtocolMetadata { $0?.usableDatagramFrameSize ?? 0 } }
+        set { mutablePerProtocolMetadata { $0?.usableDatagramFrameSize = newValue } }
+    }
+    public internal(set) var isDatagram: Bool {
+        get { mutablePerProtocolMetadata { $0?.isDatagramFlow ?? false } }
+        set { mutablePerProtocolMetadata { $0?.isDatagramFlow = newValue } }
     }
 }

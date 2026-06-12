@@ -445,7 +445,11 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
 {
     private(set) var streamID: QUICStreamID?
     var logPrefix: String = ""
-    var streamMetadata = QUICStreamProtocol.QUICStreamMetadata()
+    var streamMetadata = ProtocolMetadata<QUICStreamProtocol>(
+        protocolIdentifier: QUICStreamProtocol.identifier,
+        perProtocolMetadata: QUICStreamProtocol.QUICStreamMetadata(),
+        messageIdentifier: SystemUUID(insecure: true)
+    )
 
     @_optimize(speed)
     override public var reference: ProtocolInstanceReference {
