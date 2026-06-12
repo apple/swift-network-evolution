@@ -489,11 +489,11 @@ public final class ProtocolStack: Hashable {
         #endif
     }
 
-    lazy var persistentApplication: Deque<ApplicationProtocol> = Deque<ApplicationProtocol>()
-    lazy var application: Deque<ApplicationProtocol> = Deque<ApplicationProtocol>()
-    public lazy var transport: TransportProtocol? = nil
+    var persistentApplication: Deque<ApplicationProtocol> = Deque<ApplicationProtocol>()
+    var application: Deque<ApplicationProtocol> = Deque<ApplicationProtocol>()
+    public var transport: TransportProtocol? = nil
     public var internet: InternetProtocol? = nil
-    public lazy var link: LinkProtocol? = nil
+    public var link: LinkProtocol? = nil
 
     #if !NETWORK_EMBEDDED
     var internetOptions: AbstractProtocolOptions? {
