@@ -349,7 +349,7 @@ public struct IPProtocol: NetworkProtocol {
 
         var passthroughEvents = true
 
-        struct IPCounters {
+        struct IPCounters: ~Copyable {
             var txPackets = 0
             var rxPackets = 0
             var rxECT0Packets = 0
@@ -364,8 +364,9 @@ public struct IPProtocol: NetworkProtocol {
             var dscpValue: UInt8?
         }
 
-        struct IPReassemblyState {
+        struct IPReassemblyState: ~Copyable {
             var reassemblyID: UInt32
+            var inputReassemblyFrames = FrameArray()
             //	TODO: inputReassemblyFrames, assignedInputFrameArray, assignedOutputFrameArray
         }
 
@@ -428,7 +429,7 @@ public struct IPProtocol: NetworkProtocol {
             }
         }
 
-        struct IPv4Instance {
+        struct IPv4Instance: ~Copyable {
             var ipProtocolNumber: UInt8 = 0
             var localAddress = IPv4Address.any
             var remoteAddress = IPv4Address.any
@@ -454,7 +455,7 @@ public struct IPProtocol: NetworkProtocol {
                 return value + IPv4Instance.headerLength
             }
 
-            mutating func processInboundFrames(_ ip: borrowing IPInstance, _ inboundFrames: inout FrameArray) {
+            mutating func processInboundFrames(_ log: borrowing NetworkLoggerState, _ inboundFrames: inout FrameArray) {
                 inboundFrames.iterateMutableFrames { frame in
                     let originalFrameLength = frame.unclaimedLength
                     var versionAndHeaderLength: UInt8 = 0
@@ -483,7 +484,7 @@ public struct IPProtocol: NetworkProtocol {
                     }
 
                     guard result.isValid else {
-                        ip.log.info("Failed to parse IPv4 header: \(result)")
+                        log.info("Failed to parse IPv4 header: \(result)")
 
                         // Keep processing other frames even if some are invalid.
                         frame.finalize(success: false)
@@ -491,14 +492,14 @@ public struct IPProtocol: NetworkProtocol {
                     }
 
                     guard originalFrameLength >= IPv4Instance.headerLength else {
-                        ip.log.error("Received IPv4 packet with incorrect length \(originalFrameLength)")
+                        log.error("Received IPv4 packet with incorrect length \(originalFrameLength)")
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
 
                     let version = UInt8(versionAndHeaderLength >> 4)  // Get the first four bits
                     guard version == Version.v4.rawValue else {
-                        ip.log.error("Invalid IPv4 version: \(version)")
+                        log.error("Invalid IPv4 version: \(version)")
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
@@ -509,12 +510,12 @@ public struct IPProtocol: NetworkProtocol {
                     let subnet = (0xE000_0000 as UInt32).bigEndian
 
                     guard headerLength >= IPv4Instance.headerLength else {
-                        ip.log.error("Invalid header length: \(headerLength)")
+                        log.error("Invalid header length: \(headerLength)")
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
                     guard headerLength <= originalFrameLength else {
-                        ip.log.error("Invalid header length: \(headerLength) > \(originalFrameLength)")
+                        log.error("Invalid header length: \(headerLength) > \(originalFrameLength)")
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
@@ -527,24 +528,32 @@ public struct IPProtocol: NetworkProtocol {
                             || ((self.broadcast.addressValue != 0 && self.netmask.addressValue != 0)
                                 && destinationAddressValue == (self.broadcast.addressValue & self.netmask.addressValue))
                     else {
-                        ip.log.error("Received local address \(destinationAddressValue) != \(localAddress)")
+                        log.error("Received local address \(destinationAddressValue) != \(localAddress)")
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
                     guard totalLength == originalFrameLength else {
-                        ip.log.error(
+                        log.error(
                             "Received length mismatch with IP total length \(totalLength) != \(originalFrameLength)"
                         )
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
                     guard headerLength <= totalLength else {
-                        ip.log.error("Invalid header length (greater than IP length): \(headerLength) > \(totalLength)")
+                        log.error("Invalid header length (greater than IP length): \(headerLength) > \(totalLength)")
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
 
                     // TODO: Handle reassembly / fragmentation
+                    if offset & UInt16(IP_MF | IP_OFFMASK).bigEndian != 0 {
+                        if frame.isSingleIPAggregate {
+                            log.fault("Received fragment on a super-packet with length: \(headerLength)")
+                            return .removeFrameAndContinue
+                        }
+                        // Build out rest here
+
+                    }
 
                     let ipECN = IPProtocol.ECN(tos)
                     frame.ecnFlag = ipECN
@@ -571,14 +580,14 @@ public struct IPProtocol: NetworkProtocol {
 
                     if frame.isChecksumIPChecked {
                         guard frame.isChecksumIPValid else {
-                            ip.log.error("Invalid checksum \(checksum)")
+                            log.error("Invalid checksum \(checksum)")
                             return .removeFrameAndContinue
                         }
                     } else {
                         guard let frameChecksum = try? frame.ipChecksum(offset: 0, length: Int(headerLength)),
                             frameChecksum == 0
                         else {
-                            ip.log.error("Invalid checksum \(checksum)")
+                            log.error("Invalid checksum \(checksum)")
                             return .removeFrameAndContinue
 
                         }
@@ -689,7 +698,7 @@ public struct IPProtocol: NetworkProtocol {
             }
         }
 
-        struct IPv6Instance {
+        struct IPv6Instance: ~Copyable {
             var ipProtocolNumber: UInt8 = 0
             var localAddress = IPv6Address.any
             var remoteAddress = IPv6Address.any
@@ -717,7 +726,7 @@ public struct IPProtocol: NetworkProtocol {
                 return value + IPv6Instance.headerLength
             }
 
-            mutating func processInboundFrames(_ ip: borrowing IPInstance, _ inboundFrames: inout FrameArray) {
+            mutating func processInboundFrames(_ log: borrowing NetworkLoggerState, _ inboundFrames: inout FrameArray) {
                 inboundFrames.iterateMutableFrames { frame in
                     let originalFrameLength = frame.unclaimedLength
                     var flow: UInt32 = 0
@@ -743,7 +752,7 @@ public struct IPProtocol: NetworkProtocol {
                     }
 
                     guard result.isValid else {
-                        ip.log.info("Failed to parse IPv6 header: \(result)")
+                        log.info("Failed to parse IPv6 header: \(result)")
 
                         // Keep processing other frames even if some are invalid.
                         frame.finalize(success: false)
@@ -751,19 +760,19 @@ public struct IPProtocol: NetworkProtocol {
                     }
 
                     guard originalFrameLength >= IPv6Instance.headerLength else {
-                        ip.log.error("Received IPv6 packet with incorrect length \(originalFrameLength)")
+                        log.error("Received IPv6 packet with incorrect length \(originalFrameLength)")
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
                     let version = UInt8(flow >> 28)  // Get the first 4 high order bits for version
                     guard version == Version.v6.rawValue else {
-                        ip.log.error("Not an IPv6 packet")
+                        log.error("Not an IPv6 packet")
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
                     let ipv6Length = (payloadLength + UInt16(IPv6Instance.headerLength))
                     guard ipv6Length == originalFrameLength else {
-                        ip.log.error(
+                        log.error(
                             "Received IPv6 packet with incorrect length, expected \(ipv6Length) received \(originalFrameLength)"
                         )
                         frame.finalize(success: false)
@@ -870,7 +879,7 @@ public struct IPProtocol: NetworkProtocol {
             }
         }
 
-        enum IPInstanceType {
+        enum IPInstanceType: ~Copyable {
             case ipv4(IPv4Instance)
             case ipv6(IPv6Instance)
         }
@@ -980,17 +989,13 @@ public struct IPProtocol: NetworkProtocol {
             }
         }
 
-        func receiveDatagrams(maximumDatagramCount: Int) throws(NetworkError) -> FrameArray? {
+        mutating func receiveDatagrams(maximumDatagramCount: Int) throws(NetworkError) -> FrameArray? {
             repeat {
                 let inboundFrames = try invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount)
                 guard var inboundFrames, !inboundFrames.isEmpty else {
                     return nil
                 }
-
-                switch self.instanceType {
-                case .ipv4(var instance): instance.processInboundFrames(self, &inboundFrames)
-                case .ipv6(var instance): instance.processInboundFrames(self, &inboundFrames)
-                }
+                IPInstance.processInbound(&self.instanceType, log: self.log, frames: &inboundFrames)
                 guard !inboundFrames.isEmpty else {
                     log.error("Dropped inbound packets, checking for more")
                     continue
@@ -1023,14 +1028,38 @@ public struct IPProtocol: NetworkProtocol {
             }
         }
 
-        func sendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
-            switch self.instanceType {
-            case .ipv4(var instance): instance.writeOutboundFrames(&datagrams)
-            case .ipv6(var instance): instance.writeOutboundFrames(&datagrams)
-            }
-            return try invokeSendDatagrams(datagrams)
+        mutating func sendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
+            IPInstance.processSend(&self.instanceType, datagrams: &datagrams)
+            try invokeSendDatagrams(datagrams)
         }
 
+        @inline(__always)
+        private static func processInbound(
+            _ instanceType: inout IPInstanceType,
+            log: borrowing NetworkLoggerState,
+            frames: inout FrameArray
+        ) {
+            switch instanceType {
+            case .ipv4(var instance):
+                instance.processInboundFrames(log, &frames)
+                instanceType = .ipv4(instance)
+            case .ipv6(var instance):
+                instance.processInboundFrames(log, &frames)
+                instanceType = .ipv6(instance)
+            }
+        }
+
+        @inline(__always)
+        private static func processSend(_ instanceType: inout IPInstanceType, datagrams: inout FrameArray) {
+            switch instanceType {
+            case .ipv4(var instance):
+                instance.writeOutboundFrames(&datagrams)
+                instanceType = .ipv4(instance)
+            case .ipv6(var instance):
+                instance.writeOutboundFrames(&datagrams)
+                instanceType = .ipv6(instance)
+            }
+        }
         #if !NETWORK_EMBEDDED
         var metadata: AbstractProtocolMetadata? { nil }
         #endif
