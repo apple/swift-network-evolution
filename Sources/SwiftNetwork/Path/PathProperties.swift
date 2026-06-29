@@ -202,7 +202,7 @@ public struct PathProperties: CustomStringConvertible {
 
     var customEthertype: UInt16 = 0
     var customIPProtocol: UInt8 = 0
-    var nat64Prefixes: [UInt8]? = nil
+    var nat64Prefixes: [NAT64Prefix]? = nil
     var recommendedMSS: UInt8 = 0
     var linkQualityInternal: Int8 = 0
     var clientNECPFD: Int = -1
