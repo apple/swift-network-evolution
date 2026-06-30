@@ -61,7 +61,7 @@ final class SwiftNetworkQUICKeepaliveTests: NetTestCase {
         let serverOptions = QUICProtocol.options()
         serverOptions.connectionOptions.pmtudUpdateInterval = .seconds(1)
 
-        var networkError: NetworkError? = nil
+        nonisolated(unsafe) var networkError: NetworkError? = nil
 
         QUICTestHarness().runQUICTest(
             clientOptions: clientOptions,
@@ -99,7 +99,7 @@ final class SwiftNetworkQUICKeepaliveTests: NetTestCase {
         let serverOptions = QUICProtocol.options()
         serverOptions.connectionOptions.pmtud = false
 
-        var networkError: NetworkError? = nil
+        nonisolated(unsafe) var networkError: NetworkError? = nil
 
         QUICTestHarness().runQUICTest(
             clientOptions: clientOptions,

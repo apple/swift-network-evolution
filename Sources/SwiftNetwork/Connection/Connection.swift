@@ -969,7 +969,7 @@ public struct TCP: StreamProtocol {
 #if !NETWORK_EMBEDDED
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct DatagramBridge: DatagramProtocol {
+public struct DatagramBridge: DatagramProtocol, Sendable {
     public typealias ContentType = Void
 
     public let belowProtocol: Void
@@ -990,7 +990,7 @@ public struct DatagramBridge: DatagramProtocol {
 #if !NETWORK_EMBEDDED
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct StreamBridge: StreamProtocol {
+public struct StreamBridge: StreamProtocol, Sendable {
     public typealias ContentType = Void
 
     public let belowProtocol: Void
@@ -1010,8 +1010,8 @@ public struct StreamBridge: StreamProtocol {
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct NoTransport: StreamProtocol {
-    public enum BelowProtocol {
+public struct NoTransport: StreamProtocol, Sendable {
+    public enum BelowProtocol: Sendable {
         case void
         #if !NETWORK_EMBEDDED
         case bridge(StreamBridge)
@@ -1331,7 +1331,7 @@ public struct QUIC: MultiplexProtocol {
 /// > Note: This type is not intended to be inserted into the protocol stack manually; it is vended by connections that use QUIC.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct QUICStream: StreamProtocol {
+public struct QUICStream: StreamProtocol, Sendable {
     public let belowProtocol: Void
 
     public enum Directionality: Equatable {
@@ -1353,7 +1353,7 @@ public struct QUICStream: StreamProtocol {
 /// UDP supports sending and receiving datagrams.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct UDP: DatagramProtocol {
+public struct UDP: DatagramProtocol, Sendable {
     public typealias ContentType = [UInt8]
 
     private var preferNoChecksum: Bool?
@@ -1397,8 +1397,8 @@ public struct UDP: DatagramProtocol {
 /// protocol stack when configuring IP options.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct IP: NetworkProtocolOptions {
-    public enum BelowProtocol {
+public struct IP: NetworkProtocolOptions, Sendable {
+    public enum BelowProtocol: Sendable {
         case void
         #if !NETWORK_EMBEDDED
         case bridge(DatagramBridge)
@@ -2085,7 +2085,7 @@ extension NetworkChannel where ApplicationProtocol: MessageProtocol {
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-extension NetworkChannel where ApplicationProtocol: StreamProtocol {
+extension NetworkChannel where ApplicationProtocol: StreamProtocol & Sendable {
     public struct StreamMessage {
         public static func message(content: [UInt8]? = nil, isComplete: Bool = false) -> StreamMessage {
             StreamMessage(content: content, isComplete: isComplete)
@@ -2097,10 +2097,12 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
 
     public func send(_ message: StreamMessage, completion: (@Sendable (Result<Void, NetworkError>) -> Void)? = nil) {
         let endpointFlow = self.endpointFlow
+        let content = message.content
+        let isComplete = message.isComplete
         endpointFlow.async {
             let writeRequest = WriteRequest(
-                content: message.content,
-                isComplete: message.isComplete,
+                content: content,
+                isComplete: isComplete,
                 completion: completion
             )
             endpointFlow.addWriteRequestOnContext(writeRequest)
@@ -2114,10 +2116,12 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
         completion: (@Sendable (Result<Void, NetworkError>) -> Void)? = nil
     ) {
         let endpointFlow = self.endpointFlow
+        nonisolated(unsafe) let unsafeBuffer = buffer
+        nonisolated(unsafe) let unsafeOwner = owner
         endpointFlow.async {
             let writeRequest = WriteRequest(
-                buffer: buffer,
-                owner: owner,
+                buffer: unsafeBuffer,
+                owner: unsafeOwner,
                 isComplete: isComplete,
                 completion: completion
             )
@@ -2144,7 +2148,7 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
+extension NetworkChannel where ApplicationProtocol: DatagramProtocol & Sendable {
     public struct DatagramMessage {
         public static func message(content: [UInt8]? = nil) -> DatagramMessage {
             DatagramMessage(content: content)
@@ -2155,8 +2159,9 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
 
     public func send(_ message: DatagramMessage, completion: (@Sendable (Result<Void, NetworkError>) -> Void)? = nil) {
         let endpointFlow = self.endpointFlow
+        let content = message.content
         endpointFlow.async {
-            let writeRequest = WriteRequest(content: message.content, isComplete: true, completion: completion)
+            let writeRequest = WriteRequest(content: content, isComplete: true, completion: completion)
             endpointFlow.addWriteRequestOnContext(writeRequest)
         }
     }
@@ -2168,10 +2173,12 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
         completion: (@Sendable (Result<Void, NetworkError>) -> Void)? = nil
     ) {
         let endpointFlow = self.endpointFlow
+        nonisolated(unsafe) let unsafeBuffer = buffer
+        nonisolated(unsafe) let unsafeOwner = owner
         endpointFlow.async {
             let writeRequest = WriteRequest(
-                buffer: buffer,
-                owner: owner,
+                buffer: unsafeBuffer,
+                owner: unsafeOwner,
                 isComplete: isComplete,
                 completion: completion
             )

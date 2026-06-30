@@ -59,7 +59,7 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
         // If the spin bit is disabled then the test short circuits and ends, if it is enable then it verified
         // it from the server.
 
-        var hasSpinBit = true
+        nonisolated(unsafe) var hasSpinBit = true
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             afterHandshake: { harness in

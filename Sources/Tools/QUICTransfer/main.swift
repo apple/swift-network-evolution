@@ -35,7 +35,7 @@ import Crypto
 #if IMPORT_SWIFTTLS && canImport(SwiftTLS)
 
 @available(Network 0.1.0, *)
-final class QUICTransfer {
+final class QUICTransfer: @unchecked Sendable {
 
     // 169.254.156.146
     let localIPv4Address: [UInt8] = [0xa9, 0xfe, 0x9c, 0x92]
@@ -45,7 +45,12 @@ final class QUICTransfer {
     let dataBenchmarkUtility = DataBenchmarkUtility()
     let quicBenchmakrUtility = QUICBenchmarkUtility()
     let NSEC_PER_MSEC = UInt64(Duration.milliseconds(1) / Duration.nanoseconds(1))
-    var serverSigningKey = P256.Signing.PrivateKey()
+    let serverSigningKey = P256.Signing.PrivateKey()
+
+    var clientStream: StreamUpperHarness? = nil
+    var clientInput: NewStreamFlowHarness? = nil
+    var serverInput: NewStreamFlowHarness? = nil
+    var serverStream: StreamUpperHarness? = nil
 
     func run(
         iterations: Int,
@@ -54,30 +59,30 @@ final class QUICTransfer {
         sendSize: Int,
         linkDelay: NetworkDuration = .zero
     ) -> Double {
-        let ipv4Client = Endpoint(address: IPv4Address(localIPv4Address)!, port: 1234)
-        let ipv4Server = Endpoint(address: IPv4Address(remoteIPv4Address)!, port: 2345)
-        var clientStream: StreamUpperHarness? = nil
-        var clientInput: NewStreamFlowHarness? = nil
-        var serverInput: NewStreamFlowHarness? = nil
         // Create a random payload to send back and forth
-        var payload = [UInt8](repeating: 0, count: sendSize)
-        payload = (0..<sendSize).map { _ in UInt8.random(in: 0...255) }
-        var index = 0
+        var mutablePayload = [UInt8](repeating: 0, count: sendSize)
+        mutablePayload = (0..<sendSize).map { _ in UInt8.random(in: 0...255) }
+        let payload = mutablePayload
+        nonisolated(unsafe) var index = 0
         print("Running QUIC transfer, transferring \(iterations) packet\(iterations > 1 ? "s" : "")")
         let timestart = DispatchTime.now().uptimeNanoseconds
 
         group.enter()
-        var clientParameters = Parameters()
         let context = NetworkContext(identifier: "QUICTransfer")
-        clientParameters.context = context
-        let path = PathProperties(parameters: clientParameters)
-
-        var serverParameters = Parameters()
-        serverParameters.isServer = true
-        serverParameters.context = context
 
         context.activate()
         context.async {
+            let ipv4Client = Endpoint(address: IPv4Address(self.localIPv4Address)!, port: 1234)
+            let ipv4Server = Endpoint(address: IPv4Address(self.remoteIPv4Address)!, port: 2345)
+
+            var clientParameters = Parameters()
+            clientParameters.context = context
+            let path = PathProperties(parameters: clientParameters)
+
+            var serverParameters = Parameters()
+            serverParameters.isServer = true
+            serverParameters.context = context
+
             // Client
             let clientIP = IPProtocol.instance(context: clientParameters.context)
             let clientIPOptions = IPProtocol.options()
@@ -112,7 +117,7 @@ final class QUICTransfer {
             clientParameters.defaultStack.link = .custom(bridgeOptions)
 
             let clientListenerLinkage = StreamListenerLinkage(reference: clientQUIC)
-            clientInput = NewStreamFlowHarness(
+            self.clientInput = NewStreamFlowHarness(
                 identifier: "Client",
                 local: ipv4Client,
                 remote: ipv4Server,
@@ -122,7 +127,7 @@ final class QUICTransfer {
                 listenerProtocol: clientListenerLinkage
             )
 
-            clientStream = StreamUpperHarness(
+            self.clientStream = StreamUpperHarness(
                 identifier: "C1",
                 local: ipv4Client,
                 remote: ipv4Server,
@@ -131,7 +136,7 @@ final class QUICTransfer {
                 context: context,
                 listenerProtocol: clientListenerLinkage
             )
-            guard let clientInput else {
+            guard self.clientInput != nil else {
                 group.leave()
                 return
             }
@@ -196,7 +201,7 @@ final class QUICTransfer {
             serverParameters.defaultStack.link = .custom(serverBridgeOptions)
 
             let serverListenerLinkage = StreamListenerLinkage(reference: serverQUIC)
-            serverInput = NewStreamFlowHarness(
+            self.serverInput = NewStreamFlowHarness(
                 identifier: "Server",
                 local: ipv4Server,
                 remote: ipv4Client,
@@ -206,7 +211,7 @@ final class QUICTransfer {
                 listenerProtocol: serverListenerLinkage
             )
 
-            guard let serverInput else {
+            guard self.serverInput != nil else {
                 group.leave()
                 return
             }
@@ -238,33 +243,33 @@ final class QUICTransfer {
                 group.leave()
                 return
             }
-            serverInput.start { connected in
+            self.serverInput!.start { connected in
                 // Server connected event
                 group.leave()
             }
-            clientInput.start()
-            clientStream?.start()
+            self.clientInput!.start()
+            self.clientStream?.start()
         }
         group.wait()
-        guard let serverInput, let clientInput, let clientStream else {
+        guard self.serverInput != nil, self.clientInput != nil, self.clientStream != nil else {
             return 0
         }
-        var serverStream: StreamUpperHarness?
 
-        var totalReadSize = 0
+        nonisolated(unsafe) var totalReadSize = 0
         while index < iterations {
+            let indexToLog = index
             group.enter()
             context.async {
-                guard clientStream.write(payload) else {
-                    loggingHandle.log("Client failed to write at iteration: \(index)")
+                guard self.clientStream!.write(payload) else {
+                    loggingHandle.log("Client failed to write at iteration: \(indexToLog)")
                     group.leave()
                     return
                 }
-                if serverStream == nil {
+                if self.serverStream == nil {
                     group.enter()
-                    serverInput.waitForNewFlow {
+                    self.serverInput!.waitForNewFlow {
                         loggingHandle.log("Server got new inbound flow")
-                        serverStream = serverInput.upperHarnesses.last
+                        self.serverStream = self.serverInput!.upperHarnesses.last
                         group.leave()
                     }
                 }
@@ -272,7 +277,7 @@ final class QUICTransfer {
             }
             group.wait()
 
-            guard let serverStream else {
+            guard self.serverStream != nil else {
                 return 0
             }
 
@@ -281,7 +286,7 @@ final class QUICTransfer {
                 var serverReadDataSizeForIteration = 0
                 var serverReadCompletion: ((Bool) -> Void)? = nil
                 serverReadCompletion = { _ in
-                    let readBytes = serverStream.readAndDrop()
+                    let readBytes = self.serverStream!.readAndDrop()
                     if readBytes > 0 {
                         serverReadDataSizeForIteration += readBytes
                         totalReadSize += readBytes
@@ -291,21 +296,21 @@ final class QUICTransfer {
                         index += 1
                         group.leave()
                     } else {
-                        serverStream.waitForInboundDataAvailable(completion: serverReadCompletion!)
+                        self.serverStream!.waitForInboundDataAvailable(completion: serverReadCompletion!)
                     }
                 }
-                serverStream.waitForInboundDataAvailable(completion: serverReadCompletion!)
+                self.serverStream!.waitForInboundDataAvailable(completion: serverReadCompletion!)
             }
             group.wait()
         }
 
         group.enter()
         context.async {
-            clientStream.stop()
-            clientInput.stop()
-            clientInput.teardown()
-            serverInput.stop()
-            serverInput.teardown()
+            self.clientStream!.stop()
+            self.clientInput!.stop()
+            self.clientInput!.teardown()
+            self.serverInput!.stop()
+            self.serverInput!.teardown()
             group.leave()
         }
         group.wait()

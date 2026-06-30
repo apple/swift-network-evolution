@@ -29,17 +29,24 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
     static let inputMessage: [UInt8] = [0x0d, 0x0c, 0x0b, 0x0a, 0x01]
 
     func testMultiplexingProtocol() {
-        let parameters = Parameters()
-        let context = parameters.context
-        let path = PathProperties(parameters: parameters)
+        let context = NetworkContext.implicitContext
+        nonisolated(unsafe) var parameters = Parameters()
+        parameters.context = context
+        nonisolated(unsafe) let path = PathProperties(parameters: parameters)
 
-        let localEndpoint = Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 1234)
-        let remoteEndpoint = Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 2345)
+        nonisolated(unsafe) let localEndpoint = Endpoint(
+            address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!,
+            port: 1234
+        )
+        nonisolated(unsafe) let remoteEndpoint = Endpoint(
+            address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!,
+            port: 2345
+        )
 
-        var instance: TestMultiplexingProtocol? = nil
-        var upperHarness1: DatagramUpperHarness?
-        var lowerHarness: DatagramLowerHarness?
-        var listenerHarness: NewDatagramFlowHarness?
+        nonisolated(unsafe) var instance: TestMultiplexingProtocol? = nil
+        nonisolated(unsafe) var upperHarness1: DatagramUpperHarness?
+        nonisolated(unsafe) var lowerHarness: DatagramLowerHarness?
+        nonisolated(unsafe) var listenerHarness: NewDatagramFlowHarness?
         let expectation = XCTestExpectation()
         context.async {
             instance = TestMultiplexingProtocol(context: context)
@@ -110,6 +117,9 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
         guard let upperHarness1, let lowerHarness, let listenerHarness else {
             return
         }
+        nonisolated(unsafe) let unsafeUpperHarness1 = upperHarness1
+        nonisolated(unsafe) let unsafeLowerHarness = lowerHarness
+        nonisolated(unsafe) let unsafeListenerHarness = listenerHarness
 
         let dataExpectation = XCTestExpectation()
         context.async {
@@ -121,11 +131,11 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
             let outputMessage = SwiftNetworkMultiplexingTests.outputMessage
             let inputMessage = SwiftNetworkMultiplexingTests.inputMessage
 
-            let wrote = upperHarness1.write(outputMessage)
+            let wrote = unsafeUpperHarness1.write(outputMessage)
 
             XCTAssertTrue(wrote, "Failed to write")
 
-            let lastPacketData = lowerHarness.extractLastOutboundPacket()
+            let lastPacketData = unsafeLowerHarness.extractLastOutboundPacket()
             XCTAssertNotNil(lastPacketData, "Failed to get multiplexed outbound packet")
             guard let lastPacketData else {
                 return
@@ -135,9 +145,9 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
             XCTAssertEqual(lastPacketData, expectedPacketData, "Failed to generate expected multiplexed output packet")
 
             let inputPacketData = inputMessage.withUnsafeBytes { [UInt8]($0) }
-            lowerHarness.setNextInboundPacket(inputPacketData)
+            unsafeLowerHarness.setNextInboundPacket(inputPacketData)
 
-            let readApplicationBytes = upperHarness1.read()
+            let readApplicationBytes = unsafeUpperHarness1.read()
             XCTAssertNotNil(readApplicationBytes, "Failed to get multiplexed input packet")
             guard let readApplicationBytes else {
                 return
@@ -147,7 +157,7 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
             XCTAssertEqual(inputPacketData, readApplicationData, "Failed to read expected multiplexed input data")
 
             instance.triggerNewFlowCreation()
-            XCTAssertEqual(listenerHarness.upperHarnesses.count, 1, "Listener expects to have 1 inbound flows")
+            XCTAssertEqual(unsafeListenerHarness.upperHarnesses.count, 1, "Listener expects to have 1 inbound flows")
 
             let upperHarness2 = DatagramUpperHarness(
                 identifier: "Client2",
@@ -184,7 +194,7 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
             let wrote2 = upperHarness2.write(outputMessage)
             XCTAssertTrue(wrote2, "Failed to write, second flow")
 
-            let lastPacketData2 = lowerHarness.extractLastOutboundPacket()
+            let lastPacketData2 = unsafeLowerHarness.extractLastOutboundPacket()
             XCTAssertNotNil(lastPacketData, "Failed to get multiplexed output packet, second flow")
             guard let lastPacketData2 else {
                 return
@@ -198,33 +208,40 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
                 "Failed to generate expected multiplexed output packet, second flow"
             )
 
-            upperHarness1.stop()
+            unsafeUpperHarness1.stop()
             upperHarness2.stop()
             upperHarness3.stop()
 
-            upperHarness1.teardown()
+            unsafeUpperHarness1.teardown()
             upperHarness2.teardown()
             upperHarness3.teardown()
 
-            listenerHarness.teardown()
+            unsafeListenerHarness.teardown()
         }
 
         wait(for: [dataExpectation], timeout: 5.0)
     }
 
     func testMultiplexingProtocolPendingStreams() {
-        let parameters = Parameters()
-        let context = parameters.context
-        let path = PathProperties(parameters: parameters)
+        let context = NetworkContext.implicitContext
+        nonisolated(unsafe) var parameters = Parameters()
+        parameters.context = context
+        nonisolated(unsafe) let path = PathProperties(parameters: parameters)
 
-        let localEndpoint = Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 1234)
-        let remoteEndpoint = Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 2345)
+        nonisolated(unsafe) let localEndpoint = Endpoint(
+            address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!,
+            port: 1234
+        )
+        nonisolated(unsafe) let remoteEndpoint = Endpoint(
+            address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!,
+            port: 2345
+        )
 
         // Use a high number of streams to ensure that we don't have poor scaling
         let upperHarnessCount = 1000
-        var upperHarnesses = [DatagramUpperHarness]()
-        var lowerHarness: DatagramLowerHarness?
-        var listenerHarness: NewDatagramFlowHarness?
+        nonisolated(unsafe) var upperHarnesses = [DatagramUpperHarness]()
+        nonisolated(unsafe) var lowerHarness: DatagramLowerHarness?
+        nonisolated(unsafe) var listenerHarness: NewDatagramFlowHarness?
         let expectation = XCTestExpectation()
         context.async {
             var instance = TestMultiplexingProtocol(context: context)
@@ -302,6 +319,7 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
         guard upperHarnesses.count == upperHarnessCount, let listenerHarness else {
             return
         }
+        nonisolated(unsafe) let unsafeListenerHarness = listenerHarness
 
         let closeExpectation = XCTestExpectation()
         context.async {
@@ -310,8 +328,8 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
                 upperHarness.stop()
                 upperHarness.teardown()
             }
-            listenerHarness.stop()
-            listenerHarness.teardown()
+            unsafeListenerHarness.stop()
+            unsafeListenerHarness.teardown()
 
             closeExpectation.fulfill()
         }

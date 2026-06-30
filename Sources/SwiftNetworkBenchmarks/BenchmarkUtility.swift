@@ -72,7 +72,7 @@ public struct QUICLoopbackState {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public struct QUICClientEndpointResult {
+public struct QUICClientEndpointResult: @unchecked Sendable {
     public var instance: QUICConnection
     public var parameters: Parameters
     public var upperHandler: StreamUpperHarness
@@ -82,7 +82,7 @@ public struct QUICClientEndpointResult {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public struct QUICServerEndpointResult {
+public struct QUICServerEndpointResult: @unchecked Sendable {
     public var instance: QUICConnection
     public var parameters: Parameters
     public var upperHandler: NewStreamFlowHarness
@@ -96,12 +96,12 @@ public enum BenchmarkError: Error {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public final class QUICBenchmarkUtility {
+public final class QUICBenchmarkUtility: Sendable {
 
     // 127.0.0.1 (Just point both at loopback)
     public static let localIPv4Address: [UInt8] = [0x7f, 0x00, 0x00, 0x01]
     public static let remoteIPv4Address: [UInt8] = [0x7f, 0x00, 0x00, 0x01]
-    var serverSigningKey = P256.Signing.PrivateKey()
+    let serverSigningKey = P256.Signing.PrivateKey()
 
     public func createQUICTestOptions(
         server: Bool = false,
@@ -265,7 +265,7 @@ public final class QUICBenchmarkUtility {
 #if !(os(Linux) || NETWORK_EMBEDDED)
 @available(macOS 11, iOS 14, tvOS 14, watchOS 7, *)
 #endif
-public struct LoggingHandle: CustomStringConvertible {
+public struct LoggingHandle: CustomStringConvertible, Sendable {
     #if os(Linux) || NETWORK_EMBEDDED
     let logger = Logger(label: "com.apple.network.benchmarks")
     #else
@@ -273,12 +273,12 @@ public struct LoggingHandle: CustomStringConvertible {
     let logger = Logger(subsystem: "com.apple.network.benchmarks", category: "perf")
     #endif
     #endif
-    public enum LoggingType: Int {
+    public enum LoggingType: Int, Sendable {
         case none = 0
         case print = 1
         case log = 2
     }
-    public var loggingType: LoggingType = .none
+    public let loggingType: LoggingType
 
     public init(loggingType: LoggingType) {
         self.loggingType = loggingType
@@ -322,7 +322,7 @@ public struct LoggingHandle: CustomStringConvertible {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public final class DataBenchmarkUtility {
+public final class DataBenchmarkUtility: Sendable {
     @discardableResult
     public func loopOutputHandlerPackets(
         sender: DatagramLowerHarness,

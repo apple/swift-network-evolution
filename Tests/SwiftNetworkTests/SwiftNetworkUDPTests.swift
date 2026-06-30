@@ -81,12 +81,14 @@ final class SwiftNetworkUDPTests: NetTestCase {
         secondaryInputPacket: [UInt8]? = nil,
         expectBadInput: Bool = false
     ) {
-        let parameters = Parameters()
-
+        nonisolated(unsafe) let localEndpoint = localEndpoint
+        nonisolated(unsafe) let remoteEndpoint = remoteEndpoint
         let expectation = XCTestExpectation()
-        let context = parameters.context
+        let context = NetworkContext.implicitContext
         context.async {
             defer { expectation.fulfill() }
+            var parameters = Parameters()
+            parameters.context = context
             let path = PathProperties(parameters: parameters)
 
             let reference = UDPProtocol.instance(context: context)
@@ -236,13 +238,16 @@ final class SwiftNetworkUDPTests: NetTestCase {
     }
 
     func udpEcho(clientEndpoint: Endpoint, serverEndpoint: Endpoint, messages: [[UInt8]]) {
-        let clientParameters = Parameters()
+        nonisolated(unsafe) let clientEndpoint = clientEndpoint
+        nonisolated(unsafe) let serverEndpoint = serverEndpoint
 
         let expectation = XCTestExpectation()
-        let context = clientParameters.context
+        let context = NetworkContext.implicitContext
         context.async {
             defer { expectation.fulfill() }
 
+            var clientParameters = Parameters()
+            clientParameters.context = context
             let clientPath = PathProperties(parameters: clientParameters)
             let clientReference = UDPProtocol.instance(context: clientParameters.context)
             let clientOptions = UDPProtocol.options()

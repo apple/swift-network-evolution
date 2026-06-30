@@ -49,9 +49,9 @@ internal import os
 #if IMPORT_SWIFTTLS
 #if canImport(SwiftTLS)
 @available(Network 0.1.0, *)
-final class SwiftNetworkQUICShortLHPacketTests: NetTestCase {
+final class SwiftNetworkQUICShortLHPacketTests: NetTestCase, @unchecked Sendable {
 
-    var serverSigningKey = P256.Signing.PrivateKey()
+    let serverSigningKey = P256.Signing.PrivateKey()
     func createQUICTestOptions(server: Bool = false) -> ProtocolOptions<QUICProtocol> {
         var tlsOptions = SwiftTLSProtocol.Options()
         tlsOptions.applicationProtocols = ["h3"]
@@ -150,24 +150,31 @@ final class SwiftNetworkQUICShortLHPacketTests: NetTestCase {
         ]
 
     func testShortQUICInitialParsing() {
-        let clientEndpoint = Endpoint(address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!, port: 1234)
-        let serverEndpoint = Endpoint(address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!, port: 8080)
-
-        var serverParameters = Parameters()
-        serverParameters.isServer = true
-        let context = serverParameters.context
-        let serverPath = PathProperties(parameters: serverParameters)
-        let serverQUIC = QUICProtocol.instance(context: context)
-
-        let serverQUICOptions = self.createQUICTestOptions(server: true)
-        serverQUICOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
-        serverQUICOptions.setProtocolInstance(serverQUIC)
-
-        serverParameters.defaultStack.prepend(applicationProtocol: .quic(serverQUICOptions))
-
         let expectation = XCTestExpectation()
+        let context = NetworkContext.implicitContext
         context.async {
             defer { expectation.fulfill() }
+
+            let clientEndpoint = Endpoint(
+                address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!,
+                port: 1234
+            )
+            let serverEndpoint = Endpoint(
+                address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!,
+                port: 8080
+            )
+
+            var serverParameters = Parameters()
+            serverParameters.isServer = true
+            serverParameters.context = context
+            let serverPath = PathProperties(parameters: serverParameters)
+            let serverQUIC = QUICProtocol.instance(context: context)
+
+            let serverQUICOptions = self.createQUICTestOptions(server: true)
+            serverQUICOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
+            serverQUICOptions.setProtocolInstance(serverQUIC)
+
+            serverParameters.defaultStack.prepend(applicationProtocol: .quic(serverQUICOptions))
 
             let serverListenerLinkage = StreamListenerLinkage(reference: serverQUIC)
             let serverUpperHarness = StreamUpperHarness(

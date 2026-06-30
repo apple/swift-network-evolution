@@ -23,7 +23,7 @@ import XCTest
 #endif
 
 @available(Network 0.1.0, *)
-final class QUICStreamZombieListTests: XCTestCase {
+final class QUICStreamZombieListTests: XCTestCase, @unchecked Sendable {
     var zombieList = QUICStreamZombieList()
 
     func testAppend() {

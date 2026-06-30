@@ -49,7 +49,7 @@ internal import os
 #if IMPORT_SWIFTTLS
 #if canImport(SwiftTLS)
 @available(Network 0.1.0, *)
-final class SwiftNetworkQUICStackTests: NetTestCase {
+final class SwiftNetworkQUICStackTests: NetTestCase, @unchecked Sendable {
 
     // 10.0.0.20
     static let localIPv4Address: [UInt8] = [0x0a, 0x00, 0x00, 0x14]
@@ -234,21 +234,25 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         migrateCount: Int = 0,
         dataToSend: [UInt8]? = nil
     ) {
-        let clientParameters = Parameters()
+        nonisolated(unsafe) let clientEndpoint = clientEndpoint
+        nonisolated(unsafe) let serverEndpoint = serverEndpoint
 
         let expectation = XCTestExpectation()
-        let context = clientParameters.context
-        var clientConnected = false
-        var serverConnected = false
-        var clientUpperHarness: StreamUpperHarness?
-        var serverUpperHarness: NewStreamFlowHarness?
-        var clientQUICReference: ProtocolInstanceReference?
-        var serverQUICReference: ProtocolInstanceReference?
+        let context = NetworkContext.implicitContext
+        nonisolated(unsafe) var clientConnected = false
+        nonisolated(unsafe) var serverConnected = false
+        nonisolated(unsafe) var clientUpperHarness: StreamUpperHarness?
+        nonisolated(unsafe) var serverUpperHarness: NewStreamFlowHarness?
+        nonisolated(unsafe) var clientQUICReference: ProtocolInstanceReference?
+        nonisolated(unsafe) var serverQUICReference: ProtocolInstanceReference?
 
-        var pairedPathsArray = [PairedUDPIPPaths]()
+        nonisolated(unsafe) var pairedPathsArray = [PairedUDPIPPaths]()
 
         context.async {
             defer { expectation.fulfill() }
+
+            var clientParameters = Parameters()
+            clientParameters.context = context
 
             let pairedPaths = PairedUDPIPPaths(
                 context: context,
@@ -308,6 +312,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             }
 
             var serverParameters = Parameters()
+            serverParameters.context = context
             serverParameters.isServer = true
             let serverPath = PathProperties(parameters: serverParameters)
             let serverQUIC = QUICProtocol.instance(context: context)
@@ -376,6 +381,8 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         guard let clientQUICReference, let serverQUICReference else {
             return
         }
+        nonisolated(unsafe) let clientQUICRef = clientQUICReference
+        nonisolated(unsafe) let serverQUICRef = serverQUICReference
 
         let eventExpectation = XCTestExpectation()
         context.async {
@@ -422,14 +429,14 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                     let serverParameters = Parameters()
                     let severPath = PathProperties(parameters: Parameters())
 
-                    try clientQUICReference.attachLowerDatagramProtocolForNewPath(
+                    try clientQUICRef.attachLowerDatagramProtocolForNewPath(
                         pairedPaths.clientTop,
                         remote: serverEndpoint,
                         local: clientEndpoint,
                         parameters: clientParameters,
                         path: clientPath
                     )
-                    try serverQUICReference.attachLowerDatagramProtocolForNewPath(
+                    try serverQUICRef.attachLowerDatagramProtocolForNewPath(
                         pairedPaths.serverTop,
                         remote: clientEndpoint,
                         local: serverEndpoint,

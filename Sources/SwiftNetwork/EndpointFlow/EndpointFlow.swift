@@ -32,7 +32,7 @@ internal import Synchronization
 #endif
 
 @available(Network 0.1.0, *)
-final class EndpointFlow: CustomDebugStringConvertible {
+final class EndpointFlow: CustomDebugStringConvertible, @unchecked Sendable {
 
     /// State used to emit logs on the data path.
     public var log = NetworkLoggerState()
@@ -269,7 +269,7 @@ final class EndpointFlow: CustomDebugStringConvertible {
         }
     }
 
-    func async(_ block: @escaping () -> Void) {
+    func async(_ block: @Sendable @escaping () -> Void) {
         self.parameters.context.async(block)
     }
 

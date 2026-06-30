@@ -23,7 +23,7 @@ import XCTest
 #endif
 
 @available(Network 0.1.0, *)
-final class QUICConnectionTests: XCTestCase {
+final class QUICConnectionTests: XCTestCase, @unchecked Sendable {
     var connection: QUICConnection!
     override func setUp() {
         connection = QUICConnection(context: NetworkContext.implicitContext)

@@ -118,12 +118,15 @@ final class SwiftNetworkIPTests: NetTestCase {
         corrumptChecksum: Bool = false,
         hopLimit: UInt8? = nil
     ) {
-        let parameters = Parameters()
+        nonisolated(unsafe) let localEndpoint = localEndpoint
+        nonisolated(unsafe) let remoteEndpoint = remoteEndpoint
 
         let expectation = XCTestExpectation()
-        let context = parameters.context
+        let context = NetworkContext.implicitContext
         context.async {
             defer { expectation.fulfill() }
+            var parameters = Parameters()
+            parameters.context = context
             let path = PathProperties(parameters: parameters)
 
             let reference = IPProtocol.instance(context: parameters.context)
@@ -365,11 +368,14 @@ final class SwiftNetworkIPTests: NetTestCase {
     }
 
     func ipEcho(clientEndpoint: Endpoint, serverEndpoint: Endpoint, messages: [[UInt8]]) {
-        let clientParameters = Parameters()
+        nonisolated(unsafe) let clientEndpoint = clientEndpoint
+        nonisolated(unsafe) let serverEndpoint = serverEndpoint
         let expectation = XCTestExpectation()
-        let context = clientParameters.context
+        let context = NetworkContext.implicitContext
         context.async {
             defer { expectation.fulfill() }
+            var clientParameters = Parameters()
+            clientParameters.context = context
             let clientPath = PathProperties(parameters: clientParameters)
             let clientReference = IPProtocol.instance(context: clientParameters.context)
             let clientOptions = IPProtocol.options()

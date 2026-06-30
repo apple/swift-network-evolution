@@ -23,8 +23,11 @@ import XCTest
 #endif
 
 #if QlogOutput
+
+@available(Network 0.1.0, *)
 let qlogTestsLogPrefixer = LogPrefixer("[QLogTests]")
 
+@available(Network 0.1.0, *)
 final class QLogTests: XCTestCase {
     var qlog: QLog = QLog()
 

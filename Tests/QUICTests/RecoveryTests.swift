@@ -31,7 +31,7 @@ internal import DequeModule
 let recoveryTestsLogPrefixer: LogPrefixer = LogPrefixer("[RecoveryTests]")
 
 @available(Network 0.1.0, *)
-final class RecoveryTests: XCTestCase {
+final class RecoveryTests: XCTestCase, @unchecked Sendable {
     var connection = QUICConnection(context: .implicitContext)
     var path: QUICPath! = nil
 
@@ -571,7 +571,7 @@ final class RecoveryTests: XCTestCase {
         packet.transmittedItems.ping = true
         let sentPath = connection.currentPath?.identifier ?? .none
         packet.sentPath = sentPath
-        var timeNow = NetworkClock.Instant.now
+        nonisolated(unsafe) var timeNow = NetworkClock.Instant.now
         sentPacket(packet, connection: connection)
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(packetNumberSpace: .initial),
@@ -591,7 +591,7 @@ final class RecoveryTests: XCTestCase {
         XCTAssertGreaterThan(connection.recovery.computedTimeout, .milliseconds(900))
 
         var expectation = XCTestExpectation()
-        self.connection.context.async {
+        self.connection.context.async { [expectation] in
             timeNow = timeNow.advanced(by: .seconds(1))
             self.connection.recovery.timerFired(timeNow: timeNow)
             expectation.fulfill()
@@ -612,7 +612,7 @@ final class RecoveryTests: XCTestCase {
         XCTAssertGreaterThan(connection.recovery.computedTimeout, .milliseconds(1900))
 
         expectation = XCTestExpectation()
-        self.connection.context.async {
+        self.connection.context.async { [expectation] in
             timeNow = timeNow.advanced(by: .seconds(2))
             self.connection.recovery.timerFired(timeNow: timeNow)
             expectation.fulfill()
@@ -633,7 +633,7 @@ final class RecoveryTests: XCTestCase {
         XCTAssertGreaterThan(connection.recovery.computedTimeout, .milliseconds(3900))
 
         expectation = XCTestExpectation()
-        self.connection.context.async {
+        self.connection.context.async { [expectation] in
             timeNow = timeNow.advanced(by: .seconds(4))
             self.connection.recovery.timerFired(timeNow: timeNow)
             expectation.fulfill()

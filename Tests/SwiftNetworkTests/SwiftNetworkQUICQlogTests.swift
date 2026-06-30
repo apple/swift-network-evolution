@@ -48,6 +48,7 @@ internal import os
 
 #if QlogOutput
 
+@available(Network 0.1.0, *)
 final class SwiftNetworkQUICQlogTests: NetTestCase {
     func testQUICWriteClientQlogFileOnDataTransfer() throws {
         let dataBlock: [UInt8] = Array("Hello World!".utf8)
@@ -68,7 +69,7 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
         let qlogExpectation = XCTestExpectation(description: "Loop until the qlog is written")
         // Validate the qlog file is present (based on how it creates the file)
         let finalPath = path + "/qlog_client_\(title)_C1.qlog"
-        func checkQlogFileExists() {
+        @Sendable func checkQlogFileExists() {
             if FileManager.default.fileExists(atPath: finalPath) {
                 qlogExpectation.fulfill()
             }
@@ -110,7 +111,7 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
         let qlogExpectation = XCTestExpectation(description: "Loop until the qlog is written")
         // Validate the qlog file is present (based on how it creates the file)
         let finalPath = path + "qlog_server_\(title)_C1.qlog"
-        func checkQlogFileExists() {
+        @Sendable func checkQlogFileExists() {
             if FileManager.default.fileExists(atPath: finalPath) {
                 qlogExpectation.fulfill()
             }

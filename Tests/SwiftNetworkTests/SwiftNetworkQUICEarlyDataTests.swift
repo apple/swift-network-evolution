@@ -49,7 +49,7 @@ internal import os
 #if IMPORT_SWIFTTLS
 #if canImport(SwiftTLS)
 @available(Network 0.1.0, *)
-final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
+final class SwiftNetworkQUICEarlyDataTests: NetTestCase, @unchecked Sendable {
 
     // 10.0.0.20
     static let localIPv4Address: [UInt8] = [0x0a, 0x00, 0x00, 0x14]
@@ -239,26 +239,30 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
         expectFailure: Bool = false,
         resendRejectedEarlyDataAutomatically: Bool = false
     ) -> [UInt8]? {
-        let clientParameters = Parameters()
+        nonisolated(unsafe) let clientEndpoint = clientEndpoint
+        nonisolated(unsafe) let serverEndpoint = serverEndpoint
+        let context = NetworkContext.implicitContext
 
         let expectation = XCTestExpectation()
-        let context = clientParameters.context
-        var clientConnected = false
-        var serverConnected = false
-        var clientUpperHarness: StreamUpperHarness?
-        var serverUpperHarness: NewStreamFlowHarness?
-        var clientQUICReference: ProtocolInstanceReference?
-        var serverQUICReference: ProtocolInstanceReference?
+        nonisolated(unsafe) var clientConnected = false
+        nonisolated(unsafe) var serverConnected = false
+        nonisolated(unsafe) var clientUpperHarness: StreamUpperHarness?
+        nonisolated(unsafe) var serverUpperHarness: NewStreamFlowHarness?
+        nonisolated(unsafe) var clientQUICReference: ProtocolInstanceReference?
+        nonisolated(unsafe) var serverQUICReference: ProtocolInstanceReference?
 
-        var pairedPathsArray = [PairedUDPIPPaths]()
+        nonisolated(unsafe) var pairedPathsArray = [PairedUDPIPPaths]()
 
-        var earlyDataRejected = false
-        var remoteTransportParameters: [UInt8]? = nil
+        nonisolated(unsafe) var earlyDataRejected = false
+        nonisolated(unsafe) var remoteTransportParameters: [UInt8]? = nil
         let rejectedExpectation = XCTestExpectation()
         let errorExpectation = XCTestExpectation()
 
         context.async {
             defer { expectation.fulfill() }
+
+            var clientParameters = Parameters()
+            clientParameters.context = context
 
             let pairedPaths = PairedUDPIPPaths(
                 context: context,
@@ -417,7 +421,7 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
                 let receiveExpectation = XCTestExpectation()
                 context.async {
                     Logger.test.info("Trying to read data")
-                    func attemptServerRead() {
+                    @Sendable func attemptServerRead() {
                         if pairedPathsArray.first?.transferPackets() == 0 {
                             // Wait for new writes from the client to be sent
                             context.async {

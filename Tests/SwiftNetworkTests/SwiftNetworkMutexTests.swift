@@ -20,8 +20,8 @@ final class SwiftNetworkMutexTests: NetTestCase {
     func testMutexWithoutStorage() throws {
         let context = NetworkContext.implicitContext
 
-        var protectedFlag = false
-        var protectedValue = 0
+        nonisolated(unsafe) var protectedFlag = false
+        nonisolated(unsafe) var protectedValue = 0
 
         let mutex = NetworkMutex(())
 

@@ -27,7 +27,7 @@ internal import os
 #endif
 
 @available(Network 0.1.0, *)
-final class IPUDPTransfer {
+final class IPUDPTransfer: @unchecked Sendable {
 
     // 169.254.156.146
     let localIPv4Address: [UInt8] = [0xa9, 0xfe, 0x9c, 0x92]
@@ -37,14 +37,14 @@ final class IPUDPTransfer {
     let dataBenchmarkUtility = DataBenchmarkUtility()
     let NSEC_PER_MSEC = UInt64(Duration.milliseconds(1) / Duration.nanoseconds(1))
 
+    var iterationIndex = 0
+
     func run(iterations: Int, packets: Int, loggingHandle: LoggingHandle, group: DispatchGroup, sendSize: Int) -> Double
     {
-        let ipv4Client = Endpoint(address: IPv4Address(localIPv4Address)!, port: 0)
-        let ipv4Server = Endpoint(address: IPv4Address(remoteIPv4Address)!, port: 0)
         // Create a random payload to send back and forth
-        var payload = [UInt8](repeating: 0, count: sendSize)
-        payload = (0..<sendSize).map { _ in UInt8.random(in: 0...255) }
-        var iterationIndex = 0
+        var mutablePayload = [UInt8](repeating: 0, count: sendSize)
+        mutablePayload = (0..<sendSize).map { _ in UInt8.random(in: 0...255) }
+        let payload = mutablePayload
         print(
             "Running IP/UDP transfer, transferring \(iterations) iteration\(iterations > 1 ? "s" : "") of \(packets) packet\(packets > 1 ? "s" : "")"
         )
@@ -53,11 +53,15 @@ final class IPUDPTransfer {
         // NOTE: Today this benchmark relies on DispatchGroups due to Sendability issues on some of the project types.
         // In the future we should try to adopt Swift Concurrency.
         group.enter()
-        var clientParameters = Parameters()
         let context = NetworkContext(identifier: "IPUDPTransfer")
-        clientParameters.context = context
         context.activate()
         context.async {
+            let ipv4Client = Endpoint(address: IPv4Address(self.localIPv4Address)!, port: 0)
+            let ipv4Server = Endpoint(address: IPv4Address(self.remoteIPv4Address)!, port: 0)
+
+            var clientParameters = Parameters()
+            clientParameters.context = context
+
             for _ in 0..<iterations {
                 // Client
                 let path = PathProperties(parameters: clientParameters)
@@ -185,7 +189,7 @@ final class IPUDPTransfer {
                 serverInput.stop()
                 serverInput.teardown()
 
-                iterationIndex += 1
+                self.iterationIndex += 1
             }
             group.leave()
         }

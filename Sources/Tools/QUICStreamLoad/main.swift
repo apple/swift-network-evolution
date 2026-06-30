@@ -35,7 +35,7 @@ import Crypto
 #if IMPORT_SWIFTTLS && canImport(SwiftTLS)
 
 @available(Network 0.1.0, *)
-final class QUICStreamLoad {
+final class QUICStreamLoad: @unchecked Sendable {
 
     // 169.254.156.146
     let localIPv4Address: [UInt8] = [0xa9, 0xfe, 0x9c, 0x92]
@@ -55,8 +55,8 @@ final class QUICStreamLoad {
         downloadSize: Int,
         linkDelay: NetworkDuration
     ) -> NetworkDuration {
-        let ipv4Client = Endpoint(address: IPv4Address(localIPv4Address)!, port: 1234)
-        let ipv4Server = Endpoint(address: IPv4Address(remoteIPv4Address)!, port: 2345)
+        nonisolated(unsafe) let ipv4Client = Endpoint(address: IPv4Address(localIPv4Address)!, port: 1234)
+        nonisolated(unsafe) let ipv4Server = Endpoint(address: IPv4Address(remoteIPv4Address)!, port: 2345)
 
         var uploadPayload = [UInt8](repeating: 0, count: uploadSize)
         uploadPayload = (0..<uploadSize).map { _ in UInt8.random(in: 0...255) }
@@ -68,23 +68,23 @@ final class QUICStreamLoad {
         )
         let startTime = NetworkClock.Instant.now
 
-        var handshakeDuration = NetworkDuration.zero
+        nonisolated(unsafe) var handshakeDuration = NetworkDuration.zero
         var streamRoundTripDurations = [NetworkDuration]()
 
-        var clientInput: NewStreamFlowHarness? = nil
-        var clientListenerLinkage: StreamListenerLinkage? = nil
-        var serverInput: NewStreamFlowHarness? = nil
+        nonisolated(unsafe) var clientInput: NewStreamFlowHarness? = nil
+        nonisolated(unsafe) var clientListenerLinkage: StreamListenerLinkage? = nil
+        nonisolated(unsafe) var serverInput: NewStreamFlowHarness? = nil
 
         group.enter()
-        var clientParameters = Parameters()
+        nonisolated(unsafe) var clientParameters = Parameters()
         let context = NetworkContext(identifier: "QUICStreamLoad")
         clientParameters.context = context
-        let path = PathProperties(parameters: clientParameters)
+        nonisolated(unsafe) let path = PathProperties(parameters: clientParameters)
 
-        var serverParameters = Parameters()
+        nonisolated(unsafe) var serverParameters = Parameters()
         serverParameters.isServer = true
         serverParameters.context = context
-        let serverPath = PathProperties(parameters: serverParameters)
+        nonisolated(unsafe) let serverPath = PathProperties(parameters: serverParameters)
 
         context.activate()
         context.async {
@@ -257,13 +257,15 @@ final class QUICStreamLoad {
         guard let serverInput, let clientInput, let clientListenerLinkage else {
             return .zero
         }
+        nonisolated(unsafe) let unsafeServerInput = serverInput
+        nonisolated(unsafe) let unsafeClientListenerLinkage = clientListenerLinkage
 
         var index = 0
         for _ in 0..<streamCount {
             group.enter()
         }
 
-        var testStreamBlock: (() -> Void)? = nil
+        nonisolated(unsafe) var testStreamBlock: (() -> Void)? = nil
 
         testStreamBlock = {
             guard index < streamCount else { return }
@@ -280,7 +282,7 @@ final class QUICStreamLoad {
                 parameters: clientParameters,
                 path: path,
                 context: context,
-                listenerProtocol: clientListenerLinkage
+                listenerProtocol: unsafeClientListenerLinkage
             )
             guard let clientStream else {
                 group.leave()
@@ -292,8 +294,8 @@ final class QUICStreamLoad {
             var serverStreamToTeardown: StreamUpperHarness? = nil
 
             // Get new server stream
-            serverInput.waitForNewFlow {
-                guard let serverStream = serverInput.upperHarnesses.last else {
+            unsafeServerInput.waitForNewFlow {
+                guard let serverStream = unsafeServerInput.upperHarnesses.last else {
                     group.leave()
                     return
                 }
@@ -375,9 +377,10 @@ final class QUICStreamLoad {
 
         // Kick off first round of streams. Each stream will in turn kick another.
         if let testStreamBlock {
+            nonisolated(unsafe) let unsafeTestStreamBlock = testStreamBlock
             context.async {
                 for _ in 0..<concurrentStreams {
-                    testStreamBlock()
+                    unsafeTestStreamBlock()
                 }
             }
         }
@@ -389,11 +392,13 @@ final class QUICStreamLoad {
         print("Completed \(index) / \(streamCount) streams")
 
         group.enter()
+        nonisolated(unsafe) let unsafeClientInputTeardown = clientInput
+        nonisolated(unsafe) let unsafeServerInputTeardown = serverInput
         context.async {
-            clientInput.stop()
-            clientInput.teardown()
-            serverInput.stop()
-            serverInput.teardown()
+            unsafeClientInputTeardown.stop()
+            unsafeClientInputTeardown.teardown()
+            unsafeServerInputTeardown.stop()
+            unsafeServerInputTeardown.teardown()
             group.leave()
         }
         group.wait()

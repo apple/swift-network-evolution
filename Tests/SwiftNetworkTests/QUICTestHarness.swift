@@ -50,7 +50,7 @@ internal import os
 #if canImport(SwiftTLS)
 
 @available(Network 0.1.0, *)
-final class QUICTestHarness {
+final class QUICTestHarness: @unchecked Sendable {
     // 127.0.0.1
     static let clientIPv4Address: [UInt8] = [0x7f, 0x00, 0x00, 0x01]
     static let serverIPv4Address: [UInt8] = [0x7f, 0x00, 0x00, 0x01]
@@ -140,12 +140,16 @@ final class QUICTestHarness {
         clientOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options()
     ) throws(NetworkError) {
-        var clientConnected = false
-        var serverConnected = false
+        nonisolated(unsafe) let clientOptions = clientOptions
+        nonisolated(unsafe) let serverOptions = serverOptions
+        nonisolated(unsafe) let clientDrops = clientDrops
+        nonisolated(unsafe) let serverDrops = serverDrops
+        nonisolated(unsafe) var clientConnected = false
+        nonisolated(unsafe) var serverConnected = false
         let handshakeExpectation = XCTestExpectation(description: "Wait for QUIC connection to be established")
 
-        var matchedError = false
-        var receivedError: NetworkError? = nil
+        nonisolated(unsafe) var matchedError = false
+        nonisolated(unsafe) var receivedError: NetworkError? = nil
 
         // Async onto the context to attach the protocol stack and start the handshake
         context.async {
@@ -370,25 +374,26 @@ final class QUICTestHarness {
             XCTFail("No instance found")
             return nil
         }
-        var upperHarnessConnected = false
-        var parameters = Parameters()
-        parameters.context = context
+        nonisolated(unsafe) let unsafeInstance = instance
+        nonisolated(unsafe) var upperHarnessConnected = false
 
-        var upperHarness: StreamUpperHarness?
+        nonisolated(unsafe) var upperHarness: StreamUpperHarness?
         let newStreamExpectation = XCTestExpectation(description: "Wait for new QUIC stream to be ready")
-        let options = quicOptions.deepCopy()
+        nonisolated(unsafe) let options = quicOptions.deepCopy()
         context.async {
+            var parameters = Parameters()
+            parameters.context = self.context
             options.setLogID(
                 prefix: identifier,
                 parent: "",
                 protocolLogIDNumber: 1
             )
-            options.setProtocolInstance(instance.reference)
+            options.setProtocolInstance(unsafeInstance.reference)
             parameters.defaultStack.transport = .custom(options)
             var path = PathProperties(parameters: parameters)
             path.effectiveMTU = 1500
 
-            let listenerLinkage = StreamListenerLinkage(reference: instance.reference)
+            let listenerLinkage = StreamListenerLinkage(reference: unsafeInstance.reference)
             let streamUpperHarness = StreamUpperHarness(
                 identifier: identifier,
                 local: self.clientEndpoint,
@@ -409,8 +414,9 @@ final class QUICTestHarness {
                 newStreamExpectation.fulfill()
                 return
             }
+            nonisolated(unsafe) let unsafeUpperHarness = upperHarness
 
-            upperHarness.start { connected in
+            unsafeUpperHarness.start { connected in
                 if connected {
                     upperHarnessConnected = true
                     newStreamExpectation.fulfill()
@@ -444,25 +450,26 @@ final class QUICTestHarness {
             XCTFail("No instance found")
             return nil
         }
-        var upperHarnessConnected = false
-        var parameters = Parameters()
-        parameters.context = context
+        nonisolated(unsafe) let unsafeInstance = instance
+        nonisolated(unsafe) var upperHarnessConnected = false
 
-        var upperHarness: DatagramUpperHarness?
+        nonisolated(unsafe) var upperHarness: DatagramUpperHarness?
         let newFlowExpectation = XCTestExpectation(description: "Wait for new QUIC datagram flow to be ready")
-        let options = quicOptions.deepCopy()
+        nonisolated(unsafe) let options = quicOptions.deepCopy()
         context.async {
+            var parameters = Parameters()
+            parameters.context = self.context
             options.setLogID(
                 prefix: identifier,
                 parent: "",
                 protocolLogIDNumber: 1
             )
-            options.setProtocolInstance(instance.reference)
+            options.setProtocolInstance(unsafeInstance.reference)
             parameters.defaultStack.transport = .custom(options)
             var path = PathProperties(parameters: parameters)
             path.effectiveMTU = 1500
 
-            let listenerLinkage = DatagramListenerLinkage(reference: instance.reference)
+            let listenerLinkage = DatagramListenerLinkage(reference: unsafeInstance.reference)
             let datagramUpperHarness = DatagramUpperHarness(
                 identifier: identifier,
                 local: self.clientEndpoint,
@@ -483,8 +490,9 @@ final class QUICTestHarness {
                 newFlowExpectation.fulfill()
                 return
             }
+            nonisolated(unsafe) let unsafeUpperHarness = upperHarness
 
-            upperHarness.start { connected in
+            unsafeUpperHarness.start { connected in
                 if connected {
                     upperHarnessConnected = true
                     newFlowExpectation.fulfill()
@@ -511,12 +519,13 @@ final class QUICTestHarness {
             XCTFail("State must be non-nil")
             return
         }
+        nonisolated(unsafe) let unsafeState = state
         let idleCompleteExpectation = XCTestExpectation(description: "Wait for marking idle")
         context.async {
-            for upperHarness in state.clientHarness.upperHarnesses {
+            for upperHarness in unsafeState.clientHarness.upperHarnesses {
                 upperHarness.invokeConnectionIdleEvent()
             }
-            for upperHarness in state.serverHarness.upperHarnesses {
+            for upperHarness in unsafeState.serverHarness.upperHarnesses {
                 upperHarness.invokeConnectionIdleEvent()
             }
             idleCompleteExpectation.fulfill()
@@ -529,14 +538,15 @@ final class QUICTestHarness {
             XCTFail("State must be non-nil")
             return
         }
+        nonisolated(unsafe) let unsafeState = state
         let stopCompleteExpectation = XCTestExpectation(description: "Wait for stop/teardown to complete")
         context.async {
-            state.clientHarness.stop()
-            state.serverHarness.stop()
-            state.serverDatagramHarness?.stop()
-            state.clientHarness.teardown()
-            state.serverHarness.teardown()
-            state.serverDatagramHarness?.teardown()
+            unsafeState.clientHarness.stop()
+            unsafeState.serverHarness.stop()
+            unsafeState.serverDatagramHarness?.stop()
+            unsafeState.clientHarness.teardown()
+            unsafeState.serverHarness.teardown()
+            unsafeState.serverDatagramHarness?.teardown()
             stopCompleteExpectation.fulfill()
             self.state = nil
         }
@@ -563,14 +573,15 @@ final class QUICTestHarness {
         let clientReadExpectation = XCTestExpectation(description: "Wait for client to read response")
 
         let serverStreamExpectation = XCTestExpectation(description: "Wait for server to receive stream")
-        let clientStreamHarness = state.clientHarness.upperHarnesses[streamIndex]
+        nonisolated(unsafe) let clientStreamHarness = state.clientHarness.upperHarnesses[streamIndex]
+        nonisolated(unsafe) let unsafeState = state
 
-        var serverStreamHarness: StreamUpperHarness? = nil
+        nonisolated(unsafe) var serverStreamHarness: StreamUpperHarness? = nil
 
         // Set up waiting for a server stream
         context.async {
-            state.serverHarness.waitForNewFlow {
-                guard let serverStream = state.serverHarness.upperHarnesses.last else {
+            unsafeState.serverHarness.waitForNewFlow {
+                guard let serverStream = unsafeState.serverHarness.upperHarnesses.last else {
                     serverStreamExpectation.fulfill()
                     return
                 }
@@ -598,10 +609,11 @@ final class QUICTestHarness {
         wait(for: [serverStreamExpectation], timeout: timeout)
         XCTAssertNotNil(serverStreamHarness)
         guard let serverStreamHarness else { return }
+        nonisolated(unsafe) let unsafeServerStreamHarness = serverStreamHarness
 
         // Block for reading on the client
-        var clientReadBytes = 0
-        var clientReadHandler: ((Bool) -> Void)? = nil
+        nonisolated(unsafe) var clientReadBytes = 0
+        nonisolated(unsafe) var clientReadHandler: ((Bool) -> Void)? = nil
         // The read handlers capture themselves: each re-registers via
         // `waitForInboundDataAvailable`, which stores the closure on the
         // harness's completions. Break the retain cycle.
@@ -638,20 +650,20 @@ final class QUICTestHarness {
         }
 
         // Block for reading on the server
-        var serverReadBytes = 0
-        var serverReadHandler: ((Bool) -> Void)? = nil
+        nonisolated(unsafe) var serverReadBytes = 0
+        nonisolated(unsafe) var serverReadHandler: ((Bool) -> Void)? = nil
         defer { serverReadHandler = nil }
         serverReadHandler = { hasData in
             defer {
                 if hasData {
                     // Schedule a follow-on read
-                    serverStreamHarness.waitForInboundDataAvailable { success in
+                    unsafeServerStreamHarness.waitForInboundDataAvailable { success in
                         serverReadHandler?(success)
                     }
                 }
             }
 
-            while let response = serverStreamHarness.read() {
+            while let response = unsafeServerStreamHarness.read() {
                 do {
                     try dataGenerator.validate(at: serverReadBytes, data: response)
                 } catch {
@@ -661,18 +673,18 @@ final class QUICTestHarness {
                 }
                 serverReadBytes += response.count
 
-                let receivedFIN = serverStreamHarness.receivedFIN
-                let writeResult = serverStreamHarness.write(response, sendFIN: receivedFIN)
+                let receivedFIN = unsafeServerStreamHarness.receivedFIN
+                let writeResult = unsafeServerStreamHarness.write(response, sendFIN: receivedFIN)
                 XCTAssertTrue(writeResult, "Server failed send response")
             }
 
             if serverReadBytes >= dataGenerator.totalSize {
                 if dataGenerator.sendFIN {
-                    let receivedFIN = serverStreamHarness.receivedFIN
+                    let receivedFIN = unsafeServerStreamHarness.receivedFIN
                     XCTAssertTrue(receivedFIN, "Server failed to receive FIN from client")
                 }
-                if serverStreamHarness.receivedFIN {
-                    serverStreamHarness.stop()
+                if unsafeServerStreamHarness.receivedFIN {
+                    unsafeServerStreamHarness.stop()
                 }
                 serverReadExpectation.fulfill()
                 return
@@ -695,7 +707,7 @@ final class QUICTestHarness {
                 clientStreamHarness.waitForDisconnected {
                     clientDisconnectedExpectation.fulfill()
                 }
-                serverStreamHarness.waitForDisconnected {
+                unsafeServerStreamHarness.waitForDisconnected {
                     serverDisconnectedExpectation.fulfill()
                 }
             }
@@ -718,19 +730,20 @@ final class QUICTestHarness {
             XCTFail("Server datagram harness must be non-nil")
             return
         }
+        nonisolated(unsafe) let unsafeServerDatagramHarness = serverDatagramHarness
 
         let serverReadExpectation = XCTestExpectation(description: "Wait for server to read request")
         let clientReadExpectation = XCTestExpectation(description: "Wait for client to read response")
 
         let serverDatagramFlowExpectation = XCTestExpectation(description: "Wait for server to receive stream")
-        let clientDatagramFlow = datagramFlow
+        nonisolated(unsafe) let clientDatagramFlow = datagramFlow
 
-        var serverDatagramFlow: DatagramUpperHarness? = nil
+        nonisolated(unsafe) var serverDatagramFlow: DatagramUpperHarness? = nil
 
         // Set up waiting for a server flow
         context.async {
-            serverDatagramHarness.waitForNewFlow {
-                guard let serverFlow = serverDatagramHarness.upperHarnesses.last else {
+            unsafeServerDatagramHarness.waitForNewFlow {
+                guard let serverFlow = unsafeServerDatagramHarness.upperHarnesses.last else {
                     serverDatagramFlowExpectation.fulfill()
                     return
                 }
@@ -753,10 +766,11 @@ final class QUICTestHarness {
         wait(for: [serverDatagramFlowExpectation], timeout: timeout)
         XCTAssertNotNil(serverDatagramFlow)
         guard let serverDatagramFlow else { return }
+        nonisolated(unsafe) let unsafeServerDatagramFlow = serverDatagramFlow
 
         // Block for reading on the client
-        var clientReadBytes = 0
-        var clientReadHandler: ((Bool) -> Void)? = nil
+        nonisolated(unsafe) var clientReadBytes = 0
+        nonisolated(unsafe) var clientReadHandler: ((Bool) -> Void)? = nil
         // The read handlers capture themselves: each re-registers via
         // `waitForInboundDataAvailable`, which stores the closure on the
         // harness's completions. Break the retain cycle.
@@ -789,20 +803,20 @@ final class QUICTestHarness {
         }
 
         // Block for reading on the server
-        var serverReadBytes = 0
-        var serverReadHandler: ((Bool) -> Void)? = nil
+        nonisolated(unsafe) var serverReadBytes = 0
+        nonisolated(unsafe) var serverReadHandler: ((Bool) -> Void)? = nil
         defer { serverReadHandler = nil }
         serverReadHandler = { hasData in
             defer {
                 if hasData {
                     // Schedule a follow-on read
-                    serverDatagramFlow.waitForInboundDataAvailable { success in
+                    unsafeServerDatagramFlow.waitForInboundDataAvailable { success in
                         serverReadHandler?(success)
                     }
                 }
             }
 
-            while let response = serverDatagramFlow.read() {
+            while let response = unsafeServerDatagramFlow.read() {
                 do {
                     try dataGenerator.validate(at: serverReadBytes, data: response)
                 } catch {
@@ -812,7 +826,7 @@ final class QUICTestHarness {
                 }
                 serverReadBytes += response.count
 
-                let writeResult = serverDatagramFlow.write(response)
+                let writeResult = unsafeServerDatagramFlow.write(response)
                 XCTAssertTrue(writeResult, "Server failed send response")
             }
 
@@ -973,7 +987,7 @@ final class QUICTestHarness {
 
         if !datagram {
             // Transfer stream data
-            var streamCount = streamCount
+            nonisolated(unsafe) var streamCount = streamCount
             if streamCount == 0 && (dataBlock != nil || blockCount > 0) {
                 // If there is some data to transfer, make sure there is at least one stream
                 streamCount = 1
@@ -1103,12 +1117,14 @@ final class QUICTestHarness {
 
         if validateMetrics {
             if let serverHarness = state?.serverHarness, let clientHarness = state?.clientHarness {
-                var clientReports: NetworkMetrics?
-                var serverReports: NetworkMetrics?
+                nonisolated(unsafe) let unsafeClientHarness = clientHarness
+                nonisolated(unsafe) let unsafeServerHarness = serverHarness
+                nonisolated(unsafe) var clientReports: NetworkMetrics?
+                nonisolated(unsafe) var serverReports: NetworkMetrics?
                 let snapshotExpectation = XCTestExpectation(description: "Wait for QUIC connection to receive metrics")
                 context.async {
-                    clientReports = clientHarness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
-                    serverReports = serverHarness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
+                    clientReports = unsafeClientHarness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
+                    serverReports = unsafeServerHarness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
                     XCTAssertNotNil(clientReports)
                     XCTAssertNotNil(serverReports)
                     snapshotExpectation.fulfill()
@@ -1121,8 +1137,12 @@ final class QUICTestHarness {
                     description: "Wait for QUIC connection to receive metrics"
                 )
                 context.async {
-                    clientReports = clientHarness.getMetrics(requestedNetworkMetric: .protocolEstablishmentReports)
-                    serverReports = serverHarness.getMetrics(requestedNetworkMetric: .protocolEstablishmentReports)
+                    clientReports = unsafeClientHarness.getMetrics(
+                        requestedNetworkMetric: .protocolEstablishmentReports
+                    )
+                    serverReports = unsafeServerHarness.getMetrics(
+                        requestedNetworkMetric: .protocolEstablishmentReports
+                    )
                     XCTAssertNotNil(clientReports)
                     XCTAssertNotNil(serverReports)
                     protocolEstablishmentReportExpectation.fulfill()
@@ -1136,8 +1156,9 @@ final class QUICTestHarness {
         // If applicationError is present, act upon that here
         if let applicationError, let applicationErrorReason {
             if let serverHarness = state?.serverHarness, let clientHarness = state?.clientHarness {
+                nonisolated(unsafe) let unsafeClientHarness = clientHarness
                 let errorExpectation = XCTestExpectation(description: "Wait for QUIC connection to receive error")
-                var networkError: NetworkError?
+                nonisolated(unsafe) var networkError: NetworkError?
                 serverHarness.waitForError { code in
                     guard let code else {
                         XCTAssertNotNil(code, "Error must be invoked with a valid error code")
@@ -1149,12 +1170,12 @@ final class QUICTestHarness {
                 }
                 context.async {
                     if sendApplicationCloseError {
-                        clientHarness.stop(
+                        unsafeClientHarness.stop(
                             error: .init(quicApplicationError: applicationError, reason: applicationErrorReason)
                         )
                     } else {
                         if let transportError = QUICTransportError(applicationError, applicationErrorReason) {
-                            clientHarness.stop(error: .init(quicTransportError: transportError))
+                            unsafeClientHarness.stop(error: .init(quicTransportError: transportError))
                         }
                     }
                 }
@@ -1205,9 +1226,11 @@ final class QUICTestHarness {
             if let serverUpperHarness = state?.serverHarness.upperHarnesses.first,
                 let clientUpperHarness = state?.clientHarness.upperHarnesses.first
             {
+                nonisolated(unsafe) let unsafeServerUpperHarness = serverUpperHarness
+                nonisolated(unsafe) let unsafeClientUpperHarness = clientUpperHarness
                 // Sends error code with STOP_SENDING / RESET_STREAM
                 let errorExpectation = XCTestExpectation(description: "Wait for ECONNRESET error")
-                var networkError: NetworkError?
+                nonisolated(unsafe) var networkError: NetworkError?
                 // Set up error handler before triggering the error
                 let errorBlock: ((NetworkError?) -> Void) = { code in
                     guard let code,
@@ -1224,7 +1247,7 @@ final class QUICTestHarness {
                         "Application error codes do not match"
                     )
 
-                    if let metadata: ProtocolMetadata<QUICProtocol> = serverUpperHarness.getMetadata(),
+                    if let metadata: ProtocolMetadata<QUICProtocol> = unsafeServerUpperHarness.getMetadata(),
                         let errorCode = metadata.applicationError
                     {
                         // Match the sent error in the metadata
@@ -1234,16 +1257,16 @@ final class QUICTestHarness {
                     }
                     errorExpectation.fulfill()
                 }
-                serverUpperHarness.waitForInboundAborted(completion: errorBlock)
-                serverUpperHarness.waitForOutboundAborted(completion: errorBlock)
+                unsafeServerUpperHarness.waitForInboundAborted(completion: errorBlock)
+                unsafeServerUpperHarness.waitForOutboundAborted(completion: errorBlock)
 
                 context.async {
                     if sendStreamResetError {
-                        clientUpperHarness.abortOutbound(
+                        unsafeClientUpperHarness.abortOutbound(
                             error: .init(quicApplicationError: applicationError, reason: applicationErrorReason)
                         )
                     } else if sendStreamStopSendingError {
-                        clientUpperHarness.abortInbound(
+                        unsafeClientUpperHarness.abortInbound(
                             error: .init(quicApplicationError: applicationError, reason: applicationErrorReason)
                         )
                     }
@@ -1253,7 +1276,7 @@ final class QUICTestHarness {
 
                 if verifyResetStreamHalfClosure {
                     XCTAssertFalse(
-                        serverUpperHarness.receivedDisconnected,
+                        unsafeServerUpperHarness.receivedDisconnected,
                         "Server stream must not be disconnected — only the read side was reset"
                     )
 
@@ -1262,8 +1285,8 @@ final class QUICTestHarness {
                     )
                     let halfClosurePayload = Array("half-closure-test".utf8)
                     context.async {
-                        clientUpperHarness.waitForInboundDataAvailable { _ in
-                            let data = clientUpperHarness.read()
+                        unsafeClientUpperHarness.waitForInboundDataAvailable { _ in
+                            let data = unsafeClientUpperHarness.read()
                             XCTAssertEqual(
                                 data,
                                 halfClosurePayload,
@@ -1271,7 +1294,7 @@ final class QUICTestHarness {
                             )
                             halfClosureExpectation.fulfill()
                         }
-                        let writeResult = serverUpperHarness.write(halfClosurePayload)
+                        let writeResult = unsafeServerUpperHarness.write(halfClosurePayload)
                         XCTAssertTrue(writeResult, "Server should be able to write after peer's RESET_STREAM")
                     }
                     wait(for: [halfClosureExpectation], timeout: 4.0)
@@ -1319,10 +1342,11 @@ final class QUICTestHarness {
             XCTFail("Failed to create client stream")
             return
         }
+        nonisolated(unsafe) let unsafeClientStream = clientStream
 
         let serverFlowExpectation = XCTestExpectation(description: "Server sees new flow")
         let serverAbortExpectation = XCTestExpectation(description: "Server sees abort event")
-        var serverStream: StreamUpperHarness?
+        nonisolated(unsafe) var serverStream: StreamUpperHarness?
 
         context.async {
             self.state?.serverHarness.waitForNewFlow {
@@ -1361,12 +1385,12 @@ final class QUICTestHarness {
         // (creating the flow) and the abort frame (targeting that flow) in
         // one pass.
         context.async {
-            _ = clientStream.write(Array("hello".utf8))
+            _ = unsafeClientStream.write(Array("hello".utf8))
             switch abortKind {
             case .reset:
-                clientStream.abortOutbound(error: .init(quicApplicationError: applicationError))
+                unsafeClientStream.abortOutbound(error: .init(quicApplicationError: applicationError))
             case .stopSending:
-                clientStream.abortInbound(error: .init(quicApplicationError: applicationError))
+                unsafeClientStream.abortInbound(error: .init(quicApplicationError: applicationError))
             }
         }
 
@@ -1396,10 +1420,11 @@ final class QUICTestHarness {
             XCTFail("Failed to create client stream")
             return
         }
+        nonisolated(unsafe) let unsafeClientStream = clientStream
 
         let serverFlowExpectation = XCTestExpectation(description: "Server sees new flow")
         let serverAbortExpectation = XCTestExpectation(description: "Server sees inbound abort event")
-        var serverStream: StreamUpperHarness?
+        nonisolated(unsafe) var serverStream: StreamUpperHarness?
 
         context.async {
             self.state?.serverHarness.waitForNewFlow {
@@ -1426,7 +1451,7 @@ final class QUICTestHarness {
         // this stream id is RESET_STREAM. There is no STREAM frame to
         // stride-create the flow ahead of the reset.
         context.async {
-            clientStream.abortOutbound(error: .init(quicApplicationError: applicationError))
+            unsafeClientStream.abortOutbound(error: .init(quicApplicationError: applicationError))
         }
 
         wait(for: [serverFlowExpectation], timeout: timeout)
@@ -1553,11 +1578,12 @@ final class QUICTestHarness {
                 quicOptions: clientOptions
             )
             XCTAssertNotNil(clientStream)
+            nonisolated(unsafe) let unsafeClientStream = clientStream
             let generator = TestDataGenerator(singleDataBlock: dataBlock)
             let clientWriteExpectation = XCTestExpectation(description: "Wait for client write \(index) to complete")
             context.async {
                 Logger.test.debug("Client writing data: \(dataBlock)")
-                let writeResult = clientStream?.write(generator.block)
+                let writeResult = unsafeClientStream?.write(generator.block)
                 XCTAssertNotNil(writeResult, "writeResult should not be nil")
                 XCTAssertTrue(writeResult!, "Client write failed for stream \(index)")
                 clientWriteExpectation.fulfill()
@@ -1566,7 +1592,7 @@ final class QUICTestHarness {
 
             // Wait for the server side stream to pass through handleNewFlow and become connected
             let serverHandlerExpectation = XCTestExpectation(description: "Wait for server input handler \(index)")
-            func checkForServerHandler() {
+            @Sendable func checkForServerHandler() {
                 if state?.serverHarness.upperHarnesses.count ?? 0 > index {
                     let serverHandler = state?.serverHarness.upperHarnesses[index]
                     if let serverHandler, serverHandler.receivedConnected {
@@ -1587,7 +1613,7 @@ final class QUICTestHarness {
             let serverReadExpectation = XCTestExpectation(description: "Wait for server read \(index) to complete")
             let serverHandlerIndex = index
             context.async {
-                func attemptServerRead() {
+                @Sendable func attemptServerRead() {
                     guard serverHandlerIndex < self.state?.serverHarness.upperHarnesses.count ?? 0 else {
                         self.context.async {
                             attemptServerRead()
@@ -1618,7 +1644,7 @@ final class QUICTestHarness {
             context.async {
                 if streamIDsToValidate.count > 0 {
                     let streamIDAtIndex = streamIDsToValidate[index]
-                    let metadata: ProtocolMetadata<QUICProtocol>? = clientStream?.getMetadata()
+                    let metadata: ProtocolMetadata<QUICProtocol>? = unsafeClientStream?.getMetadata()
                     XCTAssertNotNil(metadata)
                     if let metadata {
                         let streamID = metadata.streamID
@@ -1707,13 +1733,15 @@ final class QUICTestHarness {
             XCTFail("Failure to unwrap clientHarness")
             return
         }
+        nonisolated(unsafe) let unsafeClientHarness = clientHarness
 
         for (index, serverHarness) in state!.serverHarness.upperHarnesses.enumerated() {
+            nonisolated(unsafe) let unsafeServerHarness = serverHarness
             let generator = TestDataGenerator(singleDataBlock: dataBlock)
             let serverWriteExpectation = XCTestExpectation(description: "Wait for server write \(index) to complete")
             context.async {
                 Logger.test.debug("Client writing data: \(dataBlock)")
-                let writeResult = serverHarness.write(generator.block)
+                let writeResult = unsafeServerHarness.write(generator.block)
                 XCTAssertTrue(writeResult, "Server write failed for stream \(index)")
                 serverWriteExpectation.fulfill()
             }
@@ -1721,9 +1749,9 @@ final class QUICTestHarness {
 
             // Wait for the client side stream to pass through handleNewFlow and become connected
             let clientHandlerExpectation = XCTestExpectation(description: "Wait for client input handler \(index)")
-            func checkForClientHandler() {
-                if clientHarness.upperHarnesses.count > index {
-                    let clientHandler = clientHarness.upperHarnesses[index]
+            @Sendable func checkForClientHandler() {
+                if unsafeClientHarness.upperHarnesses.count > index {
+                    let clientHandler = unsafeClientHarness.upperHarnesses[index]
 
                     if clientHandler.receivedConnected {
                         clientHandlerExpectation.fulfill()
@@ -1743,14 +1771,14 @@ final class QUICTestHarness {
             let clientReadExpectation = XCTestExpectation(description: "Wait for client read \(index) to complete")
             let clientHandlerIndex = index
             context.async {
-                func attemptClientRead() {
-                    guard clientHandlerIndex < clientHarness.upperHarnesses.count else {
+                @Sendable func attemptClientRead() {
+                    guard clientHandlerIndex < unsafeClientHarness.upperHarnesses.count else {
                         self.context.async {
                             attemptClientRead()
                         }
                         return
                     }
-                    let clientUpperHarness = clientHarness.upperHarnesses[clientHandlerIndex]
+                    let clientUpperHarness = unsafeClientHarness.upperHarnesses[clientHandlerIndex]
                     if let response = clientUpperHarness.read() {
                         Logger.test.debug("Client read data: \(response)")
                         do {
@@ -1774,7 +1802,7 @@ final class QUICTestHarness {
             context.async {
                 if streamIDsToValidate.count > 0 {
                     let streamIDAtIndex = streamIDsToValidate[index]
-                    let metadata: ProtocolMetadata<QUICProtocol>? = serverHarness.getMetadata()
+                    let metadata: ProtocolMetadata<QUICProtocol>? = unsafeServerHarness.getMetadata()
                     XCTAssertNotNil(metadata)
                     if let metadata {
                         let streamID = metadata.streamID
@@ -1793,9 +1821,9 @@ final class QUICTestHarness {
             wait(for: [metadataCheckExpectation], timeout: timeout)
         }
         XCTAssertEqual(
-            clientHarness.upperHarnesses.count,
+            unsafeClientHarness.upperHarnesses.count,
             streamCount,
-            "Expected \(streamCount) client input handlers, but got \(clientHarness.upperHarnesses.count)"
+            "Expected \(streamCount) client input handlers, but got \(unsafeClientHarness.upperHarnesses.count)"
         )
 
         Logger.test.debug("Test phase: Termination")
@@ -1827,10 +1855,11 @@ final class QUICTestHarness {
             quicOptions: clientOptions,
             serverInitiated: true
         )
+        nonisolated(unsafe) let unsafeAddedStreamHandler = addedStreamHandler
         let clientWriteExpectation = XCTestExpectation(description: "Wait for client write to complete")
         context.async {
             Logger.test.debug("Client writing data: \(dataBlock)")
-            let writeResult = addedStreamHandler?.write(dataBlock)
+            let writeResult = unsafeAddedStreamHandler?.write(dataBlock)
             XCTAssertNotNil(writeResult, "writeResult should not be nil")
             XCTAssertTrue(writeResult!, "Client write failed to write on the unidirectional stream")
             clientWriteExpectation.fulfill()

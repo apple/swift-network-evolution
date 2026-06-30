@@ -46,8 +46,9 @@ public protocol NetworkContextProtocol: AnyObject, Hashable {
     init(identifier: String)
     var identifier: String { get }
     func activate()
-    func async(_ block: @escaping () -> Void)
-    func barrierAsync(_ block: @escaping () -> Void)
+    func async(_ block: @Sendable @escaping () -> Void)
+    func isolatedAsync(_ block: @escaping () -> Void)
+    func barrierAsync(_ block: @Sendable @escaping () -> Void)
 }
 
 @_spi(Essentials)
@@ -65,12 +66,17 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
     }
 
     public protocol Scheduler: AnyObject {
+        /// Runs an immediate task, scheduled from the scheduler's context (so the completion is non-sendable).
+        /// No assumptions are made about how the task is run.
+        func runImmediateIsolated(_ task: @escaping () -> Void)
+
         /// Runs an immediate task. No assumptions are made about how the task is run.
-        func runImmediate(_ task: @escaping (() -> Void))
+        func runImmediate(_ task: @Sendable @escaping () -> Void)
+
         /// Schedules a task to run after a delay, using a reference.
         ///
         /// The `milliseconds` parameter specifies the delay before the task runs.
-        func schedule(_ task: @escaping (() -> Void), milliseconds: Int64, reference: TimerReference)
+        func schedule(_ task: @escaping () -> Void, milliseconds: Int64, reference: TimerReference)
         /// Unschedules a task with a reference.
         func unschedule(reference: TimerReference)
         /// A Boolean value that indicates whether the current code is running in the scheduler.
@@ -301,7 +307,7 @@ extension NetworkContext {
                 entries.removeFirst(where: { $0.reference == reference })
             }
 
-            func insert(targetTime: DispatchTime, reference: TimerReference, task: @escaping (() -> Void)) {
+            func insert(targetTime: DispatchTime, reference: TimerReference, task: @escaping () -> Void) {
                 // First, remove an existing entry for this reference
                 remove(by: reference)
                 // Check to see if the targetTime is before the first entry before it's added
@@ -348,14 +354,19 @@ extension NetworkContext {
         init(globals: Globals) {
             self.globals = globals
         }
+        /// Runs an immediate task, scheduled from the scheduler's context (so the completion is non-sendable).
+        /// No assumptions are made about how the task is run.
+        func runImmediateIsolated(_ task: @escaping () -> Void) {
+            globals.queue.async(execute: DispatchWorkItem(block: task))
+        }
         /// Runs an immediate task. No assumptions are made about how the task is run.
-        func runImmediate(_ task: @escaping (() -> Void)) {
+        func runImmediate(_ task: @Sendable @escaping () -> Void) {
             globals.queue.async(execute: DispatchWorkItem(block: task))
         }
         /// Schedules a task to run after a delay, using a reference.
         ///
         /// The `milliseconds` parameter specifies the delay before the task runs.
-        func schedule(_ task: @escaping (() -> Void), milliseconds: Int64, reference: TimerReference) {
+        func schedule(_ task: @escaping () -> Void, milliseconds: Int64, reference: TimerReference) {
             let targetTime = DispatchTime.now() + DispatchTimeInterval.milliseconds(Int(milliseconds))
             globals.timerList.insert(targetTime: targetTime, reference: reference, task: task)
         }
@@ -380,11 +391,18 @@ extension NetworkContext {
         globals.queue
     }
 
-    public func async(_ block: @escaping () -> Void) {
+    public func async(_ block: @Sendable @escaping () -> Void) {
         scheduler.runImmediate(block)
     }
 
-    public func barrierAsync(_ block: @escaping () -> Void) {
+    public func isolatedAsync(_ block: @escaping () -> Void) {
+        #if DEBUG
+        assert()
+        #endif
+        scheduler.runImmediateIsolated(block)
+    }
+
+    public func barrierAsync(_ block: @Sendable @escaping () -> Void) {
         scheduler.runImmediate(block)
     }
 

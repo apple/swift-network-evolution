@@ -13,11 +13,11 @@
 //===----------------------------------------------------------------------===//
 
 @available(Network 0.1.0, *)
-struct ReadRequest {
+struct ReadRequest: Sendable {
     let minimumBytes: Int
     let maximumBytes: Int
     let maximumFrames: Int
-    let completion: ([UInt8]?, Bool, Bool, NetworkError?) -> Void
+    let completion: @Sendable ([UInt8]?, Bool, Bool, NetworkError?) -> Void
 
     func complete(content: [UInt8]?, isComplete: Bool, isFinal: Bool, error: NetworkError? = nil) {
         completion(content, isComplete, isFinal, error)

@@ -29,7 +29,7 @@ internal import os
 #if IMPORT_SWIFTTLS && canImport(SwiftTLS)
 
 @available(Network 0.1.0, *)
-final class QUICHandshake {
+final class QUICHandshake: @unchecked Sendable {
 
     let quicBenchmarkUtility = QUICBenchmarkUtility()
     let dataBenchmarkUtility = DataBenchmarkUtility()
@@ -137,7 +137,7 @@ final class QUICHandshake {
                     }
                 }
                 // Wait until both instances are connected to signal handshake complete
-                func pollForConnectedInstances() {
+                @Sendable func pollForConnectedInstances() {
                     // Wait for the client connection state to go into connected
                     if client.instance.state == .connected {
                         loggingHandle.log("Client connection handshake finished")

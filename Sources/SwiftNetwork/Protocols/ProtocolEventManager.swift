@@ -520,7 +520,7 @@ extension NetworkContext {
 
     fileprivate func async(index: NetworkStateIndex, _ block: @escaping () -> Void) {
         self.softAssert()
-        self.async {
+        self.isolatedAsync {
             self.protocolEventStates[index].startAsyncCall()
             defer {
                 self.protocolEventStates[index].finishAsyncCall()
