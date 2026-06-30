@@ -165,9 +165,13 @@ class EndpointFlowProtocol<LinkageType: InboundDataLinkage>: ProtocolInstanceCon
 
     func handleInboundDataAvailableEvent(_ from: ProtocolInstanceReference) {
         log.debug("Received inbound data available event")
+        // Clear the slot before invoking: the completion may synchronously
+        // re-arm the waiter (when receiveStreamData returns nil because the
+        // requested minimum spans more than one segment). Clearing afterwards
+        // would clobber that re-registration and drop later notifications.
         if let inboundDataAvailableCompletion = self.completions.inboundDataAvailable {
-            inboundDataAvailableCompletion(true)
             self.completions.inboundDataAvailable = nil
+            inboundDataAvailableCompletion(true)
         }
     }
 

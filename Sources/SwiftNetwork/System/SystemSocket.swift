@@ -244,6 +244,156 @@ class SystemSocket {
         return try System.recvmsg(descriptor: self.sockfd, msgHdr: msgHdr, flags: flags).result
     }
 
+    // MARK: - Socket options
+
+    /// Set a fixed-size socket option value.
+    public func setSocketOption<T>(level: CInt, name: CInt, value: T) throws(NetworkError) {
+        guard self.sockfd > 0 else { throw NetworkError.posix(EINVAL) }
+        var copy = value
+        let size = socklen_t(MemoryLayout<T>.size)
+        let result = withUnsafePointer(to: &copy) { ptr -> CInt in
+            ptr.withMemoryRebound(to: UInt8.self, capacity: Int(size)) { rebound in
+                setsockopt(self.sockfd, level, name, rebound, size)
+            }
+        }
+        if result != 0 {
+            throw NetworkError.posix(errno)
+        }
+    }
+
+    /// Get a fixed-size socket option value.
+    public func getSocketOption<T>(level: CInt, name: CInt, defaultValue: T) throws(NetworkError) -> T {
+        guard self.sockfd > 0 else { throw NetworkError.posix(EINVAL) }
+        var value = defaultValue
+        var size = socklen_t(MemoryLayout<T>.size)
+        let result = withUnsafeMutablePointer(to: &value) { ptr -> CInt in
+            ptr.withMemoryRebound(to: UInt8.self, capacity: Int(size)) { rebound in
+                getsockopt(self.sockfd, level, name, rebound, &size)
+            }
+        }
+        if result != 0 {
+            throw NetworkError.posix(errno)
+        }
+        return value
+    }
+
+    /// Read pending socket error via SO_ERROR (and clear it). Returns 0 if no error.
+    public func getSocketError() -> CInt {
+        (try? getSocketOption(level: SOL_SOCKET, name: SO_ERROR, defaultValue: CInt(0))) ?? 0
+    }
+
+    #if canImport(Darwin)
+    /// Number of bytes available to read in the socket receive buffer (Darwin only).
+    public func availableBytesToRead() -> Int {
+        let value: CInt = (try? getSocketOption(level: SOL_SOCKET, name: SO_NREAD, defaultValue: 0)) ?? 0
+        return Int(value)
+    }
+    #else
+    /// Number of bytes available to read in the socket receive buffer (Linux: FIONREAD).
+    public func availableBytesToRead() -> Int {
+        guard self.sockfd > 0 else { return 0 }
+        var value: CInt = 0
+        let result = ioctl(self.sockfd, UInt(FIONREAD), &value)
+        return result == 0 ? Int(value) : 0
+    }
+    #endif
+
+    public func getReceiveBufferSize() -> CInt {
+        (try? getSocketOption(level: SOL_SOCKET, name: SO_RCVBUF, defaultValue: CInt(0))) ?? 0
+    }
+
+    public func getSendBufferSize() -> CInt {
+        (try? getSocketOption(level: SOL_SOCKET, name: SO_SNDBUF, defaultValue: CInt(0))) ?? 0
+    }
+
+    public func setReceiveBufferSize(_ bytes: CInt) throws(NetworkError) {
+        try setSocketOption(level: SOL_SOCKET, name: SO_RCVBUF, value: bytes)
+    }
+
+    public func setSendBufferSize(_ bytes: CInt) throws(NetworkError) {
+        try setSocketOption(level: SOL_SOCKET, name: SO_SNDBUF, value: bytes)
+    }
+
+    public func setReceiveLowWatermark(_ bytes: CInt) throws(NetworkError) {
+        try setSocketOption(level: SOL_SOCKET, name: SO_RCVLOWAT, value: bytes)
+    }
+
+    public func setSendLowWatermark(_ bytes: CInt) throws(NetworkError) {
+        try setSocketOption(level: SOL_SOCKET, name: SO_SNDLOWAT, value: bytes)
+    }
+
+    public func setNoDelay(_ enabled: Bool) throws(NetworkError) {
+        let value: CInt = enabled ? 1 : 0
+        try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_NODELAY, value: value)
+    }
+
+    public func setKeepalive(enabled: Bool, idleTime: UInt32, interval: UInt32, count: UInt32) throws(NetworkError) {
+        let on: CInt = enabled ? 1 : 0
+        try setSocketOption(level: SOL_SOCKET, name: SO_KEEPALIVE, value: on)
+        if !enabled { return }
+        if idleTime > 0 {
+            #if canImport(Darwin)
+            try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_KEEPALIVE, value: CInt(idleTime))
+            #else
+            try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_KEEPIDLE, value: CInt(idleTime))
+            #endif
+        }
+        if interval > 0 {
+            try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_KEEPINTVL, value: CInt(interval))
+        }
+        if count > 0 {
+            try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_KEEPCNT, value: CInt(count))
+        }
+    }
+
+    /// Set the maximum segment size (TCP_MAXSEG). Portable.
+    public func setMaximumSegmentSize(_ mss: UInt32) throws(NetworkError) {
+        try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_MAXSEG, value: CInt(mss))
+    }
+
+    /// Set TCP_NOTSENT_LOWAT — reduce send-side buffering for latency-sensitive
+    /// flows. Portable (Darwin and Linux both define TCP_NOTSENT_LOWAT).
+    public func setNotSentLowWatermark(_ bytes: UInt32) throws(NetworkError) {
+        #if canImport(Darwin) || canImport(Glibc)
+        try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_NOTSENT_LOWAT, value: CInt(bytes))
+        #else
+        throw NetworkError.posix(ENOTSUP)
+        #endif
+    }
+
+    #if canImport(Darwin)
+    /// TCP_NOPUSH — delay sending small segments (Darwin-only; Linux has TCP_CORK
+    /// with different semantics, not wired here).
+    public func setNoPush(_ enabled: Bool) throws(NetworkError) {
+        let value: CInt = enabled ? 1 : 0
+        try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_NOPUSH, value: value)
+    }
+
+    /// TCP_NOOPT — disable all TCP options in outgoing segments. Darwin-only.
+    public func setNoOptions(_ enabled: Bool) throws(NetworkError) {
+        let value: CInt = enabled ? 1 : 0
+        try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_NOOPT, value: value)
+    }
+
+    /// TCP_SENDMOREACKS — disable ACK stretching. Darwin-only.
+    public func setSendMoreAcks(_ enabled: Bool) throws(NetworkError) {
+        let value: CInt = enabled ? 1 : 0
+        try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_SENDMOREACKS, value: value)
+    }
+
+    /// TCP_RXT_FINDROP — drop connection after unacked FIN. Darwin-only.
+    public func setRetransmitFinDrop(_ enabled: Bool) throws(NetworkError) {
+        let value: CInt = enabled ? 1 : 0
+        try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_RXT_FINDROP, value: value)
+    }
+    #endif
+
+    /// Reuse the local port via SO_REUSEPORT.
+    public func setReusableLocalPort(_ enabled: Bool) throws(NetworkError) {
+        let value: CInt = enabled ? 1 : 0
+        try setSocketOption(level: SOL_SOCKET, name: SO_REUSEPORT, value: value)
+    }
+
     deinit {
         close(self.sockfd)
     }
