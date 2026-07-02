@@ -76,6 +76,9 @@ final class QUICTestHarness {
 
         let clientInstance: QUICProtocol.Instance
         let serverInstance: QUICProtocol.Instance
+
+        let clientBridge: BridgeDatagramProtocol.Instance
+        let serverBridge: BridgeDatagramProtocol.Instance
     }
     var state: QUICHarnessState? = nil
 
@@ -165,7 +168,8 @@ final class QUICTestHarness {
             clientOptions.setProtocolInstance(clientReference)
             clientParameters.defaultStack.transport = .quic(clientOptions)
 
-            let clientBridge = BridgeDatagramProtocol.instance(context: self.context)
+            let clientBridgeInstance = BridgeDatagramProtocol.Instance(context: self.context)
+            let clientBridge = clientBridgeInstance.reference
             let clientBridgeOptions = BridgeDatagramProtocol.options()
             clientBridgeOptions.setProtocolInstance(clientBridge)
             clientBridgeOptions.linkDelay = clientLinkDelay
@@ -192,7 +196,8 @@ final class QUICTestHarness {
             serverOptions.setProtocolInstance(serverReference)
             serverParameters.defaultStack.transport = .quic(serverOptions)
 
-            let serverBridge = BridgeDatagramProtocol.instance(context: self.context)
+            let serverBridgeInstance = BridgeDatagramProtocol.Instance(context: self.context)
+            let serverBridge = serverBridgeInstance.reference
             let serverBridgeOptions = BridgeDatagramProtocol.options()
             serverBridgeOptions.setProtocolInstance(serverBridge)
             serverBridgeOptions.linkDelay = serverLinkDelay
@@ -292,7 +297,9 @@ final class QUICTestHarness {
                 clientReference: clientReference,
                 serverReference: serverReference,
                 clientInstance: clientInstance,
-                serverInstance: serverInstance
+                serverInstance: serverInstance,
+                clientBridge: clientBridgeInstance,
+                serverBridge: serverBridgeInstance
             )
 
             clientHarness.waitForError { error in
@@ -541,6 +548,18 @@ final class QUICTestHarness {
             self.state = nil
         }
         wait(for: [stopCompleteExpectation], timeout: 5.0)
+    }
+
+    // Installs a callback on the client and server bridge that fires passing the raw first byte to the
+    // caller for a short header packet.  Used to detect a spin bit passing between the client and server.
+    func observeFirstByteForOutboundShortHeaderPacket(handler: @escaping (_ firstByte: UInt8) -> Void) {
+        guard let state else { return }
+        let observe: ((UInt8) -> Void) = { firstByte in
+            guard (firstByte & 0xC0) == 0x40 else { return }
+            handler(firstByte)
+        }
+        state.clientBridge.observeFirstByte = observe
+        state.serverBridge.observeFirstByte = observe
     }
 
     func echoDataOnStream(

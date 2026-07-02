@@ -60,6 +60,7 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
         // it from the server.
 
         var hasSpinBit = true
+        var observedSpinBitValues: Set<Bool> = []
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             afterHandshake: { harness in
@@ -78,6 +79,11 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
                         hasSpinBit = false
                         return
                     }
+                    // If we have made it this far we should at least be able to detect at least one spin bit value going back and forth
+                    // Detect at least 1 outbound datagram sending a spin bit value
+                    harness.observeFirstByteForOutboundShortHeaderPacket { firstByte in
+                        observedSpinBitValues.insert((firstByte & 0x20) != 0)
+                    }
                 }
                 self.wait(for: [expectation], timeout: 5.0)
             },
@@ -89,14 +95,14 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
                 let expectation = XCTestExpectation(description: "Wait to validate spin bit")
                 harness.context.async {
                     defer { expectation.fulfill() }
-
-                    let clientSpinBit = harness.state?.clientInstance.currentPath?.spinValue ?? false
-                    // Note that spinValueForTestingSeen is checked here because it could be that by the time
-                    // this test checks the server spin bit value it has received the ACK from the client and the
-                    // spin bit value has already changed. This reliably make sure that the spin bit on the server was present.
-                    let serverSpinBit = harness.state?.serverInstance.currentPath?.spinValueForTestingSeen ?? false
-                    XCTAssertFalse(clientSpinBit, "Client should have the spin bit set to false")
-                    XCTAssertTrue(serverSpinBit, "Server should have the spin bit set to true")
+                    XCTAssertFalse(
+                        observedSpinBitValues.isEmpty,
+                        "BridgeDatagramProtocol should have observed short-header packets with spin bit values"
+                    )
+                    XCTAssertTrue(
+                        observedSpinBitValues.contains(true),
+                        "BridgeDatagramProtocol should have observed at least one packet with spin bit set"
+                    )
                 }
             }
         )

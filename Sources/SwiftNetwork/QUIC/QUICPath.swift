@@ -188,7 +188,6 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         static let isFlowControlled = Flags(rawValue: 1 << 9)
         static let l4sEnabled = Flags(rawValue: 1 << 10)
         static let reportedIdleEvent = Flags(rawValue: 1 << 11)
-        static let spinValueForTestingSeen = Flags(rawValue: 1 << 12)
     }
     private var flags = Flags()
 
@@ -241,10 +240,6 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
     var reportedIdleEvent: Bool {
         get { flags.contains(.reportedIdleEvent) }
         set { if newValue { flags.insert(.reportedIdleEvent) } else { flags.remove(.reportedIdleEvent) } }
-    }
-    var spinValueForTestingSeen: Bool {
-        get { flags.contains(.spinValueForTestingSeen) }
-        set { if newValue { flags.insert(.spinValueForTestingSeen) } else { flags.remove(.spinValueForTestingSeen) } }
     }
 
     var log: LogPrefixer {

@@ -142,6 +142,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
 
         var linkDelay: NetworkDuration = .zero
         var datagramDrops: DatagramDrops? = nil
+        var observeFirstByte: ((UInt8) -> Void)? = nil
 
         private var timerSet = false
         func deliverInboundDataAvailableEvent() {
@@ -275,6 +276,14 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
                 datagrams = remainingDatagrams
             }
             log.datapath("forwarding \(datagrams.count) datagrams to port: \(remotePort)")
+            if let observeFirstByte {
+                datagrams.iterateMutableFrames { frame in
+                    if let bytes = frame.bytes, bytes.byteCount > 0 {
+                        observeFirstByte(bytes[0])
+                    }
+                    return true
+                }
+            }
             remoteInstance.incomingFrames.add(frames: datagrams)
             remoteInstance.deliverInboundDataAvailableEvent()
         }

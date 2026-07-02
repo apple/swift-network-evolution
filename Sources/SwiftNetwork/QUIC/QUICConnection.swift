@@ -2322,9 +2322,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     // Reflect the spin bit.
                     let spinValue = packet.spinValue
                     path.spinValue = spinValue
-                    if spinValue {
-                        path.spinValueForTestingSeen = true
-                    }
                 } else {
                     // Spin it!
                     let spinValue = packet.spinValue
