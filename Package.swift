@@ -96,7 +96,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "5.0.0-beta.1"),
-        .package(url: "https://github.com/apple/swift-tls.git", branch: "main"),
+        .package(url: "https://github.com/apple/swift-tls.git", .upToNextMinor(from: "0.1.0")),
     ],
     targets: [
         .target(
