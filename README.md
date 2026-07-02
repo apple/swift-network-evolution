@@ -39,6 +39,10 @@ Unit tests can also be run by filtering a specific class or function:
 
 All unit tests are run automatically upon creation or update of a Pull Request. See [CONTRIBUTING](https://github.com/apple/swift-network-evolution/blob/main/CONTRIBUTING.md) for details.
 
+### Versioning
+
+Whilst the library is in the `0.x.x` version range, you should adopt it using the `.upToNextMinor(from: "0.1.0")` specifier. During this period, breaking changes are intended to map to minor version bumps, so depending on the library this way picks up smaller, non-breaking changes automatically while protecting against API-breaking ones.
+
 ### Logging Levels
 
 By default, Swift Network will emit logs at `debug`, `info`, `notice`, `error`, and `fault` levels. There are also datapath-specific debug logs, referred to as `datapath` logs, that are disabled by default.
