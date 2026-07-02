@@ -3196,11 +3196,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         else {
             return false
         }
-        var datagramBatch = FrameArray()
+
+        var datagramBatch: FrameArray
         if self.flowControlState.pendingOutboundBytesToSend > 0 && availableCongestionWindow > 0 {
             datagramBatch = buildOutboundFrameBatch(
                 availableCongestionWindow: (availableCongestionWindow - totalSendBytes)
             )
+        } else {
+            datagramBatch = FrameArray()
         }
 
         // Sending on the current path.

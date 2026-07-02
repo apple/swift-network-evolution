@@ -36,7 +36,7 @@ public struct FrameArray: ~Copyable {
     }
 
     public init() {
-        self.frames = NetworkUniqueDeque<Frame>(minimumCapacity: 1)
+        self.frames = NetworkUniqueDeque<Frame>()
     }
 
     public init(capacity: Int) {
