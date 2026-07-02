@@ -91,7 +91,10 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
                     defer { expectation.fulfill() }
 
                     let clientSpinBit = harness.state?.clientInstance.currentPath?.spinValue ?? false
-                    let serverSpinBit = harness.state?.serverInstance.currentPath?.spinValue ?? false
+                    // Note that spinValueForTestingSeen is checked here because it could be that by the time
+                    // this test checks the server spin bit value it has received the ACK from the client and the
+                    // spin bit value has already changed. This reliably make sure that the spin bit on the server was present.
+                    let serverSpinBit = harness.state?.serverInstance.currentPath?.spinValueForTestingSeen ?? false
                     XCTAssertFalse(clientSpinBit, "Client should have the spin bit set to false")
                     XCTAssertTrue(serverSpinBit, "Server should have the spin bit set to true")
                 }
