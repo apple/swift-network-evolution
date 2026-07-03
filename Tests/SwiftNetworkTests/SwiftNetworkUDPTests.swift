@@ -19,7 +19,7 @@ import XCTest
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 #elseif canImport(Network)
-@_spi(Essentials) @_spi(ProtocolProvider) import Network
+@_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
 @available(Network 0.1.0, *)
