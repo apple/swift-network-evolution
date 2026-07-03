@@ -61,6 +61,10 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
 
         var hasSpinBit = true
         var observedSpinBitValues: Set<Bool> = []
+        let observeFirstByteHandler: BridgeObserveFirstByteHandler = { firstByte in
+            guard (firstByte & 0xC0) == 0x40 else { return }
+            observedSpinBitValues.insert((firstByte & 0x20) != 0)
+        }
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             afterHandshake: { harness in
@@ -78,11 +82,6 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
                         Logger.proto.info("Spin bit was selected to not be enabled, end the test")
                         hasSpinBit = false
                         return
-                    }
-                    // If we have made it this far we should at least be able to detect at least one spin bit value going back and forth
-                    // Detect at least 1 outbound datagram sending a spin bit value
-                    harness.observeFirstByteForOutboundShortHeaderPacket { firstByte in
-                        observedSpinBitValues.insert((firstByte & 0x20) != 0)
                     }
                 }
                 self.wait(for: [expectation], timeout: 5.0)
@@ -104,7 +103,8 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
                         "BridgeDatagramProtocol should have observed at least one packet with spin bit set"
                     )
                 }
-            }
+            },
+            bridgeObserveFirstByteHandler: observeFirstByteHandler
         )
     }
 

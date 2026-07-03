@@ -66,6 +66,8 @@ public struct DatagramDrops: Equatable {
     }
 }
 
+public typealias BridgeObserveFirstByteHandler = ((UInt8) -> Void)?
+
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public struct BridgeDatagramProtocol: NetworkProtocol {
@@ -75,6 +77,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
 
     public struct BridgeOptions: PerProtocolOptions {
         public var linkDelay: NetworkDuration = .zero
+        public var observeFirstByteHandler: BridgeObserveFirstByteHandler = nil
         var datagramDrops: DatagramDrops?
 
         init() {}
@@ -94,6 +97,10 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
         }
         public func isEqual(to other: BridgeOptions, for: ProtocolCompareMode) -> Bool {
             self == other
+        }
+
+        static public func == (lhs: BridgeOptions, rhs: BridgeOptions) -> Bool {
+            lhs.linkDelay == rhs.linkDelay && lhs.datagramDrops == rhs.datagramDrops
         }
 
         var isDefault: Bool {
@@ -142,7 +149,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
 
         var linkDelay: NetworkDuration = .zero
         var datagramDrops: DatagramDrops? = nil
-        var observeFirstByte: ((UInt8) -> Void)? = nil
+        var observeFirstByteHandler: BridgeObserveFirstByteHandler = nil
 
         private var timerSet = false
         func deliverInboundDataAvailableEvent() {
@@ -184,6 +191,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
             {
                 self.linkDelay = bridgeOptions.linkDelay
                 self.datagramDrops = bridgeOptions.datagramDrops
+                self.observeFirstByteHandler = bridgeOptions.observeFirstByteHandler
             }
             #endif
 
@@ -276,10 +284,10 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
                 datagrams = remainingDatagrams
             }
             log.datapath("forwarding \(datagrams.count) datagrams to port: \(remotePort)")
-            if let observeFirstByte {
+            if let observeFirstByteHandler {
                 datagrams.iterateMutableFrames { frame in
                     if let bytes = frame.bytes, bytes.byteCount > 0 {
-                        observeFirstByte(bytes[0])
+                        observeFirstByteHandler(bytes[0])
                     }
                     return true
                 }
@@ -330,6 +338,11 @@ extension ProtocolOptions<BridgeDatagramProtocol> {
     public var linkDelay: NetworkDuration {
         get { perProtocolOptions!.linkDelay }
         set { perProtocolOptions!.linkDelay = newValue }
+    }
+
+    public var observeFirstByteHandler: BridgeObserveFirstByteHandler {
+        get { perProtocolOptions!.observeFirstByteHandler }
+        set { perProtocolOptions!.observeFirstByteHandler = newValue }
     }
 
     public var datagramDrops: DatagramDrops? {
