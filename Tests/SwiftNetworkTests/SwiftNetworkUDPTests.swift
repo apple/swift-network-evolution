@@ -220,7 +220,8 @@ final class SwiftNetworkUDPTests: NetTestCase {
     func internalTestUDPChecksumFlags(
         localEndpoint: Endpoint,
         remoteEndpoint: Endpoint,
-        instanceFlags: UInt16,
+        fullChecksumOffload: Bool,
+        preferNoChecksum: Bool = false,
         validateOutbound: @escaping (DatagramLowerHarness) -> Void
     ) {
         let parameters = Parameters()
@@ -230,8 +231,10 @@ final class SwiftNetworkUDPTests: NetTestCase {
             defer { expectation.fulfill() }
             let path = PathProperties(parameters: parameters)
 
-            let reference = UDPProtocol.instance(context: context, flags: instanceFlags)
+            let reference = UDPProtocol.instance(context: context)
             let udpOptions = UDPProtocol.options()
+            udpOptions.fullChecksumOffload = fullChecksumOffload
+            udpOptions.preferNoChecksum = preferNoChecksum
             udpOptions.noMetadata = true
             udpOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
             udpOptions.setProtocolInstance(reference)
@@ -286,7 +289,7 @@ final class SwiftNetworkUDPTests: NetTestCase {
         internalTestUDPChecksumFlags(
             localEndpoint: Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 1234),
             remoteEndpoint: Endpoint(address: IPv4Address(SwiftNetworkUDPTests.remoteIPv4Address)!, port: 2345),
-            instanceFlags: UDPProtocol.Instance.Flags.fullChecksumOffload.rawValue
+            fullChecksumOffload: true
         ) { lowerHarness in
             let flags = lowerHarness.pendingOutboundPackets.peekFirstFrame { $0.checksumOffloadFlags }
             // udpv4 = 0x10, zeroInvert = 0x02 → 0x12
@@ -298,7 +301,7 @@ final class SwiftNetworkUDPTests: NetTestCase {
         internalTestUDPChecksumFlags(
             localEndpoint: Endpoint(address: IPv6Address(SwiftNetworkUDPTests.localIPv6Address)!, port: 1234),
             remoteEndpoint: Endpoint(address: IPv6Address(SwiftNetworkUDPTests.remoteIPv6Address)!, port: 2345),
-            instanceFlags: UDPProtocol.Instance.Flags.fullChecksumOffload.rawValue
+            fullChecksumOffload: true
         ) { lowerHarness in
             let flags = lowerHarness.pendingOutboundPackets.peekFirstFrame { $0.checksumOffloadFlags }
             // udpv6 = 0x40, zeroInvert = 0x02 → 0x42
@@ -310,7 +313,8 @@ final class SwiftNetworkUDPTests: NetTestCase {
         internalTestUDPChecksumFlags(
             localEndpoint: Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 1234),
             remoteEndpoint: Endpoint(address: IPv4Address(SwiftNetworkUDPTests.remoteIPv4Address)!, port: 2345),
-            instanceFlags: UDPProtocol.Instance.Flags.noChecksum.rawValue
+            fullChecksumOffload: false,
+            preferNoChecksum: true
         ) { lowerHarness in
             guard let packet = lowerHarness.extractLastOutboundPacket() else {
                 XCTFail("No outbound packet")

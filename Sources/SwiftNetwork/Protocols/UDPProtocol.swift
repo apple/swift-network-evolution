@@ -48,6 +48,7 @@ public struct UDPProtocol: NetworkProtocol {
         static public let noMetadata = UDPOptions(rawValue: 1 << 1)
         static public let ignoreInboundChecksum = UDPOptions(rawValue: 1 << 2)
         static public let useQUICStats = UDPOptions(rawValue: 1 << 3)
+        static public let fullChecksumOffload = UDPOptions(rawValue: 1 << 4)
 
         #if NETWORK_PRIVATE
         var privateStorage = UDPProtocolOptionsPrivateStorage()
@@ -99,10 +100,8 @@ public struct UDPProtocol: NetworkProtocol {
         // Only called by newProtocolInstance()
         fileprivate static func registerNewUDP(
             on context: NetworkContext,
-            flags: UInt16 = 0
         ) -> ProtocolInstanceReference {
-            var udp = UDPInstance(context: context)
-            udp.flags = UDPProtocol.Instance.Flags(rawValue: flags)
+            let udp = UDPInstance(context: context)
             let registeredIndex = context.registerUDPInstance(udp)
             context.udpInstances[registeredIndex].udpInstanceIndex = registeredIndex
             context.udpInstances[registeredIndex].reference = ProtocolInstanceReference(
@@ -215,6 +214,9 @@ public struct UDPProtocol: NetworkProtocol {
                 }
                 if udpOptions.ignoreInboundChecksum {
                     self.flags.insert(.ignoreInboundChecksum)
+                }
+                if udpOptions.fullChecksumOffload {
+                    self.flags.insert(.fullChecksumOffload)
                 }
                 if let transport = parameters.defaultStack.transport {
                     if transport.options == udpOptions, udpOptions.useQUICStats {
@@ -495,10 +497,6 @@ public struct UDPProtocol: NetworkProtocol {
         UDPInstance.registerNewUDP(on: context)
     }
 
-    public func newProtocolInstance(context: NetworkContext, flags: UInt16 = 0) -> ProtocolInstanceReference? {
-        UDPInstance.registerNewUDP(on: context, flags: flags)
-    }
-
     static public let identifier = ProtocolIdentifier(name: "udp", level: .transport, mapping: .oneToOne)
 
     #if !NETWORK_PRIVATE
@@ -507,8 +505,8 @@ public struct UDPProtocol: NetworkProtocol {
 
     static public func options() -> ProtocolOptions<UDPProtocol> { UDPProtocol.definition.protocolOptions() }
 
-    static public func instance(context: NetworkContext, flags: UInt16 = 0) -> ProtocolInstanceReference {
-        UDPProtocol().newProtocolInstance(context: context, flags: flags)!
+    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
+        UDPProtocol().newProtocolInstance(context: context)!
     }
 }
 
@@ -554,6 +552,17 @@ extension ProtocolOptions<UDPProtocol> {
                 perProtocolOptions!.insert(.useQUICStats)
             } else {
                 perProtocolOptions!.remove(.useQUICStats)
+            }
+        }
+    }
+
+    public var fullChecksumOffload: Bool {
+        get { perProtocolOptions!.contains(.fullChecksumOffload) }
+        set {
+            if newValue {
+                perProtocolOptions!.insert(.fullChecksumOffload)
+            } else {
+                perProtocolOptions!.remove(.fullChecksumOffload)
             }
         }
     }
