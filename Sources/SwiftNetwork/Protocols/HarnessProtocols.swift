@@ -237,6 +237,10 @@ public class UpperHarness<LinkageType: InboundDataLinkage>: UpperHarnessProtocol
         return invokeGetMetadata() as? ProtocolMetadata<P>
     }
 
+    final public func getMetrics(requestedNetworkMetric: RequestedNetworkMetrics) -> NetworkMetrics? {
+        lower.invokeGetMetrics(reference, requestedNetworkMetric: requestedNetworkMetric)
+    }
+
     public func setApplicationError(_ applicationError: UInt64, applicationErrorReason: String) {
         if let metadata: ProtocolMetadata<QUICProtocol> = self.getMetadata() {
             metadata.perProtocolMetadata?.quicConnectionMetadata?.applicationError = applicationError
