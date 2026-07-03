@@ -45,11 +45,7 @@ let settings: [SwiftSetting] = [
     .define("EXPORT_SWIFTTLS"),
     .define("IMPORT_CRYPTO"),
     .define("SWIFTTLS_CERTIFICATE_VERIFICATION"),
-    // To support back to macOS 26, provide a shim on top of crypto APIs
-    // that allows passing spans. This is a less performant path, so for
-    // performance-sensitive cases, remove this define and require at least
-    // macOS 27.
-    .define("SHIM_CRYPTO_SPAN_APIS", .when(platforms: allApplePlatforms)),
+    //.define("SHIM_CRYPTO_SPAN_APIS", .when(platforms: allApplePlatforms)),
     .unsafeFlags(["-Xfrontend", "-experimental-spi-only-imports"]),
     .enableExperimentalFeature("Lifetimes"),
     .enableExperimentalFeature("AnyAppleOSAvailability"),
@@ -90,7 +86,15 @@ let package = Package(
             name: "SignpostOutput",
             description: "Enables `OSSignposter` output from the QUIC implementation."
         ),
-        .default(enabledTraits: []),
+        // To support back to macOS 26, provide a shim on top of crypto APIs
+        // that allows passing spans. This is a less performant path, so for
+        // performance-sensitive cases, remove this define and require at least
+        // macOS 27.
+        .trait(
+            name: "SHIM_CRYPTO_SPAN_APIS",
+            description: "To support back to macOS 26, provide a shim on top of crypto APIs that allows passing spans"
+        ),
+        .default(enabledTraits: ["SHIM_CRYPTO_SPAN_APIS"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
