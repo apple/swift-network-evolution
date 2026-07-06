@@ -15,7 +15,7 @@
 // Wrappers over older Crypto functions when span-based APIs are not available.
 // This path exists for compatibility, but is significantly less efficient.
 
-#if !SHIM_CRYPTO_SPAN_APIS
+#if !DISABLE_SHIM_CRYPTO_SPAN_APIS
 #if canImport(Foundation)
 import Foundation
 #elseif canImport(SwiftSystem)

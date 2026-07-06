@@ -86,12 +86,11 @@ let package = Package(
             description: "Enables `OSSignposter` output from the QUIC implementation."
         ),
         // To support back to macOS 26, provide a shim on top of crypto APIs
-        // that allows passing spans. This is a less performant path, so for
-        // performance-sensitive cases, remove this define and require at least
-        // macOS 27.
+        // that allows passing spans is provided. This is a less performant path, so for
+        // performance-sensitive cases, pass in this trait to disable this shim. 
        .trait(
-           name: "SHIM_CRYPTO_SPAN_APIS",
-           description: "To support back to macOS 26, provide a shim on top of crypto APIs that allows passing spans"
+           name: "DISABLE_SHIM_CRYPTO_SPAN_APIS",
+           description: "Disable backwards compatible crypto shim for performance sensitive cases"
        ),
         .default(enabledTraits: []),
     ],
