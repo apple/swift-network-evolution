@@ -32,7 +32,7 @@ jobs:
         /usr/bin/xcodebuild -quiet -scheme swift-network-evolution-Package -destination "generic/platform=tvos" build && tvos=PASSED || { rc=1; tvos=FAILED; };
         echo "=== tvOS build: $tvos ===";
         echo "=== xcodebuild visionOS ===";
-        /usr/bin/xcodebuild - -quiet -scheme swift-network-evolution-Package -destination "generic/platform=visionos" build && visionos=PASSED || { rc=1; visionos=FAILED; };
+        /usr/bin/xcodebuild -quiet -scheme swift-network-evolution-Package -destination "generic/platform=visionos" build && visionos=PASSED || { rc=1; visionos=FAILED; };
         echo "=== visionOS build: $visionos ===";
         echo "=== xcrun swift test ===";
         xcrun swift test --quiet "$@" && tests=PASSED || { rc=1; tests=FAILED; };
