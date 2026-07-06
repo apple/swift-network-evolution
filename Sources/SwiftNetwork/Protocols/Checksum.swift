@@ -62,16 +62,16 @@ struct ChecksumFlags: OptionSet {
     static let partial = ChecksumFlags(rawValue: 0x01)
     static let zeroInvert = ChecksumFlags(rawValue: 0x02)
     static let ip = ChecksumFlags(rawValue: 0x04)
-    static let tcpv4 = ChecksumFlags(rawValue: 0x08)
-    static let udpv4 = ChecksumFlags(rawValue: 0x10)
-    static let tcpv6 = ChecksumFlags(rawValue: 0x20)
-    static let udpv6 = ChecksumFlags(rawValue: 0x40)
+    static let tcpIPv4 = ChecksumFlags(rawValue: 0x08)
+    static let udpIPv4 = ChecksumFlags(rawValue: 0x10)
+    static let tcpIPv6 = ChecksumFlags(rawValue: 0x20)
+    static let udpIPv6 = ChecksumFlags(rawValue: 0x40)
 }
 
 struct InterfaceChecksumFlags: OptionSet {
     let rawValue: UInt32
-    static let csumUDP = InterfaceChecksumFlags(rawValue: 0x0000_0004)
-    static let csumUDPIPV6 = InterfaceChecksumFlags(rawValue: 0x0000_0040)
+    static let csumUDPIPv4 = InterfaceChecksumFlags(rawValue: 0x0000_0004)
+    static let csumUDPIPv6 = InterfaceChecksumFlags(rawValue: 0x0000_0040)
 }
 
 @available(Network 0.1.0, *)

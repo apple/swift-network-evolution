@@ -159,9 +159,9 @@ public struct UDPProtocol: NetworkProtocol {
             if self.maximumDatagramSize > UDPProtocol.headerLength {
                 self.maximumDatagramSize -= UDPProtocol.headerLength
             }
-            let udpCsumOffload: UInt32 = path.hardwareChecksumFlags
-            if isIPv4 && ((udpCsumOffload & InterfaceChecksumFlags.csumUDP.rawValue) != 0)
-                || !isIPv4 && ((udpCsumOffload & InterfaceChecksumFlags.csumUDPIPV6.rawValue) != 0)
+            let udpChecksumOffload: UInt32 = path.hardwareChecksumFlags
+            if isIPv4 && ((udpChecksumOffload & InterfaceChecksumFlags.csumUDPIPv4.rawValue) != 0)
+                || !isIPv4 && ((udpChecksumOffload & InterfaceChecksumFlags.csumUDPIPv6.rawValue) != 0)
             {
                 self.flags.insert(.fullChecksumOffload)
                 self.flags.remove(.partialChecksumOffload)
@@ -218,6 +218,7 @@ public struct UDPProtocol: NetworkProtocol {
                 if udpOptions.fullChecksumOffload {
                     self.flags.insert(.fullChecksumOffload)
                 }
+                #if !NETWORK_EMBEDDED
                 if let transport = parameters.defaultStack.transport {
                     if transport.options == udpOptions, udpOptions.useQUICStats {
                         self.flags.insert(.upperTransportIsQUIC)
@@ -228,6 +229,7 @@ public struct UDPProtocol: NetworkProtocol {
                         self.flags.insert(.upperTransportIsQUIC)
                     }
                 }
+                #endif
             }
         }
 
@@ -436,8 +438,8 @@ public struct UDPProtocol: NetworkProtocol {
                     if self.flags.contains(.fullChecksumOffload) {
                         let csumFlags: ChecksumFlags =
                             isIPv4
-                            ? [.udpv4, .zeroInvert]
-                            : [.udpv6, .zeroInvert]
+                            ? [.udpIPv4, .zeroInvert]
+                            : [.udpIPv6, .zeroInvert]
                         frame.checksumOffloadFlags |= csumFlags.rawValue
                     }
 
