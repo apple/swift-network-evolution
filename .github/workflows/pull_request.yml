@@ -17,13 +17,13 @@ jobs:
         bash -c '
         rc=0;
         echo "=== xcodebuild macOS ===";
-        /usr/bin/xcodebuild -quiet -scheme swift-network-evolution-Package -destination "generic/platform=macos,variant=macos" build && macos=PASSED || { rc=1; macos=FAILED; };
+        /usr/bin/xcodebuild -DSHIM_CRYPTO_SPAN_APIS -quiet -scheme swift-network-evolution-Package -destination "generic/platform=macos,variant=macos" build && macos=PASSED || { rc=1; macos=FAILED; };
         echo "=== macOS build: $macos ===";
         echo "=== xcodebuild Mac Catalyst ===";
-        /usr/bin/xcodebuild -quiet -scheme swift-network-evolution-Package -destination "generic/platform=macos,variant=Mac Catalyst" build && catalyst=PASSED || { rc=1; catalyst=FAILED; };
+        /usr/bin/xcodebuild -DSHIM_CRYPTO_SPAN_APIS -quiet -scheme swift-network-evolution-Package -destination "generic/platform=macos,variant=Mac Catalyst" build && catalyst=PASSED || { rc=1; catalyst=FAILED; };
         echo "=== Mac Catalyst build: $catalyst ===";
         echo "=== xcodebuild iOS ===";
-        /usr/bin/xcodebuild -quiet -scheme swift-network-evolution-Package -destination "generic/platform=ios" build && ios=PASSED || { rc=1; ios=FAILED; };
+        /usr/bin/xcodebuild -DSHIM_CRYPTO_SPAN_APIS -quiet -scheme swift-network-evolution-Package -destination "generic/platform=ios" build && ios=PASSED || { rc=1; ios=FAILED; };
         echo "=== iOS build: $ios ===";
         echo "=== xcodebuild watchOS ===";
         /usr/bin/xcodebuild -quiet -scheme swift-network-evolution-Package -destination "generic/platform=watchos" build && watchos=PASSED || { rc=1; watchos=FAILED; };
@@ -32,10 +32,10 @@ jobs:
         /usr/bin/xcodebuild -quiet -scheme swift-network-evolution-Package -destination "generic/platform=tvos" build && tvos=PASSED || { rc=1; tvos=FAILED; };
         echo "=== tvOS build: $tvos ===";
         echo "=== xcodebuild visionOS ===";
-        /usr/bin/xcodebuild -quiet -scheme swift-network-evolution-Package -destination "generic/platform=visionos" build && visionos=PASSED || { rc=1; visionos=FAILED; };
+        /usr/bin/xcodebuild - -quiet -scheme swift-network-evolution-Package -destination "generic/platform=visionos" build && visionos=PASSED || { rc=1; visionos=FAILED; };
         echo "=== visionOS build: $visionos ===";
         echo "=== xcrun swift test ===";
-        xcrun swift test --quiet "$@" && tests=PASSED || { rc=1; tests=FAILED; };
+        xcrun swift test --traits SHIM_CRYPTO_SPAN_APIS --quiet "$@" && tests=PASSED || { rc=1; tests=FAILED; };
         echo "=== swift test: $tests ===";
         echo "=== Summary ===";
         printf "%-20s %s\n" "macOS build:" "$macos";
