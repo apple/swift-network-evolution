@@ -70,8 +70,8 @@ struct ChecksumFlags: OptionSet {
 
 struct InterfaceChecksumFlags: OptionSet {
     let rawValue: UInt32
-    static let csumUDPIPv4 = InterfaceChecksumFlags(rawValue: 0x0000_0004)
-    static let csumUDPIPv6 = InterfaceChecksumFlags(rawValue: 0x0000_0040)
+    static let udpIPv4 = InterfaceChecksumFlags(rawValue: 0x0000_0004)
+    static let udpIPv6 = InterfaceChecksumFlags(rawValue: 0x0000_0040)
 }
 
 @available(Network 0.1.0, *)

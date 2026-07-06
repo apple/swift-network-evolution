@@ -160,8 +160,8 @@ public struct UDPProtocol: NetworkProtocol {
                 self.maximumDatagramSize -= UDPProtocol.headerLength
             }
             let udpChecksumOffload: UInt32 = path.hardwareChecksumFlags
-            if isIPv4 && ((udpChecksumOffload & InterfaceChecksumFlags.csumUDPIPv4.rawValue) != 0)
-                || !isIPv4 && ((udpChecksumOffload & InterfaceChecksumFlags.csumUDPIPv6.rawValue) != 0)
+            if isIPv4 && ((udpChecksumOffload & InterfaceChecksumFlags.udpIPv4.rawValue) != 0)
+                || !isIPv4 && ((udpChecksumOffload & InterfaceChecksumFlags.udpIPv6.rawValue) != 0)
             {
                 self.flags.insert(.fullChecksumOffload)
                 self.flags.remove(.partialChecksumOffload)
@@ -444,8 +444,8 @@ public struct UDPProtocol: NetworkProtocol {
                     }
 
                     if !self.flags.contains(.fullChecksumOffload) {
-                        var noChecksumOffload = !self.flags.contains(.partialChecksumOffload)
-                        if !noChecksumOffload {
+                        var checksumOffloadDisabled = !self.flags.contains(.partialChecksumOffload)
+                        if !checksumOffloadDisabled {
                             let csumStart = UInt16(isIPv4 ? IPProtocol.ipv4HeaderLength : IPProtocol.ipv6HeaderLength)
                             let csumWrite = csumStart + UInt16(checksumOffset)
                             let csumFlags: ChecksumFlags = [.partial, .zeroInvert]
@@ -454,11 +454,11 @@ public struct UDPProtocol: NetworkProtocol {
                                 startOffset: csumStart,
                                 checksumOffset: csumWrite
                             ) {
-                                noChecksumOffload = true
+                                checksumOffloadDisabled = true
                             }
                         }
 
-                        if noChecksumOffload {
+                        if checksumOffloadDisabled {
                             do throws(ChecksumError) {
                                 try frame.finalizeIPChecksum(checksumOffset: checksumOffset, zeroInvert: true)
                             } catch {
