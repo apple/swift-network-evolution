@@ -48,6 +48,7 @@ public struct UDPProtocol: NetworkProtocol {
         static public let noMetadata = UDPOptions(rawValue: 1 << 1)
         static public let ignoreInboundChecksum = UDPOptions(rawValue: 1 << 2)
         static public let useQUICStats = UDPOptions(rawValue: 1 << 3)
+        static public let fullChecksumOffload = UDPOptions(rawValue: 1 << 4)
 
         #if NETWORK_PRIVATE
         var privateStorage = UDPProtocolOptionsPrivateStorage()
@@ -97,7 +98,9 @@ public struct UDPProtocol: NetworkProtocol {
         var eventManager = ProtocolEventManager()
 
         // Only called by newProtocolInstance()
-        fileprivate static func registerNewUDP(on context: NetworkContext) -> ProtocolInstanceReference {
+        fileprivate static func registerNewUDP(
+            on context: NetworkContext,
+        ) -> ProtocolInstanceReference {
             let udp = UDPInstance(context: context)
             let registeredIndex = context.registerUDPInstance(udp)
             context.udpInstances[registeredIndex].udpInstanceIndex = registeredIndex
@@ -121,6 +124,9 @@ public struct UDPProtocol: NetworkProtocol {
 
         var serviceClass = Parameters.ServiceClass.bestEffort
         var maximumDatagramSize: Int = 0
+        var isIPv4: Bool {
+            flags.contains(.isIPv4)
+        }
 
         struct Flags: OptionSet {
             init(rawValue: Self.RawValue) {
@@ -152,6 +158,13 @@ public struct UDPProtocol: NetworkProtocol {
             self.maximumDatagramSize = path.maximumPacketSize
             if self.maximumDatagramSize > UDPProtocol.headerLength {
                 self.maximumDatagramSize -= UDPProtocol.headerLength
+            }
+            let udpChecksumOffload: UInt32 = path.hardwareChecksumFlags
+            if isIPv4 && ((udpChecksumOffload & InterfaceChecksumFlags.udpIPv4.rawValue) != 0)
+                || !isIPv4 && ((udpChecksumOffload & InterfaceChecksumFlags.udpIPv6.rawValue) != 0)
+            {
+                self.flags.insert(.fullChecksumOffload)
+                self.flags.remove(.partialChecksumOffload)
             }
         }
 
@@ -202,6 +215,21 @@ public struct UDPProtocol: NetworkProtocol {
                 if udpOptions.ignoreInboundChecksum {
                     self.flags.insert(.ignoreInboundChecksum)
                 }
+                if udpOptions.fullChecksumOffload {
+                    self.flags.insert(.fullChecksumOffload)
+                }
+                #if !NETWORK_EMBEDDED
+                if let transport = parameters.defaultStack.transport {
+                    if transport.options == udpOptions, udpOptions.useQUICStats {
+                        self.flags.insert(.upperTransportIsQUIC)
+                    } else if let quicOptions = transport.options,
+                        quicOptions.matches(identifier: QUICStreamProtocol.identifier)
+                            || quicOptions.matches(identifier: QUICConnectionProtocol.identifier)
+                    {
+                        self.flags.insert(.upperTransportIsQUIC)
+                    }
+                }
+                #endif
             }
         }
 
@@ -213,7 +241,7 @@ public struct UDPProtocol: NetworkProtocol {
             let inbound = (inboundChecksum != nil)
             let existingChecksum: UInt16 = inboundChecksum ?? 0
             var checksumValue: UInt16 = 0
-            if self.flags.contains(.isIPv4) {
+            if isIPv4 {
                 checksumValue = Checksum.ipv4PseudoHeader(
                     source: inbound ? ipv4Remote : ipv4Local,
                     dest: inbound ? ipv4Local : ipv4Remote,
@@ -295,7 +323,7 @@ public struct UDPProtocol: NetworkProtocol {
                         return .removeFrameAndContinue
                     }
 
-                    guard self.flags.contains(.isIPv4) || checksum != 0 else {
+                    guard isIPv4 || checksum != 0 else {
                         log.error("Received an IPv6 packet with zero checksum")
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
@@ -391,7 +419,7 @@ public struct UDPProtocol: NetworkProtocol {
                     frame.serviceClass = self.serviceClass
                 }
 
-                if !self.flags.contains(.isIPv4) || !self.flags.contains(.noChecksum) {
+                if !isIPv4 || !self.flags.contains(.noChecksum) {
                     // Always insert pseudo header checksum
                     let checksumValue = pseudoHeaderChecksum(inboundChecksum: nil, length: length)
 
@@ -407,23 +435,41 @@ public struct UDPProtocol: NetworkProtocol {
                         return .removeFrameAndContinue
                     }
 
-                    let finalizedChecksum = false
                     if self.flags.contains(.fullChecksumOffload) {
-                        // TODO: Checksum offload
-                    } else if self.flags.contains(.partialChecksumOffload) {
-                        // TODO: Checksum offload
+                        let csumFlags: ChecksumFlags =
+                            isIPv4
+                            ? [.udpIPv4, .zeroInvert]
+                            : [.udpIPv6, .zeroInvert]
+                        frame.checksumOffloadFlags |= csumFlags.rawValue
                     }
 
-                    if !finalizedChecksum {
-                        do throws(ChecksumError) {
-                            try frame.finalizeIPChecksum(checksumOffset: checksumOffset, zeroInvert: true)
-                        } catch {
-                            log.error("Failed to finalize UDP checksum")
-                            frame.finalize(success: false)
-                            return .removeFrameAndContinue
+                    if !self.flags.contains(.fullChecksumOffload) {
+                        var checksumOffloadDisabled = !self.flags.contains(.partialChecksumOffload)
+                        if !checksumOffloadDisabled {
+                            let csumStart = UInt16(isIPv4 ? IPProtocol.ipv4HeaderLength : IPProtocol.ipv6HeaderLength)
+                            let csumWrite = csumStart + UInt16(checksumOffset)
+                            let csumFlags: ChecksumFlags = [.partial, .zeroInvert]
+                            if !frame.setInternetChecksum(
+                                flags: csumFlags,
+                                startOffset: csumStart,
+                                checksumOffset: csumWrite
+                            ) {
+                                checksumOffloadDisabled = true
+                            }
+                        }
+
+                        if checksumOffloadDisabled {
+                            do throws(ChecksumError) {
+                                try frame.finalizeIPChecksum(checksumOffset: checksumOffset, zeroInvert: true)
+                            } catch {
+                                log.error("Failed to finalize UDP checksum")
+                                frame.finalize(success: false)
+                                return .removeFrameAndContinue
+                            }
                         }
                     }
                 }
+                transmitByteCount += length - UDPProtocol.headerLength
 
                 return .continueIterating
             }
@@ -434,6 +480,11 @@ public struct UDPProtocol: NetworkProtocol {
         #if !NETWORK_EMBEDDED
         var metadata: AbstractProtocolMetadata? { nil }
         #endif
+
+        func updateDataTransferSnapshot(_ snapshot: inout DataTransferSnapshot) {
+            snapshot.receivedTransportByteCount = UInt64(receiveByteCount)
+            snapshot.sentTransportByteCount = UInt64(transmitByteCount)
+        }
     }
 
     public init() {}
@@ -503,6 +554,17 @@ extension ProtocolOptions<UDPProtocol> {
                 perProtocolOptions!.insert(.useQUICStats)
             } else {
                 perProtocolOptions!.remove(.useQUICStats)
+            }
+        }
+    }
+
+    public var fullChecksumOffload: Bool {
+        get { perProtocolOptions!.contains(.fullChecksumOffload) }
+        set {
+            if newValue {
+                perProtocolOptions!.insert(.fullChecksumOffload)
+            } else {
+                perProtocolOptions!.remove(.fullChecksumOffload)
             }
         }
     }

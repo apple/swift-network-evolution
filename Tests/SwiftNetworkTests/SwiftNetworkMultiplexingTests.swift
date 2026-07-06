@@ -25,6 +25,10 @@ import XCTest
 @available(Network 0.1.0, *)
 final class SwiftNetworkMultiplexingTests: NetTestCase {
 
+    // 10.0.0.20
+    static let localIPv4Address: [UInt8] = [0x0a, 0x00, 0x00, 0x14]
+    // 10.0.0.117
+    static let remoteIPv4Address: [UInt8] = [0x0a, 0x00, 0x00, 0x75]
     static let outputMessage: [UInt8] = [0x0a, 0x0b, 0x0c, 0x0d]
     static let inputMessage: [UInt8] = [0x0d, 0x0c, 0x0b, 0x0a, 0x01]
 
@@ -33,8 +37,8 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
         let context = parameters.context
         let path = PathProperties(parameters: parameters)
 
-        let localEndpoint = Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 1234)
-        let remoteEndpoint = Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 2345)
+        let localEndpoint = Endpoint(address: IPv4Address(SwiftNetworkMultiplexingTests.localIPv4Address)!, port: 1234)
+        let remoteEndpoint = Endpoint(address: IPv4Address(SwiftNetworkMultiplexingTests.localIPv4Address)!, port: 2345)
 
         var instance: TestMultiplexingProtocol? = nil
         var upperHarness1: DatagramUpperHarness?
@@ -217,8 +221,8 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
         let context = parameters.context
         let path = PathProperties(parameters: parameters)
 
-        let localEndpoint = Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 1234)
-        let remoteEndpoint = Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 2345)
+        let localEndpoint = Endpoint(address: IPv4Address(SwiftNetworkMultiplexingTests.localIPv4Address)!, port: 1234)
+        let remoteEndpoint = Endpoint(address: IPv4Address(SwiftNetworkMultiplexingTests.localIPv4Address)!, port: 2345)
 
         // Use a high number of streams to ensure that we don't have poor scaling
         let upperHarnessCount = 1000

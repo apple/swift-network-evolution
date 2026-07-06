@@ -57,6 +57,23 @@ enum ChecksumError: Error {
     case invalidBuffer
 }
 
+struct ChecksumFlags: OptionSet {
+    let rawValue: UInt8
+    static let partial = ChecksumFlags(rawValue: 0x01)
+    static let zeroInvert = ChecksumFlags(rawValue: 0x02)
+    static let ip = ChecksumFlags(rawValue: 0x04)
+    static let tcpIPv4 = ChecksumFlags(rawValue: 0x08)
+    static let udpIPv4 = ChecksumFlags(rawValue: 0x10)
+    static let tcpIPv6 = ChecksumFlags(rawValue: 0x20)
+    static let udpIPv6 = ChecksumFlags(rawValue: 0x40)
+}
+
+struct InterfaceChecksumFlags: OptionSet {
+    let rawValue: UInt32
+    static let udpIPv4 = InterfaceChecksumFlags(rawValue: 0x0000_0004)
+    static let udpIPv6 = InterfaceChecksumFlags(rawValue: 0x0000_0040)
+}
+
 @available(Network 0.1.0, *)
 extension IPv6Address {
     func checksum() -> UInt32 {
@@ -139,6 +156,11 @@ extension Frame {
     func ipChecksum(offset: Int, length: Int) throws(ChecksumError) -> UInt16 {
         let value = try self.checksum16(offset: offset, length: length)
         return ((~value) & 0xffff)
+    }
+
+    mutating func setInternetChecksum(flags: ChecksumFlags, startOffset: UInt16, checksumOffset: UInt16) -> Bool {
+        checksumOffloadFlags |= flags.rawValue
+        return false
     }
 
     mutating func finalizeIPChecksum(checksumOffset: Int, zeroInvert: Bool) throws(ChecksumError) {

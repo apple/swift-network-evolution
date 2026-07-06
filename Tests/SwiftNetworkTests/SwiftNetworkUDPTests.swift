@@ -19,7 +19,7 @@ import XCTest
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 #elseif canImport(Network)
-@_spi(Essentials) @_spi(ProtocolProvider) import Network
+@_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
 @available(Network 0.1.0, *)
@@ -79,7 +79,8 @@ final class SwiftNetworkUDPTests: NetTestCase {
         outputPacket: [UInt8],
         inputPacket: [UInt8],
         secondaryInputPacket: [UInt8]? = nil,
-        expectBadInput: Bool = false
+        expectBadInput: Bool = false,
+        validateMetrics: Bool = false
     ) {
         let parameters = Parameters()
 
@@ -169,6 +170,17 @@ final class SwiftNetworkUDPTests: NetTestCase {
 
                 XCTAssertEqual(expectedInputData, readApplicationData, "Failed to read expected UDP input data")
             }
+            if validateMetrics {
+                let metrics = upperHarness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
+                XCTAssertNotNil(metrics)
+                switch metrics {
+                case .dataTransferSnapshot(let snapshot):
+                    XCTAssertTrue(snapshot.receivedTransportByteCount > 0)
+                    XCTAssertTrue(snapshot.sentTransportByteCount > 0)
+                default:
+                    XCTFail("Failed to get UDP harness metrics")
+                }
+            }
 
             upperHarness.stop()
             upperHarness.teardown()
@@ -186,6 +198,16 @@ final class SwiftNetworkUDPTests: NetTestCase {
         )
     }
 
+    func testUDPIPv4WithMetrics() {
+        internalTestUDP(
+            localEndpoint: Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 1234),
+            remoteEndpoint: Endpoint(address: IPv4Address(SwiftNetworkUDPTests.remoteIPv4Address)!, port: 2345),
+            outputPacket: SwiftNetworkUDPTests.outputIPv4Packet,
+            inputPacket: SwiftNetworkUDPTests.inputIPv4Packet,
+            validateMetrics: true
+        )
+    }
+
     func testUDPIPv6() {
         internalTestUDP(
             localEndpoint: Endpoint(address: IPv6Address(SwiftNetworkUDPTests.localIPv6Address)!, port: 1234),
@@ -193,6 +215,116 @@ final class SwiftNetworkUDPTests: NetTestCase {
             outputPacket: SwiftNetworkUDPTests.outputIPv6Packet,
             inputPacket: SwiftNetworkUDPTests.inputIPv6Packet
         )
+    }
+
+    func internalTestUDPChecksumFlags(
+        localEndpoint: Endpoint,
+        remoteEndpoint: Endpoint,
+        fullChecksumOffload: Bool,
+        preferNoChecksum: Bool = false,
+        validateOutbound: @escaping (DatagramLowerHarness) -> Void
+    ) {
+        let parameters = Parameters()
+        let expectation = XCTestExpectation()
+        let context = parameters.context
+        context.async {
+            defer { expectation.fulfill() }
+            let path = PathProperties(parameters: parameters)
+
+            let reference = UDPProtocol.instance(context: context)
+            let udpOptions = UDPProtocol.options()
+            udpOptions.fullChecksumOffload = fullChecksumOffload
+            udpOptions.preferNoChecksum = preferNoChecksum
+            udpOptions.noMetadata = true
+            udpOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
+            udpOptions.setProtocolInstance(reference)
+            parameters.defaultStack.transport = .udp(udpOptions)
+
+            let udpLinkage = OutboundDatagramLinkage(reference: reference)
+            guard
+                let upperHarness = DatagramUpperHarness(
+                    identifier: "Client",
+                    local: localEndpoint,
+                    remote: remoteEndpoint,
+                    parameters: parameters,
+                    path: path,
+                    context: context,
+                    lowerProtocol: udpLinkage
+                )
+            else {
+                XCTFail("Failed to attach UDP to upper harness")
+                return
+            }
+
+            let lowerHarness = DatagramLowerHarness(identifier: "Client", context: context)
+            do {
+                try reference.attachLowerDatagramProtocol(
+                    lowerHarness.reference,
+                    remote: remoteEndpoint,
+                    local: localEndpoint,
+                    parameters: parameters,
+                    path: path
+                )
+            } catch {
+                XCTFail("Failed to attach UDP to lower harness")
+                return
+            }
+
+            upperHarness.start { connected in
+                XCTAssertTrue(connected, "UDP failed to become connected")
+            }
+
+            var message = SwiftNetworkUDPTests.outputMessage
+            XCTAssertTrue(message.withUTF8 { upperHarness.write($0.map { $0 }) }, "Failed to write")
+
+            validateOutbound(lowerHarness)
+
+            upperHarness.stop()
+            upperHarness.teardown()
+        }
+        wait(for: [expectation], timeout: 10.0)
+    }
+
+    func testUDPIPv4FullChecksumOffload() {
+        internalTestUDPChecksumFlags(
+            localEndpoint: Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 1234),
+            remoteEndpoint: Endpoint(address: IPv4Address(SwiftNetworkUDPTests.remoteIPv4Address)!, port: 2345),
+            fullChecksumOffload: true
+        ) { lowerHarness in
+            let flags = lowerHarness.pendingOutboundPackets.peekFirstFrame { $0.checksumOffloadFlags }
+            // udpv4 = 0x10, zeroInvert = 0x02 → 0x12
+            XCTAssertEqual(flags, 0x10 | 0x02, "Expected fullChecksumOffload flags for IPv4 UDP")
+        }
+    }
+
+    func testUDPIPv6FullChecksumOffload() {
+        internalTestUDPChecksumFlags(
+            localEndpoint: Endpoint(address: IPv6Address(SwiftNetworkUDPTests.localIPv6Address)!, port: 1234),
+            remoteEndpoint: Endpoint(address: IPv6Address(SwiftNetworkUDPTests.remoteIPv6Address)!, port: 2345),
+            fullChecksumOffload: true
+        ) { lowerHarness in
+            let flags = lowerHarness.pendingOutboundPackets.peekFirstFrame { $0.checksumOffloadFlags }
+            // udpv6 = 0x40, zeroInvert = 0x02 → 0x42
+            XCTAssertEqual(flags, 0x40 | 0x02, "Expected fullChecksumOffload flags for IPv6 UDP")
+        }
+    }
+
+    func testUDPIPv4NoChecksum() {
+        internalTestUDPChecksumFlags(
+            localEndpoint: Endpoint(address: IPv4Address(SwiftNetworkUDPTests.localIPv4Address)!, port: 1234),
+            remoteEndpoint: Endpoint(address: IPv4Address(SwiftNetworkUDPTests.remoteIPv4Address)!, port: 2345),
+            fullChecksumOffload: false,
+            preferNoChecksum: true
+        ) { lowerHarness in
+            guard let packet = lowerHarness.extractLastOutboundPacket() else {
+                XCTFail("No outbound packet")
+                return
+            }
+            // Everything should be zero here
+            XCTAssertTrue(packet.count >= 8, "Packet too short")
+            XCTAssertEqual(packet[6], 0x00, "Checksum high byte should be zero")
+            XCTAssertEqual(packet[7], 0x00, "Checksum low byte should be zero")
+        }
     }
 
     func testBadChecksumUDPIPv4() {
