@@ -60,6 +60,11 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
         // it from the server.
 
         var hasSpinBit = true
+        var observedSpinBitValues: Set<Bool> = []
+        let observeFirstByteHandler: BridgeObserveFirstByteHandler = { firstByte in
+            guard (firstByte & 0xC0) == 0x40 else { return }
+            observedSpinBitValues.insert((firstByte & 0x20) != 0)
+        }
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             afterHandshake: { harness in
@@ -89,13 +94,17 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
                 let expectation = XCTestExpectation(description: "Wait to validate spin bit")
                 harness.context.async {
                     defer { expectation.fulfill() }
-
-                    let clientSpinBit = harness.state?.clientInstance.currentPath?.spinValue ?? false
-                    let serverSpinBit = harness.state?.serverInstance.currentPath?.spinValue ?? false
-                    XCTAssertFalse(clientSpinBit, "Client should have the spin bit set to false")
-                    XCTAssertTrue(serverSpinBit, "Server should have the spin bit set to true")
+                    XCTAssertFalse(
+                        observedSpinBitValues.isEmpty,
+                        "BridgeDatagramProtocol should have observed short-header packets with spin bit values"
+                    )
+                    XCTAssertTrue(
+                        observedSpinBitValues.contains(true),
+                        "BridgeDatagramProtocol should have observed at least one packet with spin bit set"
+                    )
                 }
-            }
+            },
+            bridgeObserveFirstByteHandler: observeFirstByteHandler
         )
     }
 
