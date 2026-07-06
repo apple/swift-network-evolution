@@ -3827,11 +3827,21 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         if !state.isTerminal {
-            // Send a FIN if we are closing a stream without an error.
-            // Otherwise, send RESET_STREAM.
-            // Technically, 0 can be valid application error code, but
-            // it isn't for HTTP/3, so we can assume it's not set.
-            if stream.sendState == .send && stream.outboundApplicationError == nil {
+            // A clean close (no application error) is a FIN, regardless of whether
+            // any data was sent. A send side still in `.ready` (nothing ever sent)
+            // advances to `.send` so the servicing path emits a zero-length STREAM
+            // frame with the FIN bit set (RFC 9000 §3.1 / §19.8). Only send
+            // RESET_STREAM when an application error is set (e.g. a received
+            // STOP_SENDING) or a partially buffered stream is aborted.
+            if stream.outboundApplicationError == nil
+                && (stream.sendState == .send || stream.sendState == .ready)
+            {
+                if stream.sendState == .ready {
+                    stream.sendState.change(logIDString: stream.logPrefix, to: .send)
+                    // Keep the write side open until the zero-length FIN has been
+                    // serviced (and ACKed); closing now would drop the queued FIN.
+                    closeWrite = false
+                }
                 markStreamFinished(stream: stream)
             } else if stream.sendState == .ready
                 || (stream.sendState == .send && !stream.sendBuffer.hasLast
