@@ -87,11 +87,11 @@ let package = Package(
         ),
         // To support back to macOS 26, provide a shim on top of crypto APIs
         // that allows passing spans is provided. This is a less performant path, so for
-        // performance-sensitive cases, pass in this trait to disable this shim. 
-       .trait(
-           name: "DISABLE_SHIM_CRYPTO_SPAN_APIS",
-           description: "Disable backwards compatible crypto shim for performance sensitive cases"
-       ),
+        // performance-sensitive cases, pass in this trait to disable this shim.
+        .trait(
+            name: "DISABLE_SHIM_CRYPTO_SPAN_APIS",
+            description: "Disable backwards compatible crypto shim for performance sensitive cases"
+        ),
         .default(enabledTraits: []),
     ],
     dependencies: [
