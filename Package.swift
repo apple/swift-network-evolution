@@ -89,10 +89,10 @@ let package = Package(
         // that allows passing spans. This is a less performant path, so for
         // performance-sensitive cases, remove this define and require at least
         // macOS 27.
-//        .trait(
-//            name: "SHIM_CRYPTO_SPAN_APIS",
-//            description: "To support back to macOS 26, provide a shim on top of crypto APIs that allows passing spans"
-//        ),
+       .trait(
+           name: "SHIM_CRYPTO_SPAN_APIS",
+           description: "To support back to macOS 26, provide a shim on top of crypto APIs that allows passing spans"
+       ),
         .default(enabledTraits: []),
     ],
     dependencies: [
