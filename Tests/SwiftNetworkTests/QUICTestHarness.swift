@@ -1462,10 +1462,10 @@ final class QUICTestHarness {
         let serverClosedExpectation = XCTestExpectation(
             description: "Server reads ping and closes the stream without writing"
         )
-        // Only used to bound the wait for a inbound abort. A clean close of
-        // a send side that never wrote must not reset the peer, so this must never
-        // actually be fulfilled.
+        // Expecting a clean close, so this should not be fulfilled.
         let clientAbortExpectation = XCTestExpectation(description: "Client inbound abort (must not happen)")
+        // The client must observe a clean end-of-stream.
+        let clientClosedExpectation = XCTestExpectation(description: "Client observes clean close")
 
         var serverStream: StreamUpperHarness?
         var clientResetError: String?
@@ -1474,6 +1474,18 @@ final class QUICTestHarness {
         clientStream.waitForInboundAborted { error in
             clientResetError = error?.description ?? "no error"
             clientAbortExpectation.fulfill()
+        }
+        clientStream.waitForDisconnected {
+            clientClosedExpectation.fulfill()
+        }
+
+        // Client drains its receive side so the server's FIN is consumed and the
+        // stream can reach a clean close.
+        var clientReadHandler: ((Bool) -> Void)? = nil
+        defer { clientReadHandler = nil }
+        clientReadHandler = { _ in
+            while clientStream.read() != nil {}
+            clientStream.waitForInboundDataAvailable { clientReadHandler?($0) }
         }
 
         context.async {
@@ -1500,17 +1512,35 @@ final class QUICTestHarness {
         context.async {
             let wrote = clientStream.write(Array("ping".utf8), sendFIN: true)
             XCTAssertTrue(wrote, "Client failed to write ping")
+            clientReadHandler?(true)
         }
 
         wait(for: [serverFlowExpectation], timeout: timeout)
         wait(for: [serverClosedExpectation], timeout: timeout)
         // Give other errors some time to arrive.
-        _ = XCTWaiter.wait(for: [clientAbortExpectation], timeout: 1.0)
+        _ = XCTWaiter.wait(for: [clientAbortExpectation], timeout: 0.5)
         XCTAssertNil(
             clientResetError,
             "Client received RESET_STREAM(\(clientResetError ?? "")) instead of a clean FIN — a clean close "
                 + "of a send side that never wrote must be a zero-length STREAM+FIN (RFC 9000 §3.1 / §19.8)."
         )
+        // And confirm that the client saw the FIN.
+        wait(for: [clientClosedExpectation], timeout: timeout)
+
+        #if canImport(SwiftNetwork)
+        // The server's send side must have finished via FIN, i.e. the state should be
+        // in .dataSent, or .dataReceived.
+        if let serverConnection = state?.serverInstance,
+            let serverFlow = serverConnection.multiplexedFlows.values.first
+        {
+            XCTAssertTrue(
+                serverFlow.sendState == .dataSent || serverFlow.sendState == .dataReceived,
+                "Server send side must reach a clean FIN terminal state, got \(serverFlow.sendState)"
+            )
+        } else {
+            XCTFail("Server stream flow missing; cannot verify send state")
+        }
+        #endif
 
         _ = serverStream  // silence unused-warning; harness keeps strong ref
         stop()
