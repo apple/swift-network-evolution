@@ -45,11 +45,6 @@ let settings: [SwiftSetting] = [
     .define("EXPORT_SWIFTTLS"),
     .define("IMPORT_CRYPTO"),
     .define("SWIFTTLS_CERTIFICATE_VERIFICATION"),
-    // To support back to macOS 26, provide a shim on top of crypto APIs
-    // that allows passing spans. This is a less performant path, so for
-    // performance-sensitive cases, remove this define and require at least
-    // macOS 27.
-    .define("SHIM_CRYPTO_SPAN_APIS", .when(platforms: allApplePlatforms)),
     .unsafeFlags(["-Xfrontend", "-experimental-spi-only-imports"]),
     .enableExperimentalFeature("Lifetimes"),
     .enableExperimentalFeature("AnyAppleOSAvailability"),
@@ -89,6 +84,13 @@ let package = Package(
         .trait(
             name: "SignpostOutput",
             description: "Enables `OSSignposter` output from the QUIC implementation."
+        ),
+        // To support back to macOS 26, provide a shim on top of crypto APIs
+        // that allows passing spans is provided. This is a less performant path, so for
+        // performance-sensitive cases, pass in this trait to disable this shim.
+        .trait(
+            name: "DISABLE_SHIM_CRYPTO_SPAN_APIS",
+            description: "Disable backwards compatible crypto shim for performance sensitive cases"
         ),
         .default(enabledTraits: []),
     ],
