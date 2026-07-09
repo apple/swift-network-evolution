@@ -63,6 +63,48 @@ public struct IPv4Address: IPAddress, Hashable, CustomDebugStringConvertible {
         return v4WireAddress & mask == subnet
     }
 
+    var isInLoopbackRange: Bool {
+        let v4WireAddress = self.address
+        let mask = (0xFF00_0000 as UInt32).bigEndian
+        let subnet = (0x7F00_0000 as UInt32).bigEndian
+        return v4WireAddress & mask == subnet  // 127.0.0.0/8
+    }
+
+    var isDSLite: Bool {
+        let v4WireAddress = self.address
+        let mask = (0xFFFF_FFF8 as UInt32).bigEndian
+        let subnet = (0xC000_0000 as UInt32).bigEndian
+        return v4WireAddress & mask == subnet  // 192.0.0.0/29
+    }
+
+    var is6to4RelayAnycast: Bool {
+        let v4WireAddress = self.address
+        let mask = (0xFFFF_FF00 as UInt32).bigEndian
+        let subnet = (0xC058_6300 as UInt32).bigEndian
+        return v4WireAddress & mask == subnet  // 192.88.99.0/24
+    }
+
+    var isPrivateUse: Bool {
+        let v4WireAddress = self.address
+        let mask8 = (0xFF00_0000 as UInt32).bigEndian
+        let mask12 = (0xFFF0_0000 as UInt32).bigEndian
+        let mask16 = (0xFFFF_0000 as UInt32).bigEndian
+        return v4WireAddress & mask8 == (0x0A00_0000 as UInt32).bigEndian  // 10.0.0.0/8
+            || v4WireAddress & mask12 == (0xAC10_0000 as UInt32).bigEndian  // 172.16.0.0/12
+            || v4WireAddress & mask16 == (0xC0A8_0000 as UInt32).bigEndian  // 192.168.0.0/16
+    }
+
+    var isSharedAddressSpace: Bool {
+        let v4WireAddress = self.address
+        let mask = (0xFFC0_0000 as UInt32).bigEndian
+        let subnet = (0x6440_0000 as UInt32).bigEndian
+        return v4WireAddress & mask == subnet  // 100.64.0.0/10
+    }
+
+    var isBroadcast: Bool {
+        self == .broadcast  // 255.255.255.255
+    }
+
     // Stored in network byte order
     let address: UInt32
 
