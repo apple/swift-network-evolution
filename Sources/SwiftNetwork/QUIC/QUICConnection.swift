@@ -735,6 +735,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             let keepaliveSeconds = self.keepaliveDuration.seconds
             return UInt16(keepaliveSeconds)
         }
+        self.connectionMetadata.getRemoteMaxDatagramFrameSize {
+            let datagramFrameSize = self.remoteMaxDatagramFrameSize
+            return UInt16(truncatingIfNeeded: datagramFrameSize)
+        }
 
         self.connectionMetadata.getLocalConnectionIDs {
             self.localCIDs.managedConnectionIDs.map { $0.connectionID }
@@ -754,6 +758,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.connectionMetadata.getRemoteMaxStreamsBidirectionalHandler = nil
         self.connectionMetadata.getRemoteMaxStreamsUnidirectionalHandler = nil
         self.connectionMetadata.getLocalConnectionIDsHandler = nil
+        self.connectionMetadata.getRemoteMaxDatagramFrameSizeHandler = nil
         #endif
     }
 

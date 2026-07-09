@@ -653,6 +653,36 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICTest(datagram: true, blockSize: 1000, blockCount: 10)
     }
 
+    func testQUICDatagramRemoteMaxDatagramFrameSize() {
+        QUICTestHarness().runQUICTest(
+            datagram: true,
+            blockSize: 1000,
+            blockCount: 1,
+            afterData: { harness in
+                let expectation = XCTestExpectation(description: "Wait for remote datagram frame size to be fetched")
+                harness.context.async {
+                    let clientMetadata: ProtocolMetadata<QUICProtocol>? = harness.state?.clientHarness.getMetadata()
+                    XCTAssertNotNil(clientMetadata)
+                    if let clientMetadata {
+                        let clientRemoteSize = clientMetadata.connectionMetadata?.getRemoteDatagramFrameSize()
+                        XCTAssertNotNil(clientRemoteSize)
+                        XCTAssertEqual(clientRemoteSize, 65535)
+                    }
+                    let serverMetadata: ProtocolMetadata<QUICProtocol>? = harness.state?.serverHarness.getMetadata()
+                    XCTAssertNotNil(serverMetadata)
+                    if let serverMetadata {
+                        let serverRemoteSize = serverMetadata.connectionMetadata?.getRemoteDatagramFrameSize()
+                        XCTAssertNotNil(serverRemoteSize)
+                        XCTAssertEqual(serverRemoteSize, 65535)
+                    }
+                    expectation.fulfill()
+                }
+                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
+                XCTAssertEqual(waitResult, .completed, "Remote datagram frame size fetch should complete")
+            }
+        )
+    }
+
     // MARK: Unidirectional tests
 
     func testQUICHelloWorldUnidirectional() {
