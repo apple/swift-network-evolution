@@ -753,6 +753,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         public var applicationErrorReason: String?
 
         public var activeConnectionIDLimit: Int = 0
+        public var remoteMaxDatagramFrameSize: UInt16 = 0
         #if NETWORK_PRIVATE
         var privateStorage = QUICConnectionMetadataPrivateStorage()
         #endif
@@ -779,7 +780,6 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         var getApplicationResultHandler: QUICMetadataGetApplicationResultHandler?
         var setLinkFlowControlledHandler: QUICMetadataBoolSetterHandler?
         var getResetStreamAtSupportedHandler: QUICMetadataBoolGetterHandler?
-        var getRemoteMaxDatagramFrameSizeHandler: QUICMetadata16GetterHandler?
         #if !NETWORK_NO_SWIFT_QUIC
         var getLocalConnectionIDsHandler: (() -> [QUICConnectionID])?
         #endif
@@ -1094,15 +1094,6 @@ public struct QUICConnectionProtocol: NetworkProtocol {
             }
         }
 
-        public func getRemoteDatagramFrameSize() -> UInt16 {
-            mutex.withLock { _ in
-                guard let getRemoteMaxDatagramFrameSize = self.getRemoteMaxDatagramFrameSizeHandler else {
-                    return 0
-                }
-                return getRemoteMaxDatagramFrameSize()
-            }
-        }
-
         #if !NETWORK_NO_SWIFT_QUIC
         func getLocalConnectionIDs() -> [QUICConnectionID] {
             mutex.withLock { _ in
@@ -1161,12 +1152,6 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         func getResetStreamAtSupported(handler: @escaping QUICMetadataBoolGetterHandler) {
             mutex.withLock { _ in
                 self.getResetStreamAtSupportedHandler = handler
-            }
-        }
-
-        func getRemoteMaxDatagramFrameSize(handler: @escaping QUICMetadata16GetterHandler) {
-            mutex.withLock { _ in
-                self.getRemoteMaxDatagramFrameSizeHandler = handler
             }
         }
 

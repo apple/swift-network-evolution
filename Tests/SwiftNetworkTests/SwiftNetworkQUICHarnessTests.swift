@@ -664,14 +664,14 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
                     let clientMetadata: ProtocolMetadata<QUICProtocol>? = harness.state?.clientHarness.getMetadata()
                     XCTAssertNotNil(clientMetadata)
                     if let clientMetadata {
-                        let clientRemoteSize = clientMetadata.connectionMetadata?.getRemoteDatagramFrameSize()
+                        let clientRemoteSize = clientMetadata.connectionMetadata?.remoteMaxDatagramFrameSize
                         XCTAssertNotNil(clientRemoteSize)
                         XCTAssertEqual(clientRemoteSize, 65535)
                     }
                     let serverMetadata: ProtocolMetadata<QUICProtocol>? = harness.state?.serverHarness.getMetadata()
                     XCTAssertNotNil(serverMetadata)
                     if let serverMetadata {
-                        let serverRemoteSize = serverMetadata.connectionMetadata?.getRemoteDatagramFrameSize()
+                        let serverRemoteSize = serverMetadata.connectionMetadata?.remoteMaxDatagramFrameSize
                         XCTAssertNotNil(serverRemoteSize)
                         XCTAssertEqual(serverRemoteSize, 65535)
                     }
