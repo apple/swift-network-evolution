@@ -753,6 +753,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         public var applicationErrorReason: String?
 
         public var activeConnectionIDLimit: Int = 0
+        public var remoteMaxDatagramFrameSize: UInt16 = 0
         #if NETWORK_PRIVATE
         var privateStorage = QUICConnectionMetadataPrivateStorage()
         #endif

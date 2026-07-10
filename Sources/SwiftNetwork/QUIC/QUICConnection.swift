@@ -4246,6 +4246,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         guard let remoteTPMaxDatagramFrameSize else {
             self.remoteMaxDatagramFrameSize = 0
+            self.connectionMetadata.remoteMaxDatagramFrameSize = 0
             return
         }
         if remoteTPMaxDatagramFrameSize > TransportParameters.maxDatagramFrameSize {
@@ -4253,6 +4254,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } else {
             self.remoteMaxDatagramFrameSize = remoteTPMaxDatagramFrameSize
         }
+        self.connectionMetadata.remoteMaxDatagramFrameSize = UInt16(truncatingIfNeeded: remoteMaxDatagramFrameSize)
     }
 
     private func discardKeys(keyState: PacketKeyState, discardRecoveryState: Bool = true) {
