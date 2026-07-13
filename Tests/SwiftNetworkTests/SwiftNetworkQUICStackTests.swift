@@ -452,6 +452,16 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                     }
                 }
 
+                // Currently we only keep the current path object and remove all the
+                // other path objects we are migrating away from, so the number of
+                // multiplexing paths should be one.
+                if case .quic(let clientConnection) = clientQUICReference.reference {
+                    XCTAssertEqual(
+                        clientConnection.multiplexingPaths.count, 1,
+                        "Migrated-away path leaked into multiplexingPaths after migrating to path \(pathIndex)"
+                    )
+                }
+
                 if let dataToSend {
                     Logger.test.info("Writing data to send on path \(pathIndex)")
                     _ = clientUpperHarness?.write(dataToSend)
@@ -535,6 +545,17 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             clientEndpoint: ipv4Client,
             serverEndpoint: ipv4Server,
             migrateCount: 2,
+            dataToSend: Array("Hello World!".utf8)
+        )
+    }
+
+    func testQUICStackMigrationDoesNotLeakPaths() {
+        let ipv4Client = Endpoint(address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!, port: 1234)
+        let ipv4Server = Endpoint(address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!, port: 8080)
+        quicStackHandshake(
+            clientEndpoint: ipv4Client,
+            serverEndpoint: ipv4Server,
+            migrateCount: 4,
             dataToSend: Array("Hello World!".utf8)
         )
     }
