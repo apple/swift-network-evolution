@@ -653,6 +653,67 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(path.recoveryState.PTOCount, 3)
         XCTAssertGreaterThan(connection.recovery.computedTimeout, .milliseconds(7900))
     }
+
+    // A PTO with ack-eliciting data in flight must emit a probe, even when the only outstanding
+    // packet carries STREAM data for a now-closed flow (so it can't be rebuilt) and the connection
+    // is validated; otherwise sendPTO sends nothing and the connection spins to idle timeout.
+    func testPTOWithClosedFlowStreamPacketStillProbes() {
+        // Register a flow and close it, so its STREAM data can never be rebuilt for retransmission.
+        let stream = QUICStreamInstance(parent: connection, inbound: true)
+        stream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
+        connection.multiplexedFlows[stream.identifier] = stream
+        stream.closed = true
+        XCTAssertFalse(stream.isOpen)
+
+        // A single ack-eliciting application-data packet is outstanding, carrying only that flow's
+        // STREAM data. This keeps ackElicitingPacketsInFlight > 0 (so the PTO stays armed) while
+        // being unrebuildable once the flow is closed.
+        var packet = SentPacketRecord()
+        packet.identifier = .init(space: .applicationData, number: 0)
+        packet.isInFlightEligible = true
+        packet.isAckEliciting = true
+        packet.totalLength = 20 + 96
+        packet.sentPath = connection.currentPath?.identifier ?? .none
+        packet.transmittedItems.sentStreams.append(
+            TransmittedItems.SentStream(
+                flowID: stream.identifier,
+                streamID: QUICStreamID(0),
+                offset: 0,
+                length: 32,
+                isFinal: true
+            )
+        )
+        XCTAssertTrue(packet.transmittedItems.hasRetransmissibleItems)
+        sentPacket(packet, connection: connection)
+
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) { innerState in
+            XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 1)
+        }
+
+        // Establish (address-validated) connection: peerCompletedValidation must be true. This is
+        // the condition under which the anti-deadlock PING is incorrectly skipped.
+        connection.recovery.received1RTTAck = true
+        XCTAssertTrue(connection.recovery.peerCompletedValidation(connection: connection))
+        XCTAssertEqual(path.recoveryState.PTOCount, 0)
+
+        // Fire the PTO with no new ack-eliciting data pending.
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.withCurrentPath { path in
+                self.connection.recovery.sendPTO(connection: self.connection, path: path)
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+
+        // The PTO must have sent a probe and advanced the PTO count. On the buggy code no probe is
+        // sent and PTOCount stays 0, so the connection would spin until idle timeout.
+        XCTAssertEqual(
+            path.recoveryState.PTOCount,
+            1,
+            "PTO produced no probe for a closed-flow tail packet; connection would spin to idle timeout"
+        )
+    }
 }
 
 #endif

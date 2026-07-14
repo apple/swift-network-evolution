@@ -656,14 +656,16 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             _ packets: consuming NetworkUniqueDeque<SentPacketRecord>,
             connection: QUICConnection
         ) -> Bool {
-            var packets = packets
-            guard !packets.isEmpty else {
+            if packets.isEmpty {
                 return false
             }
+
+            var packets = packets
             while !packets.isEmpty {
-                let packet = packets.remove(at: 0)
+                let packet = packets.removeFirst()
                 sentPacket(packet, time: connection.now, connection: connection)
             }
+
             return true
         }
     }
@@ -754,7 +756,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     ) {
         var sentPackets = sentPackets
         while !sentPackets.isEmpty {
-            let packet = sentPackets.remove(at: 0)
+            let packet = sentPackets.removeFirst()
             sentPacket(packet, time: connection.now, connection: connection)
         }
         if inBatch {
@@ -1115,25 +1117,27 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
     mutating func sendPTO(connection: QUICConnection, path: QUICPath) {
         var sentPTO = false
-        let (_, pnSpace) = getEarliestTime(
+
+        let (_, packetNumberSpace) = getEarliestTime(
             earliestTimeType: EarliestTimeType.lastSentAckElicitingTime,
             connection: connection
         )
-        var hasAckEliciting = false
-        connection.withPendingItems(for: pnSpace) { pendingItems in
-            hasAckEliciting = pendingItems.hasAckElicitingPendingItems
-        }
-        let peerCompletedValidation = peerCompletedValidation(connection: connection)
-        var shouldClearTimer = false
+
+        let hasAckEliciting = connection.withPendingItems(for: packetNumberSpace) { $0.hasAckElicitingPendingItems }
         var discardInitialRecoveryState = false
         applyToAllInnerStatesMutable { innerState, packetNumberSpace in
             let ackElicitingPacketsInFlight = innerState.ackElicitingPacketsInFlight
-            if ackElicitingPacketsInFlight == 0 {
+            guard ackElicitingPacketsInFlight > 0 else {
+                if _slowPath(ackElicitingPacketsInFlight < 0) {
+                    connection.log.fault("ackElicitingPacketsInFlight negative: \(ackElicitingPacketsInFlight)")
+                }
                 return
             }
+
             connection.log.datapath(
                 "PTO \(path.recoveryState.PTOCount) (\(packetNumberSpace)) fired on path \(path.identifier) with \(ackElicitingPacketsInFlight) ack-eliciting packets in flight"
             )
+
             if hasAckEliciting {
                 connection.log.datapath("Sending next frames with new data as PTOs")
                 sentPTO = true
@@ -1147,8 +1151,10 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                         "Unable to force send PTOs, likely flow-controlled or unavailable"
                     )
                 }
-            } else if ackElicitingPacketsInFlight > 0 {
+
+            } else {
                 connection.log.datapath("Retransmitting two tail-packets as PTO")
+
                 var addedPackets = 0
                 let packetCount = innerState.outstandingPackets.count
                 for i in 0..<packetCount {
@@ -1174,6 +1180,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                             discardInitialRecoveryState: &discardInitialRecoveryState
                         )
                     }
+
                     if let packets, innerState.recordSentPackets(packets, connection: connection) {
                         sentPTO = true
                         addedPackets += 1
@@ -1188,37 +1195,33 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             }
         }
 
+        // Anti deadlock PING frame (i.e PADDED PING). The PING will be padded when we send an initial packet.
+        // Issue whether or not handshake has completed, the timer will make the distinction.
         if !sentPTO {
             connection.log.datapath("Sending a PING as PTO")
-            if peerCompletedValidation {
-                connection.log.fault("PTO fired after validation")
-                shouldClearTimer = true
-            } else {
-                // Anti deadlock PING frame (i.e PADDED PING). The PING will be padded when we send an initial packet.
-                let pnSpace =
-                    !connection.receivedHandshakePacket
-                    ? PacketNumberSpace.initial : PacketNumberSpace.applicationData
-                connection.withPendingItems(for: pnSpace) { item in
-                    item.ping = true
-                }
-                sentPTO = true
-                withMutableInnerState(packetNumberSpace: pnSpace) { innerState in
-                    let packets = connection.sendFramesFromRecovery(
-                        on: path,
-                        ignoreCongestionWindow: true,
-                        discardInitialRecoveryState: &discardInitialRecoveryState
+            let packetNumberSpace =
+                !connection.receivedHandshakePacket
+                ? PacketNumberSpace.initial : PacketNumberSpace.applicationData
+            connection.withPendingItems(for: packetNumberSpace) { item in
+                item.ping = true
+            }
+
+            sentPTO = true
+
+            withMutableInnerState(packetNumberSpace: packetNumberSpace) { innerState in
+                let packets = connection.sendFramesFromRecovery(
+                    on: path,
+                    ignoreCongestionWindow: true,
+                    discardInitialRecoveryState: &discardInitialRecoveryState
+                )
+                if !innerState.recordSentPackets(packets, connection: connection) {
+                    connection.log.datapath(
+                        "Unable to force send PTOs, likely flow-controlled or unavailable"
                     )
-                    if !innerState.recordSentPackets(packets, connection: connection) {
-                        connection.log.datapath(
-                            "Unable to force send PTOs, likely flow-controlled or unavailable"
-                        )
-                    }
                 }
             }
         }
-        if shouldClearTimer {
-            setTimer(delay: .zero, connection: connection)
-        }
+
         if discardInitialRecoveryState {
             self.resetPNSpace(packetNumberSpace: .initial, connection: connection)
             connection.withCurrentPath {
