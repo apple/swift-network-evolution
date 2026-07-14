@@ -657,7 +657,7 @@ public struct IPProtocol: NetworkProtocol {
                             )
                         }
                     } else if forceFlush && reassemblyState?.inputReassemblyFrames.count == 0 {
-                        // If all of our fragments have been process wipe out the reassemblyState
+                        // If all of our fragments have been processed wipe out the reassemblyState
                         reassemblyState = nil
                     }
                 }
