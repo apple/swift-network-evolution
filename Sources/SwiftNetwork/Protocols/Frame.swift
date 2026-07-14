@@ -576,7 +576,7 @@ public struct Frame: ~Copyable {
                 }
                 return
             }
-            guard newValue < 2 ^ 6 else {
+            guard newValue < 64 else {
                 Logger.proto.fault("Cannot set DSCP value of \(newValue)")
                 return
             }
