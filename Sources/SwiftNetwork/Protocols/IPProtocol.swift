@@ -656,6 +656,9 @@ public struct IPProtocol: NetworkProtocol {
                                 "Dropping \(dropped) incomplete fragments for IP ID \(reassemblyState?.reassemblyID ?? 0)"
                             )
                         }
+                    } else if forceFlush && reassemblyState?.inputReassemblyFrames.count == 0 {
+                        // If all of our fragments have been process wipe out the reassemblyState
+                        reassemblyState = nil
                     }
                 }
                 // Only update the stored reassembly ID when processing a real fragment and not on force flush
@@ -890,13 +893,13 @@ public struct IPProtocol: NetworkProtocol {
                                 sorted.add(frame: remaining)
                             }
                         }
-                        reassemblyState?.inputReassemblyFrames = sorted
+                        reassemblyState?.inputReassemblyFrames.add(frames: sorted)
                     }
                     self.counters.rxPackets += 1
                 }
                 processReassembly(log, ipID: 0, reassembled: &reassembledFragments, forceFlush: true)
                 processedFrames.add(frames: reassembledFragments)
-                inboundFrames = processedFrames
+                inboundFrames.add(frames: processedFrames)
             }
 
             func prepareOutboundFrames(_ outboundFrames: inout FrameArray) {
