@@ -1388,6 +1388,15 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
         guard let flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
         flow.serviceUpperReceiveQueue()
     }
+    // Enqueue and delivery the stream data all in one shot
+    public func deliverInboundStreamData(
+        flow flowID: MultiplexedFlowIdentifier,
+        streamData: consuming FrameArray
+    ) throws(NetworkError) {
+        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        try flow.addToUpperReceiveQueue(streamData)
+        flow.serviceUpperReceiveQueue()
+    }
 }
 
 @_spi(ProtocolProvider)

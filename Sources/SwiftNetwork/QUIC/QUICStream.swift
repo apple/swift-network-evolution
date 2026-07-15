@@ -328,7 +328,7 @@ struct StreamListMembership: OptionSet {
 // Also note that a flow identifier can exist in multiple lists at one time.
 @available(Network 0.1.0, *)
 struct QUICStreamList: ~Copyable {
-    private var list: [MultiplexedFlowIdentifier] = []
+    private var list: Deque<MultiplexedFlowIdentifier> = []
     private let name: StaticString
     private let listType: StreamListMembership
 
