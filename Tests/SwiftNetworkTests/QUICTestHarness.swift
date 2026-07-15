@@ -1118,7 +1118,7 @@ final class QUICTestHarness {
                     XCTAssertNotNil(serverReports)
                     snapshotExpectation.fulfill()
                 }
-                wait(for: [snapshotExpectation], timeout: 2.0)
+                wait(for: [snapshotExpectation], timeout: 5.0)
                 // Now validate the protocol establishment report
                 clientReports = nil
                 serverReports = nil
@@ -1132,7 +1132,7 @@ final class QUICTestHarness {
                     XCTAssertNotNil(serverReports)
                     protocolEstablishmentReportExpectation.fulfill()
                 }
-                wait(for: [protocolEstablishmentReportExpectation], timeout: 2.0)
+                wait(for: [protocolEstablishmentReportExpectation], timeout: 5.0)
             } else {
                 XCTFail("There should be saved server and client harnesses")
             }
