@@ -1709,13 +1709,9 @@ struct FrameStreamSendMetadata: QUICFrameProtocol {
         let streamID = stream.streamID!.value
         let roomBeforeAddingHeader = frame.unclaimedLength
 
-        let mockHeaderLength = Serializer.length { write in
-            write.vle(0)
-            write.vle(streamID)
-            if offset > 0 {
-                write.vle(offset)
-            }
-        }
+        // Calculate the mockHeaderLength by defining:
+        // (0 - variableLengthSize = 1) + streamID.variableLengthSize + (offset if present)
+        let mockHeaderLength = 1 + streamID.variableLengthSize + (offset > 0 ? offset.variableLengthSize : 0)
 
         guard roomBeforeAddingHeader >= mockHeaderLength else {
             // Not even room for the header
