@@ -1015,9 +1015,9 @@ public struct IPProtocol: NetworkProtocol {
             var reassemblyState: IPv6ReassemblyState?
 
             static let fragmentExtensionHeader: UInt8 = 44
-            static let hopoptsExtensionHeader: UInt8 = 0
+            static let hopByHopExtensionHeader: UInt8 = 0
             static let routingExtensionHeader: UInt8 = 43
-            static let dstoptsExtensionHeader: UInt8 = 60
+            static let destinationOptionsExtensionHeader: UInt8 = 60
             static let fragmentExtensionHeaderLength: Int = 8
             static let ip6fOffMask: UInt16 = 0xFFF8
             static let ip6fMoreFragmentMask: UInt16 = 0x0001
@@ -1085,9 +1085,9 @@ public struct IPProtocol: NetworkProtocol {
                             currentProto = nextProto
                             foundFragment = true
                             break extensionHeaderLoop
-                        case IPv6Instance.hopoptsExtensionHeader,
+                        case IPv6Instance.hopByHopExtensionHeader,
                             IPv6Instance.routingExtensionHeader,
-                            IPv6Instance.dstoptsExtensionHeader:
+                            IPv6Instance.destinationOptionsExtensionHeader:
                             var extensionNext: UInt8 = 0
                             var extensionLength: UInt8 = 0
                             try read.uint8(&extensionNext)
@@ -1382,9 +1382,9 @@ public struct IPProtocol: NetworkProtocol {
                                     currentProto = nextProto
                                     isFragment = true
                                     break extensionHeaderLoop
-                                case IPv6Instance.hopoptsExtensionHeader,
+                                case IPv6Instance.hopByHopExtensionHeader,
                                     IPv6Instance.routingExtensionHeader,
-                                    IPv6Instance.dstoptsExtensionHeader:
+                                    IPv6Instance.destinationOptionsExtensionHeader:
                                     var extensionNext: UInt8 = 0
                                     var extensionLength: UInt8 = 0
                                     try read.uint8(&extensionNext)
@@ -1488,9 +1488,9 @@ public struct IPProtocol: NetworkProtocol {
                                 currentProto = nextProto
                                 foundFragment = true
                                 break extensionHeaderLoop
-                            case IPv6Instance.hopoptsExtensionHeader,
+                            case IPv6Instance.hopByHopExtensionHeader,
                                 IPv6Instance.routingExtensionHeader,
-                                IPv6Instance.dstoptsExtensionHeader:
+                                IPv6Instance.destinationOptionsExtensionHeader:
                                 var extensionNext: UInt8 = 0
                                 var extensionLength: UInt8 = 0
                                 try read.uint8(&extensionNext)
