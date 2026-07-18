@@ -538,6 +538,221 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             dataToSend: Array("Hello World!".utf8)
         )
     }
+
+    func testQUICPathEvents() {
+        // 10.0.0.99 - new client address simulating the client switching network interfaces
+        // So this test would be client initiated migration
+        let newLocalIPv4Address: [UInt8] = [0x0a, 0x00, 0x00, 0x63]
+
+        let clientEndpoint = Endpoint(
+            address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!,
+            port: 1234
+        )
+        let serverEndpoint = Endpoint(
+            address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!,
+            port: 8080
+        )
+        // The client gets a new source address; the server address stays fixed.
+        let newClientEndpoint = Endpoint(
+            address: IPv4Address(newLocalIPv4Address)!,
+            port: 4321
+        )
+
+        let clientParameters = Parameters()
+        let context = clientParameters.context
+
+        let handshakeExpectation = XCTestExpectation(description: "QUIC handshake complete")
+        let pathChangedExpectation = XCTestExpectation(description: "pathChanged event received")
+        let pathValidatedExpectation = XCTestExpectation(description: "pathValidated event received")
+
+        var clientQUICReference: ProtocolInstanceReference?
+        var serverQUICReference: ProtocolInstanceReference?
+        var clientUpperHarness: StreamUpperHarness?
+        var serverUpperHarness: NewStreamFlowHarness?
+        var pairedPathsArray = [PairedUDPIPPaths]()
+
+        var receivedPathChangedInfo: QUICPathInfo?
+        var receivedPathValidatedInfo: QUICPathInfo?
+
+        context.async {
+            defer { handshakeExpectation.fulfill() }
+
+            let initialPaths = PairedUDPIPPaths(
+                context: context,
+                identifier: "1",
+                clientEndpoint: clientEndpoint,
+                serverEndpoint: serverEndpoint
+            )
+            pairedPathsArray.append(initialPaths)
+
+            let clientQUICOptions = self.createQUICTestOptions(
+                server: false,
+                sourceConnectionIDLength: 8
+            )
+            clientQUICOptions.setLogID(prefix: "C", parent: "pathEvents", protocolLogIDNumber: 1)
+            let clientQUIC = QUICProtocol.instance(context: context)
+            clientQUICOptions.setProtocolInstance(clientQUIC)
+            clientQUICReference = clientQUIC
+
+            clientParameters.defaultStack.prepend(applicationProtocol: .quic(clientQUICOptions))
+
+            let clientPath = PathProperties(parameters: clientParameters)
+            let clientListenerLinkage = StreamListenerLinkage(reference: clientQUIC)
+            clientUpperHarness = StreamUpperHarness(
+                identifier: "Client",
+                local: clientEndpoint,
+                remote: serverEndpoint,
+                parameters: clientParameters,
+                path: clientPath,
+                context: context,
+                listenerProtocol: clientListenerLinkage
+            )
+            XCTAssertNotNil(clientUpperHarness)
+            guard let clientUpperHarness else { return }
+
+            try! clientQUIC.attachLowerDatagramProtocolForNewPath(
+                initialPaths.clientTop,
+                remote: serverEndpoint,
+                local: clientEndpoint,
+                parameters: clientParameters,
+                path: clientPath
+            )
+
+            var serverParameters = Parameters()
+            serverParameters.isServer = true
+            let serverPath = PathProperties(parameters: serverParameters)
+            let serverQUICOptions = self.createQUICTestOptions(server: true)
+            serverQUICOptions.setLogID(prefix: "L", parent: "pathEvents", protocolLogIDNumber: 1)
+            let serverQUIC = QUICProtocol.instance(context: context)
+            serverQUICOptions.setProtocolInstance(serverQUIC)
+            serverQUICReference = serverQUIC
+
+            serverParameters.defaultStack.prepend(applicationProtocol: .quic(serverQUICOptions))
+
+            let serverListenerLinkage = StreamListenerLinkage(reference: serverQUIC)
+            serverUpperHarness = NewStreamFlowHarness(
+                identifier: "Server",
+                local: serverEndpoint,
+                remote: clientEndpoint,
+                parameters: serverParameters,
+                path: serverPath,
+                context: context,
+                listenerProtocol: serverListenerLinkage
+            )
+            XCTAssertNotNil(serverUpperHarness)
+            guard let serverUpperHarness else { return }
+
+            try! serverQUIC.attachLowerDatagramProtocolForNewPath(
+                initialPaths.serverTop,
+                remote: clientEndpoint,
+                local: serverEndpoint,
+                parameters: serverParameters,
+                path: serverPath
+            )
+
+            // Register path event callbacks on the server-side connection harness
+            serverUpperHarness.completions.pathChanged = { pathInfo in
+                receivedPathChangedInfo = pathInfo
+                pathChangedExpectation.fulfill()
+            }
+            serverUpperHarness.completions.pathValidated = { pathInfo in
+                receivedPathValidatedInfo = pathInfo
+                pathValidatedExpectation.fulfill()
+            }
+
+            var serverConnected = false
+            serverUpperHarness.start { connected in
+                serverConnected = true
+                XCTAssertTrue(connected)
+                handshakeExpectation.fulfill()
+            }
+
+            clientUpperHarness.start { connected in
+                XCTAssertTrue(connected)
+            }
+
+            while !serverConnected {
+                if initialPaths.transferPackets() == 0 { break }
+            }
+        }
+
+        wait(for: [handshakeExpectation], timeout: 10.0)
+        XCTAssertNotNil(clientQUICReference)
+        XCTAssertNotNil(serverQUICReference)
+        guard let clientQUICReference, let serverQUICReference else { return }
+
+        // Migration: client switches to a new source address, server address is unchanged
+        let migrationExpectation = XCTestExpectation(description: "migration path complete")
+        context.async {
+            defer { migrationExpectation.fulfill() }
+
+            // The server endpoint is the same — only the clients source address changes.
+            let migrationPaths = PairedUDPIPPaths(
+                context: context,
+                identifier: "2",
+                clientEndpoint: newClientEndpoint,
+                serverEndpoint: serverEndpoint,
+                maximumDatagramSize: 1500
+            )
+            pairedPathsArray.append(migrationPaths)
+
+            let clientMigrationParameters = Parameters()
+            let serverMigrationParameters = Parameters()
+
+            try! clientQUICReference.attachLowerDatagramProtocolForNewPath(
+                migrationPaths.clientTop,
+                remote: serverEndpoint,
+                local: newClientEndpoint,
+                parameters: clientMigrationParameters,
+                path: PathProperties(parameters: clientMigrationParameters)
+            )
+            try! serverQUICReference.attachLowerDatagramProtocolForNewPath(
+                migrationPaths.serverTop,
+                remote: newClientEndpoint,
+                local: serverEndpoint,
+                parameters: serverMigrationParameters,
+                path: PathProperties(parameters: serverMigrationParameters)
+            )
+
+            migrationPaths.server.deliverPathIsNotPrimary()
+            migrationPaths.client.deliverPathIsPrimary()
+
+            for _ in 0..<10 {
+                if migrationPaths.transferPackets() == 0 { break }
+            }
+        }
+
+        wait(for: [migrationExpectation], timeout: 10.0)
+        wait(for: [pathChangedExpectation, pathValidatedExpectation], timeout: 10.0)
+
+        XCTAssertNotNil(receivedPathChangedInfo, "Expected pathChanged event")
+        XCTAssertNotNil(receivedPathValidatedInfo, "Expected pathValidated event")
+
+        // This validations are for the server side so the remote should change here
+        if let pathInfo = receivedPathValidatedInfo {
+            XCTAssertTrue(pathInfo.isValidated)
+            XCTAssertNotNil(pathInfo.local!)
+            XCTAssertNotNil(pathInfo.remote!)
+            XCTAssertTrue(pathInfo.local! == serverEndpoint)
+            XCTAssertTrue(pathInfo.remote! == newClientEndpoint)
+        }
+        if let pathInfo = receivedPathChangedInfo {
+            XCTAssertNotNil(pathInfo.local!)
+            XCTAssertNotNil(pathInfo.remote!)
+            XCTAssertTrue(pathInfo.local! == serverEndpoint)
+            XCTAssertTrue(pathInfo.remote! == newClientEndpoint)
+        }
+
+        let stopExpectation = XCTestExpectation(description: "stop")
+        context.async {
+            clientUpperHarness?.stop()
+            serverUpperHarness?.stop()
+            clientUpperHarness?.teardown()
+            serverUpperHarness?.teardown()
+            stopExpectation.fulfill()
+        }
+        wait(for: [stopExpectation], timeout: 10.0)
+    }
 }
 #endif
 #endif

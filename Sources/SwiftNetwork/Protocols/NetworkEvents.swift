@@ -21,6 +21,34 @@ public struct NetworkEventDomain: Sendable, Hashable, CustomStringConvertible {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
+public struct QUICPathInfo: Sendable, Equatable {
+    public enum PathAddress: Sendable, Equatable {
+        case v4(IPv4Address, port: UInt16)
+        case v6(IPv6Address, port: UInt16)
+
+        var endpoint: Endpoint {
+            switch self {
+            case .v4(let address, let port): return Endpoint(address: address, port: port)
+            case .v6(let address, let port): return Endpoint(address: address, port: port)
+            }
+        }
+    }
+    private let _local: PathAddress?
+    private let _remote: PathAddress?
+    public let isValidated: Bool
+
+    public var local: Endpoint? { _local?.endpoint }
+    public var remote: Endpoint? { _remote?.endpoint }
+
+    init(local: PathAddress?, remote: PathAddress?, isValidated: Bool) {
+        self._local = local
+        self._remote = remote
+        self.isValidated = isValidated
+    }
+}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
 /// An extensible event that a lower protocol reports to upper protocols.
 public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible {
     enum InternalEvent: Equatable {
@@ -226,6 +254,8 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
     case maxStreamsLimitUnidirectionalUpdated(maximumStreams: Int)
     case earlyDataRejected
     case receivedRemoteTransportParameters(transportParameters: [UInt8])
+    case pathChanged(_ info: QUICPathInfo)
+    case pathValidated(_ info: QUICPathInfo)
 
     public var description: String {
         switch self {
@@ -251,6 +281,12 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
             return "QUIC: Early data rejected"
         case .receivedRemoteTransportParameters:
             return "QUIC: Received remote transport parameters"
+        case .pathChanged(let pathInfo):
+            return
+                "QUIC: Path changed local: \(pathInfo.local?.description ?? "N/A") remote: \(pathInfo.remote?.description ?? "N/A") validated: \(pathInfo.isValidated)"
+        case .pathValidated(let pathInfo):
+            return
+                "QUIC: Path validated local: \(pathInfo.local?.description ?? "N/A") remote: \(pathInfo.remote?.description ?? "N/A")"
         }
     }
 }

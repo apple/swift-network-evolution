@@ -485,6 +485,20 @@ public struct UDPProtocol: NetworkProtocol {
             snapshot.receivedTransportByteCount = UInt64(receiveByteCount)
             snapshot.sentTransportByteCount = UInt64(transmitByteCount)
         }
+
+        func pathEndpoints() -> (local: QUICPathInfo.PathAddress, remote: QUICPathInfo.PathAddress)? {
+            if isIPv4 {
+                return (
+                    local: .v4(ipv4Local, port: localPort),
+                    remote: .v4(ipv4Remote, port: remotePort)
+                )
+            } else {
+                return (
+                    local: .v6(ipv6Local, port: localPort),
+                    remote: .v6(ipv6Remote, port: remotePort)
+                )
+            }
+        }
     }
 
     public init() {}
