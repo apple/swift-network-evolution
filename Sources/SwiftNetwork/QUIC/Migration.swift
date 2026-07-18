@@ -218,13 +218,14 @@ extension QUICConnection {
             )
         }
         // Notify the stack about a path change event
-        let endpoints = path.lower.invokeGetPathEndpoints(path.reference)
-        let pathInfo = QUICPathInfo(
-            local: endpoints?.local,
-            remote: endpoints?.remote,
-            isValidated: path.isValidated
-        )
-        deliverNetworkProtocolEvent(flow: .allFlows, event: .init(quicEvent: .pathChanged(pathInfo)))
+        if let endpoints = path.lower.invokeGetPathEndpoints(path.reference) {
+            let pathInfo = QUICPathInfo(
+                local: endpoints.local,
+                remote: endpoints.remote,
+                isValidated: path.isValidated
+            )
+            deliverNetworkProtocolEvent(flow: .allFlows, event: .init(quicEvent: .pathChanged(pathInfo)))
+        }
 
         // This is a new primary path. Migrate to it if we are the client.
         if !isServer, path != currentPath, isPrimary, path.isRouteEstablished {

@@ -898,7 +898,8 @@ extension ProtocolInstanceReference {
     public func getPathEndpoints(
         _ from: ProtocolInstanceReference
     ) -> (local: QUICPathInfo.PathAddress, remote: QUICPathInfo.PathAddress)? {
-        self.handleCallFromUpperProtocol {
+        guard !isNone else { return nil }
+        return self.handleCallFromUpperProtocol {
             switch self.reference {
             case .udp(let index): return context.udpInstances[index].pathEndpoints()
             default: return nil
