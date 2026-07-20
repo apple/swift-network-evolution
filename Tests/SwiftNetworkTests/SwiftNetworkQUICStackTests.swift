@@ -457,8 +457,9 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                 // multiplexing paths should be one.
                 if case .quic(let clientConnection) = clientQUICReference.reference {
                     XCTAssertEqual(
-                        clientConnection.multiplexingPaths.count, 1,
-                        "Migrated-away path leaked into multiplexingPaths after migrating to path \(pathIndex)"
+                        clientConnection.multiplexingPaths.count,
+                        1,
+                        "Path leaked after migration \(pathIndex)"
                     )
                 }
 

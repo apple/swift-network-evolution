@@ -84,15 +84,26 @@ final class MigrationTests: XCTestCase {
 
             // The path we migrated away from is dropped from the connection and its
             // remote CID is retired.
-            XCTAssertNil(self.connection.multiplexingPaths[oldPathID], "old path should be removed from multiplexingPaths")
+            XCTAssertNil(
+                self.connection.multiplexingPaths[oldPathID],
+                "Old path not removed"
+            )
             XCTAssertNil(
                 self.connection.remoteCIDs.retire(connectionID: Self.oldCID),
-                "old path's remote CID should be retired by migration"
+                "Old path CID not retired"
             )
 
             // Only the new path remains, and it is now the current path.
-            XCTAssertEqual(self.connection.multiplexingPaths.count, 1, "old path should not linger in multiplexingPaths")
-            XCTAssertEqual(self.connection.currentPath?.identifier, newPath.identifier, "current path should be the new path")
+            XCTAssertEqual(
+                self.connection.multiplexingPaths.count,
+                1,
+                "Unexpected path count"
+            )
+            XCTAssertEqual(
+                self.connection.currentPath?.identifier,
+                newPath.identifier,
+                "Current path not switched"
+            )
 
             expectation.fulfill()
         }
