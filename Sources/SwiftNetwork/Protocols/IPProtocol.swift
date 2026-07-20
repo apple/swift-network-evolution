@@ -1018,7 +1018,7 @@ public struct IPProtocol: NetworkProtocol {
             static let hopByHopExtensionHeader: UInt8 = 0
             static let routingExtensionHeader: UInt8 = 43
             static let destinationOptionsExtensionHeader: UInt8 = 60
-            static let fragmentExtensionHeaderLength: Int = 8
+            static let fragmentExtensionHeaderLength = 8
             static let ip6fOffMask: UInt16 = 0xFFF8
             static let ip6fMoreFragmentMask: UInt16 = 0x0001
 
