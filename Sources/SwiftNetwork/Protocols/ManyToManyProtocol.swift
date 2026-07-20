@@ -1590,6 +1590,16 @@ extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagr
         guard let flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
         flow.serviceUpperReceiveQueue()
     }
+
+    // Enqueue and delivery the datagrams all in one shot
+    public func deliverInboundDatagrams(
+        flow flowID: MultiplexedFlowIdentifier,
+        datagrams: consuming FrameArray
+    ) throws(NetworkError) {
+        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        try flow.addToUpperReceiveQueue(datagrams)
+        flow.serviceUpperReceiveQueue()
+    }
 }
 
 @available(Network 0.1.0, *)
