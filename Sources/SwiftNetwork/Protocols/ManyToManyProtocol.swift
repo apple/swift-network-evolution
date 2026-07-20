@@ -1632,6 +1632,16 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
         guard let flow = self.secondaryFlow(for: flowID) else { throw NetworkError.posix(EINVAL) }
         flow.serviceUpperReceiveQueue()
     }
+
+    // Enqueue and delivery the datagrams all in one shot
+    public func deliverInboundDatagrams(
+        flow flowID: MultiplexedFlowIdentifier,
+        datagrams: consuming FrameArray
+    ) throws(NetworkError) {
+        guard var flow = self.secondaryFlow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        try flow.addToUpperReceiveQueue(datagrams)
+        flow.serviceUpperReceiveQueue()
+    }
 }
 
 @_spi(ProtocolProvider)

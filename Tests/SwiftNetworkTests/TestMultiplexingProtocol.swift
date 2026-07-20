@@ -91,8 +91,7 @@ final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtocol, Man
             return
         }
         accessReceivedDatagrams(path: path) { frames in
-            try? enqueueInboundDatagrams(flow: flow, datagrams: frames.drainArray())
-            try? deliverEnqueuedInboundDatagrams(flow: flow)
+            try? deliverInboundDatagrams(flow: flow, datagrams: frames.drainArray())
         }
     }
 

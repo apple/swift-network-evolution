@@ -5562,8 +5562,7 @@ extension QUICConnection {
 
         var frame = frame.frame
         frame.metadataComplete = true
-        try? enqueueInboundDatagrams(flow: matchingFlowIdentifier, datagrams: .init(frame: frame))
-        try? deliverEnqueuedInboundDatagrams(flow: matchingFlowIdentifier)
+        try? deliverInboundDatagrams(flow: matchingFlowIdentifier, datagrams: .init(frame: frame))
         return true
     }
 }
