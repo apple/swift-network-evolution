@@ -897,7 +897,7 @@ extension ProtocolInstanceReference {
 
     public func getPathEndpoints(
         _ from: ProtocolInstanceReference
-    ) -> (local: QUICPathInfo.PathAddress, remote: QUICPathInfo.PathAddress)? {
+    ) -> DatagramPathEndpoints? {
         guard !isNone else { return nil }
         return self.handleCallFromUpperProtocol {
             switch self.reference {

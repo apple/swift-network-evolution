@@ -22,27 +22,13 @@ public struct NetworkEventDomain: Sendable, Hashable, CustomStringConvertible {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public struct QUICPathInfo: Sendable, Equatable {
-    public enum PathAddress: Sendable, Equatable {
-        case v4(IPv4Address, port: UInt16)
-        case v6(IPv6Address, port: UInt16)
-
-        var endpoint: Endpoint {
-            switch self {
-            case .v4(let address, let port): return Endpoint(address: address, port: port)
-            case .v6(let address, let port): return Endpoint(address: address, port: port)
-            }
-        }
-    }
-    private let _local: PathAddress?
-    private let _remote: PathAddress?
+    private var datagramPathEndpoints: DatagramPathEndpoints
     public let isValidated: Bool
+    public var remote: Endpoint { datagramPathEndpoints.remote.endpoint }
+    public var local: Endpoint { datagramPathEndpoints.local.endpoint }
 
-    public var local: Endpoint? { _local?.endpoint }
-    public var remote: Endpoint? { _remote?.endpoint }
-
-    init(local: PathAddress?, remote: PathAddress?, isValidated: Bool) {
-        self._local = local
-        self._remote = remote
+    init(datagramPathEndpoints: DatagramPathEndpoints, isValidated: Bool) {
+        self.datagramPathEndpoints = datagramPathEndpoints
         self.isValidated = isValidated
     }
 }
@@ -283,10 +269,10 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
             return "QUIC: Received remote transport parameters"
         case .pathChanged(let pathInfo):
             return
-                "QUIC: Path changed local: \(pathInfo.local?.description ?? "N/A") remote: \(pathInfo.remote?.description ?? "N/A") validated: \(pathInfo.isValidated)"
+                "QUIC: Path changed local: \(pathInfo.local.description) remote: \(pathInfo.remote.description) validated: \(pathInfo.isValidated)"
         case .pathValidated(let pathInfo):
             return
-                "QUIC: Path validated local: \(pathInfo.local?.description ?? "N/A") remote: \(pathInfo.remote?.description ?? "N/A")"
+                "QUIC: Path validated local: \(pathInfo.local.description) remote: \(pathInfo.remote.description)"
         }
     }
 }

@@ -287,7 +287,7 @@ public struct OutboundDatagramLinkage: OutboundDataLinkage {
 
     public func invokeGetPathEndpoints(
         _ from: ProtocolInstanceReference
-    ) -> (local: QUICPathInfo.PathAddress, remote: QUICPathInfo.PathAddress)? {
+    ) -> DatagramPathEndpoints? {
         reference.getPathEndpoints(from)
     }
 }

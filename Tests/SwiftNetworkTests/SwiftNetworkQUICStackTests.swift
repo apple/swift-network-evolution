@@ -731,16 +731,12 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         // This validations are for the server side so the remote should change here
         if let pathInfo = receivedPathValidatedInfo {
             XCTAssertTrue(pathInfo.isValidated)
-            XCTAssertNotNil(pathInfo.local!)
-            XCTAssertNotNil(pathInfo.remote!)
-            XCTAssertTrue(pathInfo.local! == serverEndpoint)
-            XCTAssertTrue(pathInfo.remote! == newClientEndpoint)
+            XCTAssertTrue(pathInfo.local == serverEndpoint)
+            XCTAssertTrue(pathInfo.remote == newClientEndpoint)
         }
         if let pathInfo = receivedPathChangedInfo {
-            XCTAssertNotNil(pathInfo.local!)
-            XCTAssertNotNil(pathInfo.remote!)
-            XCTAssertTrue(pathInfo.local! == serverEndpoint)
-            XCTAssertTrue(pathInfo.remote! == newClientEndpoint)
+            XCTAssertTrue(pathInfo.local == serverEndpoint)
+            XCTAssertTrue(pathInfo.remote == newClientEndpoint)
         }
 
         let stopExpectation = XCTestExpectation(description: "stop")
