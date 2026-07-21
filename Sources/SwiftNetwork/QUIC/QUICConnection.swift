@@ -2374,8 +2374,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 continue
             }
 
-            try? enqueueInboundStreamData(flow: flowID, streamData: frameArray)
-            try? deliverEnqueuedInboundStreamData(flow: flowID)
+            try? deliverInboundStreamData(flow: flowID, streamData: frameArray)
 
             // When the stream is already in `resetReceived` state,
             // it should be closed when we receive STOP_SENDING, so we
@@ -4317,8 +4316,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         if let frameArray = stream.dequeueReassembledData(connection: self) {
             do {
-                try enqueueInboundStreamData(flow: flowID, streamData: frameArray)
-                try deliverEnqueuedInboundStreamData(flow: flowID)
+                try deliverInboundStreamData(flow: flowID, streamData: frameArray)
                 sendFrames()
             } catch {
                 log.error("Error sending frames on stream close: \(error)")
@@ -5564,8 +5562,7 @@ extension QUICConnection {
 
         var frame = frame.frame
         frame.metadataComplete = true
-        try? enqueueInboundDatagrams(flow: matchingFlowIdentifier, datagrams: .init(frame: frame))
-        try? deliverEnqueuedInboundDatagrams(flow: matchingFlowIdentifier)
+        try? deliverInboundDatagrams(flow: matchingFlowIdentifier, datagrams: .init(frame: frame))
         return true
     }
 }

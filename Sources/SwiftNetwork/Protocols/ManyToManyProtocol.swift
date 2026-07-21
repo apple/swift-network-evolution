@@ -1388,6 +1388,15 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
         guard let flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
         flow.serviceUpperReceiveQueue()
     }
+    // Enqueue and delivery the stream data all in one shot
+    public func deliverInboundStreamData(
+        flow flowID: MultiplexedFlowIdentifier,
+        streamData: consuming FrameArray
+    ) throws(NetworkError) {
+        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        try flow.addToUpperReceiveQueue(streamData)
+        flow.serviceUpperReceiveQueue()
+    }
 }
 
 @_spi(ProtocolProvider)
@@ -1581,6 +1590,16 @@ extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagr
         guard let flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
         flow.serviceUpperReceiveQueue()
     }
+
+    // Enqueue and delivery the datagrams all in one shot
+    public func deliverInboundDatagrams(
+        flow flowID: MultiplexedFlowIdentifier,
+        datagrams: consuming FrameArray
+    ) throws(NetworkError) {
+        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        try flow.addToUpperReceiveQueue(datagrams)
+        flow.serviceUpperReceiveQueue()
+    }
 }
 
 @available(Network 0.1.0, *)
@@ -1611,6 +1630,16 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
 
     public func deliverEnqueuedInboundDatagrams(flow flowID: MultiplexedFlowIdentifier) throws(NetworkError) {
         guard let flow = self.secondaryFlow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        flow.serviceUpperReceiveQueue()
+    }
+
+    // Enqueue and delivery the datagrams all in one shot
+    public func deliverInboundDatagrams(
+        flow flowID: MultiplexedFlowIdentifier,
+        datagrams: consuming FrameArray
+    ) throws(NetworkError) {
+        guard var flow = self.secondaryFlow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        try flow.addToUpperReceiveQueue(datagrams)
         flow.serviceUpperReceiveQueue()
     }
 }
