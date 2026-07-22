@@ -919,13 +919,13 @@ public struct IPProtocol: NetworkProtocol {
             }
 
             mutating func writeOutboundFrames(_ frames: inout FrameArray) {
-                frames.iterateMutableFrames { frame in
+                var output = FrameArray()
+                while var frame = frames.popFirst() {
                     guard frame.unclaim(fromStart: IPv4Instance.headerLength) else {
                         frame.finalize(success: false)
-                        return .removeFrameAndContinue
+                        continue
                     }
 
-                    let totalLength = UInt16(frame.unclaimedLength)
                     let localAddressValue = self.localAddress.addressValue
                     let remoteAddressValue = self.remoteAddress.addressValue
                     let versionAndHeaderLength: UInt8 = 0x45
@@ -938,66 +938,144 @@ public struct IPProtocol: NetworkProtocol {
                     if dscpValue != 0 {
                         tos |= (dscpValue << 2)  // IPTOS_DSCP_SHIFT
                     }
-                    // TODO: Handle fragmentation cases differently
-                    let offset: UInt16 = 0x4000  // Don't Fragment
-                    let identifier: UInt16 = 0
 
-                    let result = Serializer.serialize(&frame, claim: false) { write throws(SerializationError) in
-                        try write.uint8(versionAndHeaderLength)
-                        try write.uint8(tos)
-                        try write.uint16NetworkByteOrder(totalLength)
-                        try write.uint16NetworkByteOrder(identifier)
-                        try write.uint16NetworkByteOrder(offset)
-                        try write.uint8(self.ttl)
-                        try write.uint8(self.ipProtocolNumber)
-                        try write.uint16(0)  // Checksum
-                        try write.uint32(localAddressValue)
-                        try write.uint32(remoteAddressValue)
-                    }
-                    if !result.isValid {
-                        Logger.proto.error("Serializing IPv4 packet failed with result: \(result)")
-                        frame.finalize(success: false)
-                        return .removeFrameAndContinue
-                    }
-                    var enableFragmentation = false
-                    if let fragmentationOverride = frame.fragmentationOverride, fragmentationOverride == true {
-                        enableFragmentation = true
-                    } else if self.flags.enableFragmentation || frame.fragmentationOverride == nil {
-                        enableFragmentation = true
+                    let enableFragmentation: Bool
+                    if let fragmentationOverride = frame.fragmentationOverride {
+                        enableFragmentation = fragmentationOverride
+                    } else {
+                        enableFragmentation = self.flags.enableFragmentation
                     }
 
-                    if enableFragmentation {
-                        // TODO: Fragmentation
+                    // Payload is the unclaimed bytes beyond the IPv4 header.
+                    let payloadLength = frame.unclaimedLength - IPv4Instance.headerLength
+                    // MTU minus the header gives the correct fragment payload room
+                    let mtu = self.pathProperties.mtu
+                    var maxPayloadPerFragment = 0
+                    if mtu > IPv4Instance.headerLength {
+                        maxPayloadPerFragment = mtu - IPv4Instance.headerLength
                     }
 
-                    do throws(ChecksumError) {
-                        if self.flags.corruptChecksums {
-                            if !self.flags.didCorruptChecksum {
-                                // Invalid checksum
-                                self.setChecksumValue(frame: &frame, value: UInt16(0xbeef))
-                                self.flags.didCorruptChecksum = true
-                            } else {
-                                // Real checksum
-                                let checksumValue = try frame.ipChecksum(offset: 0, length: 20)
-                                self.setChecksumValue(frame: &frame, value: checksumValue)
-                                self.flags.didCorruptChecksum = false
-                            }
-                        } else {
-                            if self.flags.csumOffload {
-                                frame.checksumOffloadFlags = 0x04  // CSUM_IP
-                            } else {
-                                let checksumValue = try frame.ipChecksum(offset: 0, length: 20)
-                                self.setChecksumValue(frame: &frame, value: checksumValue)
-                            }
+                    // Handle fragmentation if payloadLength is greater than maxPayloadPerFragment and enableFragmentation is enabled
+                    if enableFragmentation && maxPayloadPerFragment > 0 && payloadLength > maxPayloadPerFragment {
+                        // MTU-splitting path: fragment the oversized datagram.
+                        var randomNumber = SystemRandomNumberGenerator()
+                        let identifier = UInt16(truncatingIfNeeded: randomNumber.next())
+                        // Align fragment payload to blocks of 8 bytes - RFC 791.
+                        let fragmentRoom = maxPayloadPerFragment - (maxPayloadPerFragment % 8)
+                        guard fragmentRoom > 0 else {
+                            frame.finalize(success: false)
+                            continue
                         }
-                    } catch {
-                        Logger.proto.error("Failed to finalize IP checksum")
-                        frame.finalize(success: false)
-                        return .removeFrameAndContinue
+                        var cursor = 0
+                        var fragmentationSucceeded = true
+                        while cursor < payloadLength {
+                            // Determine if last or hold large the chunk length is
+                            let remaining = payloadLength - cursor
+                            let isLast = remaining <= fragmentRoom
+                            let chunkLength = isLast ? remaining : fragmentRoom
+                            // Create the fragment frame with this chunk length
+                            var fragmentFrame = Frame(count: IPv4Instance.headerLength + chunkLength)
+                            // MF bit is always set except for the last fragment
+                            let ipOff = UInt16(isLast ? 0 : 0x2000) | UInt16(cursor / 8)
+                            let fragmentTotalLength = UInt16(IPv4Instance.headerLength + chunkLength)
+                            let result = Serializer.serialize(&fragmentFrame, claim: false) {
+                                write throws(SerializationError) in
+                                try write.uint8(versionAndHeaderLength)
+                                try write.uint8(tos)
+                                try write.uint16NetworkByteOrder(fragmentTotalLength)
+                                try write.uint16NetworkByteOrder(identifier)
+                                try write.uint16NetworkByteOrder(ipOff)
+                                try write.uint8(self.ttl)
+                                try write.uint8(self.ipProtocolNumber)
+                                try write.uint16(0)  // Checksum
+                                try write.uint32(localAddressValue)
+                                try write.uint32(remoteAddressValue)
+                            }
+                            guard result.isValid else {
+                                Logger.proto.error("Serializing IPv4 fragment failed with result: \(result)")
+                                fragmentFrame.finalize(success: false)
+                                fragmentationSucceeded = false
+                                break
+                            }
+                            let copied = frame.copyInto(
+                                &fragmentFrame,
+                                atOffset: IPv4Instance.headerLength,
+                                fromOffset: IPv4Instance.headerLength + cursor,
+                                length: chunkLength
+                            )
+                            guard copied == chunkLength else {
+                                fragmentFrame.finalize(success: false)
+                                fragmentationSucceeded = false
+                                break
+                            }
+                            do throws(ChecksumError) {
+                                if self.flags.csumOffload {
+                                    fragmentFrame.checksumOffloadFlags = ChecksumFlags.ip.rawValue
+                                } else {
+                                    let checksumValue = try fragmentFrame.ipChecksum(offset: 0, length: 20)
+                                    self.setChecksumValue(frame: &fragmentFrame, value: checksumValue)
+                                }
+                            } catch {
+                                Logger.proto.error("Failed to compute IPv4 fragment checksum")
+                                fragmentFrame.finalize(success: false)
+                                fragmentationSucceeded = false
+                                break
+                            }
+                            self.counters.txPackets += 1
+                            output.add(frame: fragmentFrame)
+                            cursor += chunkLength
+                        }
+                        frame.finalize(success: fragmentationSucceeded)
+                    } else {
+                        // Standard path
+                        let offset: UInt16 = 0x4000  // Don't Fragment (IP_DF)
+                        let identifier: UInt16 = 0
+                        let totalLength = UInt16(frame.unclaimedLength)
+                        let result = Serializer.serialize(&frame, claim: false) { write throws(SerializationError) in
+                            try write.uint8(versionAndHeaderLength)
+                            try write.uint8(tos)
+                            try write.uint16NetworkByteOrder(totalLength)
+                            try write.uint16NetworkByteOrder(identifier)
+                            try write.uint16NetworkByteOrder(offset)
+                            try write.uint8(self.ttl)
+                            try write.uint8(self.ipProtocolNumber)
+                            try write.uint16(0)  // Checksum
+                            try write.uint32(localAddressValue)
+                            try write.uint32(remoteAddressValue)
+                        }
+                        if !result.isValid {
+                            Logger.proto.error("Serializing IPv4 packet failed with result: \(result)")
+                            frame.finalize(success: false)
+                            continue
+                        }
+                        do throws(ChecksumError) {
+                            if self.flags.corruptChecksums {
+                                if !self.flags.didCorruptChecksum {
+                                    self.setChecksumValue(frame: &frame, value: UInt16(0xbeef))
+                                    self.flags.didCorruptChecksum = true
+                                } else {
+                                    let checksumValue = try frame.ipChecksum(offset: 0, length: 20)
+                                    self.setChecksumValue(frame: &frame, value: checksumValue)
+                                    self.flags.didCorruptChecksum = false
+                                }
+                            } else {
+                                if self.flags.csumOffload {
+                                    frame.checksumOffloadFlags = ChecksumFlags.ip.rawValue
+                                } else {
+                                    let checksumValue = try frame.ipChecksum(offset: 0, length: 20)
+                                    self.setChecksumValue(frame: &frame, value: checksumValue)
+                                }
+                            }
+                        } catch {
+                            Logger.proto.error("Failed to finalize IP checksum")
+                            frame.finalize(success: false)
+                            continue
+                        }
+                        self.counters.txPackets += 1
+                        output.add(frame: frame)
                     }
-                    self.counters.txPackets += 1
-                    return .continueIterating
                 }
+                frames.add(frames: output)
             }
         }
 
