@@ -919,7 +919,6 @@ public struct IPProtocol: NetworkProtocol {
             }
 
             mutating func writeOutboundFrames(_ frames: inout FrameArray) {
-                var fragments = FrameArray()
                 frames.iterateMutableFrames { frame in
                     guard frame.unclaim(fromStart: IPv4Instance.headerLength) else {
                         frame.finalize(success: false)
@@ -968,6 +967,7 @@ public struct IPProtocol: NetworkProtocol {
                         }
                         var cursor = 0
                         var fragmentationSucceeded = true
+                        var fragmentFrames = FrameArray()
                         while cursor < payloadLength {
                             // Determine if last or hold large the chunk length is
                             let remaining = payloadLength - cursor
@@ -1022,10 +1022,15 @@ public struct IPProtocol: NetworkProtocol {
                                 break
                             }
                             self.counters.txPackets += 1
-                            fragments.add(frame: fragmentFrame)
+                            fragmentFrames.add(frame: fragmentFrame)
                             cursor += chunkLength
                         }
                         frame.finalize(success: fragmentationSucceeded)
+                        if fragmentationSucceeded {
+                            return .replaceWithFramesAndContinue(fragmentFrames)
+                        }
+                        // This is a case where something went wrong on fragmentation and we need to remove any fragments that were created
+                        fragmentFrames.finalizeAllFramesAsFailed()
                         return .removeFrameAndContinue
                     }
 
@@ -1078,9 +1083,6 @@ public struct IPProtocol: NetworkProtocol {
                     }
                     self.counters.txPackets += 1
                     return .continueIterating
-                }
-                if !fragments.isEmpty {
-                    frames.add(frames: fragments)
                 }
             }
         }

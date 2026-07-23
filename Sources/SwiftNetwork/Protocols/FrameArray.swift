@@ -96,10 +96,11 @@ public struct FrameArray: ~Copyable {
         }
     }
 
-    public enum FrameIterationResult {
+    public enum FrameIterationResult: ~Copyable {
         case continueIterating
         case stopIterating
         case removeFrameAndContinue
+        case replaceWithFramesAndContinue(FrameArray)
     }
 
     @_optimize(speed)
@@ -108,7 +109,7 @@ public struct FrameArray: ~Copyable {
         var index = 0
         while index < count {
             let result = enumerator(&frames[index])
-            switch result {
+            switch consume result {
             case .continueIterating:
                 index += 1
                 continue
@@ -118,6 +119,17 @@ public struct FrameArray: ~Copyable {
                 frames.remove(at: index)
                 count -= 1
             // Don't increment index
+            case .replaceWithFramesAndContinue(var newFrames):
+                frames.remove(at: index)
+                count -= 1
+                let insertCount = newFrames.count
+                var insertIndex = index
+                while let newFrame = newFrames.popFirst() {
+                    frames.insert(newFrame, at: insertIndex)
+                    insertIndex += 1
+                }
+                index += insertCount
+                count += insertCount
             }
         }
     }
