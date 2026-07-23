@@ -22,15 +22,9 @@ public struct NetworkEventDomain: Sendable, Hashable, CustomStringConvertible {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public struct QUICPathInfo: Sendable, Equatable {
-    private var datagramPathEndpoints: DatagramPathEndpoints
     public let isValidated: Bool
-    public var remote: Endpoint { datagramPathEndpoints.remote.endpoint }
-    public var local: Endpoint { datagramPathEndpoints.local.endpoint }
-
-    init(datagramPathEndpoints: DatagramPathEndpoints, isValidated: Bool) {
-        self.datagramPathEndpoints = datagramPathEndpoints
-        self.isValidated = isValidated
-    }
+    public let remote: AddressEndpoint
+    public let local: AddressEndpoint
 }
 
 @_spi(ProtocolProvider)

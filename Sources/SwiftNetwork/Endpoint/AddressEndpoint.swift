@@ -24,9 +24,9 @@ internal import os
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct AddressEndpoint: EndpointProtocol, EndpointCommonProtocol {
+public struct AddressEndpoint: Sendable, EndpointProtocol, EndpointCommonProtocol {
     public var common: EndpointCommon
-    public enum AddressEndpointType: Equatable {
+    public enum AddressEndpointType: Sendable, Equatable {
         case v4(IPv4Address, UInt16)
         case v6(IPv6Address, UInt16)
         case unix(String)

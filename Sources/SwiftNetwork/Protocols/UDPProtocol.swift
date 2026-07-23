@@ -489,13 +489,13 @@ public struct UDPProtocol: NetworkProtocol {
         func pathEndpoints() -> DatagramPathEndpoints? {
             if isIPv4 {
                 return DatagramPathEndpoints(
-                    local: .v4(ipv4Local, port: localPort),
-                    remote: .v4(ipv4Remote, port: remotePort)
+                    local: AddressEndpoint(address: ipv4Local, port: localPort),
+                    remote: AddressEndpoint(address: ipv4Remote, port: remotePort)
                 )
             } else {
                 return DatagramPathEndpoints(
-                    local: .v6(ipv6Local, port: localPort),
-                    remote: .v6(ipv6Remote, port: remotePort)
+                    local: AddressEndpoint(address: ipv6Local, port: localPort),
+                    remote: AddressEndpoint(address: ipv6Remote, port: remotePort)
                 )
             }
         }

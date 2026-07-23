@@ -219,7 +219,11 @@ extension QUICConnection {
         }
         // Notify the stack about a path change event
         if let datagramPathEndpoints = path.lower.invokeGetPathEndpoints(path.reference) {
-            let pathInfo = QUICPathInfo(datagramPathEndpoints: datagramPathEndpoints, isValidated: path.isValidated)
+            let pathInfo = QUICPathInfo(
+                isValidated: path.isValidated,
+                remote: datagramPathEndpoints.remote,
+                local: datagramPathEndpoints.local
+            )
             deliverNetworkProtocolEvent(flow: .allFlows, event: .init(quicEvent: .pathChanged(pathInfo)))
         }
 

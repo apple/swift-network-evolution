@@ -548,14 +548,18 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!,
             port: 1234
         )
+        let serverAddress = IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!
+        let serverPort: UInt16 = UInt16(8080)
         let serverEndpoint = Endpoint(
-            address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!,
-            port: 8080
+            address: serverAddress,
+            port: serverPort
         )
         // The client gets a new source address; the server address stays fixed.
+        let newClientAddress = IPv4Address(newLocalIPv4Address)!
+        let newCLientPort = UInt16(4321)
         let newClientEndpoint = Endpoint(
-            address: IPv4Address(newLocalIPv4Address)!,
-            port: 4321
+            address: newClientAddress,
+            port: newCLientPort
         )
 
         let clientParameters = Parameters()
@@ -731,12 +735,12 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         // This validations are for the server side so the remote should change here
         if let pathInfo = receivedPathValidatedInfo {
             XCTAssertTrue(pathInfo.isValidated)
-            XCTAssertTrue(pathInfo.local == serverEndpoint)
-            XCTAssertTrue(pathInfo.remote == newClientEndpoint)
+            XCTAssertTrue(pathInfo.local == AddressEndpoint(address: serverAddress, port: serverPort))
+            XCTAssertTrue(pathInfo.remote == AddressEndpoint(address: newClientAddress, port: newCLientPort))
         }
         if let pathInfo = receivedPathChangedInfo {
-            XCTAssertTrue(pathInfo.local == serverEndpoint)
-            XCTAssertTrue(pathInfo.remote == newClientEndpoint)
+            XCTAssertTrue(pathInfo.local == AddressEndpoint(address: serverAddress, port: serverPort))
+            XCTAssertTrue(pathInfo.remote == AddressEndpoint(address: newClientAddress, port: newCLientPort))
         }
 
         let stopExpectation = XCTestExpectation(description: "stop")

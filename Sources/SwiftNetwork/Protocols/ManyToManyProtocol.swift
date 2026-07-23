@@ -255,22 +255,9 @@ where LowerProtocol: OutboundDataLinkage, ParentProtocol: ManyToManyDatapathProt
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public enum PathAddress: Sendable, Equatable {
-    case v4(IPv4Address, port: UInt16)
-    case v6(IPv6Address, port: UInt16)
-    var endpoint: Endpoint {
-        switch self {
-        case .v4(let address, let port): return Endpoint(address: address, port: port)
-        case .v6(let address, let port): return Endpoint(address: address, port: port)
-        }
-    }
-}
-
-@_spi(ProtocolProvider)
-@available(Network 0.1.0, *)
 public struct DatagramPathEndpoints: Sendable, Equatable {
-    let local: PathAddress
-    let remote: PathAddress
+    let local: AddressEndpoint
+    let remote: AddressEndpoint
     public static func == (lhs: DatagramPathEndpoints, rhs: DatagramPathEndpoints) -> Bool {
         lhs.local == rhs.local && lhs.remote == rhs.remote
     }

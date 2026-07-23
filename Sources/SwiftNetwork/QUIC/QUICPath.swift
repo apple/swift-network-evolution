@@ -620,7 +620,11 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         parentProtocol.migration.resetTimer(connection: parentProtocol)
         // Notify the stack about the path becoming validated
         if let datagramPathEndpoints = lower.invokeGetPathEndpoints(reference) {
-            let pathInfo = QUICPathInfo(datagramPathEndpoints: datagramPathEndpoints, isValidated: state.isValidated)
+            let pathInfo = QUICPathInfo(
+                isValidated: self.isValidated,
+                remote: datagramPathEndpoints.remote,
+                local: datagramPathEndpoints.local
+            )
             parentProtocol.deliverNetworkProtocolEvent(
                 flow: .allFlows,
                 event: .init(quicEvent: .pathValidated(pathInfo))
