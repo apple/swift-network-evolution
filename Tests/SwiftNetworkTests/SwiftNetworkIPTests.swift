@@ -238,6 +238,223 @@ final class SwiftNetworkIPTests: NetTestCase {
         0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
     ]
 
+    // fe80::1cd6:90f7:2466:d31b -> fe80::1444:4d27:b896:d383, fragment 1 of 2: first 8 bytes of inputMessage, MF=1 (More fragments)
+    // reassemblyID = 0xABCD1234
+    static let twoIPv6FragmentInputPacket1: [UInt8] = [
+        // IPv6 base header (40 bytes)
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x10, 0x2C, 0x40,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x01, 0xAB, 0xCD, 0x12, 0x34,
+        // Payload: first 8 bytes of inputMessage
+        0x04, 0xD2, 0xFC, 0xF7, 0x00, 0x0D, 0xE8, 0x04,
+    ]
+
+    // fe80::1cd6:90f7:2466:d31b -> fe80::1444:4d27:b896:d383, fragment 2 of 2: last 5 bytes of inputMessage, MF=0 (Last fragment)
+    // reassemblyID = 0xABCD1234
+    static let twoIPv6FragmentInputPacket2: [UInt8] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x0D, 0x2C, 0x40,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x08, 0xAB, 0xCD, 0x12, 0x34,
+        // Payload: last 5 bytes of inputMessage
+        0x68, 0x65, 0x6C, 0x6C, 0x6F,
+    ]
+
+    // fe80::1cd6:90f7:2466:d31b -> fe80::1444:4d27:b896:d383, fragment 1 of 3: bytes 0-7, MF=1, offset=0 (More fragments)
+    // reassemblyID = 0xDEADBEEF
+    static let threeIPv6FragmentInputPacket1: [UInt8] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x10, 0x2C, 0x40,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x01, 0xDE, 0xAD, 0xBE, 0xEF,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    ]
+
+    // fragment 2 of 3: bytes 8-15, MF=1, offset=8 (More fragments)
+    // reassemblyID = 0xDEADBEEF
+    static let threeIPv6FragmentInputPacket2: [UInt8] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x10, 0x2C, 0x40,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x09, 0xDE, 0xAD, 0xBE, 0xEF,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+    ]
+
+    // fragment 3 of 3: bytes 16-23, MF=0, offset=16 (Last fragment)
+    // reassemblyID = 0xDEADBEEF
+    static let threeIPv6FragmentInputPacket3: [UInt8] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x10, 0x2C, 0x40,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x10, 0xDE, 0xAD, 0xBE, 0xEF,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+    ]
+
+    // Fragment 1 of 2: offset=0, MF=1, 16 payload bytes. Fragment 2 starts at offset=8, overlapping the last 8
+    // bytes of fragment 1. RFC 5722 forbids overlapping fragments; the sequence must be rejected.
+    // reassemblyID = 0xAABBCCDD
+    static let overlappingIPv6FragmentPacket1: [UInt8] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x18, 0x2C, 0x40,  // payloadLength=24 (8 frag hdr + 16 data)
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x01, 0xAA, 0xBB, 0xCC, 0xDD,  // offset=0, MF=1
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+    ]
+    // Fragment 2: offset=8 bytes (overlaps last 8 bytes of fragment 1), MF=0.
+    // reassemblyID = 0xAABBCCDD
+    static let overlappingIPv6FragmentPacket2: [UInt8] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x10, 0x2C, 0x40,  // payloadLength=16 (8 frag hdr + 8 data)
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x08, 0xAA, 0xBB, 0xCC, 0xDD,  // offset=8, MF=0 — overlaps fragment 1
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+    ]
+
+    // Fragment 1 of 2: offset=0, MF=1, 8 payload bytes.
+    // Fragment 2 jumps to offset=16, skipping offset=8. (More fragments)
+    // reassemblyID = 0x11223344
+    static let gappedIPv6FragmentPacket1: [UInt8] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x10, 0x2C, 0x40,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x01, 0x11, 0x22, 0x33, 0x44,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    ]
+    // Fragment at offset=16 (skips offset=8 entirely), MF=0. (Last fragment)
+    // reassemblyID = 0x11223344
+    static let gappedIPv6FragmentPacket2: [UInt8] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x10, 0x2C, 0x40,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x10, 0x11, 0x22, 0x33, 0x44,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+    ]
+
+    // Two fragments both with MF=1 (no terminal fragment).
+    // reassemblyID = 0x55667788
+    static let allMFSetIPv6FragmentPacket1: [UInt8] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x10, 0x2C, 0x40,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x01, 0x55, 0x66, 0x77, 0x88,  // offset=0, MF=1
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    ]
+    // Fragment at offset=8, also MF=1.
+    // reassemblyID = 0x55667788
+    static let allMFSetIPv6FragmentPacket2: [UInt8] = [
+        0x60, 0x00, 0x00, 0x00, 0x00, 0x10, 0x2C, 0x40,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1C, 0xD6, 0x90, 0xF7, 0x24, 0x66, 0xD3, 0x1B,
+        0xFE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x44, 0x4D, 0x27, 0xB8, 0x96, 0xD3, 0x83,
+        0x11, 0x00, 0x00, 0x09, 0x55, 0x66, 0x77, 0x88,  // offset=8, MF=1
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+    ]
+
+    // Two fragments whose combined innerLength totals 65536 bytes, overflowing UInt16.
+    // Fragment 1: innerLength=32760, payloadLength=32768 (0x8000)
+    // reassemblyID = 0x99AABBCC
+    static let overflowIPv6FragmentPacket1: [UInt8] = {
+        var packet = [UInt8](repeating: 0, count: 32808)
+        packet[0] = 0x60
+        packet[4] = 0x80
+        packet[5] = 0x00  // payloadLength = 32768
+        packet[6] = 0x2C
+        packet[7] = 0x40
+        packet[8] = 0xFE
+        packet[9] = 0x80
+        packet[16] = 0x1C
+        packet[17] = 0xD6
+        packet[18] = 0x90
+        packet[19] = 0xF7
+        packet[20] = 0x24
+        packet[21] = 0x66
+        packet[22] = 0xD3
+        packet[23] = 0x1B
+        packet[24] = 0xFE
+        packet[25] = 0x80
+        packet[32] = 0x14
+        packet[33] = 0x44
+        packet[34] = 0x4D
+        packet[35] = 0x27
+        packet[36] = 0xB8
+        packet[37] = 0x96
+        packet[38] = 0xD3
+        packet[39] = 0x83
+        packet[40] = 0x11
+        packet[41] = 0x00
+        packet[42] = 0x00
+        packet[43] = 0x01  // offsetFlags: offset=0, MF=1
+        packet[44] = 0x99
+        packet[45] = 0xAA
+        packet[46] = 0xBB
+        packet[47] = 0xCC
+        return packet
+    }()
+
+    // Fragment 2: offset=32760 (unit=4095, offsetFlags=0x7FF8), MF=0, innerLength=32776.
+    // payloadLength = 32784 (0x8010). Combined innerLength: 32760+32776 = 65536 → UInt16 overflow.
+    // reassemblyID = 0x99AABBCC
+    static let overflowIPv6FragmentPacket2: [UInt8] = {
+        var packet = [UInt8](repeating: 0, count: 32824)
+        packet[0] = 0x60
+        packet[4] = 0x80
+        packet[5] = 0x10  // payloadLength = 32784
+        packet[6] = 0x2C
+        packet[7] = 0x40
+        packet[8] = 0xFE
+        packet[9] = 0x80
+        packet[16] = 0x1C
+        packet[17] = 0xD6
+        packet[18] = 0x90
+        packet[19] = 0xF7
+        packet[20] = 0x24
+        packet[21] = 0x66
+        packet[22] = 0xD3
+        packet[23] = 0x1B
+        packet[24] = 0xFE
+        packet[25] = 0x80
+        packet[32] = 0x14
+        packet[33] = 0x44
+        packet[34] = 0x4D
+        packet[35] = 0x27
+        packet[36] = 0xB8
+        packet[37] = 0x96
+        packet[38] = 0xD3
+        packet[39] = 0x83
+        packet[40] = 0x11
+        packet[41] = 0x00
+        packet[42] = 0x7F
+        packet[43] = 0xF8  // offsetFlags: offset=32760 (4095 units), MF=0
+        packet[44] = 0x99
+        packet[45] = 0xAA
+        packet[46] = 0xBB
+        packet[47] = 0xCC
+        return packet
+    }()
+
     func internalTestIP(
         localEndpoint: Endpoint,
         remoteEndpoint: Endpoint,
@@ -496,11 +713,15 @@ final class SwiftNetworkIPTests: NetTestCase {
     }
 
     func testThreeAIPv4FragmentsToReassemble() {
-        let readBytes = processIPv4Fragment(packets: [
-            SwiftNetworkIPTests.threeFragmentInputPacket1,
-            SwiftNetworkIPTests.threeFragmentInputPacket2,
-            SwiftNetworkIPTests.threeFragmentInputPacket3,
-        ])
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.threeFragmentInputPacket1,
+                SwiftNetworkIPTests.threeFragmentInputPacket2,
+                SwiftNetworkIPTests.threeFragmentInputPacket3,
+            ],
+            localEndpoint: Endpoint(address: IPv4Address(SwiftNetworkIPTests.localIPv4Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv4Address(SwiftNetworkIPTests.remoteIPv4Address)!, port: 0)
+        )
         XCTAssertNotNil(readBytes, "Failed to receive reassembled IPv4 packet from three fragments")
         if let readBytes {
             XCTAssertEqual(
@@ -512,10 +733,14 @@ final class SwiftNetworkIPTests: NetTestCase {
     }
 
     func testTwoIPv4FragmentsToReassemble() {
-        let readBytes = processIPv4Fragment(packets: [
-            SwiftNetworkIPTests.twoFragmentInputPacket1,
-            SwiftNetworkIPTests.twoFragmentInputPacket2,
-        ])
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.twoFragmentInputPacket1,
+                SwiftNetworkIPTests.twoFragmentInputPacket2,
+            ],
+            localEndpoint: Endpoint(address: IPv4Address(SwiftNetworkIPTests.localIPv4Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv4Address(SwiftNetworkIPTests.remoteIPv4Address)!, port: 0)
+        )
         XCTAssertNotNil(readBytes, "Failed to receive reassembled IPv4 packet from two fragments")
         if let readBytes {
             XCTAssertEqual(readBytes, SwiftNetworkIPTests.inputMessage, "Reassembled payload did not match expected")
@@ -525,35 +750,166 @@ final class SwiftNetworkIPTests: NetTestCase {
     // Verifies that appendReassembledPackets discards a fragment when it detects an offset gap.
     // fragment 1 has byte offset 0, fragment 2 jumps to byte offset 16, skipping 8.
     func testGappedIPv4FragmentsProduceNoReassembledFrame() {
-        let readBytes = processIPv4Fragment(packets: [
-            SwiftNetworkIPTests.gappedFragmentInputPacket1,
-            SwiftNetworkIPTests.gappedFragmentInputPacket2,
-        ])
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.gappedFragmentInputPacket1,
+                SwiftNetworkIPTests.gappedFragmentInputPacket2,
+            ],
+            localEndpoint: Endpoint(address: IPv4Address(SwiftNetworkIPTests.localIPv4Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv4Address(SwiftNetworkIPTests.remoteIPv4Address)!, port: 0)
+        )
         XCTAssertNil(readBytes, "Unexpectedly received a packet from a gapped fragment sequence")
     }
 
     // Verifies that appendReassembledPackets does not create a reassembled fragment without a terminal MF=0 flag.
-    func testAllMFSetFragmentsProduceNoReassembledFrame() {
-        let readBytes = processIPv4Fragment(packets: [
-            SwiftNetworkIPTests.noTerminalFragmentPacket1,
-            SwiftNetworkIPTests.noTerminalFragmentPacket2,
-        ])
+    func testIPv4AllMFSetFragmentsProduceNoReassembledFrame() {
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.noTerminalFragmentPacket1,
+                SwiftNetworkIPTests.noTerminalFragmentPacket2,
+            ],
+            localEndpoint: Endpoint(address: IPv4Address(SwiftNetworkIPTests.localIPv4Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv4Address(SwiftNetworkIPTests.remoteIPv4Address)!, port: 0)
+        )
         XCTAssertNil(readBytes, "Unexpectedly received a packet when no terminal fragment was present")
     }
 
     // Verifies that appendReassembledPackets rejects a complete fragment sequence whose combined
-    // payload would cause rawLength (headerLength + totalPayload) exceeds UInt16.max.
-    func testReassembledLengthOverflowProducesNoFrame() {
-        let readBytes = processIPv4Fragment(packets: [
-            SwiftNetworkIPTests.overflowFragmentPacket1,
-            SwiftNetworkIPTests.overflowFragmentPacket2,
-        ])
+    // payload would cause rawLength (headerLength + totalPayload) exceeds UInt16.max
+    func testIPv4ReassembledLengthOverflowProducesNoFrame() {
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.overflowFragmentPacket1,
+                SwiftNetworkIPTests.overflowFragmentPacket2,
+            ],
+            localEndpoint: Endpoint(address: IPv4Address(SwiftNetworkIPTests.localIPv4Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv4Address(SwiftNetworkIPTests.remoteIPv4Address)!, port: 0)
+        )
         XCTAssertNil(readBytes, "Unexpectedly received a packet when reassembled length overflows UInt16")
     }
 
-    // Sets up a minimal IPv4 harness to test different fragment and reassembly conditions.
-    private func processIPv4Fragment(
+    func testTwoIPv6FragmentsToReassemble() {
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.twoIPv6FragmentInputPacket1,
+                SwiftNetworkIPTests.twoIPv6FragmentInputPacket2,
+            ],
+            localEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.localIPv6Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.remoteIPv6Address)!, port: 0)
+        )
+        XCTAssertNotNil(readBytes, "Failed to receive reassembled IPv6 packet from two fragments")
+        if let readBytes {
+            XCTAssertEqual(
+                readBytes,
+                SwiftNetworkIPTests.inputMessage,
+                "Reassembled IPv6 payload did not match expected"
+            )
+        }
+    }
+
+    func testThreeIPv6FragmentsToReassemble() {
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.threeIPv6FragmentInputPacket1,
+                SwiftNetworkIPTests.threeIPv6FragmentInputPacket2,
+                SwiftNetworkIPTests.threeIPv6FragmentInputPacket3,
+            ],
+            localEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.localIPv6Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.remoteIPv6Address)!, port: 0)
+        )
+        XCTAssertNotNil(readBytes, "Failed to receive reassembled IPv6 packet from three fragments")
+        if let readBytes {
+            XCTAssertEqual(
+                readBytes,
+                SwiftNetworkIPTests.threeFragmentPayload,
+                "Reassembled IPv6 payload did not match expected"
+            )
+        }
+    }
+
+    // Verifies that a gap between IPv6 fragment offsets prevents reassembly
+    // Fragment 1 covers bytes 0–7; fragment 2 starts at byte 16, skipping byte 8–15
+    func testGappedIPv6FragmentsProduceNoReassembledFrame() {
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.gappedIPv6FragmentPacket1,
+                SwiftNetworkIPTests.gappedIPv6FragmentPacket2,
+            ],
+            localEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.localIPv6Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.remoteIPv6Address)!, port: 0)
+        )
+        XCTAssertNil(readBytes, "Unexpectedly received a packet from a gapped IPv6 fragment sequence")
+    }
+
+    // Verifies that a sequence with no terminal fragment (all MF=1) is never reassembled
+    func testAllMFSetIPv6FragmentsProduceNoReassembledFrame() {
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.allMFSetIPv6FragmentPacket1,
+                SwiftNetworkIPTests.allMFSetIPv6FragmentPacket2,
+            ],
+            localEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.localIPv6Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.remoteIPv6Address)!, port: 0)
+        )
+        XCTAssertNil(readBytes, "Unexpectedly received a packet when no terminal IPv6 fragment was present")
+    }
+
+    // Verifies that a fragment sequence whose combined innerLength overflows UInt16 is rejected
+    func testIPv6FragmentOffsetOverflowProducesNoFrame() {
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.overflowIPv6FragmentPacket1,
+                SwiftNetworkIPTests.overflowIPv6FragmentPacket2,
+            ],
+            localEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.localIPv6Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.remoteIPv6Address)!, port: 0)
+        )
+        XCTAssertNil(readBytes, "Unexpectedly received a packet when IPv6 fragment offset overflows UInt16")
+    }
+
+    // Verifies that three fragments arriving out of order (3, 1, 2) are sorted and reassembled correctly
+    // Verifies that out-of-order IPv6 fragments (3, 1, 2) are sorted and reassembled correctly
+    func testOutOfOrderIPv6FragmentsReassemble() {
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.threeIPv6FragmentInputPacket3,
+                SwiftNetworkIPTests.threeIPv6FragmentInputPacket1,
+                SwiftNetworkIPTests.threeIPv6FragmentInputPacket2,
+            ],
+            localEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.localIPv6Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.remoteIPv6Address)!, port: 0)
+        )
+        XCTAssertNotNil(readBytes, "Failed to reassemble out-of-order IPv6 fragments")
+        if let readBytes {
+            XCTAssertEqual(
+                readBytes,
+                SwiftNetworkIPTests.threeFragmentPayload,
+                "Reassembled out-of-order IPv6 payload did not match expected"
+            )
+        }
+    }
+
+    // Verifies that overlapping IPv6 fragments are rejected per RFC 5722
+    // Fragment 1 covers bytes 0–15 (MF=1) (More Fragments)
+    // Fragment 2 starts at byte 8, overlapping the last 8 bytes of fragment 1
+    // The fragmentOffset (8) != expectedOffset (16) check drops the sequence
+    func testOverlappingIPv6FragmentsProduceNoReassembledFrame() {
+        let readBytes = processIPFragment(
+            packets: [
+                SwiftNetworkIPTests.overlappingIPv6FragmentPacket1,
+                SwiftNetworkIPTests.overlappingIPv6FragmentPacket2,
+            ],
+            localEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.localIPv6Address)!, port: 0),
+            remoteEndpoint: Endpoint(address: IPv6Address(SwiftNetworkIPTests.remoteIPv6Address)!, port: 0)
+        )
+        XCTAssertNil(readBytes, "Unexpectedly received a packet from overlapping IPv6 fragments (RFC 5722 violation)")
+    }
+
+    // Sets up a minimal IP harness to test different fragment and reassembly conditions
+    private func processIPFragment(
         packets: [[UInt8]],
+        localEndpoint: Endpoint,
+        remoteEndpoint: Endpoint,
         logIDNumber: Int = 2
     ) -> [UInt8]? {
         let parameters = Parameters()
@@ -574,8 +930,8 @@ final class SwiftNetworkIPTests: NetTestCase {
             udpOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
             parameters.defaultStack.transport = .udp(udpOptions)
 
-            let localEndpoint = Endpoint(address: IPv4Address(SwiftNetworkIPTests.localIPv4Address)!, port: 0)
-            let remoteEndpoint = Endpoint(address: IPv4Address(SwiftNetworkIPTests.remoteIPv4Address)!, port: 0)
+            let localEndpoint = localEndpoint
+            let remoteEndpoint = remoteEndpoint
 
             let ipLinkage = OutboundDatagramLinkage(reference: ipInstance)
             guard

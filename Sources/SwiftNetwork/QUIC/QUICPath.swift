@@ -635,6 +635,10 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
             parentProtocol.migration.migrate(to: self, connection: parentProtocol)
         }
     }
+
+    func tearDownLowerStack() {
+        try? lower.invokeDetach(self.reference)
+    }
 }
 
 // Congestion Control access
