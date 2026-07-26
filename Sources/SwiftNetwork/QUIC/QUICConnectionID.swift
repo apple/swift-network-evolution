@@ -168,12 +168,24 @@ public struct QUICConnectionID: Sendable, Equatable, CustomStringConvertible {
         guard lhs.actualLength == rhs.actualLength else {
             return false
         }
+        #if !NETWORK_EMBEDDED
         // Contstant time equality
-        return lhs.connectionIDStorage.withUnsafeBytes { left in
-            rhs.connectionIDStorage.withUnsafeBytes { right in
+        return lhs.connectionIDStorage.span.withUnsafeBytes { left in
+            rhs.connectionIDStorage.span.withUnsafeBytes { right in
                 memcmp(left.baseAddress!, right.baseAddress!, 20)
             }
         } == 0
+        #else
+        // Fall back to comparing by index
+        let lhsSpan = lhs._connectionID.span
+        let rhsSpan = rhs._connectionID.span
+        for i in 0..<lhs.actualLength {
+            if lhsSpan[i] != rhsSpan[i] {
+                return false
+            }
+        }
+        return true
+        #endif
     }
 }
 
