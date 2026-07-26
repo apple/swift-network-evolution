@@ -2307,7 +2307,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         )
 
         guard
-            packet.destinationConnectionID == path.dcid
+            packet.destinationConnectionID == path.scid
                 || validateDCIDFromInboundPacket(packet, on: path)
         else {
             return false
