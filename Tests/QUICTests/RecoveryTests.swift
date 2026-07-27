@@ -72,7 +72,7 @@ final class RecoveryTests: XCTestCase {
     func sentPacket(_ sentPacket: consuming SentPacketRecord, connection: QUICConnection) {
         var packets = NetworkUniqueDeque<SentPacketRecord>()
         packets.append(sentPacket)
-        connection.recovery.recordSentPackets(packets, connection: connection)
+        connection.recovery.recordSentPackets(&packets, connection: connection)
     }
 
     func testInitialValues() {
