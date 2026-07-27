@@ -717,13 +717,13 @@ extension Deserializer where Factory: ~Escapable {
             value = PacketNumber(Int64(pn))
         case 3:
             // 3 bytes
-            var packetNumberBytes = [UInt8](repeating: 0, count: 3)
-            try self.uint8(&packetNumberBytes[2])
-            try self.uint8(&packetNumberBytes[1])
-            try self.uint8(&packetNumberBytes[0])
-            let pn =
-                UInt32(packetNumberBytes[2]) << 16 | UInt32(packetNumberBytes[1]) << 8
-                | UInt32(packetNumberBytes[0])
+            var high: UInt8 = 0
+            var middle: UInt8 = 0
+            var low: UInt8 = 0
+            try self.uint8(&high)
+            try self.uint8(&middle)
+            try self.uint8(&low)
+            let pn = UInt32(high) << 16 | UInt32(middle) << 8 | UInt32(low)
             value = PacketNumber(Int64(pn))
         case 4:
             // 4 bytes

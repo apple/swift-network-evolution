@@ -430,6 +430,43 @@ final class PacketTests: XCTestCase {
             "Stateless Reset packet bytes should be zero due to a invalid packet size"
         )
     }
+
+    func testDeserializePacketNumber() throws {
+        typealias Vector = (
+            description: String,
+            bytes: [UInt8],
+            pnSize: UInt8,
+            expected: PacketNumber
+        )
+        let testVectors: [Vector] = [
+            ("1-byte packet number", [0x7f], 1, 0x7f),
+            ("2-byte packet number", [0x7f, 0xff], 2, 0x7fff),
+            ("3-byte packet number, low byte only", [0x00, 0x00, 0xff], 3, 0xff),
+            ("3-byte packet number, middle byte only", [0x00, 0xff, 0x00], 3, 0xff00),
+            ("3-byte packet number, high byte only", [0xff, 0x00, 0x00], 3, 0xff_0000),
+            ("3-byte packet number, all bytes", [0x12, 0x34, 0x56], 3, 0x12_3456),
+            ("4-byte packet number", [0x7f, 0xff, 0xff, 0xff], 4, 0x7fff_ffff),
+        ]
+
+        for vector in testVectors {
+            var frame = Frame(copyBuffer: vector.bytes)
+            defer {
+                frame.finalize(success: true)
+            }
+
+            var packetNumber = PacketNumber.none
+            let result = Deserializer.deserialize(&frame, claim: true) {
+                read throws(DeserializationError) in
+                try read.packetNumber(&packetNumber, pnSize: vector.pnSize)
+            }
+            XCTAssertEqual(
+                result,
+                .success(parsedBytes: vector.bytes.count, remainingBytes: 0),
+                "Failed test: \(vector.description)"
+            )
+            XCTAssertEqual(packetNumber, vector.expected, "Failed test: \(vector.description)")
+        }
+    }
 }
 
 #endif
