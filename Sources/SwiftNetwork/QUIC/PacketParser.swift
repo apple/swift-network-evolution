@@ -319,11 +319,13 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
     private func parseHeader(frame: inout Frame, dcidLength: Int) throws(QUICError) -> Packet {
         var firstOctet: UInt8 = 0
         let originalLength = frame.unclaimedLength
-        let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
-            try read.uint8(&firstOctet)
+        guard let firstFrameOctet = frame.firstOctet else {
+            throw QUICError.packet(QUICPacketError.deserializationError)
         }
-        try validateDeserializationResult(result)
-
+        guard frame.claim(fromStart: 1) else {
+            throw QUICError.packet(QUICPacketError.deserializationError)
+        }
+        firstOctet = firstFrameOctet
         // Common short/long header bits
         let longHeader = (firstOctet & 0x80) != 0
 
@@ -342,7 +344,6 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                 originalLength: originalLength
             )
         }
-        packet.framesReceived.reserveCapacity(1)
         return packet
     }
 
@@ -523,16 +524,13 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             log.error("Short header fixed bit is zero")
             throw QUICError.packet(QUICPacketError.deserializationError)
         }
-
         var dcidStorage = QUICConnectionIDStorage.empty
-        let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
-            try read.connectionID(&dcidStorage, length: dcidLength)
+        frame.copyInto(inlineArray: &dcidStorage, length: Int(dcidLength))
+        guard frame.claim(fromStart: dcidLength) else {
+            throw QUICError.packet(QUICPacketError.deserializationError)
         }
-        try validateDeserializationResult(result)
-
-        let destinationConnectionID = QUICConnectionID(storage: dcidStorage, size: Int(dcidLength))
         return Packet(
-            destinationConnectionID: destinationConnectionID,
+            destinationConnectionID: QUICConnectionID(storage: dcidStorage, size: Int(dcidLength)),
             headerLength: UInt16(originalLength - frame.unclaimedLength),
             spin: spinValue
         )

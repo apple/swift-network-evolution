@@ -52,12 +52,12 @@ public struct Frame: ~Copyable {
         set { _endOffset = UInt32(newValue) }
     }
     private var _effectiveBufferLength: UInt32 = 0
-    var effectiveBufferLength: Int {
+    @usableFromInline var effectiveBufferLength: Int {
         get { Int(_effectiveBufferLength) }
         set { _effectiveBufferLength = UInt32(newValue) }
     }
     private var _aggregateBufferLength: UInt32 = 0
-    var aggregateBufferLength: Int {
+    @usableFromInline var aggregateBufferLength: Int {
         get { Int(_aggregateBufferLength) }
         set { _aggregateBufferLength = UInt32(newValue) }
     }
@@ -212,6 +212,11 @@ public struct Frame: ~Copyable {
         }
     }
 
+    @inline(__always)
+    public var firstOctet: UInt8? {
+        bytes?.unsafeLoad(fromUncheckedByteOffset: 0, as: UInt8.self)
+    }
+
     // Only unclaimed bytes in frame, for unsafe types
     private var unsafeUnclaimedBuffer: UnsafeMutableRawBufferPointer? {
         switch buffer {
@@ -261,6 +266,7 @@ public struct Frame: ~Copyable {
         }
     }
 
+    @inline(__always)
     public mutating func claim(fromStart: Int, fromEnd: Int = 0, adjustSingleIPAggregate: Bool = true) -> Bool {
         if adjustSingleIPAggregate && isSingleIPAggregate {
             guard fromEnd == 0 else {
@@ -786,6 +792,16 @@ extension Frame {
 
 @available(Network 0.1.0, *)
 extension Frame {
+
+    @inline(__always)
+    func copyInto(inlineArray: inout [20 of UInt8], length: Int) {
+        guard startOffset + length <= self._bytes.count else {
+            return
+        }
+        for i in 0..<length {
+            inlineArray[i] = self._bytes[startOffset + i]
+        }
+    }
     // Copy length bytes from offset in this Frame into destination Frame.
     // checking the source offset, length and destination fit.
     // Return the length that it was able to copy into destination.

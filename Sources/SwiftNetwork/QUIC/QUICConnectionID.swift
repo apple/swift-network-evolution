@@ -88,8 +88,10 @@ public struct QUICConnectionID: Sendable, Equatable, CustomStringConvertible {
     // Creates a QUICConnectionID from an array.
     public init?(_ connectionID: [UInt8]) {
         guard connectionID.count <= QUICConnectionID.maximumSize else {
+            #if !DisableErrorLogging
             let connectionIDCount = connectionID.count
-            Logger.proto.fault("Invalid QUICConnectionID length \(connectionIDCount)")
+            Logger.proto.error("Invalid QUICConnectionID length \(connectionIDCount)")
+            #endif
             return nil
         }
         actualLength = connectionID.count
@@ -101,15 +103,19 @@ public struct QUICConnectionID: Sendable, Equatable, CustomStringConvertible {
         if size <= QUICConnectionID.maximumSize {
             actualLength = size
         } else {
-            Logger.proto.fault("Invalid QUICConnectionID length \(size)")
+            #if !DisableErrorLogging
+            Logger.proto.error("Invalid QUICConnectionID length \(size)")
+            #endif
             actualLength = QUICConnectionID.maximumSize
         }
     }
 
     public init?(_ connectionID: Span<UInt8>) {
         guard connectionID.count <= QUICConnectionID.maximumSize else {
+            #if !DisableErrorLogging
             let connectionIDCount = connectionID.count
-            Logger.proto.fault("Invalid QUICConnectionID length \(connectionIDCount)")
+            Logger.proto.error("Invalid QUICConnectionID length \(connectionIDCount)")
+            #endif
             return nil
         }
         actualLength = connectionID.count
@@ -120,7 +126,9 @@ public struct QUICConnectionID: Sendable, Equatable, CustomStringConvertible {
     public init(_ size: Int) {
         var size = size
         if size > QUICConnectionID.maximumSize {
-            Logger.proto.fault("Invalid QUICConnectionID length \(size)")
+            #if !DisableErrorLogging
+            Logger.proto.error("Invalid QUICConnectionID length \(size)")
+            #endif
             size = QUICConnectionID.maximumSize
         }
         if size != 0 && size < 4 {
@@ -133,7 +141,9 @@ public struct QUICConnectionID: Sendable, Equatable, CustomStringConvertible {
     // Creates a QUICConnectionID from a buffer with a specific size.
     init?(_ buffer: [UInt8], size: Int) {
         guard size <= QUICConnectionID.maximumSize, buffer.count >= size else {
-            Logger.proto.fault("Invalid QUICConnectionID length \(size)")
+            #if !DisableErrorLogging
+            Logger.proto.error("Invalid QUICConnectionID length \(size)")
+            #endif
             return nil
         }
         let cidBytes = Array(buffer[0..<min(size, QUICConnectionID.maximumSize)])
