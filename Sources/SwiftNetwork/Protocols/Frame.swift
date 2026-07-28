@@ -212,11 +212,6 @@ public struct Frame: ~Copyable {
         }
     }
 
-    //    @inline(__always)
-    //    public var firstOctet: UInt8? {
-    //        bytes?.unsafeLoad(fromUncheckedByteOffset: 0, as: UInt8.self)
-    //    }
-
     // Only unclaimed bytes in frame, for unsafe types
     private var unsafeUnclaimedBuffer: UnsafeMutableRawBufferPointer? {
         switch buffer {
