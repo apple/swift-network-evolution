@@ -74,6 +74,47 @@ public enum DeserializationResult: CustomStringConvertible, Equatable, Sendable 
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
+public struct InlineDeserializer {}
+
+@available(Network 0.1.0, *)
+extension InlineDeserializer {
+    @inline(__always)
+    static func uint8(frame: inout Frame, claim: Bool = false) throws(DeserializationError) -> UInt8 {
+        guard frame._bytes.count > 0 else {
+            throw DeserializationError.bufferTooShort
+        }
+        let value: UInt8 = frame._bytes[0]
+        if claim {
+            guard frame.claim(fromStart: 1) else {
+                throw DeserializationError.bufferTooShort
+            }
+        }
+        return value
+    }
+
+    @inline(__always)
+    static func connectionID(
+        frame: inout Frame,
+        storage: inout [20 of UInt8],
+        length: Int,
+        claim: Bool = false
+    ) throws(DeserializationError) {
+        guard frame.startOffset + length <= frame._bytes.count else {
+            return
+        }
+        for i in 0..<length {
+            storage[i] = frame._bytes[frame.startOffset + i]
+        }
+        if claim {
+            guard frame.claim(fromStart: length) else {
+                throw DeserializationError.bufferTooShort
+            }
+        }
+    }
+}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
 public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escapable>: ~Copyable, ~Escapable {
     private var factory: Factory
     private var currentSpan: RawSpan
