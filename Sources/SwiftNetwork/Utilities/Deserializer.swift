@@ -83,7 +83,7 @@ extension InlineDeserializer {
         guard frame._bytes.count > 0 else {
             throw DeserializationError.bufferTooShort
         }
-        let value: UInt8 = frame._bytes[0]
+        let value: UInt8 = frame._bytes[frame.startOffset]
         if claim {
             guard frame.claim(fromStart: 1) else {
                 throw DeserializationError.bufferTooShort
