@@ -169,7 +169,6 @@ public struct QUICConnectionID: Sendable, Equatable, CustomStringConvertible {
             return false
         }
         #if !NETWORK_EMBEDDED
-        // Contstant time equality
         return lhs.connectionIDStorage.span.withUnsafeBytes { left in
             rhs.connectionIDStorage.span.withUnsafeBytes { right in
                 memcmp(left.baseAddress!, right.baseAddress!, 20)
