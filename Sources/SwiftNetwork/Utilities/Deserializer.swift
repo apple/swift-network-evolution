@@ -74,10 +74,10 @@ public enum DeserializationResult: CustomStringConvertible, Equatable, Sendable 
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public struct InlineDeserializer {}
+public struct FrameDeserializer {}
 
 @available(Network 0.1.0, *)
-extension InlineDeserializer {
+extension FrameDeserializer {
     @inline(__always)
     static func uint8(frame: inout Frame, claim: Bool = false) throws(DeserializationError) -> UInt8 {
         guard frame._bytes.count > 0 else {
@@ -90,6 +90,81 @@ extension InlineDeserializer {
             }
         }
         return value
+    }
+
+    @inline(__always)
+    static func uint16(frame: inout Frame, claim: Bool = false) throws(DeserializationError) -> UInt16 {
+        guard frame.startOffset + 2 <= frame._bytes.count else {
+            throw DeserializationError.bufferTooShort
+        }
+        let value = frame._bytes.span.bytes.unsafeLoadUnaligned(
+            fromByteOffset: frame.startOffset,
+            as: UInt16.self
+        )
+        if claim {
+            guard frame.claim(fromStart: 2) else {
+                throw DeserializationError.bufferTooShort
+            }
+        }
+        return value
+    }
+
+    @inline(__always)
+    static func uint16NetworkByteOrder(
+        frame: inout Frame,
+        claim: Bool = false
+    ) throws(DeserializationError) -> UInt16 {
+        UInt16(bigEndian: try uint16(frame: &frame, claim: claim))
+    }
+
+    @inline(__always)
+    static func uint32(frame: inout Frame, claim: Bool = false) throws(DeserializationError) -> UInt32 {
+        guard frame.startOffset + 4 <= frame._bytes.count else {
+            throw DeserializationError.bufferTooShort
+        }
+        let value = frame._bytes.span.bytes.unsafeLoadUnaligned(
+            fromByteOffset: frame.startOffset,
+            as: UInt32.self
+        )
+        if claim {
+            guard frame.claim(fromStart: 4) else {
+                throw DeserializationError.bufferTooShort
+            }
+        }
+        return value
+    }
+
+    @inline(__always)
+    static func uint32NetworkByteOrder(
+        frame: inout Frame,
+        claim: Bool = false
+    ) throws(DeserializationError) -> UInt32 {
+        UInt32(bigEndian: try uint32(frame: &frame, claim: claim))
+    }
+
+    @inline(__always)
+    static func uint64(frame: inout Frame, claim: Bool = false) throws(DeserializationError) -> UInt64 {
+        guard frame.startOffset + 8 <= frame._bytes.count else {
+            throw DeserializationError.bufferTooShort
+        }
+        let value = frame._bytes.span.bytes.unsafeLoadUnaligned(
+            fromByteOffset: frame.startOffset,
+            as: UInt64.self
+        )
+        if claim {
+            guard frame.claim(fromStart: 8) else {
+                throw DeserializationError.bufferTooShort
+            }
+        }
+        return value
+    }
+
+    @inline(__always)
+    static func uint64NetworkByteOrder(
+        frame: inout Frame,
+        claim: Bool = false
+    ) throws(DeserializationError) -> UInt64 {
+        UInt64(bigEndian: try uint64(frame: &frame, claim: claim))
     }
 
     @inline(__always)
@@ -110,6 +185,10 @@ extension InlineDeserializer {
                 throw DeserializationError.bufferTooShort
             }
         }
+    }
+
+    static func claim(frame: inout Frame, length: Int) -> Bool {
+        frame.claim(fromStart: length)
     }
 }
 

@@ -317,8 +317,11 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
     }
 
     private func parseHeader(frame: inout Frame, dcidLength: Int) throws(QUICError) -> Packet {
+        var firstOctet: UInt8 = 0
         let originalLength = frame.unclaimedLength
-        guard let firstOctet = try? InlineDeserializer.uint8(frame: &frame, claim: true) else {
+        do throws(DeserializationError) {
+            firstOctet = try FrameDeserializer.uint8(frame: &frame, claim: true)
+        } catch {
             throw QUICError.packet(QUICPacketError.deserializationError)
         }
         // Common short/long header bits
@@ -520,14 +523,14 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             throw QUICError.packet(QUICPacketError.deserializationError)
         }
         var dcidStorage = QUICConnectionIDStorage.empty
-        guard
-            let _ = try? InlineDeserializer.connectionID(
+        do throws(DeserializationError) {
+            try FrameDeserializer.connectionID(
                 frame: &frame,
                 storage: &dcidStorage,
                 length: Int(dcidLength),
                 claim: true
             )
-        else {
+        } catch {
             throw QUICError.packet(QUICPacketError.deserializationError)
         }
         return Packet(
