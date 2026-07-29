@@ -446,6 +446,13 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<InboundStreamLinkag
         throw NetworkError.posix(EINVAL)
     }
 
+    func attachLowerStreamProtocolToExistingFlow(
+        listener: StreamListenerLinkage,
+        flowReference: ProtocolInstanceReference
+    ) throws(NetworkError) {
+        throw NetworkError.posix(EINVAL)
+    }
+
     convenience init(
         identifier: String = "",
         local: Endpoint?,
