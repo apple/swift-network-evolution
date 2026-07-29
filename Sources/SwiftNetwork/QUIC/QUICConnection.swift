@@ -2988,7 +2988,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // 'sentPackets' is held onto for the lifetime of the connection. If a send burst grows it
         // beyond a certain limit then drop the capacity. This avoids bursty traffic bloating memory
         // indefinitely.
-        if self.sentPackets.capacity > 512 {
+        if self.sentPackets.capacity > QUICPreferences.shared.maxSentPacketsCapacity {
             self.sentPackets = NetworkUniqueDeque()
         }
     }
