@@ -150,6 +150,11 @@ public protocol InboundStreamHandler: ~Copyable, InboundDataHandler where LowerP
         path: PathProperties?
     ) throws(NetworkError)
 
+    mutating func attachLowerStreamProtocolToExistingFlow(
+        listener: StreamListenerLinkage,
+        flowReference: ProtocolInstanceReference
+    ) throws(NetworkError)
+
     mutating func handleInboundAbortedEvent(_ from: ProtocolInstanceReference, error: NetworkError?)
     mutating func handleOutboundAbortedEvent(_ from: ProtocolInstanceReference, error: NetworkError?)
 }

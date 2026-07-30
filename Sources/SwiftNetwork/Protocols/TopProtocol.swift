@@ -324,6 +324,19 @@ extension TopProtocolHandler where Self: ~Copyable, LowerProtocol == OutboundStr
             path: path
         )
     }
+
+    public mutating func attachLowerStreamProtocolToExistingFlow(
+        listener: StreamListenerLinkage,
+        flowReference: ProtocolInstanceReference
+    ) throws(NetworkError) {
+        guard lower.isDetached else {
+            throw NetworkError.posix(EALREADY)
+        }
+        self.lower = try listener.invokeAttachUpperStreamProtocolToExistingFlow(
+            reference,
+            flowReference: flowReference
+        )
+    }
 }
 
 @available(Network 0.1.0, *)
