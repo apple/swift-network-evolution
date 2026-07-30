@@ -748,13 +748,12 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
     }
 
+    // Note: drains 'sentPackets', leaving the caller's storage empty and reusable.
     mutating func recordSentPackets(
-        _ sentPackets: consuming NetworkUniqueDeque<SentPacketRecord>,
+        _ sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         connection: QUICConnection
     ) {
-        var sentPackets = sentPackets
-        while !sentPackets.isEmpty {
-            let packet = sentPackets.remove(at: 0)
+        while let packet = sentPackets.popFirst() {
             sentPacket(packet, time: connection.now, connection: connection)
         }
         if inBatch {
@@ -971,8 +970,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
         // We may have lost a PMTUD probe, so check if we want to resend it
         connection.withCurrentPath { path in
-            let sentPackets = path.pmtudState.tryToSend(on: path)
-            recordSentPackets(sentPackets, connection: connection)
+            var sentPackets = path.pmtudState.tryToSend(on: path)
+            recordSentPackets(&sentPackets, connection: connection)
             return
         }
     }
@@ -1019,8 +1018,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             // want to resend it.
             let path = path ?? connection.currentPath
             if let path {
-                let sentPackets = path.pmtudState.tryToSend(on: path)
-                recordSentPackets(sentPackets, connection: connection)
+                var sentPackets = path.pmtudState.tryToSend(on: path)
+                recordSentPackets(&sentPackets, connection: connection)
             }
             connection.sendAllEnqueuedOutboundDatagrams()
         }
@@ -1247,11 +1246,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             innerState.largerPacketCount > 0
         }
         if hasLargerPacketCount {
-            let sentPackets = path.pmtudState.ptoEvent(
+            var sentPackets = path.pmtudState.ptoEvent(
                 on: path,
                 ptoCount: path.recoveryState.PTOCount
             )
-            recordSentPackets(sentPackets, connection: connection)
+            recordSentPackets(&sentPackets, connection: connection)
         }
     }
 
