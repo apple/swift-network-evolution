@@ -55,23 +55,19 @@ final class PacketTests: XCTestCase {
     }
 
     func testCleanupReceivedFrames_drainsEntireDeque() {
-        var packet = Packet(
-            number: PacketNumber(1),
-            lastAcked: 0,
-            keyState: .phase0
-        )
-        packet.framesReceived.append(
+        var parser = PacketParser(logPrefixer: LogPrefixer("[PacketTests]"))
+        parser.framesReceived.append(
             .stream(frame: FrameStreamReceived(id: 0, offset: 0, data: [1, 2, 3]))
         )
-        packet.framesReceived.append(
+        parser.framesReceived.append(
             .stream(frame: FrameStreamReceived(id: 4, offset: 0, data: [4, 5, 6]))
         )
 
-        packet.cleanupReceivedFrames()
+        parser.cleanupReceivedFrames()
 
         // Drain leftover frames at the end of the test to avoid precondition failure in deinit.
         defer {
-            while let leftover = packet.framesReceived.popFirst() {
+            while let leftover = parser.framesReceived.popFirst() {
                 switch leftover {
                 case .crypto(var f): f.frame.finalize(success: false)
                 case .stream(var f): f.frame.finalize(success: false)
@@ -82,7 +78,7 @@ final class PacketTests: XCTestCase {
         }
 
         XCTAssertTrue(
-            packet.framesReceived.isEmpty,
+            parser.framesReceived.isEmpty,
             "cleanupReceivedFrames must drain all frames, not just the first"
         )
     }
