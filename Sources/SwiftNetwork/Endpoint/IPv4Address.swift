@@ -130,6 +130,18 @@ public struct IPv4Address: IPAddress, Hashable, CustomDebugStringConvertible {
         self = IPv4Address(address)
     }
 
+    /// An IPv4 address parsed from a dotted-decimal string (e.g. `"192.168.1.1"`).
+    public init?(_ string: String) {
+        let octets = string.split(separator: ".", maxSplits: 3, omittingEmptySubsequences: false)
+        guard octets.count == 4,
+            let a = UInt8(octets[0]),
+            let b = UInt8(octets[1]),
+            let c = UInt8(octets[2]),
+            let d = UInt8(octets[3])
+        else { return nil }
+        self.init((UInt32(a) << 24 | UInt32(b) << 16 | UInt32(c) << 8 | UInt32(d)).bigEndian)
+    }
+
     static func ipv4AddressString(from address: UInt32) -> String {
         withUnsafeBytes(of: address) {
             "\($0[0]).\($0[1]).\($0[2]).\($0[3])"

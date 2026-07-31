@@ -129,6 +129,58 @@ public struct IPv6Address: IPAddress, Hashable, CustomDebugStringConvertible {
         self = IPv6Address(address)
     }
 
+    /// An IPv6 address parsed from a string (e.g. `"2001:db8::1"` or `"::1"`).
+    public init?(_ string: String) {
+        guard let groups = IPv6Address.parseToGroups(string) else { return nil }
+        self.init(
+            (
+                (UInt32(groups[0]) << 16 | UInt32(groups[1])).bigEndian,
+                (UInt32(groups[2]) << 16 | UInt32(groups[3])).bigEndian,
+                (UInt32(groups[4]) << 16 | UInt32(groups[5])).bigEndian,
+                (UInt32(groups[6]) << 16 | UInt32(groups[7])).bigEndian
+            )
+        )
+    }
+
+    // Parses an IPv6 address string into 8 network-order UInt16 groups.
+    // Handles :: compression and full notation.
+    private static func parseToGroups(_ addr: String) -> [UInt16]? {
+        var searchIndex = addr.startIndex
+
+        // Position of '::' in the string, if present. Used to expand compressed zeros.
+        var doubleColonRange: Range<String.Index>? = nil
+        while searchIndex < addr.endIndex {
+            let nextIndex = addr.index(after: searchIndex)
+            if nextIndex < addr.endIndex && addr[searchIndex] == ":" && addr[nextIndex] == ":" {
+                doubleColonRange = searchIndex..<addr.index(after: nextIndex)
+                break
+            }
+            searchIndex = nextIndex
+        }
+
+        func parseHalf(_ half: String) -> [UInt16]? {
+            if half.isEmpty { return [] }
+            var result: [UInt16] = []
+            for part in half.split(separator: ":", omittingEmptySubsequences: false) {
+                guard !part.isEmpty, part.count <= 4, let value = UInt16(part, radix: 16) else { return nil }
+                result.append(value)
+            }
+            return result
+        }
+
+        if let range = doubleColonRange {
+            guard let left = parseHalf(String(addr[addr.startIndex..<range.lowerBound])),
+                let right = parseHalf(String(addr[range.upperBound..<addr.endIndex]))
+            else { return nil }
+            let zeroCount = 8 - left.count - right.count
+            guard zeroCount >= 0 else { return nil }
+            return left + [UInt16](repeating: 0, count: zeroCount) + right
+        } else {
+            guard let groups = parseHalf(addr), groups.count == 8 else { return nil }
+            return groups
+        }
+    }
+
     static func isIPv4Mapped(from address: (UInt32, UInt32, UInt32, UInt32)) -> Bool {
         address.0 == 0 && address.1 == 0 && address.2 == UInt32(0x0000_ffff).bigEndian
     }
