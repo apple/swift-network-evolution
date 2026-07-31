@@ -1125,11 +1125,13 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         let peerCompletedValidation = peerCompletedValidation(connection: connection)
         var shouldClearTimer = false
         var discardInitialRecoveryState = false
+        var hadAckElicitingInFlight = false
         applyToAllInnerStatesMutable { innerState, packetNumberSpace in
             let ackElicitingPacketsInFlight = innerState.ackElicitingPacketsInFlight
             if ackElicitingPacketsInFlight == 0 {
                 return
             }
+            hadAckElicitingInFlight = true
             connection.log.datapath(
                 "PTO \(path.recoveryState.PTOCount) (\(packetNumberSpace)) fired on path \(path.identifier) with \(ackElicitingPacketsInFlight) ack-eliciting packets in flight"
             )
@@ -1190,7 +1192,18 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         if !sentPTO {
             connection.log.datapath("Sending a PING as PTO")
             if peerCompletedValidation {
-                connection.log.fault("PTO fired after validation")
+                if hadAckElicitingInFlight {
+                    // A PTO fired with ack-eliciting packets still in flight, but the probe could
+                    // not be sent because the retransmit was flow-controlled or otherwise
+                    // unavailable. Under heavy loss this is a legitimate loss-recovery outcome
+                    // rather than an anomaly, so log it at error level instead of faulting. The
+                    // timer is still cleared below so the PTO does not immediately re-arm and spin.
+                    connection.log.error("PTO fired after validation but could not send probe, likely flow-controlled")
+                } else {
+                    // A PTO fired after validation with nothing ack-eliciting in flight. The PTO
+                    // timer should not have been armed in that state, so log a fault.
+                    connection.log.fault("PTO fired after validation")
+                }
                 shouldClearTimer = true
             } else {
                 // Anti deadlock PING frame (i.e PADDED PING). The PING will be padded when we send an initial packet.
