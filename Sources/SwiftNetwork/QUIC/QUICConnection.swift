@@ -359,7 +359,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var testSendingShortPackets = false
     private(set) var migrationSupported = false
 
-    private var pendOutboundData = false // Don't immediately process application sends
+    private var pendOutboundData = false  // Don't immediately process application sends
 
     // false == IPv6, true == IPv4
     private(set) var initialAddressIsIPv4 = false
