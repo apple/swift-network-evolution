@@ -38,7 +38,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
     var framesReceived = NetworkUniqueDeque<QUICFrame>()
 
     // Initial capacity for `framesReceived`.
-    private static var framesReceivedCapacity: Int { 16 }
+    private static var framesReceivedCapacity: Int { 4 }
 
     init(logPrefixer: LogPrefixer) {
         self.log = logPrefixer
