@@ -1006,7 +1006,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         }
 
         func setCloseWithError(handler: @escaping QUICMetadataSetterHandler) {
-            mutex.withLock { _ in
+            closeMutex.withLock { _ in
                 self.closeWithErrorHandler = handler
             }
         }
