@@ -359,6 +359,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var testSendingShortPackets = false
     private(set) var migrationSupported = false
 
+    private var pendOutboundData = false // Don't immediately process application sends
+
     // false == IPv6, true == IPv4
     private(set) var initialAddressIsIPv4 = false
 
@@ -2460,6 +2462,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         // Note: trigger sending of any frames based on this external event
         checkConnectionIdle()
+
+        guard !pendOutboundData else {
+            log.datapath("Outbound data pended, ignore send frames")
+            return
+        }
         sendFrames()
     }
 
@@ -5490,6 +5497,11 @@ extension QUICConnection {
 
         // Note: trigger sendFrames() based on this external event
         checkConnectionIdle()
+
+        guard !pendOutboundData else {
+            log.datapath("Outbound data pended, ignore send frames")
+            return
+        }
         if !sendFrames() {
             log.datapath("failed to send DATAGRAM frames")
         }
@@ -5889,6 +5901,19 @@ extension QUICConnection {
     }
 
     public func handleApplicationEvent(_ event: ApplicationEvent) -> HandleNetworkEventResult {
+        if event == .outboundDataBatchStart {
+            // Start pending processing
+            pendOutboundData = true
+            return .consumed
+        }
+
+        if event == .outboundDataBatchEnd {
+            // Stop pending processing, resume sending
+            pendOutboundData = false
+            sendFrames()
+            return .consumed
+        }
+
         guard let quicEvent = event.quicEvent else {
             return .unconsumed
         }

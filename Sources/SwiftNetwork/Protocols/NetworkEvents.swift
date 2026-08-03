@@ -111,6 +111,7 @@ public struct ApplicationEvent: Sendable, Equatable, CustomStringConvertible {
     enum InternalEvent: Equatable {
         case dataStall
         case connectionIdle(idle: Bool)
+        case outboundDataPending(pending: Bool)
         case quic(event: QUICApplicationEvent)
         #if !NETWORK_EMBEDDED
         case custom(event: any DomainSpecificApplicationEvent)
@@ -120,6 +121,7 @@ public struct ApplicationEvent: Sendable, Equatable, CustomStringConvertible {
             switch (lhs, rhs) {
             case (.dataStall, .dataStall): return true
             case (.connectionIdle(let lState), .connectionIdle(let rState)): return lState == rState
+            case (.outboundDataPending(let lState), .outboundDataPending(let rState)): return lState == rState
             default:
                 return false
             }
@@ -131,6 +133,7 @@ public struct ApplicationEvent: Sendable, Equatable, CustomStringConvertible {
         switch internalEvent {
         case .dataStall: return nil
         case .connectionIdle: return nil
+        case .outboundDataPending: return nil
         case .quic(let event): return event.domain
         #if !NETWORK_EMBEDDED
         case .custom(let event): return event.domain
@@ -154,6 +157,14 @@ public struct ApplicationEvent: Sendable, Equatable, CustomStringConvertible {
         .init(internalEvent: .connectionIdle(idle: false))
     }
 
+    static public var outboundDataBatchStart: ApplicationEvent {
+        .init(internalEvent: .outboundDataPending(pending: true))
+    }
+
+    static public var outboundDataBatchEnd: ApplicationEvent {
+        .init(internalEvent: .outboundDataPending(pending: false))
+    }
+
     public init(quicEvent: QUICApplicationEvent) {
         self.internalEvent = .quic(event: quicEvent)
     }
@@ -172,6 +183,12 @@ public struct ApplicationEvent: Sendable, Equatable, CustomStringConvertible {
                 return "Connection Idle"
             } else {
                 return "Connection Reused"
+            }
+        case .outboundDataPending(let pending):
+            if pending {
+                return "Outbound Data Pending"
+            } else {
+                return "Outbound Data No Longer Pending"
             }
         case .quic(let event): return event.description
         #if !NETWORK_EMBEDDED
