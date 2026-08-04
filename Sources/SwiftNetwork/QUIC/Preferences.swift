@@ -30,6 +30,7 @@ struct QUICPreferences {
     let initialMaxStreamBidirectionalLocalData: Int? = nil
     let maxConnectivityProbes: Int = 3
     let maxSentPacketsCapacity: Int = 512
+    let maxReceivedFramesCapacity: Int = 128
 
     private init() {}
 }
@@ -56,6 +57,7 @@ struct QUICPreferences: ~Copyable, Sendable {
     let quiclogDirectory: String
     let maxConnectivityProbes: Int
     let maxSentPacketsCapacity: Int
+    let maxReceivedFramesCapacity: Int
 
     // Flow Control
     let initialStreamReceiveSpace: Int?
@@ -115,6 +117,10 @@ struct QUICPreferences: ~Copyable, Sendable {
         maxSentPacketsCapacity = QUICPreferences.findSetting(
             "max_sent_packets_capacity",
             defaultValue: 512
+        )
+        maxReceivedFramesCapacity = QUICPreferences.findSetting(
+            "max_received_frames_capacity",
+            defaultValue: 128
         )
         quiclogDirectory = QUICPreferences.findSetting("quiclog_directory", defaultValue: "")
 

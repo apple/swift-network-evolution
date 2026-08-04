@@ -16,7 +16,6 @@
 
 #if canImport(BasicContainers)
 import BasicContainers
-internal import DequeModule
 #endif
 
 #if canImport(Glibc)
@@ -231,9 +230,6 @@ struct Packet: ~Copyable {
         identifier.space
     }
 
-    // Temporary storage for parsed frames
-    var framesReceived = NetworkUniqueDeque<QUICFrame>()
-
     // Temporary storage used for logging, only set when datapath logs or QLog is enabled
     var shorthandFrames: [QUICShorthandFrame]?
 
@@ -248,24 +244,6 @@ struct Packet: ~Copyable {
 
     // Version Negotiation
     private(set) var versions: [QUICVersion]?
-
-    mutating func cleanupReceivedFrames() {
-        while let receivedFrame = framesReceived.popFirst() {
-            let type = receivedFrame.frameType
-            switch type {
-            case .crypto:
-                guard case .crypto(var frame) = receivedFrame else { continue }
-                frame.frame.finalize(success: false)
-            case .stream:
-                guard case .stream(var frame) = receivedFrame else { continue }
-                frame.frame.finalize(success: false)
-            case .datagram:
-                guard case .datagram(var frame) = receivedFrame else { continue }
-                frame.frame.finalize(success: false)
-            default: continue
-            }
-        }
-    }
 
     // Flags
     struct Flags: OptionSet {

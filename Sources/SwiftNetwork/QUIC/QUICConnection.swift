@@ -1720,7 +1720,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         defer {
             // Make sure to always clean up any unprocessed frames when exiting
-            packet.cleanupReceivedFrames()
+            packetParser.cleanupReceivedFrames()
         }
 
         log(packet: &packet, coalesced: coalesced, outbound: false)
@@ -1768,7 +1768,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var isAckEliciting = false
         var isNonProbing = false
 
-        while let quicFrame = packet.framesReceived.popFirst() {
+        while let quicFrame = packetParser.framesReceived.popFirst() {
             if state == .initialReceived {
                 if !QUICFrame.isValidInInitial(frame: quicFrame) {
                     close(
