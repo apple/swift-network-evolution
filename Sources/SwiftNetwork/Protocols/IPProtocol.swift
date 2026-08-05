@@ -969,7 +969,7 @@ public struct IPProtocol: NetworkProtocol {
                         var fragmentationSucceeded = true
                         var fragmentFrames = FrameArray()
                         while cursor < payloadLength {
-                            // Determine if last or hold large the chunk length is
+                            // Determine if last or how large the chunk length is
                             let remaining = payloadLength - cursor
                             let isLast = remaining <= fragmentRoom
                             let chunkLength = isLast ? remaining : fragmentRoom
@@ -1667,7 +1667,7 @@ public struct IPProtocol: NetworkProtocol {
                 frames.iterateMutableFrames { frame in
                     _ = frame.unclaim(fromStart: IPv6Instance.headerLength)
 
-                    let payloadLength = UInt16(frame.unclaimedLength - IPv6Instance.headerLength)
+                    let payloadLength = frame.unclaimedLength - IPv6Instance.headerLength
                     let localAddressValue = self.localAddress.addressValue
                     let remoteAddressValue = self.remoteAddress.addressValue
 
@@ -1686,9 +1686,99 @@ public struct IPProtocol: NetworkProtocol {
                     if dscpValue != 0 {
                         flow |= UInt32(bigEndian: (UInt32(dscpValue) << 22) & 0x0fc0_0000)  // IP6FLOW_DSCP_SHIFT
                     }
+
+                    let enableFragmentation: Bool
+                    if let fragmentationOverride = frame.fragmentationOverride {
+                        enableFragmentation = fragmentationOverride
+                    } else {
+                        enableFragmentation = self.flags.enableFragmentation
+                    }
+
+                    // IPv6 header + Fragment Extension Header
+                    let ipv6CompleteHeaderLength =
+                        IPv6Instance.headerLength + IPv6Instance.fragmentExtensionHeaderLength
+                    let mtu = self.pathProperties.mtu
+                    var maxPayloadPerFragment = 0
+                    if mtu > ipv6CompleteHeaderLength {
+                        maxPayloadPerFragment = mtu - ipv6CompleteHeaderLength
+                    }
+
+                    // Handle fragmentation if payloadLength is greater than maxPayloadPerFragment and enableFragmentation is enabled
+                    if enableFragmentation && maxPayloadPerFragment > 0 && payloadLength > maxPayloadPerFragment {
+                        var randomNumber = SystemRandomNumberGenerator()
+                        let fragmentID = UInt32(truncatingIfNeeded: randomNumber.next())
+                        // Align fragment payload to blocks of 8 bytes - RFC 2460
+                        let fragmentRoom = maxPayloadPerFragment - (maxPayloadPerFragment % 8)
+                        guard fragmentRoom > 0 else {
+                            frame.finalize(success: false)
+                            return .removeFrameAndContinue
+                        }
+                        var cursor = 0
+                        var fragmentationSucceeded = true
+                        var fragmentFrames = FrameArray()
+                        while cursor < payloadLength {
+                            // Determine if last or how large the chunk length is
+                            let remaining = payloadLength - cursor
+                            let isLast = remaining <= fragmentRoom
+                            let chunkLength = isLast ? remaining : fragmentRoom
+                            // Fragment Extension Header + this chunk's payload.
+                            let fragmentLength = UInt16(chunkLength + IPv6Instance.fragmentExtensionHeaderLength)
+                            // Fragment offset flags
+                            let offsetFlags = UInt16(cursor) | (isLast ? 0 : UInt16(IPv6Instance.ip6fMoreFragmentMask))
+                            var fragmentFrame = Frame(count: ipv6CompleteHeaderLength + chunkLength)
+                            let result = Serializer.serialize(&fragmentFrame, claim: false) {
+                                write throws(SerializationError) in
+                                // IPv6 base header
+                                try write.uint32(flow)
+                                try write.uint16NetworkByteOrder(fragmentLength)
+                                try write.uint8(IPv6Instance.fragmentExtensionHeader)
+                                try write.uint8(self.hopLimit)
+                                try write.uint32(localAddressValue.0)
+                                try write.uint32(localAddressValue.1)
+                                try write.uint32(localAddressValue.2)
+                                try write.uint32(localAddressValue.3)
+                                try write.uint32(remoteAddressValue.0)
+                                try write.uint32(remoteAddressValue.1)
+                                try write.uint32(remoteAddressValue.2)
+                                try write.uint32(remoteAddressValue.3)
+                                // Fragment Extension Header
+                                try write.uint8(self.ipProtocolNumber)
+                                try write.uint8(0)
+                                try write.uint16NetworkByteOrder(offsetFlags)
+                                try write.uint32(fragmentID)
+                            }
+                            guard result.isValid else {
+                                Logger.proto.error("Serializing IPv6 fragment failed with result: \(result)")
+                                fragmentFrame.finalize(success: false)
+                                fragmentationSucceeded = false
+                                break
+                            }
+                            let copied = frame.copyInto(
+                                &fragmentFrame,
+                                atOffset: ipv6CompleteHeaderLength,
+                                fromOffset: IPv6Instance.headerLength + cursor,
+                                length: chunkLength
+                            )
+                            guard copied == chunkLength else {
+                                fragmentFrame.finalize(success: false)
+                                fragmentationSucceeded = false
+                                break
+                            }
+                            self.counters.txPackets += 1
+                            fragmentFrames.add(frame: fragmentFrame)
+                            cursor += chunkLength
+                        }
+                        frame.finalize(success: fragmentationSucceeded)
+                        if fragmentationSucceeded {
+                            return .replaceWithFramesAndContinue(fragmentFrames)
+                        }
+                        fragmentFrames.finalizeAllFramesAsFailed()
+                        return .removeFrameAndContinue
+                    }
+                    // Standard path
                     let result = Serializer.serialize(&frame, claim: false) { write throws(SerializationError) in
                         try write.uint32(flow)
-                        try write.uint16NetworkByteOrder(payloadLength)
+                        try write.uint16NetworkByteOrder(UInt16(payloadLength))
                         try write.uint8(self.ipProtocolNumber)
                         try write.uint8(self.hopLimit)
                         try write.uint32(localAddressValue.0)
@@ -1702,10 +1792,10 @@ public struct IPProtocol: NetworkProtocol {
                     }
                     if !result.isValid {
                         Logger.proto.error("Serializing IPv6 packet failed with result: \(result)")
-                        return true
+                        return .continueIterating
                     }
                     self.counters.txPackets += 1
-                    return true
+                    return .continueIterating
                 }
             }
         }
