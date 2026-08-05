@@ -25,29 +25,22 @@ public protocol DeserializerSpanFactory: ~Copyable, ~Escapable {
     var availableByteCount: Int { get }
 }
 
-/// A factory that stores a single span.
+/// A factory that stores no spans.
 ///
 /// Use this factory when initializing a `Deserializer` directly from a `RawSpan`.
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public struct SingleSpanFactory: ~Escapable, DeserializerSpanFactory {
-    private var span: RawSpan
-    private var consumed: Bool = false
-
-    @_lifetime(copy span)
-    init(_ span: RawSpan) {
-        self.span = span
-    }
+public struct EmptySpanFactory: ~Escapable, DeserializerSpanFactory {
+    @_lifetime(immortal)
+    init() {}
 
     @_lifetime(&self)
     public mutating func nextSpan() -> RawSpan? {
-        guard !consumed else { return nil }
-        consumed = true
-        return span
+        nil
     }
 
     public var availableByteCount: Int {
-        span.byteCount
+        0
     }
 }
 
