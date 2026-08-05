@@ -37,26 +37,34 @@ public struct Frame: ~Copyable {
         case customFinalizer(buffer: UnsafeMutableRawBufferPointer, finalizer: (UnsafeMutableRawBufferPointer) -> Void)
     }
 
-    public var buffer: Buffer
-
     var _bytes: NetworkUniqueArray<UInt8> = .init()
+    var protocolMetadatas: NetworkUniqueDeque<FrameProtocolMetadata> = .init(minimumCapacity: 0)
+    var ipPacketValues: IPPacketValues? = nil
+    public var buffer: Buffer
+    var appMetadata: AppMetadata? = nil
 
     private var _startOffset: UInt32 = 0
+
+    var timestamp: FrameTimestamp? = nil
+    var flags: Flags = Flags()
+    var _metadataComplete: Bool = false
+    public var connectionComplete: Bool = false
+    private var _endOffset: UInt32 = 0
+    private var _effectiveBufferLength: UInt32 = 0
+    private var _aggregateBufferLength: UInt32 = 0
+
     @usableFromInline var startOffset: Int {
         get { Int(_startOffset) }
         set { _startOffset = UInt32(newValue) }
     }
-    private var _endOffset: UInt32 = 0
     @usableFromInline var endOffset: Int {
         get { Int(_endOffset) }
         set { _endOffset = UInt32(newValue) }
     }
-    private var _effectiveBufferLength: UInt32 = 0
     var effectiveBufferLength: Int {
         get { Int(_effectiveBufferLength) }
         set { _effectiveBufferLength = UInt32(newValue) }
     }
-    private var _aggregateBufferLength: UInt32 = 0
     var aggregateBufferLength: Int {
         get { Int(_aggregateBufferLength) }
         set { _aggregateBufferLength = UInt32(newValue) }
@@ -464,7 +472,6 @@ public struct Frame: ~Copyable {
         static let isBackground = Frame.Flags(rawValue: 1 << 5)
         static let isRealtime = Frame.Flags(rawValue: 1 << 6)
     }
-    var flags: Flags = Flags()
 
     struct IPPacketValues {
         struct Flags: OptionSet {
@@ -507,13 +514,11 @@ public struct Frame: ~Copyable {
             }
         }
     }
-    var ipPacketValues: IPPacketValues? = nil
 
     struct AppMetadata: ~Copyable {
         let appType: UInt8
         let appMetadata: UInt8
     }
-    var appMetadata: AppMetadata? = nil
 
     var isSingleIPAggregate: Bool {
         get { flags.contains(.isSingleIPAggregate) }
@@ -671,7 +676,6 @@ public struct Frame: ~Copyable {
         var metadata: AbstractProtocolMetadata
         var metadataComplete: Bool = false
     }
-    var protocolMetadatas: NetworkUniqueDeque<FrameProtocolMetadata> = .init(minimumCapacity: 0)
 
     public var firstMetadata: AbstractProtocolMetadata? {
         guard protocolMetadatas.count > 0 else {
@@ -679,7 +683,6 @@ public struct Frame: ~Copyable {
         }
         return protocolMetadatas[0].metadata
     }
-    var _metadataComplete: Bool = false
     var metadataComplete: Bool {
         get {
             if protocolMetadatas.count > 0 {
@@ -689,13 +692,11 @@ public struct Frame: ~Copyable {
         }
         set { _metadataComplete = newValue }
     }
-    public var connectionComplete: Bool = false
 
     enum FrameTimestamp {
         case receiveTime(_ timestamp: NetworkClock.Instant)
         case expireTime(_ timestamp: NetworkClock.Instant)
     }
-    var timestamp: FrameTimestamp? = nil
 
     mutating func reduceAggregateBufferLength(by length: Int) {
         if isSingleIPAggregate {
