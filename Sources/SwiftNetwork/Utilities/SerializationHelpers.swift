@@ -32,11 +32,11 @@ public protocol DeserializerSpanFactory: ~Copyable, ~Escapable {
 @available(Network 0.1.0, *)
 public struct EmptySpanFactory: ~Escapable, DeserializerSpanFactory {
     @_lifetime(immortal)
-    init() { }
+    init() {}
 
     @_lifetime(&self)
     public mutating func nextSpan() -> RawSpan? {
-        return nil
+        nil
     }
 
     public var availableByteCount: Int {

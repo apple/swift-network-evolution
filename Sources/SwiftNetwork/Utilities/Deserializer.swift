@@ -79,7 +79,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     private var currentSpan: RawSpan
     private var currentSpanByteCount = 0
     private var availableByteCount: Int
-    private var scratchSpace: [16 of UInt8]? // Initialized lazily
+    private var scratchSpace: [16 of UInt8]?  // Initialized lazily
     private var cursor = 0
     private var previousSpanAggregateByteCount = 0
     private(set) var internalResult: DeserializationResult = .success
