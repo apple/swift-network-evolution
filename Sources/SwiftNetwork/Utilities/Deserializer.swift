@@ -42,6 +42,7 @@ public enum DeserializationResult: CustomStringConvertible, Equatable, Sendable 
     case success(parsedBytes: Int, remainingBytes: Int)
     case error(DeserializationError)
 
+    @usableFromInline
     static let success: Self = .success(parsedBytes: 0, remainingBytes: 0)
 
     public var description: String {
@@ -76,11 +77,11 @@ public enum DeserializationResult: CustomStringConvertible, Equatable, Sendable 
 @available(Network 0.1.0, *)
 public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escapable>: ~Copyable, ~Escapable {
     private var factory: Factory
-    private var currentSpan: RawSpan
-    private var currentSpanByteCount = 0
+    @usableFromInline internal var currentSpan: RawSpan
+    @usableFromInline internal var currentSpanByteCount = 0
     private var availableByteCount: Int
     private var scratchSpace: [16 of UInt8]?  // Initialized lazily
-    private var cursor = 0
+    @usableFromInline internal var cursor = 0
     private var previousSpanAggregateByteCount = 0
     private(set) var internalResult: DeserializationResult = .success
 
@@ -339,11 +340,32 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         moveCursorUnchecked(length)
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint8(_ value: inout UInt8) throws(DeserializationError) {
-        try readFixedSize(&value)
+        guard cursor < currentSpanByteCount else {
+            // Fallback for multi-span cases
+            try readUInt8AtSpanBoundary(&value)
+            return
+        }
+        value = UInt8(currentSpan.unsafeLoadUnaligned(fromByteOffset: cursor, as: UInt8.self))
+        // Move by one byte
+        cursor &+= 1
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint8(_ value: inout UInt8?) throws(DeserializationError) {
+        var temp: UInt8 = 0
+        try uint8(&temp)
+        value = temp
+    }
+
+    @usableFromInline
+    @inline(never)
+    internal mutating func readUInt8AtSpanBoundary(_ value: inout UInt8) throws(DeserializationError) {
         try readFixedSize(&value)
     }
 
@@ -363,11 +385,32 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         try validateValue(expect: value)
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint16(_ value: inout UInt16) throws(DeserializationError) {
-        try readFixedSize(&value)
+        guard (currentSpanByteCount - cursor) >= 2 else {
+            // Fallback for multi-span cases
+            try readUInt16AtSpanBoundary(&value)
+            return
+        }
+        value = currentSpan.unsafeLoadUnaligned(fromByteOffset: cursor, as: UInt16.self)
+        // Move by two bytes
+        cursor &+= 2
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint16(_ value: inout UInt16?) throws(DeserializationError) {
+        var temp: UInt16 = 0
+        try uint16(&temp)
+        value = temp
+    }
+
+    @usableFromInline
+    @inline(never)
+    internal mutating func readUInt16AtSpanBoundary(_ value: inout UInt16) throws(DeserializationError) {
         try readFixedSize(&value)
     }
 
@@ -387,11 +430,32 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         try validateValue(expect: value)
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint32(_ value: inout UInt32) throws(DeserializationError) {
-        try readFixedSize(&value)
+        guard (currentSpanByteCount - cursor) >= 4 else {
+            // Fallback for multi-span cases
+            try readUInt32AtSpanBoundary(&value)
+            return
+        }
+        value = currentSpan.unsafeLoadUnaligned(fromByteOffset: cursor, as: UInt32.self)
+        // Move by four bytes
+        cursor &+= 4
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint32(_ value: inout UInt32?) throws(DeserializationError) {
+        var temp: UInt32 = 0
+        try uint32(&temp)
+        value = temp
+    }
+
+    @usableFromInline
+    @inline(never)
+    internal mutating func readUInt32AtSpanBoundary(_ value: inout UInt32) throws(DeserializationError) {
         try readFixedSize(&value)
     }
 
@@ -399,11 +463,32 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         try validateValue(expect: value)
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint64(_ value: inout UInt64) throws(DeserializationError) {
-        try readFixedSize(&value)
+        guard (currentSpanByteCount - cursor) >= 8 else {
+            // Fallback for multi-span cases
+            try readUInt64AtSpanBoundary(&value)
+            return
+        }
+        value = currentSpan.unsafeLoadUnaligned(fromByteOffset: cursor, as: UInt64.self)
+        // Move by eight bytes
+        cursor &+= 8
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint64(_ value: inout UInt64?) throws(DeserializationError) {
+        var temp: UInt64 = 0
+        try uint64(&temp)
+        value = temp
+    }
+
+    @usableFromInline
+    @inline(never)
+    internal mutating func readUInt64AtSpanBoundary(_ value: inout UInt64) throws(DeserializationError) {
         try readFixedSize(&value)
     }
 
@@ -411,11 +496,32 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         try validateValue(expect: value)
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint16NetworkByteOrder(_ value: inout UInt16) throws(DeserializationError) {
-        try readFixedSize(&value, networkByteOrder: true)
+        guard (currentSpanByteCount - cursor) >= 2 else {
+            // Fallback for multi-span cases
+            try readUInt16NBOAtSpanBoundary(&value)
+            return
+        }
+        value = UInt16(bigEndian: currentSpan.unsafeLoadUnaligned(fromByteOffset: cursor, as: UInt16.self))
+        // Move by two bytes
+        cursor &+= 2
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint16NetworkByteOrder(_ value: inout UInt16?) throws(DeserializationError) {
+        var temp: UInt16 = 0
+        try uint16NetworkByteOrder(&temp)
+        value = temp
+    }
+
+    @usableFromInline
+    @inline(never)
+    internal mutating func readUInt16NBOAtSpanBoundary(_ value: inout UInt16) throws(DeserializationError) {
         try readFixedSize(&value, networkByteOrder: true)
     }
 
@@ -423,11 +529,32 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         try validateValue(expect: value.bigEndian)
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint32NetworkByteOrder(_ value: inout UInt32) throws(DeserializationError) {
-        try readFixedSize(&value, networkByteOrder: true)
+        guard (currentSpanByteCount - cursor) >= 4 else {
+            // Fallback for multi-span cases
+            try readUInt32NBOAtSpanBoundary(&value)
+            return
+        }
+        value = UInt32(bigEndian: currentSpan.unsafeLoadUnaligned(fromByteOffset: cursor, as: UInt32.self))
+        // Move by four bytes
+        cursor &+= 4
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint32NetworkByteOrder(_ value: inout UInt32?) throws(DeserializationError) {
+        var temp: UInt32 = 0
+        try uint32NetworkByteOrder(&temp)
+        value = temp
+    }
+
+    @usableFromInline
+    @inline(never)
+    internal mutating func readUInt32NBOAtSpanBoundary(_ value: inout UInt32) throws(DeserializationError) {
         try readFixedSize(&value, networkByteOrder: true)
     }
 
@@ -435,11 +562,32 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         try validateValue(expect: value.bigEndian)
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint64NetworkByteOrder(_ value: inout UInt64) throws(DeserializationError) {
-        try readFixedSize(&value, networkByteOrder: true)
+        guard (currentSpanByteCount - cursor) >= 8 else {
+            // Fallback for multi-span cases
+            try readUInt64NBOAtSpanBoundary(&value)
+            return
+        }
+        value = UInt64(bigEndian: currentSpan.unsafeLoadUnaligned(fromByteOffset: cursor, as: UInt64.self))
+        // Move by eight bytes
+        cursor &+= 8
     }
 
+    @_optimize(speed)
+    @inlinable
+    @inline(__always)
     public mutating func uint64NetworkByteOrder(_ value: inout UInt64?) throws(DeserializationError) {
+        var temp: UInt64 = 0
+        try uint64NetworkByteOrder(&temp)
+        value = temp
+    }
+
+    @usableFromInline
+    @inline(never)
+    internal mutating func readUInt64NBOAtSpanBoundary(_ value: inout UInt64) throws(DeserializationError) {
         try readFixedSize(&value, networkByteOrder: true)
     }
 
@@ -827,6 +975,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     }
 
     @_optimize(speed)
+    @inlinable
     public static func deserialize(
         _ frame: inout Frame,
         claim: Bool,
@@ -846,6 +995,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
 
     #if !NETWORK_EMBEDDED
     @_optimize(speed)
+    @inlinable
     public static func deserialize(
         _ frameArray: inout FrameArray,
         claim: Bool,
