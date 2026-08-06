@@ -98,7 +98,7 @@ public struct AddressEndpoint: EndpointProtocol, EndpointCommonProtocol {
         #else
         let max = 104  // This is sun_path[104]
         #endif
-        if max < path.count {
+        if max < path.utf8.count {
             Logger.endpoint.fault("Path \(path) is too large for a unix domain address")
             return nil
         }
