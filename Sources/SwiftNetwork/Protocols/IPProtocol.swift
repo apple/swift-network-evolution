@@ -920,7 +920,8 @@ public struct IPProtocol: NetworkProtocol {
 
             mutating func writeOutboundFrames(
                 _ frames: inout FrameArray,
-                getDatagramsToSend: (Int, Int) throws -> FrameArray?
+                lower: OutboundDatagramLinkage,
+                selfReference: ProtocolInstanceReference
             ) {
                 frames.iterateMutableFrames { frame in
                     guard frame.unclaim(fromStart: IPv4Instance.headerLength) else {
@@ -978,7 +979,12 @@ public struct IPProtocol: NetworkProtocol {
                             let chunkLength = isLast ? remaining : fragmentRoom
                             // Create the fragment frame with this chunk length
                             let fragmentFrameSize = IPv4Instance.headerLength + chunkLength
-                            guard var allocatedFrames = try? getDatagramsToSend(1, fragmentFrameSize),
+                            guard
+                                var allocatedFrames = try? lower.invokeGetDatagramsToSend(
+                                    selfReference,
+                                    maximumDatagramCount: 1,
+                                    minimumDatagramSize: fragmentFrameSize
+                                ),
                                 var fragmentFrame = allocatedFrames.popFirst()
                             else {
                                 fragmentationSucceeded = false
@@ -1674,7 +1680,8 @@ public struct IPProtocol: NetworkProtocol {
 
             mutating func writeOutboundFrames(
                 _ frames: inout FrameArray,
-                getDatagramsToSend: (Int, Int) throws -> FrameArray?
+                lower: OutboundDatagramLinkage,
+                selfReference: ProtocolInstanceReference
             ) {
                 frames.iterateMutableFrames { (frame: inout Frame) -> FrameArray.FrameIterationResult in
                     _ = frame.unclaim(fromStart: IPv6Instance.headerLength)
@@ -1738,7 +1745,12 @@ public struct IPProtocol: NetworkProtocol {
                             // Fragment offset flags
                             let offsetFlags = UInt16(cursor) | (isLast ? 0 : UInt16(IPv6Instance.ip6fMoreFragmentMask))
                             let fragmentFrameSize = ipv6CompleteHeaderLength + chunkLength
-                            guard var allocatedFrames = try? getDatagramsToSend(1, fragmentFrameSize),
+                            guard
+                                var allocatedFrames = try? lower.invokeGetDatagramsToSend(
+                                    selfReference,
+                                    maximumDatagramCount: 1,
+                                    minimumDatagramSize: fragmentFrameSize
+                                ),
                                 var fragmentFrame = allocatedFrames.popFirst()
                             else {
                                 fragmentationSucceeded = false
@@ -1995,13 +2007,8 @@ public struct IPProtocol: NetworkProtocol {
             let selfReference = self.effectiveSelfReference
             IPInstance.processOutbound(
                 &self.instanceType,
-                getDatagramsToSend: { maxCount, minSize in
-                    try lower.invokeGetDatagramsToSend(
-                        selfReference,
-                        maximumDatagramCount: maxCount,
-                        minimumDatagramSize: minSize
-                    )
-                },
+                lower: lower,
+                selfReference: selfReference,
                 datagrams: &datagrams
             )
             try invokeSendDatagrams(datagrams)
@@ -2026,15 +2033,16 @@ public struct IPProtocol: NetworkProtocol {
         @inline(__always)
         private static func processOutbound(
             _ instanceType: inout IPInstanceType,
-            getDatagramsToSend: (Int, Int) throws -> FrameArray?,
+            lower: OutboundDatagramLinkage,
+            selfReference: ProtocolInstanceReference,
             datagrams: inout FrameArray
         ) {
             switch instanceType {
             case .ipv4(var instance):
-                instance.writeOutboundFrames(&datagrams, getDatagramsToSend: getDatagramsToSend)
+                instance.writeOutboundFrames(&datagrams, lower: lower, selfReference: selfReference)
                 instanceType = .ipv4(instance)
             case .ipv6(var instance):
-                instance.writeOutboundFrames(&datagrams, getDatagramsToSend: getDatagramsToSend)
+                instance.writeOutboundFrames(&datagrams, lower: lower, selfReference: selfReference)
                 instanceType = .ipv6(instance)
             }
         }
