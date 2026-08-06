@@ -656,8 +656,9 @@ final class RecoveryTests: XCTestCase {
 
     // A PTO with ack-eliciting data in flight must emit a probe, even when the only outstanding
     // packet carries STREAM data for a now-closed flow (so it can't be rebuilt) and the connection
-    // is validated; otherwise sendPTO sends nothing and the connection spins to idle timeout.
-    func testPTOWithClosedFlowStreamPacketStillProbes() {
+    // is validated; otherwise `sendPTO` sends nothing and the connection makes no progress until the
+    // idle timeout closes it.
+    func testValidatedPTOProbesWhenTailRetransmitProducesNothing() {
         // Register a flow and close it, so its STREAM data can never be rebuilt for retransmission.
         let stream = QUICStreamInstance(parent: connection, inbound: true)
         stream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
@@ -706,13 +707,65 @@ final class RecoveryTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 5.0)
 
-        // The PTO must have sent a probe and advanced the PTO count. On the buggy code no probe is
-        // sent and PTOCount stays 0, so the connection would spin until idle timeout.
+        // A probe must have been recorded, taking the packets in flight to two, and the PTO counted.
         XCTAssertEqual(
-            path.recoveryState.PTOCount,
-            1,
-            "PTO produced no probe for a closed-flow tail packet; connection would spin to idle timeout"
+            connection.recovery.totalAckElicitingPacketsInFlight,
+            2,
+            "PTO produced no probe for a closed-flow tail packet"
         )
+        XCTAssertEqual(path.recoveryState.PTOCount, 1)
+    }
+
+    // `sendPTO` must emit a probe; otherwise the PTO makes no progress. A pending item whose flow was
+    // torn down writes no payload, so ensure the probe only counts once the packet is recorded.
+    func testPTOProbesWhenNewDataProducesNothing() {
+        // A stream queued for service whose flow has since been torn down: it is absent from
+        // `multiplexedFlows`, so writing it produces no payload.
+        let unregisteredStream = QUICStreamInstance(parent: connection, inbound: true)
+        unregisteredStream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
+        XCTAssertNil(connection.flow(for: unregisteredStream.identifier))
+        connection.withPendingItems(for: .initial) { pendingItems in
+            pendingItems.streamsToService.append(unregisteredStream.identifier)
+            pendingItems.stream = true
+        }
+
+        // Recovery still sees new ack-eliciting data, so the PTO sends that rather than retransmitting.
+        let hasPendingAckEliciting = connection.withPendingItems(for: .initial) {
+            $0.hasAckElicitingPendingItems
+        }
+        XCTAssertTrue(hasPendingAckEliciting)
+
+        // One ack-eliciting packet outstanding, so the PTO is armed and the per-space loop runs.
+        var packet = SentPacketRecord()
+        packet.identifier = .init(space: .initial, number: 0)
+        packet.isInFlightEligible = true
+        packet.isAckEliciting = true
+        packet.totalLength = 20 + 96
+        packet.sentPath = connection.currentPath?.identifier ?? .none
+
+        sentPacket(packet, connection: connection)
+
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .initial) { innerState in
+            XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 1)
+        }
+
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.withCurrentPath { path in
+                self.connection.recovery.sendPTO(connection: self.connection, path: path)
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+
+        // Ensure a probe has been recorded, taking the packets in flight to two.
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .initial) { innerState in
+            XCTAssertEqual(
+                innerState.ackElicitingPacketsInFlight,
+                2,
+                "PTO reported a probe but no packet was sent"
+            )
+        }
     }
 }
 
