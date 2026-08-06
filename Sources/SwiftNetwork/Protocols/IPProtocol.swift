@@ -918,7 +918,10 @@ public struct IPProtocol: NetworkProtocol {
                 }
             }
 
-            mutating func writeOutboundFrames(_ frames: inout FrameArray) {
+            mutating func writeOutboundFrames(
+                _ frames: inout FrameArray,
+                getDatagramsToSend: (Int, Int) throws -> FrameArray?
+            ) {
                 frames.iterateMutableFrames { frame in
                     guard frame.unclaim(fromStart: IPv4Instance.headerLength) else {
                         frame.finalize(success: false)
@@ -974,7 +977,13 @@ public struct IPProtocol: NetworkProtocol {
                             let isLast = remaining <= fragmentRoom
                             let chunkLength = isLast ? remaining : fragmentRoom
                             // Create the fragment frame with this chunk length
-                            var fragmentFrame = Frame(count: IPv4Instance.headerLength + chunkLength)
+                            let fragmentFrameSize = IPv4Instance.headerLength + chunkLength
+                            guard var allocatedFrames = try? getDatagramsToSend(1, fragmentFrameSize),
+                                var fragmentFrame = allocatedFrames.popFirst()
+                            else {
+                                fragmentationSucceeded = false
+                                break
+                            }
                             // MF bit is always set except for the last fragment
                             let ipOff = UInt16(isLast ? 0 : 0x2000) | UInt16(cursor / 8)
                             let fragmentTotalLength = UInt16(IPv4Instance.headerLength + chunkLength)
@@ -1663,8 +1672,11 @@ public struct IPProtocol: NetworkProtocol {
                 }
             }
 
-            mutating func writeOutboundFrames(_ frames: inout FrameArray) {
-                frames.iterateMutableFrames { frame in
+            mutating func writeOutboundFrames(
+                _ frames: inout FrameArray,
+                getDatagramsToSend: (Int, Int) throws -> FrameArray?
+            ) {
+                frames.iterateMutableFrames { (frame: inout Frame) -> FrameArray.FrameIterationResult in
                     _ = frame.unclaim(fromStart: IPv6Instance.headerLength)
 
                     let payloadLength = frame.unclaimedLength - IPv6Instance.headerLength
@@ -1725,7 +1737,13 @@ public struct IPProtocol: NetworkProtocol {
                             let fragmentLength = UInt16(chunkLength + IPv6Instance.fragmentExtensionHeaderLength)
                             // Fragment offset flags
                             let offsetFlags = UInt16(cursor) | (isLast ? 0 : UInt16(IPv6Instance.ip6fMoreFragmentMask))
-                            var fragmentFrame = Frame(count: ipv6CompleteHeaderLength + chunkLength)
+                            let fragmentFrameSize = ipv6CompleteHeaderLength + chunkLength
+                            guard var allocatedFrames = try? getDatagramsToSend(1, fragmentFrameSize),
+                                var fragmentFrame = allocatedFrames.popFirst()
+                            else {
+                                fragmentationSucceeded = false
+                                break
+                            }
                             let result = Serializer.serialize(&fragmentFrame, claim: false) {
                                 write throws(SerializationError) in
                                 // IPv6 base header
@@ -1973,7 +1991,19 @@ public struct IPProtocol: NetworkProtocol {
         }
 
         mutating func sendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
-            IPInstance.processOutbound(&self.instanceType, datagrams: &datagrams)
+            let lower = self.lower
+            let selfReference = self.effectiveSelfReference
+            IPInstance.processOutbound(
+                &self.instanceType,
+                getDatagramsToSend: { maxCount, minSize in
+                    try lower.invokeGetDatagramsToSend(
+                        selfReference,
+                        maximumDatagramCount: maxCount,
+                        minimumDatagramSize: minSize
+                    )
+                },
+                datagrams: &datagrams
+            )
             try invokeSendDatagrams(datagrams)
         }
 
@@ -1994,13 +2024,17 @@ public struct IPProtocol: NetworkProtocol {
         }
 
         @inline(__always)
-        private static func processOutbound(_ instanceType: inout IPInstanceType, datagrams: inout FrameArray) {
+        private static func processOutbound(
+            _ instanceType: inout IPInstanceType,
+            getDatagramsToSend: (Int, Int) throws -> FrameArray?,
+            datagrams: inout FrameArray
+        ) {
             switch instanceType {
             case .ipv4(var instance):
-                instance.writeOutboundFrames(&datagrams)
+                instance.writeOutboundFrames(&datagrams, getDatagramsToSend: getDatagramsToSend)
                 instanceType = .ipv4(instance)
             case .ipv6(var instance):
-                instance.writeOutboundFrames(&datagrams)
+                instance.writeOutboundFrames(&datagrams, getDatagramsToSend: getDatagramsToSend)
                 instanceType = .ipv6(instance)
             }
         }
