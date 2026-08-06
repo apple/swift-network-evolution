@@ -70,9 +70,11 @@ struct StreamSendBuffer: ~Copyable {
             // currentSendOffset is at bytes we no longer have, they're already ACKd?
             // Could be re-ordering problem?
             let _storageStartOffset = storageStartOffset
+            #if !DisableErrorLogging
             Logger.proto.error(
                 "currentSendOffset \(currentSendOffset) is out of date, storageStartOffset \(_storageStartOffset)"
             )
+            #endif
             return 0
         }
         return offsetPastLastByte - currentSendOffset

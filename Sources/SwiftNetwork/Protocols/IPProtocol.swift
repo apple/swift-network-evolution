@@ -914,7 +914,9 @@ public struct IPProtocol: NetworkProtocol {
                     try write.uint16(value)
                 }
                 if !checksumResult.isValid {
+                    #if !DisableErrorLogging
                     Logger.proto.error("Serializing IPv4 checksum failed with result: \(checksumResult)")
+                    #endif
                 }
             }
 
@@ -992,7 +994,9 @@ public struct IPProtocol: NetworkProtocol {
                                 try write.uint32(remoteAddressValue)
                             }
                             guard result.isValid else {
+                                #if !DisableErrorLogging
                                 Logger.proto.error("Serializing IPv4 fragment failed with result: \(result)")
+                                #endif
                                 fragmentFrame.finalize(success: false)
                                 fragmentationSucceeded = false
                                 break
@@ -1016,7 +1020,9 @@ public struct IPProtocol: NetworkProtocol {
                                     self.setChecksumValue(frame: &fragmentFrame, value: checksumValue)
                                 }
                             } catch {
+                                #if !DisableErrorLogging
                                 Logger.proto.error("Failed to compute IPv4 fragment checksum")
+                                #endif
                                 fragmentFrame.finalize(success: false)
                                 fragmentationSucceeded = false
                                 break
@@ -1051,7 +1057,9 @@ public struct IPProtocol: NetworkProtocol {
                         try write.uint32(remoteAddressValue)
                     }
                     if !result.isValid {
+                        #if !DisableErrorLogging
                         Logger.proto.error("Serializing IPv4 packet failed with result: \(result)")
+                        #endif
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
@@ -1077,7 +1085,9 @@ public struct IPProtocol: NetworkProtocol {
                             }
                         }
                     } catch {
+                        #if !DisableErrorLogging
                         Logger.proto.error("Failed to finalize IP checksum")
+                        #endif
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
