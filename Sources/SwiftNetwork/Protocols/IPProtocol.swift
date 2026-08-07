@@ -371,11 +371,6 @@ public struct IPProtocol: NetworkProtocol {
             var dscpValue: UInt8?
         }
 
-        struct IPReassemblyState: ~Copyable {
-            var reassemblyID: UInt16
-            var inputReassemblyFrames = FrameArray()
-        }
-
         struct IPInstanceFlags: OptionSet {
             init(rawValue: Self.RawValue) {
                 self.rawValue = rawValue
@@ -448,7 +443,12 @@ public struct IPProtocol: NetworkProtocol {
             var flags = IPInstanceFlags()
             var counters = IPCounters()
             var pathProperties = IPPathProperties()
-            var reassemblyState: IPReassemblyState?
+            var reassemblyState: IPv4ReassemblyState?
+
+            struct IPv4ReassemblyState: ~Copyable {
+                var reassemblyID: UInt16
+                var inputReassemblyFrames = FrameArray()
+            }
 
             static var headerLength: Int {
                 MemoryLayout<UInt32>.size * 5
@@ -656,12 +656,15 @@ public struct IPProtocol: NetworkProtocol {
                                 "Dropping \(dropped) incomplete fragments for IP ID \(reassemblyState?.reassemblyID ?? 0)"
                             )
                         }
+                    } else if forceFlush && reassemblyState?.inputReassemblyFrames.count == 0 {
+                        // If all of our fragments have been processed wipe out the reassemblyState
+                        reassemblyState = nil
                     }
                 }
                 // Only update the stored reassembly ID when processing a real fragment and not on force flush
                 if !forceFlush {
                     if reassemblyState == nil {
-                        reassemblyState = IPReassemblyState(reassemblyID: ipID)
+                        reassemblyState = IPv4ReassemblyState(reassemblyID: ipID)
                     } else {
                         reassemblyState?.reassemblyID = ipID
                     }
@@ -669,7 +672,6 @@ public struct IPProtocol: NetworkProtocol {
             }
 
             mutating func processInboundFrames(_ log: borrowing NetworkLoggerState, _ inboundFrames: inout FrameArray) {
-                // Hoist loop-invariant values.
                 let localAddress: UInt32 = self.localAddress.addressValue
                 let remoteAddress: UInt32 = self.remoteAddress.addressValue
                 let mask = (0xF000_0000 as UInt32).bigEndian
@@ -890,13 +892,13 @@ public struct IPProtocol: NetworkProtocol {
                                 sorted.add(frame: remaining)
                             }
                         }
-                        reassemblyState?.inputReassemblyFrames = sorted
+                        reassemblyState?.inputReassemblyFrames.add(frames: sorted)
                     }
                     self.counters.rxPackets += 1
                 }
                 processReassembly(log, ipID: 0, reassembled: &reassembledFragments, forceFlush: true)
                 processedFrames.add(frames: reassembledFragments)
-                inboundFrames = processedFrames
+                inboundFrames.add(frames: processedFrames)
             }
 
             func prepareOutboundFrames(_ outboundFrames: inout FrameArray) {
@@ -936,8 +938,104 @@ public struct IPProtocol: NetworkProtocol {
                     if dscpValue != 0 {
                         tos |= (dscpValue << 2)  // IPTOS_DSCP_SHIFT
                     }
-                    // TODO: Handle fragmentation cases differently
-                    let offset: UInt16 = 0x4000  // Don't Fragment
+
+                    let enableFragmentation: Bool
+                    if let fragmentationOverride = frame.fragmentationOverride {
+                        enableFragmentation = fragmentationOverride
+                    } else {
+                        enableFragmentation = self.flags.enableFragmentation
+                    }
+
+                    // Payload is the unclaimed bytes beyond the IPv4 header.
+                    let payloadLength = frame.unclaimedLength - IPv4Instance.headerLength
+                    // MTU minus the header gives the correct fragment payload room
+                    let mtu = self.pathProperties.mtu
+                    var maxPayloadPerFragment = 0
+                    if mtu > IPv4Instance.headerLength {
+                        maxPayloadPerFragment = mtu - IPv4Instance.headerLength
+                    }
+                    // Handle fragmentation if payloadLength is greater than maxPayloadPerFragment and enableFragmentation is enabled
+                    if enableFragmentation && maxPayloadPerFragment > 0 && payloadLength > maxPayloadPerFragment {
+                        // MTU-splitting path: fragment the oversized datagram.
+                        var randomNumber = SystemRandomNumberGenerator()
+                        let identifier = UInt16(truncatingIfNeeded: randomNumber.next())
+                        // Align fragment payload to blocks of 8 bytes - RFC 791.
+                        let fragmentRoom = maxPayloadPerFragment - (maxPayloadPerFragment % 8)
+                        guard fragmentRoom > 0 else {
+                            frame.finalize(success: false)
+                            return .removeFrameAndContinue
+                        }
+                        var cursor = 0
+                        var fragmentationSucceeded = true
+                        var fragmentFrames = FrameArray()
+                        while cursor < payloadLength {
+                            // Determine if last or hold large the chunk length is
+                            let remaining = payloadLength - cursor
+                            let isLast = remaining <= fragmentRoom
+                            let chunkLength = isLast ? remaining : fragmentRoom
+                            // Create the fragment frame with this chunk length
+                            var fragmentFrame = Frame(count: IPv4Instance.headerLength + chunkLength)
+                            // MF bit is always set except for the last fragment
+                            let ipOff = UInt16(isLast ? 0 : 0x2000) | UInt16(cursor / 8)
+                            let fragmentTotalLength = UInt16(IPv4Instance.headerLength + chunkLength)
+                            let result = Serializer.serialize(&fragmentFrame, claim: false) {
+                                write throws(SerializationError) in
+                                try write.uint8(versionAndHeaderLength)
+                                try write.uint8(tos)
+                                try write.uint16NetworkByteOrder(fragmentTotalLength)
+                                try write.uint16NetworkByteOrder(identifier)
+                                try write.uint16NetworkByteOrder(ipOff)
+                                try write.uint8(self.ttl)
+                                try write.uint8(self.ipProtocolNumber)
+                                try write.uint16(0)  // Checksum
+                                try write.uint32(localAddressValue)
+                                try write.uint32(remoteAddressValue)
+                            }
+                            guard result.isValid else {
+                                Logger.proto.error("Serializing IPv4 fragment failed with result: \(result)")
+                                fragmentFrame.finalize(success: false)
+                                fragmentationSucceeded = false
+                                break
+                            }
+                            let copied = frame.copyInto(
+                                &fragmentFrame,
+                                atOffset: IPv4Instance.headerLength,
+                                fromOffset: IPv4Instance.headerLength + cursor,
+                                length: chunkLength
+                            )
+                            guard copied == chunkLength else {
+                                fragmentFrame.finalize(success: false)
+                                fragmentationSucceeded = false
+                                break
+                            }
+                            do throws(ChecksumError) {
+                                if self.flags.csumOffload {
+                                    fragmentFrame.checksumOffloadFlags = ChecksumFlags.ip.rawValue
+                                } else {
+                                    let checksumValue = try fragmentFrame.ipChecksum(offset: 0, length: 20)
+                                    self.setChecksumValue(frame: &fragmentFrame, value: checksumValue)
+                                }
+                            } catch {
+                                Logger.proto.error("Failed to compute IPv4 fragment checksum")
+                                fragmentFrame.finalize(success: false)
+                                fragmentationSucceeded = false
+                                break
+                            }
+                            self.counters.txPackets += 1
+                            fragmentFrames.add(frame: fragmentFrame)
+                            cursor += chunkLength
+                        }
+                        frame.finalize(success: fragmentationSucceeded)
+                        if fragmentationSucceeded {
+                            return .replaceWithFramesAndContinue(fragmentFrames)
+                        }
+                        // This is a case where something went wrong on fragmentation and we need to remove any fragments that were created
+                        fragmentFrames.finalizeAllFramesAsFailed()
+                        return .removeFrameAndContinue
+                    }
+
+                    // No fragmentation, standard outbound path
+                    let offset: UInt16 = 0x4000  // Don't Fragment (IP_DF)
                     let identifier: UInt16 = 0
 
                     let result = Serializer.serialize(&frame, claim: false) { write throws(SerializationError) in
@@ -956,16 +1054,6 @@ public struct IPProtocol: NetworkProtocol {
                         Logger.proto.error("Serializing IPv4 packet failed with result: \(result)")
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
-                    }
-                    var enableFragmentation = false
-                    if let fragmentationOverride = frame.fragmentationOverride, fragmentationOverride == true {
-                        enableFragmentation = true
-                    } else if self.flags.enableFragmentation || frame.fragmentationOverride == nil {
-                        enableFragmentation = true
-                    }
-
-                    if enableFragmentation {
-                        // TODO: Fragmentation
                     }
 
                     do throws(ChecksumError) {
@@ -1010,7 +1098,28 @@ public struct IPProtocol: NetworkProtocol {
             var flags = IPInstanceFlags()
             var counters = IPCounters()
             var pathProperties = IPPathProperties()
-            var reassemblyState: IPReassemblyState?
+            var reassemblyState: IPv6ReassemblyState?
+
+            static let fragmentExtensionHeader: UInt8 = 44
+            static let hopByHopExtensionHeader: UInt8 = 0
+            static let routingExtensionHeader: UInt8 = 43
+            static let destinationOptionsExtensionHeader: UInt8 = 60
+            static let fragmentExtensionHeaderLength = 8
+            static let ip6fOffMask: UInt16 = 0xFFF8
+            static let ip6fMoreFragmentMask: UInt16 = 0x0001
+
+            struct IPv6ReassemblyState: ~Copyable {
+                var reassemblyID: UInt32
+                var inputReassemblyFrames = FrameArray()
+            }
+
+            struct IPv6FragmentValues {
+                var fragmentOffset: UInt16
+                var moreFragments: Bool
+                var payloadOffset: Int
+                var innerLength: Int
+                var nextProtocol: UInt8
+            }
 
             static var minimalMTU: Int {
                 1280
@@ -1027,17 +1136,269 @@ public struct IPProtocol: NetworkProtocol {
                 return value + IPv6Instance.headerLength
             }
 
+            static func parseFragmentValues(
+                _ frame: inout Frame,
+                ipProtocolNumber: UInt8
+            ) -> IPv6FragmentValues? {
+                var payloadLength: UInt16 = 0
+                var firstProto: UInt8 = 0
+                var fragmentOffset: UInt16 = 0
+                var moreFragments = false
+                var headerOffset = IPv6Instance.headerLength
+                var nextProtocol: UInt8 = 0
+                var foundFragment = false
+
+                let result = Deserializer.deserialize(&frame, claim: false) { read throws(DeserializationError) in
+                    try read.skip(4)
+                    try read.uint16NetworkByteOrder(&payloadLength)
+                    try read.uint8(&firstProto)
+                    try read.skip(1)
+                    try read.skip(32)  // src and dst addresses
+                    var currentProto = firstProto
+                    extensionHeaderLoop: while currentProto != ipProtocolNumber {
+                        switch currentProto {
+                        case IPv6Instance.fragmentExtensionHeader:
+                            var nextProto: UInt8 = 0
+                            var offsetAndFlags: UInt16 = 0
+                            try read.uint8(&nextProto)
+                            try read.skip(1)
+                            try read.uint16NetworkByteOrder(&offsetAndFlags)
+                            try read.skip(4)
+                            fragmentOffset = offsetAndFlags & IPv6Instance.ip6fOffMask
+                            moreFragments = (offsetAndFlags & IPv6Instance.ip6fMoreFragmentMask) != 0
+                            nextProtocol = nextProto
+                            headerOffset += IPv6Instance.fragmentExtensionHeaderLength
+                            currentProto = nextProto
+                            foundFragment = true
+                            break extensionHeaderLoop
+                        case IPv6Instance.hopByHopExtensionHeader,
+                            IPv6Instance.routingExtensionHeader,
+                            IPv6Instance.destinationOptionsExtensionHeader:
+                            var extensionNext: UInt8 = 0
+                            var extensionLength: UInt8 = 0
+                            try read.uint8(&extensionNext)
+                            try read.uint8(&extensionLength)
+                            let extensionTotal = (Int(extensionLength) + 1) * 8
+                            try read.skip(extensionTotal - 2)
+                            headerOffset += extensionTotal
+                            currentProto = extensionNext
+                        default:
+                            break extensionHeaderLoop
+                        }
+                    }
+                }
+
+                guard result.isValid && foundFragment else { return nil }
+                let innerLength = Int(payloadLength) - (headerOffset - IPv6Instance.headerLength)
+                guard innerLength >= 0 else { return nil }
+                return IPv6FragmentValues(
+                    fragmentOffset: fragmentOffset,
+                    moreFragments: moreFragments,
+                    payloadOffset: headerOffset,
+                    innerLength: innerLength,
+                    nextProtocol: nextProtocol
+                )
+            }
+
+            mutating func appendReassembledPackets(
+                _ log: borrowing NetworkLoggerState,
+                reassembled: inout FrameArray
+            ) {
+                guard let empty = reassemblyState?.inputReassemblyFrames.isEmpty, !empty else {
+                    return
+                }
+                guard let reassemblyID = reassemblyState?.reassemblyID else {
+                    return
+                }
+                // Overlapping IPv6 fragments are not allowed due [RFC 5722]
+                // Verify all stored fragments are contiguous and in offset order
+                var complete = false
+                var expectedOffset: UInt16 = 0
+                var firstTrafficClass: UInt8 = 0
+                var firstHopLimit: UInt8 = 0
+                var firstNextProtocol: UInt8 = 0
+                var isFirstFragment = true
+                reassemblyState?.inputReassemblyFrames.iterateMutableFrames { fragment in
+                    guard
+                        let values = IPv6Instance.parseFragmentValues(
+                            &fragment,
+                            ipProtocolNumber: self.ipProtocolNumber
+                        )
+                    else {
+                        log.info("Reassembly frame is no longer valid for ID \(reassemblyID)")
+                        return false
+                    }
+                    if isFirstFragment {
+                        // Read traffic class and hop limit directly from the IPv6 base header
+                        let result = Deserializer.deserialize(&fragment, claim: false) {
+                            read throws(DeserializationError) in
+                            var flow: UInt32 = 0
+                            try read.uint32NetworkByteOrder(&flow)
+                            firstTrafficClass = UInt8((flow >> 20) & 0xFF)
+                            try read.skip(3)  // payload length + next header
+                            try read.uint8(&firstHopLimit)
+                        }
+                        guard result.isValid else {
+                            return false
+                        }
+                        firstNextProtocol = values.nextProtocol
+                        isFirstFragment = false
+                    }
+                    guard values.fragmentOffset == expectedOffset else {
+                        log.debug("IPv6 fragment out of order for ID \(reassemblyID)")
+                        return false
+                    }
+                    let (next, overflow) = expectedOffset.addingReportingOverflow(UInt16(values.innerLength))
+                    guard !overflow else {
+                        log.error("Fragment offset overflow for IPv6 ID \(reassemblyID)")
+                        return false
+                    }
+                    expectedOffset = next
+                    if !values.moreFragments {
+                        complete = true
+                        return false
+                    }
+                    return true
+                }
+                guard complete else {
+                    log.debug("Fragments for IPv6 ID \(reassemblyID) incomplete")
+                    return
+                }
+                // Create a new frame for reassembly
+                let newFrameLength = IPv6Instance.headerLength + Int(expectedOffset)
+                var newFrame = Frame(count: newFrameLength)
+
+                // Copy the IPv6 header from the first fragment
+                let headerCopied = reassemblyState?.inputReassemblyFrames.peekFirstFrame { first in
+                    first.copyInto(&newFrame, length: IPv6Instance.headerLength)
+                }
+                guard headerCopied == IPv6Instance.headerLength else {
+                    log.error("Failed to copy IPv6 header from first fragment (ID \(reassemblyID))")
+                    newFrame.finalize(success: false)
+                    return
+                }
+                // Update payload length and next header based on the first fragments values
+                let headerUpdateResult = Serializer.serialize(&newFrame, claim: false) {
+                    write throws(SerializationError) in
+                    try write.skip(4)
+                    try write.uint16NetworkByteOrder(expectedOffset)
+                    try write.uint8(firstNextProtocol)
+                }
+                guard headerUpdateResult.isValid else {
+                    log.error("Failed to update IPv6 header in reassembled frame (ID \(reassemblyID))")
+                    newFrame.finalize(success: false)
+                    return
+                }
+                // Claim the IPv6 header so subsequent payload writes target the payload region
+                guard newFrame.claim(fromStart: IPv6Instance.headerLength) else {
+                    log.error("Failed to claim IPv6 header in reassembled frame (ID \(reassemblyID))")
+                    newFrame.finalize(success: false)
+                    return
+                }
+                // Copy each fragments inner payload contiguously into the new frame
+                var writeOffset = 0
+                var copyFailed = false
+                reassemblyState?.inputReassemblyFrames.iterateMutableFrames { fragment in
+                    guard
+                        let values = IPv6Instance.parseFragmentValues(
+                            &fragment,
+                            ipProtocolNumber: self.ipProtocolNumber
+                        )
+                    else {
+                        log.error("Failed to re-parse fragment during copy for IPv6 ID \(reassemblyID)")
+                        copyFailed = true
+                        return false
+                    }
+                    let copied = fragment.copyInto(
+                        &newFrame,
+                        atOffset: writeOffset,
+                        fromOffset: values.payloadOffset,
+                        length: values.innerLength
+                    )
+                    guard copied == values.innerLength else {
+                        log.error(
+                            "Fragment payload copy mismatch for IPv6 ID \(reassemblyID): \(copied) != \(values.innerLength)"
+                        )
+                        copyFailed = true
+                        return false
+                    }
+                    writeOffset += values.innerLength
+                    return true
+                }
+
+                guard !copyFailed else {
+                    newFrame.finalize(success: false)
+                    return
+                }
+
+                log.debug("IPv6 reassembly complete for ID \(reassemblyID), total length \(newFrameLength)")
+
+                newFrame.dscpValue = firstTrafficClass >> 2
+                if self.flags.receiveHopLimit {
+                    newFrame.hopLimit = firstHopLimit
+                }
+                if self.flags.calculateReceiveTime {
+                    newFrame.timestamp = Frame.FrameTimestamp.receiveTime(.now)
+                }
+                newFrame.metadataComplete = true
+                reassembled.add(frame: newFrame)
+
+                // Finalize the original fragment frames.
+                while var fragment = reassemblyState?.inputReassemblyFrames.popFirst() {
+                    fragment.finalize(success: true)
+                }
+            }
+
+            mutating func processReassembly(
+                _ log: borrowing NetworkLoggerState,
+                fragmentID: UInt32,
+                reassembled: inout FrameArray,
+                forceFlush: Bool
+            ) {
+                let hasAccumulatedFragments = reassemblyState?.inputReassemblyFrames.isEmpty == false
+                let isNewID = reassemblyState?.reassemblyID != fragmentID
+
+                if hasAccumulatedFragments && (isNewID || forceFlush) {
+                    appendReassembledPackets(log, reassembled: &reassembled)
+                    // Only discard buffered fragments when the IP ID change
+                    if isNewID && !forceFlush {
+                        var dropped = 0
+                        while var fragment = reassemblyState?.inputReassemblyFrames.popFirst() {
+                            fragment.finalize(success: false)
+                            dropped += 1
+                        }
+                        if dropped > 0 {
+                            log.error(
+                                "Dropping \(dropped) incomplete IPv6 fragments for ID \(reassemblyState?.reassemblyID ?? 0)"
+                            )
+                        }
+                    }
+                }
+                if !forceFlush {
+                    if reassemblyState == nil {
+                        reassemblyState = IPv6ReassemblyState(reassemblyID: fragmentID)
+                    } else {
+                        reassemblyState?.reassemblyID = fragmentID
+                    }
+                }
+            }
+
             mutating func processInboundFrames(_ log: borrowing NetworkLoggerState, _ inboundFrames: inout FrameArray) {
+
+                let localAddress = self.localAddress.addressValue
+                let remoteAddress = self.remoteAddress.addressValue
+                // IP fragments are not common so preserve a fast-path that just loops inboundFrames in-place
+                var hadFragments = false
+                // If fragments are present, hadFragments will be set and metadataComplete will not be set on the frame.
                 inboundFrames.iterateMutableFrames { frame in
                     let originalFrameLength = frame.unclaimedLength
                     var flow: UInt32 = 0
                     var payloadLength: UInt16 = 0
                     var hopLimit: UInt8 = 0
                     var nextProtocol: UInt8 = 0
-                    let remoteAddress = self.remoteAddress.addressValue
-                    let localAddress = self.localAddress.addressValue
 
-                    let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
+                    // Do not completely claim the header so any future parsing
+                    let result = Deserializer.deserialize(&frame, claim: false) { read throws(DeserializationError) in
                         try read.uint32NetworkByteOrder(&flow)
                         try read.uint16NetworkByteOrder(&payloadLength)
                         try read.uint8(&nextProtocol)
@@ -1079,8 +1440,67 @@ public struct IPProtocol: NetworkProtocol {
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
+
+                    var currentProto = nextProtocol
+                    var headerOffset = IPv6Instance.headerLength
+                    var isFragment = false
+                    var parseError = false
+                    if currentProto != self.ipProtocolNumber {
+                        if frame.isSingleIPAggregate {
+                            log.fault(
+                                "Received IPv6 extension-headers on a super-packet with length \(originalFrameLength)"
+                            )
+                            frame.finalize(success: false)
+                            return .removeFrameAndContinue
+                        }
+                        let extensionResult = Deserializer.deserialize(&frame, claim: false) {
+                            read throws(DeserializationError) in
+                            try read.skip(IPv6Instance.headerLength)
+                            extensionHeaderLoop: while currentProto != self.ipProtocolNumber {
+                                switch currentProto {
+                                case IPv6Instance.fragmentExtensionHeader:
+                                    var nextProto: UInt8 = 0
+                                    try read.uint8(&nextProto)
+                                    try read.skip(1)
+                                    try read.skip(2)
+                                    try read.skip(4)
+                                    headerOffset += IPv6Instance.fragmentExtensionHeaderLength
+                                    currentProto = nextProto
+                                    isFragment = true
+                                    break extensionHeaderLoop
+                                case IPv6Instance.hopByHopExtensionHeader,
+                                    IPv6Instance.routingExtensionHeader,
+                                    IPv6Instance.destinationOptionsExtensionHeader:
+                                    var extensionNext: UInt8 = 0
+                                    var extensionLength: UInt8 = 0
+                                    try read.uint8(&extensionNext)
+                                    try read.uint8(&extensionLength)
+                                    let extensionTotal = (Int(extensionLength) + 1) * 8
+                                    try read.skip(extensionTotal - 2)
+                                    headerOffset += extensionTotal
+                                    currentProto = extensionNext
+                                default:
+                                    break extensionHeaderLoop
+                                }
+                            }
+                        }
+                        if !extensionResult.isValid {
+                            log.info("Failed to parse IPv6 extension headers: \(extensionResult)")
+                            parseError = true
+                        }
+                    }
+                    guard !parseError && currentProto == self.ipProtocolNumber else {
+                        frame.finalize(success: false)
+                        return .removeFrameAndContinue
+                    }
+                    // Fragment detected, leave the fraim unclaimed and defer to the reassembly path
+                    if isFragment {
+                        hadFragments = true
+                        return .continueIterating
+                    }
+
                     let trafficClassShift = flow >> 4
-                    let trafficClass = trafficClassShift & 0xFF
+                    let trafficClass = UInt8(trafficClassShift & 0xFF)
                     let ipECN = IPProtocol.ECN(UInt8(trafficClass))
                     frame.ecnFlag = ipECN
                     switch ipECN {
@@ -1100,21 +1520,131 @@ public struct IPProtocol: NetworkProtocol {
                     if self.flags.receiveHopLimit {
                         frame.hopLimit = hopLimit
                     }
+                    frame.dscpValue = trafficClass >> 2
                     frame.metadataComplete = true
 
-                    if nextProtocol != self.ipProtocolNumber {
-                        // TODO: Handle Fragmentation, header extensions
-                        frame.finalize(success: false)
-                        return .removeFrameAndContinue
-                    }
-
                     _ = frame.claim(
-                        fromStart: 0,
+                        fromStart: headerOffset,
                         fromEnd: originalFrameLength - (Int(payloadLength) + IPv6Instance.headerLength)
                     )
                     self.counters.rxPackets += 1
                     return .continueIterating
                 }
+
+                // Fast path: no fragments and no prior reassembly state, return here
+                guard hadFragments || reassemblyState != nil else { return }
+
+                // Fragment reassembly path, this is not common so reparse and build up the reassembly queue
+                var processedFrames = FrameArray(capacity: inboundFrames.count)
+                var reassembledFragments = FrameArray()
+
+                while var frame = inboundFrames.popFirst() {
+                    // metadataComplete signals that the frame does not need to be processed
+                    guard !frame.metadataComplete else {
+                        processedFrames.add(frame: frame)
+                        continue
+                    }
+
+                    var fragmentID: UInt32 = 0
+                    var fragmentOffset: UInt16 = 0
+                    var moreFragments = false
+                    var foundFragment = false
+                    let parseResult = Deserializer.deserialize(&frame, claim: false) {
+                        read throws(DeserializationError) in
+                        try read.skip(4)
+                        try read.skip(2)
+                        var firstProto: UInt8 = 0
+                        try read.uint8(&firstProto)
+                        try read.skip(1)
+                        try read.skip(32)  // source and destination address
+                        var currentProto = firstProto
+                        extensionHeaderLoop: while currentProto != self.ipProtocolNumber {
+                            switch currentProto {
+                            case IPv6Instance.fragmentExtensionHeader:
+                                var nextProto: UInt8 = 0
+                                var offsetFlags: UInt16 = 0
+                                var identifier: UInt32 = 0
+                                try read.uint8(&nextProto)
+                                try read.skip(1)
+                                try read.uint16NetworkByteOrder(&offsetFlags)
+                                try read.uint32(&identifier)
+                                fragmentOffset = offsetFlags & IPv6Instance.ip6fOffMask
+                                moreFragments = (offsetFlags & IPv6Instance.ip6fMoreFragmentMask) != 0
+                                fragmentID = identifier
+                                currentProto = nextProto
+                                foundFragment = true
+                                break extensionHeaderLoop
+                            case IPv6Instance.hopByHopExtensionHeader,
+                                IPv6Instance.routingExtensionHeader,
+                                IPv6Instance.destinationOptionsExtensionHeader:
+                                var extensionNext: UInt8 = 0
+                                var extensionLength: UInt8 = 0
+                                try read.uint8(&extensionNext)
+                                try read.uint8(&extensionLength)
+                                try read.skip((Int(extensionLength) + 1) * 8 - 2)
+                                currentProto = extensionNext
+                            default:
+                                break extensionHeaderLoop
+                            }
+                        }
+                    }
+                    guard parseResult.isValid && foundFragment else {
+                        frame.finalize(success: false)
+                        continue
+                    }
+                    processReassembly(
+                        log,
+                        fragmentID: fragmentID,
+                        reassembled: &reassembledFragments,
+                        forceFlush: false
+                    )
+
+                    let currentFragmentCount = reassemblyState?.inputReassemblyFrames.count ?? 0
+                    guard currentFragmentCount < IPMaxFragmentCount else {
+                        log.error("Too many fragments for IPv6 ID \(fragmentID)")
+                        frame.finalize(success: false)
+                        continue
+                    }
+
+                    // Insert fragment in offset order, if not, sort them
+                    if fragmentOffset == 0 {
+                        reassemblyState?.inputReassemblyFrames.prepend(frame: frame)
+                    } else if !moreFragments {
+                        reassemblyState?.inputReassemblyFrames.add(frame: frame)
+                    } else {
+                        // Sort the fragments in offset order
+                        var sorted = FrameArray()
+                        var predecessorFound = false
+                        while var existing = reassemblyState?.inputReassemblyFrames.popFirst() {
+                            if !predecessorFound,
+                                let existingValue = IPv6Instance.parseFragmentValues(
+                                    &existing,
+                                    ipProtocolNumber: self.ipProtocolNumber
+                                )
+                            {
+                                let predecessorEnd =
+                                    UInt32(existingValue.fragmentOffset) + UInt32(existingValue.innerLength)
+                                if UInt32(fragmentOffset) == predecessorEnd {
+                                    sorted.add(frame: existing)
+                                    predecessorFound = true
+                                    break
+                                }
+                            }
+                            sorted.add(frame: existing)
+                        }
+                        sorted.add(frame: frame)
+                        if predecessorFound {
+                            while let remaining = reassemblyState?.inputReassemblyFrames.popFirst() {
+                                sorted.add(frame: remaining)
+                            }
+                        }
+                        reassemblyState?.inputReassemblyFrames.add(frames: sorted)
+                    }
+                    self.counters.rxPackets += 1
+                }
+                processReassembly(log, fragmentID: 0, reassembled: &reassembledFragments, forceFlush: true)
+                processedFrames.add(frames: reassembledFragments)
+                inboundFrames.add(frames: processedFrames)
             }
 
             func prepareOutboundFrames(_ outboundFrames: inout FrameArray) {

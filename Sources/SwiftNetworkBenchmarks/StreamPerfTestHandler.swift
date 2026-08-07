@@ -284,6 +284,14 @@ extension StreamPerfTestHandler: UpperProtocolHandler {
         throw NetworkError.posix(ENOTSUP)
     }
 
+    // InboundStreamHandler conformance
+    public func attachLowerStreamProtocolToExistingFlow(
+        listener: StreamListenerLinkage,
+        flowReference: ProtocolInstanceReference
+    ) throws(NetworkError) {
+        throw NetworkError.posix(ENOTSUP)
+    }
+
     // UpperProtocolHandler conformance
     public func attachLowerProtocol(
         _ lowerProtocol: ProtocolInstanceReference,

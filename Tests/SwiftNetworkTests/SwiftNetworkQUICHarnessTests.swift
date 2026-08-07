@@ -389,6 +389,10 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 4)
     }
 
+    func testQUICEcho40KiBBatched() {
+        QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 4, shouldBatchSends: true)
+    }
+
     func testQUICEcho40KiBSmallReads() {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 4, clientReadChunkSize: 1000)
     }

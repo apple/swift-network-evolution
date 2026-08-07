@@ -761,6 +761,31 @@ extension ProtocolInstanceReference {
         }
     }
 
+    public func attachLowerStreamProtocolToExistingFlow(
+        listener: StreamListenerLinkage,
+        flowReference: ProtocolInstanceReference
+    ) throws(NetworkError) {
+        try self.fromExternal { () throws(NetworkError) in
+            switch self.reference {
+            case .none: fatalError("Cannot attach to empty protocol")
+            case .tls(var instance):
+                try instance.attachLowerStreamProtocolToExistingFlow(listener: listener, flowReference: flowReference)
+            case .streamEndpointFlow(let instance):
+                try instance.attachLowerStreamProtocolToExistingFlow(listener: listener, flowReference: flowReference)
+            #if !NETWORK_EMBEDDED
+            case .custom(let container, let index):
+                try container.accessInboundStreamHandler(at: index) { instance throws(NetworkError) in
+                    try instance.attachLowerStreamProtocolToExistingFlow(
+                        listener: listener,
+                        flowReference: flowReference
+                    )
+                }
+            #endif
+            default: fatalError("Protocol cannot accept attachLowerStreamProtocolToExistingFlow call")
+            }
+        }
+    }
+
     #if !NETWORK_EMBEDDED
     public func attachLowerProtocolForNewPath(
         _ lowerProtocol: ProtocolInstanceReference,

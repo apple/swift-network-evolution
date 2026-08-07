@@ -33,8 +33,38 @@ internal import os
 struct PacketParser: ~Copyable, PrefixedLoggable {
     var log: LogPrefixer
 
+    // Temporary storage for the frames parsed out of the packet currently being
+    // processed.
+    var framesReceived = NetworkUniqueDeque<QUICFrame>()
+
+    // Initial capacity for `framesReceived`.
+    private static var framesReceivedCapacity: Int { 4 }
+
     init(logPrefixer: LogPrefixer) {
         self.log = logPrefixer
+        self.framesReceived.reserveCapacity(Self.framesReceivedCapacity)
+    }
+
+    // Drain any frames which haven't been processed, finalizing the ones holding
+    // borrowed buffers so that they aren't leaked.
+    mutating func cleanupReceivedFrames() {
+        while let receivedFrame = self.framesReceived.popFirst() {
+            switch receivedFrame {
+            case .crypto(var frame):
+                frame.frame.finalize(success: false)
+            case .stream(var frame):
+                frame.frame.finalize(success: false)
+            case .datagram(var frame):
+                frame.frame.finalize(success: false)
+            default: continue
+            }
+        }
+
+        // A packet stuffed with single byte frames can grow the deque a long way; a peer
+        // shouldn't be able to pin that storage for the lifetime of the connection.
+        if self.framesReceived.capacity > QUICPreferences.shared.maxReceivedFramesCapacity {
+            self.framesReceived.reallocate(capacity: Self.framesReceivedCapacity)
+        }
     }
 
     private func parsePacketNumber(
@@ -55,7 +85,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
     }
 
     @inline(never)
-    private func parseFrames(
+    private mutating func parseFrames(
         frame: inout Frame,
         packet: inout Packet,
         connection: QUICConnection,
@@ -94,7 +124,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                 connection: connection,
                 isLastPacketInFrame: isLastPacketInFrame
             )
-            packet.framesReceived.append(quicFrame)
+            self.framesReceived.append(quicFrame)
         }
     }
 
@@ -158,13 +188,12 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         return reservedBits
     }
 
-    func parse(
+    mutating func parse(
         frame: inout Frame,
         connection: QUICConnection,
         path: QUICPath,
         ecn: IPProtocol.ECN
     ) -> Packet? {
-
         if _slowPath(frame.unclaimedLength < Constants.minimumPacketSize) {
             connection.log.error("Dropping short packet, len=\(frame.unclaimedLength)")
             return nil
@@ -293,21 +322,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                 )
             } catch {
                 // Explicitly release finalize frames in case of error
-                while let frame = packet.framesReceived.popFirst() {
-                    let frameType = frame.frameType
-                    switch frameType {
-                    case .crypto:
-                        guard case .crypto(var frame) = frame else { continue }
-                        frame.frame.finalize(success: false)
-                    case .stream:
-                        guard case .stream(var frame) = frame else { continue }
-                        frame.frame.finalize(success: false)
-                    case .datagram:
-                        guard case .datagram(var frame) = frame else { continue }
-                        frame.frame.finalize(success: false)
-                    default: continue
-                    }
-                }
+                self.cleanupReceivedFrames()
                 throw error
             }
             return packet
@@ -342,7 +357,6 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                 originalLength: originalLength
             )
         }
-        packet.framesReceived.reserveCapacity(1)
         return packet
     }
 
@@ -717,13 +731,13 @@ extension Deserializer where Factory: ~Escapable {
             value = PacketNumber(Int64(pn))
         case 3:
             // 3 bytes
-            var packetNumberBytes = [UInt8](repeating: 0, count: 3)
-            try self.uint8(&packetNumberBytes[2])
-            try self.uint8(&packetNumberBytes[1])
-            try self.uint8(&packetNumberBytes[0])
-            let pn =
-                UInt32(packetNumberBytes[2]) << 16 | UInt32(packetNumberBytes[1]) << 8
-                | UInt32(packetNumberBytes[0])
+            var high: UInt8 = 0
+            var middle: UInt8 = 0
+            var low: UInt8 = 0
+            try self.uint8(&high)
+            try self.uint8(&middle)
+            try self.uint8(&low)
+            let pn = UInt32(high) << 16 | UInt32(middle) << 8 | UInt32(low)
             value = PacketNumber(Int64(pn))
         case 4:
             // 4 bytes

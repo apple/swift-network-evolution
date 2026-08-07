@@ -106,6 +106,7 @@ struct Migration: ~Copyable {
             return
         }
 
+        let oldPath = connection.currentPath
         connection.log.notice("Migrating to path \(path.identifier)")
         connection.currentPath = path
         path.spinValue = connection.initialSpinValue
@@ -128,6 +129,10 @@ struct Migration: ~Copyable {
         }
         // TODO: Handle preferred address migration
 
+        // Remove the path we just migrated away from.
+        if let oldPath, oldPath != path {
+            connection.tearDownMigratedPath(oldPath)
+        }
     }
 
     func probingPathCount(_ connection: QUICConnection) -> Int {
@@ -168,8 +173,7 @@ extension QUICConnection {
         event: MultiplexingPathEvent,
         isPrimary: Bool
     ) {
-        guard !migration.activeMigrationDisabled else {
-            // Ignore if migration is disabled
+        guard !migration.activeMigrationDisabled || isServer else {
             return
         }
 
@@ -195,20 +199,22 @@ extension QUICConnection {
             if !path.isRouteEstablished {
                 path.changeState(to: .routeEstablished)
             }
+            if isServer, path != currentPath, !path.isValidated {
+                path.beginValidation()
+                sendFrames(on: path)
+                migration.resetTimer(connection: self)
+            }
             break
         case .unavailable:
-            if path.isOpenForSending, let dcid = path.dcid,
-                let sequence = remoteCIDs.retire(connectionID: dcid)
-            {
-                withPendingItems(
-                    for: .applicationData,
-                    block: {
-                        $0.addRetireConnectionID(FrameRetireConnectionID(sequence: sequence))
-                    }
-                )
-            }
+            retireOutboundCID(forPathGoingAway: path)
             path.changeState(to: .routeUnavailable)
             break
+        }
+
+        if isServer {
+            for (id, path) in multiplexingPaths where path.state == .routeUnavailable {
+                multiplexingPaths.removeValue(forKey: id)
+            }
         }
 
         log.debug("Existing paths:")
@@ -224,6 +230,36 @@ extension QUICConnection {
             // Send packets if necessary
             sendFrames(on: path)
         }
+    }
+
+    // Retires a path's outbound CID and queues a RETIRE_CONNECTION_ID frame for it.
+    func retireOutboundCID(forPathGoingAway path: QUICPath) {
+        guard path.isOpenForSending, !path.hasPreAssignedCIDs, let dcid = path.dcid,
+            let sequence = remoteCIDs.retire(connectionID: dcid)
+        else {
+            return
+        }
+        withPendingItems(for: .applicationData) {
+            $0.addRetireConnectionID(FrameRetireConnectionID(sequence: sequence))
+        }
+    }
+
+    // Removes a path we migrated away from.
+    func tearDownMigratedPath(_ oldPath: QUICPath) {
+        guard oldPath !== currentPath else {
+            log.fault("Refusing to tear down the current path \(oldPath.identifier)")
+            return
+        }
+        log.notice("Tearing down old path \(oldPath.identifier) after migration")
+
+        retireOutboundCID(forPathGoingAway: oldPath)
+
+        if oldPath.state.isValidStateChange(to: .routeUnavailable) {
+            oldPath.changeState(to: .routeUnavailable)
+        }
+        oldPath.tearDownLowerStack()
+        multiplexingPaths.removeValue(forKey: oldPath.identifier)
+        sendFrames()
     }
 }
 #endif

@@ -359,6 +359,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var testSendingShortPackets = false
     private(set) var migrationSupported = false
 
+    private var pendOutboundData = false  // Don't immediately process application sends
+
     // false == IPv6, true == IPv4
     private(set) var initialAddressIsIPv4 = false
 
@@ -1720,7 +1722,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         defer {
             // Make sure to always clean up any unprocessed frames when exiting
-            packet.cleanupReceivedFrames()
+            packetParser.cleanupReceivedFrames()
         }
 
         log(packet: &packet, coalesced: coalesced, outbound: false)
@@ -1768,7 +1770,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var isAckEliciting = false
         var isNonProbing = false
 
-        while let quicFrame = packet.framesReceived.popFirst() {
+        while let quicFrame = packetParser.framesReceived.popFirst() {
             if state == .initialReceived {
                 if !QUICFrame.isValidInInitial(frame: quicFrame) {
                     close(
@@ -2307,7 +2309,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         )
 
         guard
-            packet.destinationConnectionID == path.dcid
+            packet.destinationConnectionID == path.scid
                 || validateDCIDFromInboundPacket(packet, on: path)
         else {
             return false
@@ -2374,8 +2376,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 continue
             }
 
-            try? enqueueInboundStreamData(flow: flowID, streamData: frameArray)
-            try? deliverEnqueuedInboundStreamData(flow: flowID)
+            try? deliverInboundStreamData(flow: flowID, streamData: frameArray)
 
             // When the stream is already in `resetReceived` state,
             // it should be closed when we receive STOP_SENDING, so we
@@ -2461,6 +2462,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         // Note: trigger sending of any frames based on this external event
         checkConnectionIdle()
+
+        guard !pendOutboundData else {
+            log.datapath("Outbound data pended, ignore send frames")
+            return
+        }
         sendFrames()
     }
 
@@ -2968,6 +2974,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Indicates whether the asynchronous send continuation is running or not
     private var asyncSendRunning = false
 
+    // Storage for the packets recorded by a single sendFrames() call.
+    private var sentPackets = NetworkUniqueDeque<SentPacketRecord>(minimumCapacity: 10)
+
     private func capacityForPacketNumberSpace() -> Int {
         let packetNumberSpace = PacketNumberSpace.fromKeyState(keyState: self.keyState)
         if packetNumberSpace == .applicationData {
@@ -2978,6 +2987,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         } else {
             return 1
+        }
+    }
+
+    private func shrinkSentPacketsIfNecessary() {
+        assert(self.sentPackets.isEmpty)
+        // 'sentPackets' is held onto for the lifetime of the connection. If a send burst grows it
+        // beyond a certain limit then drop the capacity. This avoids bursty traffic bloating memory
+        // indefinitely.
+        if self.sentPackets.capacity > QUICPreferences.shared.maxSentPacketsCapacity {
+            self.sentPackets = NetworkUniqueDeque()
         }
     }
 
@@ -2999,22 +3018,24 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return false
         }
         return withCurrentPath { path in
-            var sentPackets = NetworkUniqueDeque<SentPacketRecord>(minimumCapacity: capacityForPacketNumberSpace())
+            self.sentPackets.reserveCapacity(capacityForPacketNumberSpace())
             var discardInitialRecoveryState = false
+
             let success = sendFramesInternal(
                 path: path,
                 ignoreCongestionWindow: ignoreCongestionWindow,
                 retransmission: false,
-                sentPackets: &sentPackets,
+                sentPackets: &self.sentPackets,
                 discardInitialRecoveryState: &discardInitialRecoveryState
             )
 
             // Trigger PMTUD if necessary
             var pmtudPackets = path.pmtudState.sendProbe(on: path)
             while let pmtudPacket = pmtudPackets.popFirst() {
-                sentPackets.append(pmtudPacket)
+                self.sentPackets.append(pmtudPacket)
             }
-            recovery.recordSentPackets(sentPackets, connection: self)
+            recovery.recordSentPackets(&self.sentPackets, connection: self)
+            self.shrinkSentPacketsIfNecessary()
             if discardInitialRecoveryState {
                 recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
                 withCurrentPath {
@@ -3031,16 +3052,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         ignoreCongestionWindow: Bool = false,
         retransmission: Bool = false
     ) -> Bool {
-        var sentPackets = NetworkUniqueDeque<SentPacketRecord>(minimumCapacity: capacityForPacketNumberSpace())
+        self.sentPackets.reserveCapacity(capacityForPacketNumberSpace())
         var discardInitialRecoveryState = false
         let success = sendFramesInternal(
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
             retransmission: retransmission,
-            sentPackets: &sentPackets,
+            sentPackets: &self.sentPackets,
             discardInitialRecoveryState: &discardInitialRecoveryState
         )
-        recovery.recordSentPackets(sentPackets, connection: self)
+        recovery.recordSentPackets(&self.sentPackets, connection: self)
+        self.shrinkSentPacketsIfNecessary()
         if discardInitialRecoveryState {
             recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
             withCurrentPath {
@@ -3069,8 +3091,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     func recordSentPackets(_ block: () -> NetworkUniqueDeque<SentPacketRecord>) {
-        let sentPackets = block()
-        recovery.recordSentPackets(sentPackets, connection: self)
+        var sentPackets = block()
+        recovery.recordSentPackets(&sentPackets, connection: self)
     }
 
     public func handleOutboundRoomAvailableEvent(path pathID: MultiplexingPathIdentifier) {
@@ -4317,8 +4339,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         if let frameArray = stream.dequeueReassembledData(connection: self) {
             do {
-                try enqueueInboundStreamData(flow: flowID, streamData: frameArray)
-                try deliverEnqueuedInboundStreamData(flow: flowID)
+                try deliverInboundStreamData(flow: flowID, streamData: frameArray)
                 sendFrames()
             } catch {
                 log.error("Error sending frames on stream close: \(error)")
@@ -4886,8 +4907,8 @@ extension QUICConnection {
         )
 
         // Check if we need to send probes
-        let sentPackets = path.pmtudState.tryToSend(on: path)
-        recovery.recordSentPackets(sentPackets, connection: self)
+        var sentPackets = path.pmtudState.tryToSend(on: path)
+        recovery.recordSentPackets(&sentPackets, connection: self)
         return true
     }
 
@@ -5476,6 +5497,11 @@ extension QUICConnection {
 
         // Note: trigger sendFrames() based on this external event
         checkConnectionIdle()
+
+        guard !pendOutboundData else {
+            log.datapath("Outbound data pended, ignore send frames")
+            return
+        }
         if !sendFrames() {
             log.datapath("failed to send DATAGRAM frames")
         }
@@ -5564,8 +5590,7 @@ extension QUICConnection {
 
         var frame = frame.frame
         frame.metadataComplete = true
-        try? enqueueInboundDatagrams(flow: matchingFlowIdentifier, datagrams: .init(frame: frame))
-        try? deliverEnqueuedInboundDatagrams(flow: matchingFlowIdentifier)
+        try? deliverInboundDatagrams(flow: matchingFlowIdentifier, datagrams: .init(frame: frame))
         return true
     }
 }
@@ -5876,6 +5901,19 @@ extension QUICConnection {
     }
 
     public func handleApplicationEvent(_ event: ApplicationEvent) -> HandleNetworkEventResult {
+        if event == .outboundDataBatchStart {
+            // Start pending processing
+            pendOutboundData = true
+            return .consumed
+        }
+
+        if event == .outboundDataBatchEnd {
+            // Stop pending processing, resume sending
+            pendOutboundData = false
+            sendFrames()
+            return .consumed
+        }
+
         guard let quicEvent = event.quicEvent else {
             return .unconsumed
         }

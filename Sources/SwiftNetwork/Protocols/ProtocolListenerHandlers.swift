@@ -383,4 +383,19 @@ extension ProtocolInstanceReference {
             }
         }
     }
+
+    func deliverEnqueuedInboundStreamData(flowReference: ProtocolInstanceReference) throws(NetworkError) {
+        try self.fromExternal { () throws(NetworkError) in
+            switch self.reference {
+            #if !NETWORK_NO_SWIFT_QUIC
+            case .quic(let instance):
+                try instance.deliverEnqueuedInboundStreamData(
+                    flow: MultiplexedFlowIdentifier(inboundReference: flowReference)
+                )
+            #endif
+            default:
+                return
+            }
+        }
+    }
 }

@@ -702,6 +702,22 @@ extension OneToOneProtocolHandler where Self: ~Copyable, LowerProtocol == Outbou
         )
     }
 
+    public mutating func attachLowerStreamProtocolToExistingFlow(
+        listener: StreamListenerLinkage,
+        flowReference: ProtocolInstanceReference
+    ) throws(NetworkError) {
+        guard lower.isDetached else {
+            throw NetworkError.posix(EALREADY)
+        }
+        if upper.isDetached {
+            passthroughEvents = false
+        }
+        self.lower = try listener.invokeAttachUpperStreamProtocolToExistingFlow(
+            effectiveSelfReference,
+            flowReference: flowReference
+        )
+    }
+
     public mutating func invokeReceiveStreamData(
         minimumBytes: Int,
         maximumBytes: Int

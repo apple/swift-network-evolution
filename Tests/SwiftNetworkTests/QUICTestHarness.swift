@@ -550,7 +550,8 @@ final class QUICTestHarness {
         dataGenerator: TestDataGenerator,
         streamIndex: Int,
         readChunkSize: Int = .max,
-        timeout: TimeInterval = 5.0
+        timeout: TimeInterval = 5.0,
+        shouldBatchSends: Bool = false
     ) {
         guard let state else {
             XCTFail("State must be non-nil")
@@ -585,6 +586,9 @@ final class QUICTestHarness {
         // Write on the client stream
         context.async {
             var chunkCount = 1
+            if shouldBatchSends {
+                state.clientHarness.invokeApplicationEvent(.outboundDataBatchStart)
+            }
             for dataChunk in dataGenerator {
                 var writeResult = false
                 if dataGenerator.numberOfBlocks == chunkCount && dataGenerator.sendFIN {
@@ -594,6 +598,9 @@ final class QUICTestHarness {
                 }
                 XCTAssertTrue(writeResult)
                 chunkCount += 1
+            }
+            if shouldBatchSends {
+                state.clientHarness.invokeApplicationEvent(.outboundDataBatchEnd)
             }
         }
 
@@ -910,6 +917,7 @@ final class QUICTestHarness {
         sendStreamStopSendingError: Bool = false,
         verifyResetStreamHalfClosure: Bool = false,
         shouldMarkIdle: Bool = false,
+        shouldBatchSends: Bool = false,
         clientOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         sendMaxStreamUpdate: Bool = false,
@@ -1010,7 +1018,8 @@ final class QUICTestHarness {
                         dataGenerator: generator,
                         streamIndex: index,
                         readChunkSize: clientReadChunkSize,
-                        timeout: timeout
+                        timeout: timeout,
+                        shouldBatchSends: shouldBatchSends
                     )
                 } else {
                     XCTAssertTrue(dataBlock == nil && blockSize == 0 && blockCount == 0)
@@ -1118,7 +1127,7 @@ final class QUICTestHarness {
                     XCTAssertNotNil(serverReports)
                     snapshotExpectation.fulfill()
                 }
-                wait(for: [snapshotExpectation], timeout: 2.0)
+                wait(for: [snapshotExpectation], timeout: 5.0)
                 // Now validate the protocol establishment report
                 clientReports = nil
                 serverReports = nil
@@ -1132,7 +1141,7 @@ final class QUICTestHarness {
                     XCTAssertNotNil(serverReports)
                     protocolEstablishmentReportExpectation.fulfill()
                 }
-                wait(for: [protocolEstablishmentReportExpectation], timeout: 2.0)
+                wait(for: [protocolEstablishmentReportExpectation], timeout: 5.0)
             } else {
                 XCTFail("There should be saved server and client harnesses")
             }

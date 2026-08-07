@@ -462,7 +462,7 @@ extension StreamDeserializer where T: ~Copyable, Factory == FrameArraySpanFactor
 }
 
 @available(Network 0.1.0, *)
-extension StreamDeserializer where T: ~Copyable, Factory == SingleSpanFactory {
+extension StreamDeserializer where T: ~Copyable, Factory == EmptySpanFactory {
     public mutating func handleSpan(_ span: RawSpan) throws(DeserializationError) -> T? {
         try handleInputInternal(
             { builder, value in
@@ -523,5 +523,5 @@ public typealias FrameArrayStreamDeserializer<T: StreamDeserializerState & ~Copy
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public typealias SpanStreamDeserializer<T: StreamDeserializerState & ~Copyable> = StreamDeserializer<
-    T, T.StateMachineStepIdentifier, SingleSpanFactory
+    T, T.StateMachineStepIdentifier, EmptySpanFactory
 >

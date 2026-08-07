@@ -134,6 +134,7 @@ public struct Frame: ~Copyable {
         return effectiveBufferLength - (startOffset + endOffset)
     }
 
+    @inline(__always)
     public var span: Span<UInt8>? {
         @_lifetime(borrow self)
         get {
@@ -151,6 +152,7 @@ public struct Frame: ~Copyable {
         }
     }
 
+    @inline(__always)
     public var bytes: RawSpan? {
         @_lifetime(borrow self)
         get {
@@ -167,6 +169,7 @@ public struct Frame: ~Copyable {
         }
     }
 
+    @inline(__always)
     public var mutableSpan: MutableSpan<UInt8>? {
         @_lifetime(&self)
         mutating get {
@@ -187,6 +190,7 @@ public struct Frame: ~Copyable {
         }
     }
 
+    @inline(__always)
     var allBytes: RawSpan? {
         guard isValid else { return nil }
         switch buffer {
@@ -576,7 +580,7 @@ public struct Frame: ~Copyable {
                 }
                 return
             }
-            guard newValue < 2 ^ 6 else {
+            guard newValue < 64 else {
                 Logger.proto.fault("Cannot set DSCP value of \(newValue)")
                 return
             }
