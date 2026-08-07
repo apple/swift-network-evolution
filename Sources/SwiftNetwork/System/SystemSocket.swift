@@ -279,13 +279,18 @@ class SystemSocket {
 
     /// Read pending socket error via SO_ERROR (and clear it). Returns 0 if no error.
     public func getSocketError() -> CInt {
-        (try? getSocketOption(level: SOL_SOCKET, name: SO_ERROR, defaultValue: CInt(0))) ?? 0
+        guard let error = try? getSocketOption(level: SOL_SOCKET, name: SO_ERROR, defaultValue: CInt(0)) else {
+            return 0
+        }
+        return error
     }
 
     #if canImport(Darwin)
     /// Number of bytes available to read in the socket receive buffer (Darwin only).
     public func availableBytesToRead() -> Int {
-        let value: CInt = (try? getSocketOption(level: SOL_SOCKET, name: SO_NREAD, defaultValue: 0)) ?? 0
+        guard let value: CInt = try? getSocketOption(level: SOL_SOCKET, name: SO_NREAD, defaultValue: 0) else {
+            return 0
+        }
         return Int(value)
     }
     #else
@@ -299,11 +304,17 @@ class SystemSocket {
     #endif
 
     public func getReceiveBufferSize() -> CInt {
-        (try? getSocketOption(level: SOL_SOCKET, name: SO_RCVBUF, defaultValue: CInt(0))) ?? 0
+        guard let size = try? getSocketOption(level: SOL_SOCKET, name: SO_RCVBUF, defaultValue: CInt(0)) else {
+            return 0
+        }
+        return size
     }
 
     public func getSendBufferSize() -> CInt {
-        (try? getSocketOption(level: SOL_SOCKET, name: SO_SNDBUF, defaultValue: CInt(0))) ?? 0
+        guard let size = try? getSocketOption(level: SOL_SOCKET, name: SO_SNDBUF, defaultValue: CInt(0)) else {
+            return 0
+        }
+        return size
     }
 
     public func setReceiveBufferSize(_ bytes: CInt) throws(NetworkError) {
