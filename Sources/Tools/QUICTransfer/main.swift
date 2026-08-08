@@ -62,7 +62,6 @@ final class QUICTransfer {
         // Create a random payload to send back and forth
         var payload = [UInt8](repeating: 0, count: sendSize)
         payload = (0..<sendSize).map { _ in UInt8.random(in: 0...255) }
-        var index = 0
         print("Running QUIC transfer, transferring \(iterations) packet\(iterations > 1 ? "s" : "")")
         let timestart = DispatchTime.now().uptimeNanoseconds
 
@@ -251,53 +250,59 @@ final class QUICTransfer {
         }
         var serverStream: StreamUpperHarness?
 
+        var writeIndex = 0
+        var writeSucceeded = true
         var totalReadSize = 0
-        while index < iterations {
-            group.enter()
-            context.async {
-                guard clientStream.write(payload) else {
-                    loggingHandle.log("Client failed to write at iteration: \(index)")
-                    group.leave()
-                    return
-                }
-                if serverStream == nil {
-                    group.enter()
-                    serverInput.waitForNewFlow {
-                        loggingHandle.log("Server got new inbound flow")
-                        serverStream = serverInput.upperHarnesses.last
-                        group.leave()
-                    }
-                }
-                group.leave()
-            }
-            group.wait()
+        let totalExpectedSize = iterations * payload.count
+        let doneSemaphore = DispatchSemaphore(value: 0)
 
-            guard let serverStream else {
-                return 0
+        // Client write loop to perform all writes until finished
+        func writeLoop() {
+            guard writeIndex < iterations else { return }
+            guard clientStream.write(payload) else {
+                loggingHandle.log("Client failed to write at iteration: \(writeIndex)")
+                writeSucceeded = false
+                return
             }
-
-            group.enter()
+            writeIndex += 1
             context.async {
-                var serverReadDataSizeForIteration = 0
-                var serverReadCompletion: ((Bool) -> Void)? = nil
-                serverReadCompletion = { _ in
-                    let readBytes = serverStream.readAndDrop()
-                    if readBytes > 0 {
-                        serverReadDataSizeForIteration += readBytes
-                        totalReadSize += readBytes
-                    }
-                    if serverReadDataSizeForIteration >= payload.count {
-                        serverReadCompletion = nil
-                        index += 1
-                        group.leave()
-                    } else {
-                        serverStream.waitForInboundDataAvailable(completion: serverReadCompletion!)
-                    }
-                }
-                serverStream.waitForInboundDataAvailable(completion: serverReadCompletion!)
+                writeLoop()
             }
-            group.wait()
         }
+
+        // Server read loop: keeps draining inbound data as it arrives.
+        // Readloop used for multiple iterations
+        func readLoop(stream: StreamUpperHarness) {
+            stream.waitForInboundDataAvailable { available in
+                guard available else { return }
+                totalReadSize += stream.readAndDrop()
+                if totalReadSize >= totalExpectedSize {
+                    doneSemaphore.signal()
+                } else {
+                    readLoop(stream: stream)
+                }
+            }
+        }
+
+        context.async {
+            // Setup inbound flow observer and then start the client write loop
+            serverInput.waitForNewFlow {
+                serverStream = serverInput.upperHarnesses.last
+                if let serverStream {
+                    readLoop(stream: serverStream)
+                } else {
+                    doneSemaphore.signal()
+                }
+            }
+            writeLoop()
+        }
+        doneSemaphore.wait()
+
+        guard serverStream != nil, writeSucceeded else {
+            return 0
+        }
+
+        let index = min(totalReadSize / payload.count, iterations)
 
         group.enter()
         context.async {

@@ -133,7 +133,16 @@ extension AutomaticUpperStreamProcessing where Self: ~Copyable {
     /// Notifies the upper protocol that frames are available in `upperReceiveQueue`.
     public func serviceUpperReceiveQueue() {
         guard !upperReceiveQueue.isEmpty else { return }
-        upper.deliverInboundDataAvailableEvent(reference)
+        if upper.isDetached {
+            // Enqueue pending event until the stream is completely attached.
+            // This will ensure that the inboundDataAvailable event is sent for all new streams carrying data
+            let selfReference = self.reference
+            selfReference.enqueuePendingEventForUpperProtocol(
+                event: .inboundDataAvailable(selfReference, upper.reference)
+            )
+        } else {
+            upper.deliverInboundDataAvailableEvent(reference)
+        }
     }
 }
 
