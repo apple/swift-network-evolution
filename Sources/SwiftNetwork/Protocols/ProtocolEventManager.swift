@@ -73,6 +73,7 @@ struct ProtocolEventManagerState: ~Copyable {
     enum PendingEvent: ~Copyable {
         case connected(_ from: ProtocolInstanceReference, _ to: ProtocolInstanceReference)
         case disconnected(_ from: ProtocolInstanceReference, _ to: ProtocolInstanceReference, error: NetworkError?)
+        // inboundDataAvailable event will only be available on the second inbound datagram, the first will not trigger this event
         case inboundDataAvailable(_ from: ProtocolInstanceReference, _ to: ProtocolInstanceReference)
         case outboundRoomAvailable(_ from: ProtocolInstanceReference, _ to: ProtocolInstanceReference)
         case inboundAborted(_ from: ProtocolInstanceReference, _ to: ProtocolInstanceReference, error: NetworkError?)

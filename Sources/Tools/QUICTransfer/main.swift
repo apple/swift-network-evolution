@@ -289,6 +289,15 @@ final class QUICTransfer {
             serverInput.waitForNewFlow {
                 serverStream = serverInput.upperHarnesses.last
                 if let serverStream {
+                    // If there is only one inbound read then a read can take place here and that is it.
+                    // If there are more data after the first read then a read loop will need to be setup
+                    // to observe the rest of the inbound data events.
+                    totalReadSize += serverStream.readAndDrop()
+                    if totalReadSize >= totalExpectedSize {
+                        doneSemaphore.signal()
+                    } else {
+                        readLoop(stream: serverStream)
+                    }
                     readLoop(stream: serverStream)
                 } else {
                     doneSemaphore.signal()

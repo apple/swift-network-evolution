@@ -64,6 +64,8 @@ extension UpperProtocolLinkage {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol InboundDataLinkage: UpperProtocolLinkage where PairedLinkage: OutboundDataLinkage {
+    // Will only notify a upper protocol for the second inbound datagram.
+    // To receive data for the first inbound datagram read directly on the upper protocol.
     func deliverInboundDataAvailableEvent(_ from: ProtocolInstanceReference)
     func deliverOutboundRoomAvailableEvent(_ from: ProtocolInstanceReference)
 }
