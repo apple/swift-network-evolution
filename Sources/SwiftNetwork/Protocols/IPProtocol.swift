@@ -969,6 +969,20 @@ public struct IPProtocol: NetworkProtocol {
                             frame.finalize(success: false)
                             return .removeFrameAndContinue
                         }
+                        // Make sure the count of fragments is correctly accounted for
+                        let fragmentCount = (payloadLength + fragmentRoom - 1) / fragmentRoom
+                        // Will trim down later to the actual size
+                        let maxFragmentFrameSize = IPv4Instance.headerLength + fragmentRoom
+                        guard
+                            var allocatedFrames = try? lower.invokeGetDatagramsToSend(
+                                selfReference,
+                                maximumDatagramCount: fragmentCount,
+                                minimumDatagramSize: maxFragmentFrameSize
+                            )
+                        else {
+                            frame.finalize(success: false)
+                            return .removeFrameAndContinue
+                        }
                         var cursor = 0
                         var fragmentationSucceeded = true
                         var fragmentFrames = FrameArray()
@@ -979,16 +993,17 @@ public struct IPProtocol: NetworkProtocol {
                             let chunkLength = isLast ? remaining : fragmentRoom
                             // Create the fragment frame with this chunk length
                             let fragmentFrameSize = IPv4Instance.headerLength + chunkLength
-                            guard
-                                var allocatedFrames = try? lower.invokeGetDatagramsToSend(
-                                    selfReference,
-                                    maximumDatagramCount: 1,
-                                    minimumDatagramSize: fragmentFrameSize
-                                ),
-                                var fragmentFrame = allocatedFrames.popFirst()
-                            else {
+                            guard var fragmentFrame = allocatedFrames.popFirst() else {
                                 fragmentationSucceeded = false
                                 break
+                            }
+                            if fragmentFrameSize < maxFragmentFrameSize {
+                                // Trim the frame allocated at the max fragment size down to this (smaller, final) fragment's actual size.
+                                guard fragmentFrame.collapse(to: fragmentFrameSize) else {
+                                    fragmentFrame.finalize(success: false)
+                                    fragmentationSucceeded = false
+                                    break
+                                }
                             }
                             // MF bit is always set except for the last fragment
                             let ipOff = UInt16(isLast ? 0 : 0x2000) | UInt16(cursor / 8)
@@ -1043,6 +1058,9 @@ public struct IPProtocol: NetworkProtocol {
                         frame.finalize(success: fragmentationSucceeded)
                         if fragmentationSucceeded {
                             return .replaceWithFramesAndContinue(fragmentFrames)
+                        }
+                        if !allocatedFrames.isEmpty {
+                            allocatedFrames.finalizeAllFramesAsFailed()
                         }
                         // This is a case where something went wrong on fragmentation and we need to remove any fragments that were created
                         fragmentFrames.finalizeAllFramesAsFailed()
@@ -1732,6 +1750,20 @@ public struct IPProtocol: NetworkProtocol {
                             frame.finalize(success: false)
                             return .removeFrameAndContinue
                         }
+                        // Make sure the count of fragments is correctly accounted for
+                        let fragmentCount = (payloadLength + fragmentRoom - 1) / fragmentRoom
+                        // Will trim down later to the actual size
+                        let maxFragmentFrameSize = ipv6CompleteHeaderLength + fragmentRoom
+                        guard
+                            var allocatedFrames = try? lower.invokeGetDatagramsToSend(
+                                selfReference,
+                                maximumDatagramCount: fragmentCount,
+                                minimumDatagramSize: maxFragmentFrameSize
+                            )
+                        else {
+                            frame.finalize(success: false)
+                            return .removeFrameAndContinue
+                        }
                         var cursor = 0
                         var fragmentationSucceeded = true
                         var fragmentFrames = FrameArray()
@@ -1745,16 +1777,17 @@ public struct IPProtocol: NetworkProtocol {
                             // Fragment offset flags
                             let offsetFlags = UInt16(cursor) | (isLast ? 0 : UInt16(IPv6Instance.ip6fMoreFragmentMask))
                             let fragmentFrameSize = ipv6CompleteHeaderLength + chunkLength
-                            guard
-                                var allocatedFrames = try? lower.invokeGetDatagramsToSend(
-                                    selfReference,
-                                    maximumDatagramCount: 1,
-                                    minimumDatagramSize: fragmentFrameSize
-                                ),
-                                var fragmentFrame = allocatedFrames.popFirst()
-                            else {
+                            guard var fragmentFrame = allocatedFrames.popFirst() else {
                                 fragmentationSucceeded = false
                                 break
+                            }
+                            if fragmentFrameSize < maxFragmentFrameSize {
+                                // Trim the frame allocated at the max fragment size down to this (smaller, final) fragment's actual size.
+                                guard fragmentFrame.collapse(to: fragmentFrameSize) else {
+                                    fragmentFrame.finalize(success: false)
+                                    fragmentationSucceeded = false
+                                    break
+                                }
                             }
                             let result = Serializer.serialize(&fragmentFrame, claim: false) {
                                 write throws(SerializationError) in
@@ -1801,6 +1834,9 @@ public struct IPProtocol: NetworkProtocol {
                         frame.finalize(success: fragmentationSucceeded)
                         if fragmentationSucceeded {
                             return .replaceWithFramesAndContinue(fragmentFrames)
+                        }
+                        if !allocatedFrames.isEmpty {
+                            allocatedFrames.finalizeAllFramesAsFailed()
                         }
                         fragmentFrames.finalizeAllFramesAsFailed()
                         return .removeFrameAndContinue
