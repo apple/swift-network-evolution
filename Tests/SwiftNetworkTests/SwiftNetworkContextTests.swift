@@ -46,4 +46,42 @@ final class SwiftNetworkContextTests: NetTestCase {
 
         wait(for: [expectation], timeout: 5.0)
     }
+
+    func testInlineAsyncDrains() {
+        let context = NetworkContext.inlineContext(identifier: "test")
+        var log: [String] = []
+
+        context.async { log.append("a") }
+        context.async { log.append("b") }
+        XCTAssertEqual(log, [], "inline work must not run until drained")
+
+        context.drainInline()
+        XCTAssertEqual(log, ["a", "b"])
+    }
+
+    func testInlineTimerFiresOnVirtualClock() {
+        let context = NetworkContext.inlineContext(identifier: "test")
+        var fired = false
+
+        context.resetTimer(for: TimerReference(index: 1), to: .milliseconds(100) { fired = true })
+        context.drainInline()
+        XCTAssertFalse(fired, "timer not yet due")
+
+        context.advanceInline(byMilliseconds: 50)
+        XCTAssertFalse(fired, "still not due at t=50")
+
+        context.advanceInline(byMilliseconds: 60)
+        XCTAssertTrue(fired, "timer due at t=110")
+    }
+
+    func testInlineTimerUnschedule() {
+        let context = NetworkContext.inlineContext(identifier: "test")
+        var fired = false
+        let ref = TimerReference(index: 2)
+
+        context.resetTimer(for: ref, to: .milliseconds(100) { fired = true })
+        context.resetTimer(for: ref, to: .unschedule)
+        context.advanceInline(byMilliseconds: 200)
+        XCTAssertFalse(fired, "unscheduled timer must not fire")
+    }
 }

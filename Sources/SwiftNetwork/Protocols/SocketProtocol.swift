@@ -36,8 +36,8 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
     var log = NetworkLoggerState()
 
     private var socket: SystemSocket? = nil
-    private var dispatchReadSource: (any DispatchSourceRead)? = nil
-    private var dispatchWriteSource: (any DispatchSourceWrite)? = nil
+    private var dispatchReadSource: NetworkQueueSource? = nil
+    private var dispatchWriteSource: NetworkQueueSource? = nil
     private var waitingForWritable = false
     private var inputUnacknowledged = false
     private var inputSourceSuspended = false
@@ -91,7 +91,6 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
             inputSourceSuspended = false
         }
         inputUnacknowledged = false
-        dispatchReadSource?.setEventHandler(handler: nil)
         dispatchReadSource?.cancel()
         dispatchReadSource = nil
         cancelWriteSource()
@@ -212,8 +211,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
 
     private func setupReadSource() {
         socket?.withFileDescriptor { fileDescriptor in
-            dispatchReadSource = DispatchSource.makeReadSource(fileDescriptor: fileDescriptor, queue: context.queue)
-            dispatchReadSource?.setEventHandler {
+            dispatchReadSource = context.queue.createSource(.read, fileDescriptor: fileDescriptor) {
                 self.handleSocketReadEvent()
             }
             dispatchReadSource?.resume()
@@ -261,8 +259,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
 
     private func setupWriteSource() {
         socket?.withFileDescriptor { fileDescriptor -> Void in
-            dispatchWriteSource = DispatchSource.makeWriteSource(fileDescriptor: fileDescriptor, queue: context.queue)
-            dispatchWriteSource?.setEventHandler {
+            dispatchWriteSource = context.queue.createSource(.write, fileDescriptor: fileDescriptor) {
                 self.serviceWrites()
                 self.triggerOutboundRoomAvailable()
             }
@@ -283,7 +280,6 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
             // DispatchSource must be resumed before cancel
             dispatchWriteSource.resume()
         }
-        dispatchWriteSource.setEventHandler(handler: nil)
         dispatchWriteSource.cancel()
         self.dispatchWriteSource = nil
         waitingForWritable = false

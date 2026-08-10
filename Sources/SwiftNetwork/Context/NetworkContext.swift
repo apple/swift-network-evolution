@@ -164,6 +164,26 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         scheduler = externalScheduler
         schedulerIsDefault = false
     }
+
+    /// Creates a context with a deterministic inline (no-thread) queue, driven by
+    /// `drainInline()` / `advanceInline(byMilliseconds:)`. For testing.
+    public static func inlineContext(identifier: String) -> NetworkContext {
+        let globals = Globals(inline: true)
+        return NetworkContext(
+            identifier: identifier,
+            globals: globals,
+            scheduler: DefaultScheduler(globals: globals),
+            schedulerIsDefault: true
+        )
+    }
+
+    public func drainInline() {
+        globals.queue.drain()
+    }
+
+    public func advanceInline(byMilliseconds milliseconds: Int) {
+        globals.queue.advance(byMilliseconds: milliseconds)
+    }
     #endif
 
     var disableLogging: Bool {
@@ -176,7 +196,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
     #if !NETWORK_DRIVERKIT && !NETWORK_STANDALONE
     func assert() {
         if schedulerIsDefault {
-            dispatchPrecondition(condition: DispatchPredicate.onQueue(queue))
+            queue.assertQueue()
         } else {
             precondition(scheduler.runningInScheduler, "Not running on context scheduler")
         }
@@ -250,11 +270,11 @@ extension NetworkContext {
     final class Globals {
         final class TimerList {
             var entries = NetworkPriorityQueue<TimerEntry>()
-            var queue: DispatchQueue
-            var timerSource: (any DispatchSourceTimer)?
+            var queue: NetworkQueue
+            var timerSource: NetworkQueueSource?
             var currentTarget: DispatchTime = .distantFuture
 
-            init(queue: DispatchQueue) {
+            init(queue: NetworkQueue) {
                 self.queue = queue
             }
 
@@ -267,12 +287,12 @@ extension NetworkContext {
                     return
                 }
                 while !entries.isEmpty {
-                    let now = DispatchTime.now()
+                    let now = queue.now
                     let targetTime = entries.first.targetTime
                     if targetTime > now {
                         // Target is in future, reset and return
                         currentTarget = targetTime
-                        timerSource.schedule(deadline: targetTime)
+                        timerSource.setTimerValues(fireTime: targetTime)
                         return
                     }
                     guard var entry = entries.pop() else {
@@ -320,25 +340,28 @@ extension NetworkContext {
                 // Reset the target time if needed
                 if needsReschedule {
                     if timerSource == nil {
-                        timerSource = DispatchSource.makeTimerSource(queue: queue)
+                        timerSource = queue.createSource(.timer) { [weak self] in
+                            self?.runTimer()
+                        }
                     }
                     currentTarget = targetTime
                     if let timerSource {
-                        let timerHandler = DispatchWorkItem {
-                            self.runTimer()
-                        }
-                        timerSource.setEventHandler(handler: timerHandler)
-                        timerSource.schedule(deadline: currentTarget)
+                        timerSource.setTimerValues(fireTime: currentTarget)
                         timerSource.activate()
                     }
                 }
             }
         }
         var timerList: TimerList
-        var queue: DispatchQueue
+        var queue: NetworkQueue
 
         init(label: String) {
-            queue = DispatchQueue(label: "networking context")
+            queue = NetworkQueue(label: "networking context")
+            timerList = TimerList(queue: queue)
+        }
+
+        init(inline: Bool) {
+            queue = inline ? NetworkQueue() : NetworkQueue(label: "networking context")
             timerList = TimerList(queue: queue)
         }
     }
@@ -350,13 +373,13 @@ extension NetworkContext {
         }
         /// Runs an immediate task. No assumptions are made about how the task is run.
         func runImmediate(_ task: @escaping (() -> Void)) {
-            globals.queue.async(execute: DispatchWorkItem(block: task))
+            globals.queue.async(task)
         }
         /// Schedules a task to run after a delay, using a reference.
         ///
         /// The `milliseconds` parameter specifies the delay before the task runs.
         func schedule(_ task: @escaping (() -> Void), milliseconds: Int64, reference: TimerReference) {
-            let targetTime = DispatchTime.now() + DispatchTimeInterval.milliseconds(Int(milliseconds))
+            let targetTime = globals.queue.now + DispatchTimeInterval.milliseconds(Int(milliseconds))
             globals.timerList.insert(targetTime: targetTime, reference: reference, task: task)
         }
         /// Unschedules a task with a reference.
@@ -365,8 +388,7 @@ extension NetworkContext {
         }
         /// A Boolean value that indicates whether the current code is running in the scheduler.
         var runningInScheduler: Bool {
-            // TODO: Not supported by DispatchQueue
-            fatalError("Unsupported")
+            globals.queue.isCurrent
         }
     }
 }
@@ -376,7 +398,7 @@ extension NetworkContext {
 @available(Network 0.1.0, *)
 extension NetworkContext {
 
-    var queue: DispatchQueue {
+    var queue: NetworkQueue {
         globals.queue
     }
 
