@@ -210,11 +210,12 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
     }
 }
 
-/// A continuous clock with a compact representation and configurable initial value.
+/// A continuous clock with a compact representation that tests can advance manually.
 ///
 /// Mimics `Swift.ContinuousClock`, with two differences:
 /// 1. It uses `NetworkDuration` internally so its size is 8 bytes.
-/// 2. You can create a clock with any value, which is useful for unit tests.
+/// 2. Tests can replace the OS clock with one they advance by hand,
+///    which makes time-dependent behaviour deterministic.
 #if !NETWORK_EMBEDDED
 @_spi(Essentials)
 // Availability due to `SwiftNetwork`'s `System.Time` (used by `Instant.now`)
@@ -223,6 +224,55 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
 public struct NetworkClock: Clock {
     public struct Instant: InstantProtocol, CustomStringConvertible {
         var time: NetworkDuration
+
+        #if NETWORK_INTERNAL_TESTS
+        // Backing storage for the manual clock used by tests.
+        //
+        // This is a `static let` box rather than a `static var` on purpose.
+        // Reading a mutable static emits a `swift_beginAccess` call for the
+        // dynamic exclusivity check. A `let` does not.
+        private final class ManualTime: @unchecked Sendable {
+            var continuous: Instant = .zero
+            var absolute: Instant = .zero
+        }
+        private static let manualTime = ManualTime()
+        #endif
+
+        internal static func useSystemTime() {
+            #if NETWORK_INTERNAL_TESTS
+            manualTime.continuous = .zero
+            manualTime.absolute = .zero
+            #endif
+        }
+
+        internal static func useManualTime(
+            _ continuous: Instant,
+            absolute: Instant? = nil
+        ) {
+            #if NETWORK_INTERNAL_TESTS
+            let absolute = absolute ?? continuous
+            precondition(continuous > .zero, "manual time must be greater than zero")
+            precondition(absolute > .zero, "manual time must be greater than zero")
+            manualTime.continuous = continuous
+            manualTime.absolute = absolute
+            #else
+            fatalError("The manual clock requires building with -DNETWORK_INTERNAL_TESTS")
+            #endif
+        }
+
+        internal static func advanceManualTime(by duration: NetworkDuration) {
+            #if NETWORK_INTERNAL_TESTS
+            precondition(duration >= .zero, "manual time must not go backwards")
+            precondition(
+                manualTime.continuous > .zero,
+                "advanceManualTime(by:) requires useManualTime() first"
+            )
+            manualTime.continuous = manualTime.continuous.advanced(by: duration)
+            manualTime.absolute = manualTime.absolute.advanced(by: duration)
+            #else
+            fatalError("The manual clock requires building with -DNETWORK_INTERNAL_TESTS")
+            #endif
+        }
 
         public func advanced(by duration: NetworkDuration) -> Self {
             NetworkClock.Instant(self.time + duration)
@@ -265,12 +315,23 @@ public struct NetworkClock: Clock {
         }
 
         public static var now: Instant {
-            // TODO: this should probably call ContinuousClock.now instead
-            Instant(microseconds: Int64(System.Time.now()))
+            #if NETWORK_INTERNAL_TESTS
+            let manual = manualTime.continuous
+            if _slowPath(manual != .zero) {
+                return manual
+            }
+            #endif
+            return Instant(microseconds: Int64(System.Time.now()))
         }
 
         public static var nowAbsolute: Instant {
-            Instant(nanoseconds: Int64(System.Time.nowAbsoluteNanoseconds()))
+            #if NETWORK_INTERNAL_TESTS
+            let manual = manualTime.absolute
+            if _slowPath(manual != .zero) {
+                return manual
+            }
+            #endif
+            return Instant(nanoseconds: Int64(System.Time.nowAbsoluteNanoseconds()))
         }
 
         public static var zero: Instant {

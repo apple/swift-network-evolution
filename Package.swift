@@ -40,6 +40,13 @@ let allApplePlatforms: [Platform] = [
 
 // Logging levels, qlog output, and QUIC signposts are configured via package
 // traits. See the `traits:` list on the `Package(...)` initializer below.
+//
+// Test-only hooks in the library, are guarded by `NETWORK_INTERNAL_TESTS`.
+// Pass it on the command line instead:
+//
+//     swift test -Xswiftc -DNETWORK_INTERNAL_TESTS
+//
+// Tests that depend on those hooks skip themselves when it is absent.
 let settings: [SwiftSetting] = [
     .define("IMPORT_SWIFTTLS"),
     .define("EXPORT_SWIFTTLS"),

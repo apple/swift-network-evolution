@@ -35,7 +35,7 @@ jobs:
         /usr/bin/xcodebuild -quiet -scheme swift-network-evolution-Package -destination "generic/platform=visionos" build && visionos=PASSED || { rc=1; visionos=FAILED; };
         echo "=== visionOS build: $visionos ===";
         echo "=== xcrun swift test ===";
-        xcrun swift test --quiet "$@" && tests=PASSED || { rc=1; tests=FAILED; };
+        xcrun swift test --quiet -Xswiftc -DNETWORK_INTERNAL_TESTS "$@" && tests=PASSED || { rc=1; tests=FAILED; };
         echo "=== swift test: $tests ===";
         echo "=== Summary ===";
         printf "%-20s %s\n" "macOS build:" "$macos";
@@ -62,10 +62,10 @@ jobs:
         swift build --build-tests --quiet --traits DisableDebugLogging,DisableErrorLogging "$@";
         echo "=== Build (reductive traits on): PASSED ===";
         echo "=== Test (debug) ===";
-        swift test --quiet "$@";
+        swift test --quiet -Xswiftc -DNETWORK_INTERNAL_TESTS "$@";
         echo "=== Test (debug): PASSED ===";
         echo "=== Test (release) ===";
-        swift test --quiet -c release "$@";
+        swift test --quiet -c release -Xswiftc -DNETWORK_INTERNAL_TESTS "$@";
         echo "=== Test (release): PASSED ===";
         echo "=== Summary: all builds and tests passed ==="
         ' bash

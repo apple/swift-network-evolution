@@ -159,3 +159,123 @@ final class SwiftNetworkClockTests: NetTestCase {
     }
 
 }
+
+#if !NETWORK_INTERNAL_TESTS
+private struct ManualClockUnavailable: LocalizedError, CustomStringConvertible {
+    var description: String {
+        "the manual clock is not compiled in; build with -Xswiftc -DNETWORK_INTERNAL_TESTS"
+    }
+    var errorDescription: String? { self.description }
+}
+#endif
+
+/// Tests for the manually advanced clock behind `NetworkClock.Instant.now`.
+@available(Network 0.1.0, *)
+final class SwiftNetworkManualClockTests: NetTestCase {
+    private let base = NetworkClock.Instant(milliseconds: 1000)
+
+    override func setUpWithError() throws {
+        #if !NETWORK_INTERNAL_TESTS
+        throw ManualClockUnavailable()
+        #endif
+    }
+
+    override func tearDown() {
+        NetworkClock.Instant.useSystemTime()
+    }
+
+    func testSystemClockIsUsedByDefault() {
+        let first = NetworkClock.Instant.now
+        XCTAssertNotEqual(first, .zero)
+        usleep(1)
+        let second = NetworkClock.Instant.now
+        XCTAssertGreaterThan(second, first)
+    }
+
+    func testUseManualTimeFreezesTheClock() {
+        NetworkClock.Instant.useManualTime(base)
+        XCTAssertEqual(NetworkClock.Instant.now, base)
+        // Reading repeatedly must yield the same instant: time no longer moves
+        // on its own, which is the entire point of the manual clock.
+        usleep(1)
+        XCTAssertEqual(NetworkClock.Instant.now, base)
+        XCTAssertEqual(NetworkClock.Instant.now, NetworkClock.Instant.now)
+    }
+
+    func testUseManualTimeDefaultsAbsoluteToContinuous() {
+        NetworkClock.Instant.useManualTime(base)
+        XCTAssertEqual(NetworkClock.Instant.nowAbsolute, base)
+    }
+
+    func testUseManualTimeKeepsContinuousAndAbsoluteSeparate() {
+        let absolute = NetworkClock.Instant(milliseconds: 5000)
+        NetworkClock.Instant.useManualTime(base, absolute: absolute)
+        XCTAssertEqual(NetworkClock.Instant.now, base)
+        XCTAssertEqual(NetworkClock.Instant.nowAbsolute, absolute)
+    }
+
+    func testUseManualTimeOverwritesAPreviousManualTime() {
+        NetworkClock.Instant.useManualTime(base, absolute: NetworkClock.Instant(milliseconds: 5000))
+        let later = NetworkClock.Instant(milliseconds: 2000)
+        NetworkClock.Instant.useManualTime(later)
+        XCTAssertEqual(NetworkClock.Instant.now, later)
+        XCTAssertEqual(NetworkClock.Instant.nowAbsolute, later)
+    }
+
+    func testAdvanceManualTimeMovesBothClocks() {
+        let absolute = NetworkClock.Instant(milliseconds: 5000)
+        NetworkClock.Instant.useManualTime(base, absolute: absolute)
+        NetworkClock.Instant.advanceManualTime(by: .milliseconds(250))
+        XCTAssertEqual(NetworkClock.Instant.now, base.advanced(by: .milliseconds(250)))
+        XCTAssertEqual(NetworkClock.Instant.nowAbsolute, absolute.advanced(by: .milliseconds(250)))
+    }
+
+    func testAdvanceManualTimeAccumulates() {
+        NetworkClock.Instant.useManualTime(base)
+        for _ in 0..<3 {
+            NetworkClock.Instant.advanceManualTime(by: .milliseconds(100))
+        }
+        XCTAssertEqual(NetworkClock.Instant.now, base.advanced(by: .milliseconds(300)))
+    }
+
+    func testAdvanceManualTimeByZeroLeavesTheClockAlone() {
+        NetworkClock.Instant.useManualTime(base)
+        NetworkClock.Instant.advanceManualTime(by: .zero)
+        XCTAssertEqual(NetworkClock.Instant.now, base)
+    }
+
+    func testAdvanceManualTimeKeepsNanosecondResolution() {
+        // `System.Time.now()` truncates to microseconds, so nanosecond steps are
+        // only observable on the manual clock.
+        NetworkClock.Instant.useManualTime(NetworkClock.Instant(nanoseconds: 1))
+        NetworkClock.Instant.advanceManualTime(by: .nanoseconds(1))
+        XCTAssertEqual(NetworkClock.Instant.now.time, .nanoseconds(2))
+    }
+
+    func testDurationIsMeasuredAcrossManualAdvances() {
+        NetworkClock.Instant.useManualTime(base)
+        let start = NetworkClock.Instant.now
+
+        NetworkClock.Instant.advanceManualTime(by: .milliseconds(5))
+
+        // The reason the manual clock exists: an exact, reproducible elapsed
+        // time with no dependency on how long the test itself took to run.
+        XCTAssertEqual(start.duration(to: NetworkClock.Instant.now), .milliseconds(5))
+    }
+
+    func testUseSystemTimeRestoresTheSystemClock() {
+        NetworkClock.Instant.useManualTime(base)
+        XCTAssertEqual(NetworkClock.Instant.now, base)
+
+        NetworkClock.Instant.useSystemTime()
+
+        // `System.Time.now()` reports microseconds since boot, so the restored
+        // clock cannot still read the 1 s manual value, and it must keep moving.
+        let restored = NetworkClock.Instant.now
+        XCTAssertNotEqual(restored, base)
+        usleep(1)
+        let next = NetworkClock.Instant.now
+        XCTAssertGreaterThan(next, restored)
+    }
+
+}
