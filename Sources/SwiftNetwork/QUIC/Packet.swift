@@ -308,18 +308,22 @@ struct Packet: ~Copyable {
     var overrideSentNumberSize: EncodedPacketNumber.Size? {
         get {
             if let _overrideSentNumberSize {
+                #if !DisableErrorLogging
                 Logger.proto.error(
                     "WARNING: Reading overrideSentNumberSize only be used for unit testing!"
                 )
+                #endif
                 return _overrideSentNumberSize
             }
             return nil
         }
         set(newValue) {
             if let newValue {
+                #if !DisableErrorLogging
                 Logger.proto.error(
                     "WARNING: Setting overrideSentNumberSize only be used for unit testing!"
                 )
+                #endif
                 _overrideSentNumberSize = newValue
             } else {
                 _overrideSentNumberSize = nil

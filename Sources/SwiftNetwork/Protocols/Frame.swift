@@ -268,7 +268,9 @@ public struct Frame: ~Copyable {
     public mutating func claim(fromStart: Int, fromEnd: Int = 0, adjustSingleIPAggregate: Bool = true) -> Bool {
         if adjustSingleIPAggregate && isSingleIPAggregate {
             guard fromEnd == 0 else {
-                Logger.proto.fault("Trying to claim at the end \(fromEnd) bytes from a single-IP aggregate")
+                #if !DisableErrorLogging
+                Logger.proto.error("Trying to claim at the end \(fromEnd) bytes from a single-IP aggregate")
+                #endif
                 return false
             }
             aggregateBufferLength -= fromStart
@@ -278,9 +280,11 @@ public struct Frame: ~Copyable {
         let newEnd = endOffset + fromEnd
         guard newStart <= effectiveBufferLength - newEnd else {
             let effectiveLength = effectiveBufferLength
+            #if !DisableErrorLogging
             Logger.proto.error(
                 "Claiming bytes failed because start (\(newStart)) is beyond end (\(effectiveLength) - \(newEnd))"
             )
+            #endif
             return false
         }
 
@@ -297,7 +301,9 @@ public struct Frame: ~Copyable {
     public mutating func unclaim(fromStart: Int, fromEnd: Int = 0, adjustSingleIPAggregate: Bool = true) -> Bool {
         if adjustSingleIPAggregate && isSingleIPAggregate {
             guard fromEnd == 0 else {
-                Logger.proto.fault("Trying to unclaim at the end \(fromEnd) bytes from a single-IP aggregate")
+                #if !DisableErrorLogging
+                Logger.proto.error("Trying to unclaim at the end \(fromEnd) bytes from a single-IP aggregate")
+                #endif
                 return false
             }
             aggregateBufferLength += fromStart
@@ -305,13 +311,17 @@ public struct Frame: ~Copyable {
 
         guard fromStart <= startOffset else {
             let startOffset = startOffset
+            #if !DisableErrorLogging
             Logger.proto.error("Frame cannot unclaim \(fromStart) start bytes (has \(startOffset) left)")
+            #endif
             return false
         }
 
         guard fromEnd <= endOffset else {
             let endOffset = endOffset
+            #if !DisableErrorLogging
             Logger.proto.error("Frame cannot unclaim \(fromEnd) end bytes (has \(endOffset) left)")
+            #endif
             return false
         }
 
@@ -581,7 +591,9 @@ public struct Frame: ~Copyable {
                 return
             }
             guard newValue < 64 else {
-                Logger.proto.fault("Cannot set DSCP value of \(newValue)")
+                #if !DisableErrorLogging
+                Logger.proto.error("Cannot set DSCP value of \(newValue)")
+                #endif
                 return
             }
             if ipPacketValues == nil {
