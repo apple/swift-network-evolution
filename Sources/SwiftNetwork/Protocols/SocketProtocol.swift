@@ -25,18 +25,6 @@ internal import os
 #if canImport(Dispatch)
 import Dispatch
 
-// DIAG: temporary unconditional stderr tracing for the Linux receive-stall
-// investigation. Bypasses the logging stack so probes always appear in CI
-// output. Remove once the stall is diagnosed.
-@inline(never)
-func socketDiag(_ message: @autoclosure () -> String) {
-    let line = "SOCKETDIAG " + message() + "\n"
-    let bytes = Array(line.utf8)
-    bytes.withUnsafeBytes { raw in
-        _ = write(2, raw.baseAddress, raw.count)
-    }
-}
-
 // MARK: - SocketDatagramProtocol
 
 @_spi(Essentials)
@@ -106,10 +94,9 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
         }
         inputUnacknowledged = false
         dispatchReadSource?.setEventHandler(handler: nil)
-        // The cancel handler closes readSourceFD once libdispatch releases it.
+        // The cancel handler releases the shared source fd once libdispatch is done.
         dispatchReadSource?.cancel()
         dispatchReadSource = nil
-        readSourceFD = -1
         cancelWriteSource()
         socket = nil
         incomingFrames.finalizeAllFramesAsFailed()
@@ -226,35 +213,44 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
 
     // MARK: - Read source
 
-    // Read and write sources are created on their own dup()'d descriptors, each
-    // closed only in its DispatchSource cancel handler. On Linux libdispatch
-    // registers the fd in a shared epoll instance armed with EPOLLFREE and aborts
-    // from its event loop if a registered fd's file description is freed while
-    // still registered; since cancel() unregisters asynchronously and libdispatch
-    // does not own a socket fd, the source must be the sole owner of the fd it
-    // watches. The socket's own fd is never registered, so SystemSocket.deinit
-    // closing it is safe. (See the fuller note in SocketStreamProtocol.)
-    private var readSourceFD: CInt = -1
+    // Read and write sources share one dup'd fd, closed once both have cancelled.
+    // See the note in SocketStreamProtocol for why (Linux epoll fd-keying + EPOLLFREE).
+    private var sourceFD: CInt = -1
+    private var sourceFDRefCount = 0
+
+    private func makeSharedSourceFDIfNeeded() -> CInt {
+        if sourceFD >= 0 { return sourceFD }
+        let dupFD = socket?.withFileDescriptor { dup($0) } ?? -1
+        guard dupFD >= 0 else {
+            log.error("Failed to dup fd for dispatch sources: \(errno)")
+            return -1
+        }
+        sourceFD = dupFD
+        return dupFD
+    }
+
+    private func releaseSharedSourceFD(_ fd: CInt) {
+        sourceFDRefCount -= 1
+        if sourceFDRefCount <= 0 {
+            close(fd)
+            sourceFD = -1
+            sourceFDRefCount = 0
+        }
+    }
 
     private func setupReadSource() {
-        socket?.withFileDescriptor { fileDescriptor in
-            let dupFD = dup(fileDescriptor)
-            guard dupFD >= 0 else {
-                log.error("Failed to dup fd for read source: \(errno)")
-                return
-            }
-            readSourceFD = dupFD
-            let source = DispatchSource.makeReadSource(fileDescriptor: dupFD, queue: context.queue)
-            source.setEventHandler {
-                self.handleSocketReadEvent()
-            }
-            // Close the dup'd fd only once the source has fully cancelled.
-            source.setCancelHandler {
-                close(dupFD)
-            }
-            dispatchReadSource = source
-            source.resume()
+        let fd = makeSharedSourceFDIfNeeded()
+        guard fd >= 0 else { return }
+        sourceFDRefCount += 1
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: context.queue)
+        source.setEventHandler {
+            self.handleSocketReadEvent()
         }
+        source.setCancelHandler {
+            self.releaseSharedSourceFD(fd)
+        }
+        dispatchReadSource = source
+        source.resume()
     }
 
     private func handleSocketReadEvent() {
@@ -298,30 +294,21 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
 
     // MARK: - Write source
 
-    // See the note on the read source above for why the write source is created
-    // on its own dup()'d descriptor.
-    private var writeSourceFD: CInt = -1
-
+    // Shares the read source's dup'd fd.
     private func setupWriteSource() {
-        socket?.withFileDescriptor { fileDescriptor -> Void in
-            let dupFD = dup(fileDescriptor)
-            guard dupFD >= 0 else {
-                log.error("Failed to dup fd for write source: \(errno)")
-                return
-            }
-            writeSourceFD = dupFD
-            let source = DispatchSource.makeWriteSource(fileDescriptor: dupFD, queue: context.queue)
-            source.setEventHandler {
-                self.serviceWrites()
-                self.triggerOutboundRoomAvailable()
-            }
-            // Close the dup'd fd only once the source has fully cancelled.
-            source.setCancelHandler {
-                close(dupFD)
-            }
-            dispatchWriteSource = source
-            // Starts suspended — only resumed when we get EAGAIN
+        let fd = makeSharedSourceFDIfNeeded()
+        guard fd >= 0 else { return }
+        sourceFDRefCount += 1
+        let source = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: context.queue)
+        source.setEventHandler {
+            self.serviceWrites()
+            self.triggerOutboundRoomAvailable()
         }
+        source.setCancelHandler {
+            self.releaseSharedSourceFD(fd)
+        }
+        dispatchWriteSource = source
+        // Starts suspended — only resumed when we get EAGAIN
     }
 
     private func triggerOutboundRoomAvailable() {
@@ -338,10 +325,9 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
             dispatchWriteSource.resume()
         }
         dispatchWriteSource.setEventHandler(handler: nil)
-        // The cancel handler closes writeSourceFD once libdispatch releases it.
+        // The cancel handler releases the shared source fd once libdispatch is done.
         dispatchWriteSource.cancel()
         self.dispatchWriteSource = nil
-        writeSourceFD = -1
         waitingForWritable = false
     }
 
@@ -556,10 +542,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
             // For non-blocking TCP, connectSocket returns false on EINPROGRESS.
             // Wait for the socket to become writable, then treat as connected.
             let connectedNow = try socket.connectSocket(to: ip, port: remoteEndpoint.port)
-            socketDiag("connect(): connectedNow=\(connectedNow) sharedFD=\(sourceFD)")
             if connectedNow {
                 deliverConnectedEvent()
-                // Connected synchronously — safe to arm the read source now.
                 startReadSource()
             } else {
                 isConnecting = true
@@ -587,7 +571,6 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
     // MARK: - BottomStreamProtocol
 
     public func receiveStreamData(minimumBytes: Int, maximumBytes: Int) throws(NetworkError) -> FrameArray? {
-        socketDiag("receiveStreamData: min=\(minimumBytes) max=\(maximumBytes) buffered=\(incomingFrames.unclaimedLength) complete=\(incomingFrames.connectionComplete) suspended=\(inputSourceSuspended) fd=\(sourceFD)")
         guard !incomingFrames.isEmpty,
             incomingFrames.unclaimedLength >= minimumBytes || incomingFrames.connectionComplete
         else {
@@ -596,16 +579,13 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
             // more than we're currently holding, so reading must continue even
             // past the soft cap. Otherwise a large minimum would deadlock.
             if inputSourceSuspended && !inputFinished {
-                socketDiag("receiveStreamData: underflow, resuming suspended read source")
                 inputSourceSuspended = false
                 dispatchReadSource?.resume()
             }
-            socketDiag("receiveStreamData: returning nil (not enough buffered)")
             return nil
         }
         let result = incomingFrames.drainArray(maximumByteCount: maximumBytes)
         if inputSourceSuspended, incomingFrames.unclaimedLength < maximumInputSize {
-            socketDiag("receiveStreamData: drained, resuming read source below high-water")
             inputSourceSuspended = false
             dispatchReadSource?.resume()
         }
@@ -620,7 +600,6 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
 
     public func sendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {
         pendingOutputFrames.add(frames: streamData)
-        socketDiag("sendStreamData: queued, pending=\(pendingOutputFrames.unclaimedLength) isConnecting=\(isConnecting) waitingForWritable=\(waitingForWritable)")
         serviceWrites()
     }
 
@@ -666,30 +645,15 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
 
     // MARK: - Read source
 
-    // Both the read and write sources are registered on a SINGLE shared dup()'d
-    // descriptor — not the socket's own fd, and not two separate dups.
-    //
-    // Two separate dups (one per source) is wrong on Linux: libdispatch keys its
-    // epoll muxnotes by fd number, so two dup fds referring to the same socket
-    // become two independent EPOLLONESHOT registrations on one open file
-    // description. A spurious early readable edge disarms the read registration,
-    // and the re-arm collides with the write registration's — after which the
-    // read source silently stops delivering. Using one fd lets libdispatch
-    // coalesce read+write into a single muxnote (EPOLLIN|EPOLLOUT with separate
-    // reader/writer lists), which is the supported configuration.
-    //
-    // We also must not register the socket's own fd: DispatchSource.cancel()
-    // unregisters from epoll asynchronously, and libdispatch arms fds with
-    // EPOLLFREE — if SystemSocket.deinit closes the socket fd while a registration
-    // is still live, epoll reports EPOLLFREE and libdispatch aborts ("Do not close
-    // random Unix descriptors"). So we dup once, register both sources on that
-    // shared dup, and close it only after BOTH sources have finished cancelling
-    // (tracked by sourceFDRefCount). The socket's own fd is never registered, so
-    // deinit closing it is safe.
-    //
-    // On Darwin (kqueue) none of this is required but it's harmless. Actual I/O
-    // always goes through the SystemSocket (its own fd); the shared dup only arms
-    // the dispatch sources.
+    // Read and write sources share ONE dup'd fd, closed only after both have
+    // cancelled (tracked by sourceFDRefCount). Two reasons, both Linux/epoll:
+    //  - Two separate dups alias the same socket as distinct epoll registrations,
+    //    which drop events (the read source silently stops delivering).
+    //  - The socket's own fd must not be registered: cancel() unregisters
+    //    asynchronously, so if SystemSocket.deinit closes it first, libdispatch
+    //    hits EPOLLFREE and aborts.
+    // Darwin doesn't need this but is unaffected. I/O always uses the SystemSocket's
+    // own fd; the shared dup only arms the sources.
     private var sourceFD: CInt = -1
     private var sourceFDRefCount = 0
 
@@ -706,9 +670,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
         return dupFD
     }
 
-    // Called from each source's cancel handler. Closes the shared fd once the
-    // last source (read or write) has released it, so libdispatch is fully done
-    // with the fd before we close it.
+    // Called from each source's cancel handler; closes the shared fd once the
+    // last source has released it (so libdispatch is done with it).
     private func releaseSharedSourceFD(_ fd: CInt) {
         sourceFDRefCount -= 1
         if sourceFDRefCount <= 0 {
@@ -718,13 +681,10 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
         }
     }
 
-    // The read source is created in setup() but NOT resumed until connect
-    // completes. Arming it on a still-connecting socket produces a spurious
-    // readable edge at connect-completion; on Linux that early one-shot fire
-    // (observed as availableBytesToRead=0 before the write side reports
-    // connected) leaves the read source permanently silent afterward. Deferring
-    // the resume until we're connected avoids that edge entirely; we already
-    // drain the read side manually once at connect-completion, so no data is lost.
+    // Created in setup() but resumed only after connect completes: arming the read
+    // source on a still-connecting socket yields a spurious readable edge that, on
+    // Linux, leaves it permanently silent. We drain the read side manually at
+    // connect-completion, so nothing is missed by waiting.
     private var readSourceStarted = false
 
     private func setupReadSource() {
@@ -740,7 +700,6 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
         }
         dispatchReadSource = source
         // Starts suspended — resumed by startReadSource() once connect completes.
-        socketDiag("setupReadSource: read source created (suspended) on sharedFD=\(fd)")
     }
 
     // Resume the read source once connect has completed. Idempotent.
@@ -748,14 +707,11 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
         guard !readSourceStarted, let dispatchReadSource else { return }
         readSourceStarted = true
         dispatchReadSource.resume()
-        socketDiag("startReadSource: read source resumed on sharedFD=\(sourceFD)")
     }
 
     private func cancelReadSource() {
-        // A DispatchSource must be resumed before it can be cancelled/released.
-        // The read source may be suspended for two reasons: it was never started
-        // (connect never completed), or we suspended it on the high-water mark.
-        // Resume in either case before cancelling.
+        // A source must be resumed before cancelling. It may be suspended either
+        // because it was never started (connect never completed) or on backpressure.
         if !readSourceStarted {
             readSourceStarted = true
             dispatchReadSource?.resume()
@@ -764,17 +720,14 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
         }
         inputSourceSuspended = false
         dispatchReadSource?.setEventHandler(handler: nil)
-        // The cancel handler releases the shared source fd once libdispatch is done.
         dispatchReadSource?.cancel()
         dispatchReadSource = nil
     }
 
-    private func handleSocketReadEvent(caller: String = "source") {
-        socketDiag("read-handler enter (caller=\(caller)) fd=\(sourceFD) inputFinished=\(inputFinished) suspended=\(inputSourceSuspended) buffered=\(incomingFrames.unclaimedLength)")
+    private func handleSocketReadEvent() {
         guard !inputFinished else { return }
 
         let pending = socket?.availableBytesToRead() ?? 0
-        socketDiag("read-handler availableBytesToRead=\(pending)")
         let readSize: Int
         if pending > 0 {
             readSize = min(max(pending, maximumInputSize), Self.maximumDynamicInputSize)
@@ -804,10 +757,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
                 case .processed(let bytesRead):
                     if bytesRead == 0 {
                         // Stream EOF — mark the next frame as connectionComplete.
-                        socketDiag("read-handler loop: EOF (0 bytes)")
                         reachedEOF = true
                     } else {
-                        socketDiag("read-handler loop: processed \(bytesRead) bytes")
                         let frame = Frame(copyBuffer: UnsafeRawBufferPointer(start: readBuffer, count: bytesRead))
                         incomingFrames.add(frame: frame)
                         receivedAny = true
@@ -839,12 +790,9 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
             }
 
             if receivedAny {
-                socketDiag("read-handler: delivering inbound-data-available buffered=\(incomingFrames.unclaimedLength)")
                 fromExternal {
                     upper.deliverInboundDataAvailableEvent(reference)
                 }
-            } else {
-                socketDiag("read-handler: nothing delivered (receivedAny=false, reachedEOF=\(reachedEOF), buffered=\(incomingFrames.unclaimedLength))")
             }
             // Backpressure on buffered volume: suspend whenever we're over the
             // limit, regardless of whether new frames arrived this call. The
@@ -854,19 +802,15 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
                 !inputSourceSuspended,
                 incomingFrames.unclaimedLength >= maximumInputSize
             {
-                socketDiag("read-handler: suspending on high-water buffered=\(incomingFrames.unclaimedLength)")
                 inputSourceSuspended = true
                 dispatchReadSource?.suspend()
             }
-            socketDiag("read-handler exit (caller=\(caller)) suspended=\(inputSourceSuspended) buffered=\(incomingFrames.unclaimedLength)")
         }
     }
 
     // MARK: - Write source
 
-    // The write source shares the single dup fd created for the read source (see
-    // the note there). Registering read and write on the same fd lets libdispatch
-    // coalesce them into one epoll muxnote; two separate dups break event delivery.
+    // Shares the read source's dup'd fd (see note above).
     private func setupWriteSource() {
         let fd = makeSharedSourceFDIfNeeded()
         guard fd >= 0 else { return }
@@ -883,7 +827,6 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
     }
 
     private func handleSocketWriteEvent() {
-        socketDiag("write-handler enter isConnecting=\(isConnecting) sharedFD=\(sourceFD)")
         if isConnecting {
             isConnecting = false
             if waitingForWritable {
@@ -898,20 +841,16 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
             }
             deliverConnectedEvent()
 
-            // Now that the socket is connected, arm the read source (it was left
-            // suspended through the connecting phase to avoid the spurious
-            // pre-connect readable edge that silences it on Linux).
+            // Connected now — arm the read source (deferred to avoid the spurious
+            // pre-connect edge; see startReadSource).
             startReadSource()
 
             // Try any pending writes that arrived before connect completed.
             serviceWrites()
             triggerOutboundRoomAvailable()
-            // Defensively drain the read side once: if the peer sent data during
-            // the connect→ready window, the initial readable edge may already
-            // have been consumed, and on some platforms the level-triggered read
-            // source will not re-fire on its own.
-            socketDiag("connect-complete: draining read side once (manual)")
-            handleSocketReadEvent(caller: "connect-drain")
+            // Drain the read side once: a readable edge during connect→ready may
+            // already have been consumed and won't necessarily re-fire.
+            handleSocketReadEvent()
             return
         }
         serviceWrites()
@@ -941,11 +880,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
     // On fatal errors (EPIPE, ECONNRESET, etc.), delivers a disconnected event.
     // When a frame with connectionComplete is fully written, issues SHUT_WR.
     private func serviceWrites() {
-        socketDiag("serviceWrites enter isConnecting=\(isConnecting) pending=\(pendingOutputFrames.unclaimedLength) waitingForWritable=\(waitingForWritable) sharedFD=\(sourceFD)")
-        guard !isConnecting else {
-            socketDiag("serviceWrites: early-return (still connecting)")
-            return
-        }
+        guard !isConnecting else { return }
 
         var shouldShutdownWrite = false
         var fatalError: NetworkError? = nil
@@ -963,7 +898,6 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
             while frame.unclaimedLength > 0 {
                 let length = frame.unclaimedLength
                 let bytesWritten = writeFrameToSocket(&frame, length: length)
-                socketDiag("serviceWrites: write length=\(length) -> bytesWritten=\(bytesWritten)")
                 if bytesWritten == length {
                     break
                 }
@@ -1033,14 +967,12 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
 
         if !pendingOutputFrames.isEmpty {
             if !waitingForWritable {
-                socketDiag("serviceWrites: backpressure, arming write source (pending=\(pendingOutputFrames.unclaimedLength))")
                 waitingForWritable = true
                 dispatchWriteSource?.resume()
             }
             return
         }
 
-        socketDiag("serviceWrites: fully drained, waitingForWritable=\(waitingForWritable)")
         if waitingForWritable {
             waitingForWritable = false
             dispatchWriteSource?.suspend()
