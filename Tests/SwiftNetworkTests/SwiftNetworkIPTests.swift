@@ -1026,6 +1026,131 @@ final class SwiftNetworkIPTests: NetTestCase {
         wait(for: [expectation], timeout: 10.0)
     }
 
+    func testIPv6OutboundFragmentation() {
+        // Send a 29-byte payload on a path with MTU set to 64 and fragmentation enabled.
+        // IPv6 base header is 40 bytes, Fragment Extension Header is 8 bytes (total overhead = 48).
+        // Max payload per fragment = 64 - 48 = 16 bytes, aligned to 8 = 16 bytes.
+        // Expected: 2 fragments — payload[0..<16] with MF=1, payload[16..<29] with MF=0.
+        let mtu = 64
+        let payload: [UInt8] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+            0x19, 0x1A, 0x1B, 0x1C, 0x1D,
+        ]
+        let parameters = Parameters()
+        let expectation = XCTestExpectation()
+        let context = parameters.context
+        context.async {
+            defer { expectation.fulfill() }
+            var path = PathProperties(parameters: parameters)
+            path.directInterface = Interface(
+                index: 1,
+                name: "lo0",
+                type: .loopback,
+                subtype: .other,
+                mtu: mtu
+            )
+            path.effectiveMTU = UInt32(mtu)
+
+            let reference = IPProtocol.instance(context: parameters.context)
+            let ipOptions = IPProtocol.options()
+            ipOptions.flags = IPProtocol.IPOptions.Flags(rawValue: ipOptions.flags.rawValue)
+                .union(.fragmentationEnabledOverridden)
+                .union(.fragmentationEnabled)
+            ipOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 2)
+            ipOptions.setProtocolInstance(reference)
+            parameters.defaultStack.internet = .ip(ipOptions)
+
+            let udpOptions = UDPProtocol.options()
+            udpOptions.noMetadata = true
+            udpOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
+            parameters.defaultStack.transport = .udp(udpOptions)
+
+            let localEndpoint = Endpoint(address: IPv6Address(SwiftNetworkIPTests.localIPv6Address)!, port: 0)
+            let remoteEndpoint = Endpoint(address: IPv6Address(SwiftNetworkIPTests.remoteIPv6Address)!, port: 0)
+            let ipLinkage = OutboundDatagramLinkage(reference: reference)
+            guard
+                let upperHarness = DatagramUpperHarness(
+                    identifier: "Client",
+                    local: localEndpoint,
+                    remote: remoteEndpoint,
+                    parameters: parameters,
+                    path: path,
+                    context: parameters.context,
+                    lowerProtocol: ipLinkage
+                )
+            else {
+                XCTFail("Failed to attach IP to upper harness")
+                return
+            }
+            let lowerHarness = DatagramLowerHarness(identifier: "Client", context: parameters.context)
+            do {
+                try reference.attachLowerDatagramProtocol(
+                    lowerHarness.reference,
+                    remote: remoteEndpoint,
+                    local: localEndpoint,
+                    parameters: parameters,
+                    path: path
+                )
+            } catch {
+                XCTFail("Failed to attach IP to lower harness")
+                return
+            }
+            upperHarness.start { connected in XCTAssertTrue(connected) }
+            _ = upperHarness.write(payload)
+
+            var fragments: [[UInt8]] = []
+            while lowerHarness.hasOutboundPackets {
+                if let packet = lowerHarness.extractLastOutboundPacket() {
+                    fragments.append(packet)
+                }
+            }
+            // Expect exactly 2 fragments: 16-byte payload + 13-byte payload
+            XCTAssertEqual(fragments.count, 2, "Expected exactly 2 IPv6 fragments")
+            guard fragments.count == 2,
+                let fragmentOne = fragments.first,
+                let fragmentTwo = fragments.last
+            else { return }
+
+            // Each fragment must be at least 48 bytes (40 IPv6 base header + 8 Fragment Extension Header)
+            let minFragmentSize = 40 + 8
+            XCTAssertGreaterThanOrEqual(fragmentOne.count, minFragmentSize)
+            XCTAssertGreaterThanOrEqual(fragmentTwo.count, minFragmentSize)
+            guard fragmentOne.count >= minFragmentSize, fragmentTwo.count >= minFragmentSize else { return }
+
+            XCTAssertEqual(fragmentOne[6], 0x2C, "Fragment 1 Next header must be IPPROTO_FRAGMENT (44)")
+            XCTAssertEqual(fragmentTwo[6], 0x2C, "Fragment 2 Next header must be IPPROTO_FRAGMENT (44)")
+
+            XCTAssertEqual(fragmentOne[40], 0x11, "Fragment 1 must be UDP (17)")
+            XCTAssertEqual(fragmentTwo[40], 0x11, "Fragment 2 must be UDP (17)")
+
+            // Both fragments must share the same identifier (bytes 44–47)
+            XCTAssertEqual(
+                Array(fragmentOne[44...47]),
+                Array(fragmentTwo[44...47]),
+                "All fragments must share the same IPv6 fragment identifier"
+            )
+            let offsetFlags1 = UInt16(fragmentOne[42]) << 8 | UInt16(fragmentOne[43])
+            XCTAssertNotEqual(offsetFlags1 & 0x0001, 0, "Fragment 1 must have MF=1")  // More fragments
+            XCTAssertEqual(offsetFlags1 & 0xFFF8, 0, "Fragment 1 must have byte offset=0")
+            // Fragment 1 payload must be the first 16 bytes of the original payload
+            XCTAssertEqual(fragmentOne.count, minFragmentSize + 16, "Fragment 1 must be header + 16 payload bytes")
+            XCTAssertEqual(Array(fragmentOne[minFragmentSize...]), Array(payload[0..<16]))
+
+            let offsetFlags2 = UInt16(fragmentTwo[42]) << 8 | UInt16(fragmentTwo[43])
+            XCTAssertEqual(offsetFlags2 & 0x0001, 0, "Fragment 2 must have MF=0")  // No more fragments
+            XCTAssertEqual(offsetFlags2 & 0xFFF8, 16, "Fragment 2 must have byte offset=16")
+            // Fragment 2 payload must be the remaining 13 bytes of the original payload
+            XCTAssertEqual(fragmentTwo.count, minFragmentSize + 13, "Fragment 2 must be header + 13 payload bytes")
+            XCTAssertEqual(Array(fragmentTwo[minFragmentSize...]), Array(payload[16...]))
+
+            upperHarness.stop()
+            upperHarness.teardown()
+        }
+        wait(for: [expectation], timeout: 10.0)
+    }
+
     // Sets up a minimal IP harness to test different fragment and reassembly conditions
     private func processIPFragment(
         packets: [[UInt8]],
