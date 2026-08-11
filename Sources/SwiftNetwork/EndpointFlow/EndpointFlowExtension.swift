@@ -76,49 +76,36 @@ extension EndpointFlow {
 
                 switch transport {
                 case .tcp(let options):
+                    // In bridged (test-harness) mode drive a raw TCP instance directly;
+                    // otherwise use a real kernel socket. The flow wiring is identical.
+                    let reference: ProtocolInstanceReference
                     if case .custom(let linkOptions) = stack.link,
                         linkOptions.identifier == BridgeDatagramProtocol.identifier
                     {
-                        guard let reference = TCPProtocol().newProtocolInstance(context: context) else {
+                        guard let bridged = TCPProtocol().newProtocolInstance(context: context) else {
                             throw NetworkError.posix(EINVAL)
                         }
-                        options.setProtocolInstance(reference)
-                        let linkage = OutboundStreamLinkage(reference: reference)
-                        let flow = try StreamEndpointFlowProtocol(
-                            identifier: String(self.identifier),
-                            local: effectiveLocalEndpoint,
-                            remote: effectiveRemoteEndpoint,
-                            parameters: self.parameters,
-                            path: path,
-                            context: context,
-                            lowerStreamProtocol: linkage
-                        )
-                        self.flowProtocol = .stream(flow)
-                        options.setLogID(
-                            prefix: "C",
-                            parent: String(self.identifier),
-                            protocolLogIDNumber: Int(self.identifier)
-                        )
+                        reference = bridged
                     } else {
-                        let socketReference = SocketStreamProtocol.instance(context: context)
-                        options.setProtocolInstance(socketReference)
-                        let linkage = OutboundStreamLinkage(reference: socketReference)
-                        let flow = try StreamEndpointFlowProtocol(
-                            identifier: String(self.identifier),
-                            local: effectiveLocalEndpoint,
-                            remote: effectiveRemoteEndpoint,
-                            parameters: self.parameters,
-                            path: path,
-                            context: context,
-                            lowerStreamProtocol: linkage
-                        )
-                        self.flowProtocol = .stream(flow)
-                        options.setLogID(
-                            prefix: "C",
-                            parent: String(self.identifier),
-                            protocolLogIDNumber: Int(self.identifier)
-                        )
+                        reference = SocketStreamProtocol.instance(context: context)
                     }
+                    options.setProtocolInstance(reference)
+                    let linkage = OutboundStreamLinkage(reference: reference)
+                    let flow = try StreamEndpointFlowProtocol(
+                        identifier: String(self.identifier),
+                        local: effectiveLocalEndpoint,
+                        remote: effectiveRemoteEndpoint,
+                        parameters: self.parameters,
+                        path: path,
+                        context: context,
+                        lowerStreamProtocol: linkage
+                    )
+                    self.flowProtocol = .stream(flow)
+                    options.setLogID(
+                        prefix: "C",
+                        parent: String(self.identifier),
+                        protocolLogIDNumber: Int(self.identifier)
+                    )
                 case .udp(let options):
                     if case .custom(let linkOptions) = stack.link,
                         linkOptions.identifier == BridgeDatagramProtocol.identifier

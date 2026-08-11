@@ -14,49 +14,17 @@
 
 @_spi(Essentials) import SwiftNetwork
 
-#if canImport(Glibc)
-import Glibc
-#elseif canImport(Musl)
-import Musl
-#elseif canImport(Darwin)
-import Darwin
-#endif
-
 // MARK: - IP address parsing
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public func parseIPv4(_ string: String) -> IPv4Address? {
-    let parts = string.split(separator: ".")
-    guard parts.count == 4 else { return nil }
-    var bytes = [UInt8]()
-    for part in parts {
-        guard let value = UInt8(part) else { return nil }
-        bytes.append(value)
-    }
-    return IPv4Address(bytes)
-}
-
-@_spi(ProtocolProvider)
-@available(Network 0.1.0, *)
-public func parseIPv6(_ string: String) -> IPv6Address? {
-    var addr = in6_addr()
-    guard string.withCString({ inet_pton(AF_INET6, $0, &addr) }) == 1 else {
-        return nil
-    }
-    let bytes = withUnsafeBytes(of: &addr) { Array($0) }
-    return IPv6Address(bytes)
-}
-
-@_spi(ProtocolProvider)
-@available(Network 0.1.0, *)
 public func parseEndpoints(ipString: String, port: UInt16, localPort: UInt16) -> (remote: Endpoint, local: Endpoint)? {
-    if let v4 = parseIPv4(ipString) {
+    if let v4 = IPv4Address(ipString) {
         return (
             Endpoint(address: v4, port: port),
             Endpoint(address: IPv4Address.loopback, port: localPort)
         )
-    } else if let v6 = parseIPv6(ipString) {
+    } else if let v6 = IPv6Address(ipString) {
         return (
             Endpoint(address: v6, port: port),
             Endpoint(address: IPv6Address.loopback, port: localPort)
