@@ -76,8 +76,18 @@ extension EndpointFlow {
 
                 switch transport {
                 case .tcp(let options):
-                    guard let reference = TCPProtocol().newProtocolInstance(context: context) else {
-                        throw NetworkError.posix(EINVAL)
+                    // In bridged (test-harness) mode drive a raw TCP instance directly;
+                    // otherwise use a real kernel socket. The flow wiring is identical.
+                    let reference: ProtocolInstanceReference
+                    if case .custom(let linkOptions) = stack.link,
+                        linkOptions.identifier == BridgeDatagramProtocol.identifier
+                    {
+                        guard let bridged = TCPProtocol().newProtocolInstance(context: context) else {
+                            throw NetworkError.posix(EINVAL)
+                        }
+                        reference = bridged
+                    } else {
+                        reference = SocketStreamProtocol.instance(context: context)
                     }
                     options.setProtocolInstance(reference)
                     let linkage = OutboundStreamLinkage(reference: reference)
