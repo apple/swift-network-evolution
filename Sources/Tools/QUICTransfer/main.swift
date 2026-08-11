@@ -52,7 +52,8 @@ final class QUICTransfer {
         loggingHandle: LoggingHandle,
         group: DispatchGroup,
         sendSize: Int,
-        linkDelay: NetworkDuration = .zero
+        linkDelay: NetworkDuration = .zero,
+        quicOnly: Bool = false
     ) -> Double {
         let ipv4Client = Endpoint(address: IPv4Address(localIPv4Address)!, port: 1234)
         let ipv4Server = Endpoint(address: IPv4Address(remoteIPv4Address)!, port: 2345)
@@ -62,7 +63,6 @@ final class QUICTransfer {
         // Create a random payload to send back and forth
         var payload = [UInt8](repeating: 0, count: sendSize)
         payload = (0..<sendSize).map { _ in UInt8.random(in: 0...255) }
-        var index = 0
         print("Running QUIC transfer, transferring \(iterations) packet\(iterations > 1 ? "s" : "")")
         let timestart = DispatchTime.now().uptimeNanoseconds
 
@@ -83,14 +83,18 @@ final class QUICTransfer {
             let clientIPOptions = IPProtocol.options()
             clientIPOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 3)
             clientIPOptions.setProtocolInstance(clientIP)
-            clientParameters.defaultStack.internet = .ip(clientIPOptions)
+            if !quicOnly {
+                clientParameters.defaultStack.internet = .ip(clientIPOptions)
+            }
 
             let clientUDP = UDPProtocol.instance(context: context)
             let clientUDPOptions = UDPProtocol.options()
             clientUDPOptions.noMetadata = true
             clientUDPOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 2)
             clientUDPOptions.setProtocolInstance(clientUDP)
-            clientParameters.defaultStack.transport = .udp(clientUDPOptions)
+            if !quicOnly {
+                clientParameters.defaultStack.transport = .udp(clientUDPOptions)
+            }
 
             let clientQUIC = QUICProtocol.instance(context: context)
             var clientTLSOptions = SwiftTLSProtocol.Options()
@@ -103,7 +107,11 @@ final class QUICTransfer {
             clientQUICOptions.tlsOptions = clientTLSOptions
             clientQUICOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
             clientQUICOptions.setProtocolInstance(clientQUIC)
-            clientParameters.defaultStack.prepend(applicationProtocol: .quic(clientQUICOptions))
+            if !quicOnly {
+                clientParameters.defaultStack.prepend(applicationProtocol: .quic(clientQUICOptions))
+            } else {
+                clientParameters.defaultStack.transport = .quic(clientQUICOptions)
+            }
 
             let clientOutput = BridgeDatagramProtocol.instance(context: clientParameters.context)
             let bridgeOptions = BridgeDatagramProtocol.options()
@@ -136,27 +144,39 @@ final class QUICTransfer {
                 return
             }
             do {
-                try clientQUIC.attachLowerDatagramProtocolForNewPath(
-                    clientUDP,
-                    remote: ipv4Server,
-                    local: ipv4Client,
-                    parameters: clientParameters,
-                    path: path
-                )
-                try clientUDP.attachLowerDatagramProtocol(
-                    clientIP,
-                    remote: ipv4Server,
-                    local: ipv4Client,
-                    parameters: clientParameters,
-                    path: path
-                )
-                try clientIP.attachLowerDatagramProtocol(
-                    clientOutput,
-                    remote: ipv4Server,
-                    local: ipv4Client,
-                    parameters: clientParameters,
-                    path: path
-                )
+                if !quicOnly {
+                    // Use QUIC -> UDP -> IP -> BridgeProtocol
+                    try clientQUIC.attachLowerDatagramProtocolForNewPath(
+                        clientUDP,
+                        remote: ipv4Server,
+                        local: ipv4Client,
+                        parameters: clientParameters,
+                        path: path
+                    )
+                    try clientUDP.attachLowerDatagramProtocol(
+                        clientIP,
+                        remote: ipv4Server,
+                        local: ipv4Client,
+                        parameters: clientParameters,
+                        path: path
+                    )
+                    try clientIP.attachLowerDatagramProtocol(
+                        clientOutput,
+                        remote: ipv4Server,
+                        local: ipv4Client,
+                        parameters: clientParameters,
+                        path: path
+                    )
+                } else {
+                    // Use only QUIC -> Bridge Protocol
+                    try clientQUIC.attachLowerDatagramProtocolForNewPath(
+                        clientOutput,
+                        remote: ipv4Server,
+                        local: ipv4Client,
+                        parameters: clientParameters,
+                        path: path
+                    )
+                }
             } catch {
                 loggingHandle.log("Failed to attach client IP to lower protocol")
                 group.leave()
@@ -168,14 +188,18 @@ final class QUICTransfer {
             let serverIPOptions = IPProtocol.options()
             serverIPOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 3)
             clientIPOptions.setProtocolInstance(serverIP)
-            serverParameters.defaultStack.internet = .ip(serverIPOptions)
+            if !quicOnly {
+                serverParameters.defaultStack.internet = .ip(serverIPOptions)
+            }
 
             let serverUDP = UDPProtocol.instance(context: context)
             let serverUDPOptions = UDPProtocol.options()
             serverUDPOptions.noMetadata = true
             serverUDPOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 2)
             serverUDPOptions.setProtocolInstance(serverUDP)
-            serverParameters.defaultStack.transport = .udp(serverUDPOptions)
+            if !quicOnly {
+                serverParameters.defaultStack.transport = .udp(serverUDPOptions)
+            }
 
             let serverQUIC = QUICProtocol.instance(context: context)
             var serverTLSOptions = SwiftTLSProtocol.Options()
@@ -187,7 +211,11 @@ final class QUICTransfer {
             serverQUICOptions.tlsOptions = serverTLSOptions
             serverQUICOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
             serverQUICOptions.setProtocolInstance(serverQUIC)
-            serverParameters.defaultStack.prepend(applicationProtocol: .quic(serverQUICOptions))
+            if !quicOnly {
+                serverParameters.defaultStack.prepend(applicationProtocol: .quic(serverQUICOptions))
+            } else {
+                serverParameters.defaultStack.transport = .quic(serverQUICOptions)
+            }
 
             let serverOutput = BridgeDatagramProtocol.instance(context: context)
             let serverBridgeOptions = BridgeDatagramProtocol.options()
@@ -211,28 +239,40 @@ final class QUICTransfer {
                 return
             }
             do {
-                try serverQUIC.attachLowerDatagramProtocolForNewPath(
-                    serverUDP,
-                    remote: ipv4Client,
-                    local: ipv4Server,
-                    parameters: serverParameters,
-                    path: serverPath
-                )
+                if !quicOnly {
+                    // Use QUIC -> UDP -> IP -> BridgeProtocol
+                    try serverQUIC.attachLowerDatagramProtocolForNewPath(
+                        serverUDP,
+                        remote: ipv4Client,
+                        local: ipv4Server,
+                        parameters: serverParameters,
+                        path: serverPath
+                    )
 
-                try serverUDP.attachLowerDatagramProtocol(
-                    serverIP,
-                    remote: ipv4Client,
-                    local: ipv4Server,
-                    parameters: clientParameters,
-                    path: path
-                )
-                try serverIP.attachLowerDatagramProtocol(
-                    serverOutput,
-                    remote: ipv4Client,
-                    local: ipv4Server,
-                    parameters: serverParameters,
-                    path: serverPath
-                )
+                    try serverUDP.attachLowerDatagramProtocol(
+                        serverIP,
+                        remote: ipv4Client,
+                        local: ipv4Server,
+                        parameters: clientParameters,
+                        path: path
+                    )
+                    try serverIP.attachLowerDatagramProtocol(
+                        serverOutput,
+                        remote: ipv4Client,
+                        local: ipv4Server,
+                        parameters: serverParameters,
+                        path: serverPath
+                    )
+                } else {
+                    // Use only QUIC -> Bridge Protocol
+                    try serverQUIC.attachLowerDatagramProtocolForNewPath(
+                        serverOutput,
+                        remote: ipv4Client,
+                        local: ipv4Server,
+                        parameters: serverParameters,
+                        path: serverPath
+                    )
+                }
             } catch {
                 loggingHandle.log("Failed to attach server IP to lower protocol")
                 group.leave()
@@ -251,53 +291,68 @@ final class QUICTransfer {
         }
         var serverStream: StreamUpperHarness?
 
+        var writeIndex = 0
+        var writeSucceeded = true
         var totalReadSize = 0
-        while index < iterations {
-            group.enter()
-            context.async {
-                guard clientStream.write(payload) else {
-                    loggingHandle.log("Client failed to write at iteration: \(index)")
-                    group.leave()
-                    return
-                }
-                if serverStream == nil {
-                    group.enter()
-                    serverInput.waitForNewFlow {
-                        loggingHandle.log("Server got new inbound flow")
-                        serverStream = serverInput.upperHarnesses.last
-                        group.leave()
-                    }
-                }
-                group.leave()
-            }
-            group.wait()
+        let totalExpectedSize = iterations * payload.count
+        let doneSemaphore = DispatchSemaphore(value: 0)
 
-            guard let serverStream else {
-                return 0
+        // Client write loop to perform all writes until finished
+        func writeLoop() {
+            guard writeIndex < iterations else { return }
+            guard clientStream.write(payload) else {
+                loggingHandle.log("Client failed to write at iteration: \(writeIndex)")
+                writeSucceeded = false
+                return
             }
-
-            group.enter()
+            writeIndex += 1
             context.async {
-                var serverReadDataSizeForIteration = 0
-                var serverReadCompletion: ((Bool) -> Void)? = nil
-                serverReadCompletion = { _ in
-                    let readBytes = serverStream.readAndDrop()
-                    if readBytes > 0 {
-                        serverReadDataSizeForIteration += readBytes
-                        totalReadSize += readBytes
-                    }
-                    if serverReadDataSizeForIteration >= payload.count {
-                        serverReadCompletion = nil
-                        index += 1
-                        group.leave()
-                    } else {
-                        serverStream.waitForInboundDataAvailable(completion: serverReadCompletion!)
-                    }
-                }
-                serverStream.waitForInboundDataAvailable(completion: serverReadCompletion!)
+                writeLoop()
             }
-            group.wait()
         }
+
+        // Server read loop: keeps draining inbound data as it arrives.
+        // Readloop used for multiple iterations
+        func readLoop(stream: StreamUpperHarness) {
+            stream.waitForInboundDataAvailable { available in
+                guard available else { return }
+                totalReadSize += stream.readAndDrop()
+                if totalReadSize >= totalExpectedSize {
+                    doneSemaphore.signal()
+                } else {
+                    readLoop(stream: stream)
+                }
+            }
+        }
+
+        context.async {
+            // Setup inbound flow observer and then start the client write loop
+            serverInput.waitForNewFlow {
+                serverStream = serverInput.upperHarnesses.last
+                if let serverStream {
+                    // If there is only one inbound read then a read can take place here and that is it.
+                    // If there are more data after the first read then a read loop will need to be setup
+                    // to observe the rest of the inbound data events.
+                    totalReadSize += serverStream.readAndDrop()
+                    if totalReadSize >= totalExpectedSize {
+                        doneSemaphore.signal()
+                    } else {
+                        readLoop(stream: serverStream)
+                    }
+                    readLoop(stream: serverStream)
+                } else {
+                    doneSemaphore.signal()
+                }
+            }
+            writeLoop()
+        }
+        doneSemaphore.wait()
+
+        guard serverStream != nil, writeSucceeded else {
+            return 0
+        }
+
+        let index = min(totalReadSize / payload.count, iterations)
 
         group.enter()
         context.async {
@@ -325,10 +380,11 @@ final class QUICTransfer {
 
 if #available(anyAppleOS 26, *) {
     // Take command line arguments
-    var iterations = 10000  // 5gb total (if 500000 sendSize)
+    var iterations = 1  // 5gb total (if 500000 sendSize)
     var loggingHandler: LoggingHandle = LoggingHandle(loggingType: .none)
     var sendSize = 500000  // 500kb
     var linkDelay = NetworkDuration.zero
+    var quicOnly = false
     let arguments = CommandLine.arguments.dropFirst(0)
     if arguments.contains("-iterations"),
         let index = arguments.firstIndex(of: "-iterations")
@@ -338,6 +394,10 @@ if #available(anyAppleOS 26, *) {
                 iterations = parsedIterations
             }
         }
+    }
+
+    if arguments.contains("-quicOnly") {
+        quicOnly = true
     }
 
     if arguments.contains("-logging"),
@@ -378,7 +438,8 @@ if #available(anyAppleOS 26, *) {
         loggingHandle: loggingHandler,
         group: group,
         sendSize: sendSize,
-        linkDelay: linkDelay
+        linkDelay: linkDelay,
+        quicOnly: quicOnly
     )
     if totalTime > 0 {
         print("Finished all (\(iterations)) transfers in \(totalTime) seconds")
