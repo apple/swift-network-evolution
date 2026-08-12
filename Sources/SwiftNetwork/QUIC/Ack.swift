@@ -530,6 +530,12 @@ final class Ack: PrefixedLoggable, TimerUser {
                 ecn: connection.ecn
             ) {
                 connection.sendFrames(delayedACK: true)
+
+                // An ACK-only packet is not ack-eliciting, so once it is sent
+                // there is nothing left in pending items or in recovery to
+                // observe. This is the only place that can return the
+                // connection to idle after a delayed ACK.
+                connection.checkConnectionIdle()
             }
         }
 

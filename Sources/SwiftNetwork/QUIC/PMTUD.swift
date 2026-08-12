@@ -345,6 +345,12 @@ struct PMTUDState: ~Copyable {
             pendingItems.pmtudProbeMSS = probeMSS
             pendingItems.paddingApproach = .padToEnd
         }
+
+        // The probe is queued but not sent yet. A probe can be driven by the PMTUD
+        // timer rather than by an application write, in which case nothing else
+        // reports the connection active before the packet is transmitted.
+        connection.checkConnectionIdle()
+
         var discardInitialRecoveryState = false
         let sentPackets = connection.sendFramesFromRecovery(
             on: path,
