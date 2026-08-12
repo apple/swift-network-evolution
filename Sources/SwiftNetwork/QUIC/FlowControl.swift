@@ -709,22 +709,9 @@ extension QUICStreamInstance {
             return false
         }
 
-        var largestPathMSS: UInt64 = 0
-        var largestPathRTT: NetworkDuration = .zero
-
-        connection.applyToAllPaths { path in
-            if path.mss > largestPathMSS {
-                largestPathMSS = UInt64(path.mss)
-            }
-            if path.rtt.smoothedRTT > largestPathRTT {
-                largestPathRTT = path.rtt.smoothedRTT
-            }
-        }
-
         let increment = computeReceiveHighWaterMarkIncrease(
             dataLength: dataLengthAdded,
-            rtt: largestPathRTT,
-            mss: largestPathMSS,
+            connection: connection,
             now: connection.now
         )
 
@@ -749,8 +736,7 @@ extension QUICStreamInstance {
 
     fileprivate func computeReceiveHighWaterMarkIncrease(
         dataLength: UInt64,
-        rtt: NetworkDuration,
-        mss: UInt64,
+        connection: QUICConnection,
         now: NetworkClock.Instant
     ) -> UInt64 {
         if flowControlStreamState.receiveHighWaterMarkTime > now {
@@ -765,10 +751,21 @@ extension QUICStreamInstance {
         // Here, we estimate if the bandwidth measured in this RTT
         // is more than a certain value of the bandwidth measured
         // in the previous RTT.
-        if now >= flowControlStreamState.receiveHighWaterMarkTime.advanced(by: rtt) {
+        let smoothedRTT = connection.currentPath?.smoothedRTT ?? .zero
+        if now >= flowControlStreamState.receiveHighWaterMarkTime.advanced(by: smoothedRTT) {
             if flowControlStreamState.receiveHighWaterMarkCount
                 > flowControlStreamState.receiveHighWaterMarkPreviousCount
             {
+                var mss: UInt64 = 0
+                var rtt: NetworkDuration = .zero
+                connection.applyToAllPaths { path in
+                    if path.mss > mss {
+                        mss = UInt64(path.mss)
+                    }
+                    if path.rtt.smoothedRTT > rtt {
+                        rtt = path.rtt.smoothedRTT
+                    }
+                }
                 let shift: Int
                 if flowControlStreamState.receiveHighWaterMarkCount
                     > (flowControlStreamState.receiveHighWaterMarkPreviousCount
