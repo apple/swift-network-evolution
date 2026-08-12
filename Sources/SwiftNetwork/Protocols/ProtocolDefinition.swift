@@ -14,7 +14,7 @@
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public enum ProtocolLevel: Sendable {
+public enum ProtocolLevel: Sendable, Hashable {
     case link
     case internet
     case transport
