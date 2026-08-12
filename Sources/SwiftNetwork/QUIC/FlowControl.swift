@@ -751,21 +751,12 @@ extension QUICStreamInstance {
         // Here, we estimate if the bandwidth measured in this RTT
         // is more than a certain value of the bandwidth measured
         // in the previous RTT.
-        let smoothedRTT = connection.currentPath?.smoothedRTT ?? .zero
-        if now >= flowControlStreamState.receiveHighWaterMarkTime.advanced(by: smoothedRTT) {
+        let rtt = connection.currentPath?.smoothedRTT ?? .zero
+        if now >= flowControlStreamState.receiveHighWaterMarkTime.advanced(by: rtt) {
             if flowControlStreamState.receiveHighWaterMarkCount
                 > flowControlStreamState.receiveHighWaterMarkPreviousCount
             {
-                var mss: UInt64 = 0
-                var rtt: NetworkDuration = .zero
-                connection.applyToAllPaths { path in
-                    if path.mss > mss {
-                        mss = UInt64(path.mss)
-                    }
-                    if path.rtt.smoothedRTT > rtt {
-                        rtt = path.rtt.smoothedRTT
-                    }
-                }
+                let mss = UInt64(connection.currentPath?.mss ?? 0)
                 let shift: Int
                 if flowControlStreamState.receiveHighWaterMarkCount
                     > (flowControlStreamState.receiveHighWaterMarkPreviousCount
