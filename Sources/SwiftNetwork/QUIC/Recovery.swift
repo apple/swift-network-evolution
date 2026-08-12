@@ -363,7 +363,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         ) {
             if sentEntry.lostTime == .zero && sentEntry.packet.isInFlightEligible {
                 if sentEntry.packet.isAckEliciting {
-                    ackElicitingPacketsInFlight -= 1
+                    if ackElicitingPacketsInFlight > 0 {
+                        ackElicitingPacketsInFlight -= 1
+                    } else {
+                        log.fault("Cannot decrement ackElicitingPacketsInFlight below zero")
+                    }
                     let number = sentEntry.packet.number
                     log.datapath(
                         "Ack eliciting packet \(number) acked, decrementing ackElicitingPacketsInFlight to: \(ackElicitingPacketsInFlight)"
@@ -656,14 +660,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             _ packets: consuming NetworkUniqueDeque<SentPacketRecord>,
             connection: QUICConnection
         ) -> Bool {
-            var packets = packets
-            guard !packets.isEmpty else {
+            if packets.isEmpty {
                 return false
             }
-            while !packets.isEmpty {
-                let packet = packets.remove(at: 0)
+
+            while let packet = packets.popFirst() {
                 sentPacket(packet, time: connection.now, connection: connection)
             }
+
             return true
         }
     }
@@ -910,7 +914,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     // and set the lost time.
                     entry.lostTime = timeNow
                     if entry.packet.isAckEliciting {
-                        ackElicitingPacketsInFlight -= 1
+                        if ackElicitingPacketsInFlight > 0 {
+                            ackElicitingPacketsInFlight -= 1
+                        } else {
+                            connection.log.fault("Cannot decrement ackElicitingPacketsInFlight below zero")
+                        }
                     }
                     lostPackets.append(entry.packet.identifier)
                     Recovery.logAckElicitingPacketsInFlight(
@@ -1114,42 +1122,41 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
     mutating func sendPTO(connection: QUICConnection, path: QUICPath) {
         var sentPTO = false
-        let (_, pnSpace) = getEarliestTime(
-            earliestTimeType: EarliestTimeType.lastSentAckElicitingTime,
-            connection: connection
-        )
-        var hasAckEliciting = false
-        connection.withPendingItems(for: pnSpace) { pendingItems in
-            hasAckEliciting = pendingItems.hasAckElicitingPendingItems
-        }
-        let peerCompletedValidation = peerCompletedValidation(connection: connection)
-        var shouldClearTimer = false
+
         var discardInitialRecoveryState = false
-        var hadAckElicitingInFlight = false
         applyToAllInnerStatesMutable { innerState, packetNumberSpace in
             let ackElicitingPacketsInFlight = innerState.ackElicitingPacketsInFlight
-            if ackElicitingPacketsInFlight == 0 {
+            guard ackElicitingPacketsInFlight > 0 else {
                 return
             }
-            hadAckElicitingInFlight = true
+
             connection.log.datapath(
                 "PTO \(path.recoveryState.PTOCount) (\(packetNumberSpace)) fired on path \(path.identifier) with \(ackElicitingPacketsInFlight) ack-eliciting packets in flight"
             )
+
+            let hasAckEliciting = connection.withPendingItems(for: packetNumberSpace) {
+                $0.hasAckElicitingPendingItems
+            }
+
             if hasAckEliciting {
                 connection.log.datapath("Sending next frames with new data as PTOs")
-                sentPTO = true
                 let packets = connection.sendFramesFromRecovery(
                     on: path,
                     ignoreCongestionWindow: true,
                     discardInitialRecoveryState: &discardInitialRecoveryState
                 )
-                if !innerState.recordSentPackets(packets, connection: connection) {
+                // Only a recorded packet counts as a probe; the pending items may write no payload.
+                if innerState.recordSentPackets(packets, connection: connection) {
+                    sentPTO = true
+                } else {
                     connection.log.datapath(
                         "Unable to force send PTOs, likely flow-controlled or unavailable"
                     )
                 }
-            } else if ackElicitingPacketsInFlight > 0 {
+
+            } else {
                 connection.log.datapath("Retransmitting two tail-packets as PTO")
+
                 var addedPackets = 0
                 let packetCount = innerState.outstandingPackets.count
                 for i in 0..<packetCount {
@@ -1175,6 +1182,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                             discardInitialRecoveryState: &discardInitialRecoveryState
                         )
                     }
+
                     if let packets, innerState.recordSentPackets(packets, connection: connection) {
                         sentPTO = true
                         addedPackets += 1
@@ -1190,47 +1198,43 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
 
         if !sentPTO {
+            if totalAckElicitingPacketsInFlight == 0, peerCompletedValidation(connection: connection) {
+                // Nothing is in flight to probe for, so the state must have changed between arming the
+                // timer and it firing (e.g. the handshake completed and cleared the in-flight packets).
+                // `resetTimer` cancels the timer for this state once we return.
+                connection.log.fault("PTO fired after validation")
+                return
+            }
+
+            // Send an ack-eliciting probe because either:
+            // - packets are in flight, RFC 9002 Section 6.2.4 requires a probe
+            // - nothing is in flight and the peer has not validated our address, RFC 9002 Section 6.2.2.1
+            // requires an anti-deadlock packet to unblock the server.
+            // The PING is padded when it goes out in an initial packet.
             connection.log.datapath("Sending a PING as PTO")
-            if peerCompletedValidation {
-                if hadAckElicitingInFlight {
-                    // A PTO fired with ack-eliciting packets still in flight, but the probe could
-                    // not be sent because the retransmit was flow-controlled or otherwise
-                    // unavailable. Under heavy loss this is a legitimate loss-recovery outcome
-                    // rather than an anomaly, so log it at error level instead of faulting. The
-                    // timer is still cleared below so the PTO does not immediately re-arm and spin.
-                    connection.log.error("PTO fired after validation but could not send probe, likely flow-controlled")
-                } else {
-                    // A PTO fired after validation with nothing ack-eliciting in flight. The PTO
-                    // timer should not have been armed in that state, so log a fault.
-                    connection.log.fault("PTO fired after validation")
-                }
-                shouldClearTimer = true
-            } else {
-                // Anti deadlock PING frame (i.e PADDED PING). The PING will be padded when we send an initial packet.
-                let pnSpace =
-                    !connection.receivedHandshakePacket
-                    ? PacketNumberSpace.initial : PacketNumberSpace.applicationData
-                connection.withPendingItems(for: pnSpace) { item in
-                    item.ping = true
-                }
-                sentPTO = true
-                withMutableInnerState(packetNumberSpace: pnSpace) { innerState in
-                    let packets = connection.sendFramesFromRecovery(
-                        on: path,
-                        ignoreCongestionWindow: true,
-                        discardInitialRecoveryState: &discardInitialRecoveryState
+            let packetNumberSpace =
+                !connection.receivedHandshakePacket
+                ? PacketNumberSpace.initial : PacketNumberSpace.applicationData
+            connection.withPendingItems(for: packetNumberSpace) { item in
+                item.ping = true
+            }
+
+            sentPTO = true
+
+            withMutableInnerState(packetNumberSpace: packetNumberSpace) { innerState in
+                let packets = connection.sendFramesFromRecovery(
+                    on: path,
+                    ignoreCongestionWindow: true,
+                    discardInitialRecoveryState: &discardInitialRecoveryState
+                )
+                if !innerState.recordSentPackets(packets, connection: connection) {
+                    connection.log.datapath(
+                        "Unable to force send PTOs, likely flow-controlled or unavailable"
                     )
-                    if !innerState.recordSentPackets(packets, connection: connection) {
-                        connection.log.datapath(
-                            "Unable to force send PTOs, likely flow-controlled or unavailable"
-                        )
-                    }
                 }
             }
         }
-        if shouldClearTimer {
-            setTimer(delay: .zero, connection: connection)
-        }
+
         if discardInitialRecoveryState {
             self.resetPNSpace(packetNumberSpace: .initial, connection: connection)
             connection.withCurrentPath {
@@ -1329,13 +1333,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     mutating func resetTimer(connection: QUICConnection) {
-        var ackElicitingPacketsInFlight = 0
         // if there are ack eliciting packets on any of the innerStates, the L4S error should not be emitted
-        applyToAllInnerStatesImmutable { innerState, _ in
-            ackElicitingPacketsInFlight += innerState.ackElicitingPacketsInFlight
-        }
-
-        if ackElicitingPacketsInFlight == 0 && peerCompletedValidation(connection: connection) {
+        if totalAckElicitingPacketsInFlight == 0 && peerCompletedValidation(connection: connection) {
             log.datapath("No ack eliciting packets in flight, cancelling timer")
             setTimer(delay: .zero, connection: connection)
             connection.withCurrentPath { path in
@@ -1415,6 +1414,16 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             }
         }
         return hasOutstandingPackets
+    }
+
+    // The PTO timer is shared across packet number spaces, so decisions about whether there is
+    // anything left to probe for consider every space.
+    var totalAckElicitingPacketsInFlight: Int {
+        var totalAckElicitingPacketsInFlight = 0
+        applyToAllInnerStatesImmutable { innerState, _ in
+            totalAckElicitingPacketsInFlight += innerState.ackElicitingPacketsInFlight
+        }
+        return totalAckElicitingPacketsInFlight
     }
 
     mutating func resetPNSpace(

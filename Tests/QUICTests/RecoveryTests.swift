@@ -653,6 +653,120 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(path.recoveryState.PTOCount, 3)
         XCTAssertGreaterThan(connection.recovery.computedTimeout, .milliseconds(7900))
     }
+
+    // A PTO with ack-eliciting data in flight must emit a probe, even when the only outstanding
+    // packet carries STREAM data for a now-closed flow (so it can't be rebuilt) and the connection
+    // is validated; otherwise `sendPTO` sends nothing and the connection makes no progress until the
+    // idle timeout closes it.
+    func testValidatedPTOProbesWhenTailRetransmitProducesNothing() {
+        // Register a flow and close it, so its STREAM data can never be rebuilt for retransmission.
+        let stream = QUICStreamInstance(parent: connection, inbound: true)
+        stream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
+        connection.multiplexedFlows[stream.identifier] = stream
+        stream.closed = true
+        XCTAssertFalse(stream.isOpen)
+
+        // A single ack-eliciting application-data packet is outstanding, carrying only that flow's
+        // STREAM data. This keeps ackElicitingPacketsInFlight > 0 (so the PTO stays armed) while
+        // being unrebuildable once the flow is closed.
+        var packet = SentPacketRecord()
+        packet.identifier = .init(space: .applicationData, number: 0)
+        packet.isInFlightEligible = true
+        packet.isAckEliciting = true
+        packet.totalLength = 20 + 96
+        packet.sentPath = connection.currentPath?.identifier ?? .none
+        packet.transmittedItems.sentStreams.append(
+            TransmittedItems.SentStream(
+                flowID: stream.identifier,
+                streamID: QUICStreamID(0),
+                offset: 0,
+                length: 32,
+                isFinal: true
+            )
+        )
+        XCTAssertTrue(packet.transmittedItems.hasRetransmissibleItems)
+        sentPacket(packet, connection: connection)
+
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) { innerState in
+            XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 1)
+        }
+
+        // Establish (address-validated) connection: peerCompletedValidation must be true. This is
+        // the condition under which the anti-deadlock PING is incorrectly skipped.
+        connection.recovery.received1RTTAck = true
+        XCTAssertTrue(connection.recovery.peerCompletedValidation(connection: connection))
+        XCTAssertEqual(path.recoveryState.PTOCount, 0)
+
+        // Fire the PTO with no new ack-eliciting data pending.
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.withCurrentPath { path in
+                self.connection.recovery.sendPTO(connection: self.connection, path: path)
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+
+        // A probe must have been recorded, taking the packets in flight to two, and the PTO counted.
+        XCTAssertEqual(
+            connection.recovery.totalAckElicitingPacketsInFlight,
+            2,
+            "PTO produced no probe for a closed-flow tail packet"
+        )
+        XCTAssertEqual(path.recoveryState.PTOCount, 1)
+    }
+
+    // `sendPTO` must emit a probe; otherwise the PTO makes no progress. A pending item whose flow was
+    // torn down writes no payload, so ensure the probe only counts once the packet is recorded.
+    func testPTOProbesWhenNewDataProducesNothing() {
+        // A stream queued for service whose flow has since been torn down: it is absent from
+        // `multiplexedFlows`, so writing it produces no payload.
+        let unregisteredStream = QUICStreamInstance(parent: connection, inbound: true)
+        unregisteredStream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
+        XCTAssertNil(connection.flow(for: unregisteredStream.identifier))
+        connection.withPendingItems(for: .initial) { pendingItems in
+            pendingItems.streamsToService.append(unregisteredStream.identifier)
+            pendingItems.stream = true
+        }
+
+        // Recovery still sees new ack-eliciting data, so the PTO sends that rather than retransmitting.
+        let hasPendingAckEliciting = connection.withPendingItems(for: .initial) {
+            $0.hasAckElicitingPendingItems
+        }
+        XCTAssertTrue(hasPendingAckEliciting)
+
+        // One ack-eliciting packet outstanding, so the PTO is armed and the per-space loop runs.
+        var packet = SentPacketRecord()
+        packet.identifier = .init(space: .initial, number: 0)
+        packet.isInFlightEligible = true
+        packet.isAckEliciting = true
+        packet.totalLength = 20 + 96
+        packet.sentPath = connection.currentPath?.identifier ?? .none
+
+        sentPacket(packet, connection: connection)
+
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .initial) { innerState in
+            XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 1)
+        }
+
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.withCurrentPath { path in
+                self.connection.recovery.sendPTO(connection: self.connection, path: path)
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+
+        // Ensure a probe has been recorded, taking the packets in flight to two.
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .initial) { innerState in
+            XCTAssertEqual(
+                innerState.ackElicitingPacketsInFlight,
+                2,
+                "PTO reported a probe but no packet was sent"
+            )
+        }
+    }
 }
 
 #endif
