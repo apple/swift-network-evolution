@@ -664,9 +664,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 return false
             }
 
-            var packets = packets
-            while !packets.isEmpty {
-                let packet = packets.removeFirst()
+            while let packet = packets.popFirst() {
                 sentPacket(packet, time: connection.now, connection: connection)
             }
 
