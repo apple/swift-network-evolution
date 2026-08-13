@@ -70,21 +70,16 @@ public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendabl
         }
 		var storage: Storage {
 			get {
-				lock.withLock { _ in
-					_storage
-				}
+				_storage.withLock { $0 }
 			}
 			set {
-				lock.withLock { _ in
-					_storage = newValue
-				}
+				_storage.withLock { $0 = newValue }
 			}
 		}
-		private nonisolated(unsafe) var _storage: Storage
-		private let lock = NetworkMutex(())
-        init(storage: Storage) {
-            self._storage = storage
-        }
+		private let _storage: NetworkMutex<Storage>
+		init(storage: Storage) {
+			self._storage = NetworkMutex(storage)
+		}
     }
     private typealias Backing = BonjourBackingClass
     private var backing: Backing
