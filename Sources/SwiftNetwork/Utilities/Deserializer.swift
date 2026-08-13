@@ -76,11 +76,10 @@ public enum DeserializationResult: CustomStringConvertible, Equatable, Sendable 
 @available(Network 0.1.0, *)
 public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escapable>: ~Copyable, ~Escapable {
     private var factory: Factory
-    private var currentSpan: RawSpan
-    private var currentSpanByteCount = 0
+    @usableFromInline var currentSpan: RawSpan
     private var availableByteCount: Int
     private var scratchSpace: [16 of UInt8]?  // Initialized lazily
-    private var cursor = 0
+    @usableFromInline var cursor = 0
     private var previousSpanAggregateByteCount = 0
     private(set) var internalResult: DeserializationResult = .success
 
@@ -103,7 +102,6 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     init(_ span: RawSpan) where Factory == EmptySpanFactory {
         let byteCount = span.byteCount
         self.availableByteCount = byteCount
-        self.currentSpanByteCount = byteCount
         self.currentSpan = span
         self.factory = EmptySpanFactory()
     }
@@ -112,6 +110,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     ///
     /// - Returns: A Boolean value that indicates whether the factory had another span available; returns `false` when no more spans remain.
     @discardableResult
+    @usableFromInline
     mutating func refill() -> Bool {
         guard let span = factory.nextSpan() else {
             return false
@@ -119,18 +118,17 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         previousSpanAggregateByteCount += cursor
         currentSpan = span
         cursor = 0
-        currentSpanByteCount = currentSpan.byteCount
         return true
     }
-    @inline(__always)
-    private var remaining: Int {
+    @usableFromInline
+    var remaining: Int {
         // This will never be negative since cursor is only advanced
         // by moveCursor, which checks to ensure that cursor never
         // moves beyond the remaining length
         #if DEBUG
-        precondition(currentSpanByteCount >= cursor)
+        precondition(currentSpan.byteCount >= cursor)
         #endif
-        return currentSpanByteCount - cursor
+        return currentSpan.byteCount - cursor
     }
     private var totalBytesParsed: Int {
         previousSpanAggregateByteCount + cursor
@@ -150,26 +148,27 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         }
     }
 
-    @inline(__always)
-    private func hasRoom(_ length: Int) -> Bool {
-        (currentSpanByteCount - cursor) >= length
+    @usableFromInline
+    func hasRoom(_ length: Int) -> Bool {
+        (currentSpan.byteCount - cursor) >= length
     }
 
+    @usableFromInline
     mutating func invalidate(_ error: DeserializationError) throws(DeserializationError) -> Never {
         internalResult = .error(error)
         throw error
     }
 
-    @inline(__always)
-    private mutating func moveCursorUnchecked(_ amount: Int) {
+    @usableFromInline
+    mutating func moveCursorUnchecked(_ amount: Int) {
         // It is safe to always add the amount to the cursor, since the length
         // was already checked. So, we use &+= which skips the more expensive
         // overflow check.
         cursor &+= amount
     }
 
-    @inline(__always)
-    private mutating func moveCursor(_ amount: Int) throws(DeserializationError) {
+    @usableFromInline
+    mutating func moveCursor(_ amount: Int) throws(DeserializationError) {
         guard amount <= remaining else {
             try invalidate(.bufferTooShort)
         }
@@ -204,7 +203,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     }
 
     /// Reads a fixed-size value across span boundaries, with optional network-to-host byte order conversion.
-    @inline(__always)
+    @inline(always)
     private mutating func readFragmented<T: BitwiseCopyable & FixedWidthInteger>(
         _ value: inout T,
         networkByteOrder: Bool
@@ -219,7 +218,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     ///
     /// Reads a fixed-size `BitwiseCopyable` value, using the fast path when the current
     /// span has enough data, or falling back to `readFragmented(_:)`.
-    @inline(__always)
+    @inline(always)
     private mutating func readFixedSize<T: BitwiseCopyable>(_ value: inout T) throws(DeserializationError) {
         let length = MemoryLayout<T>.size
         guard hasRoom(length) else {
@@ -233,7 +232,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     /// Reads an optional fixed-size, bitwise-copyable value.
     ///
     /// Reads an optional fixed-size `BitwiseCopyable` value.
-    @inline(__always)
+    @inline(always)
     private mutating func readFixedSize<T: BitwiseCopyable & FixedWidthInteger>(
         _ value: inout T?
     ) throws(DeserializationError) {
@@ -243,7 +242,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     }
 
     /// Reads a fixed-size integer value with optional network-to-host byte order conversion.
-    @inline(__always)
+    @inline(always)
     private mutating func readFixedSize<T: BitwiseCopyable & FixedWidthInteger>(
         _ value: inout T,
         networkByteOrder: Bool
@@ -255,7 +254,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     }
 
     /// Reads an optional fixed-size integer value with optional network-to-host byte order conversion.
-    @inline(__always)
+    @inline(always)
     private mutating func readFixedSize<T: BitwiseCopyable & FixedWidthInteger>(
         _ value: inout T?,
         networkByteOrder: Bool
@@ -567,7 +566,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     }
 
     @_optimize(speed)
-    @inline(__always)
+    @inline(always)
     public mutating func buffer(_ value: inout [UInt8], length: Int) throws(DeserializationError) {
         guard length > 0 else {
             return
@@ -727,7 +726,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     }
 
     @_optimize(speed)
-    @inline(__always)
+    @inline(always)
     public mutating func buffer(_ value: inout [UInt8]) throws(DeserializationError) {
         // Drain the current span and all subsequent spans
         repeat {
@@ -736,7 +735,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
                 source.withUnsafeBytes { buffer in
                     value.append(contentsOf: buffer)
                 }
-                cursor = currentSpanByteCount
+                cursor = currentSpan.byteCount
             }
         } while refill()
     }

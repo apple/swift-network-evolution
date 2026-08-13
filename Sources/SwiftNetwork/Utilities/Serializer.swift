@@ -358,7 +358,6 @@ public struct SerializeCounter {
 public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Escapable>: ~Escapable, ~Copyable {
     private var factory: Factory
     private var currentSpan: MutableRawSpan
-    private var currentSpanByteCount = 0
     private var availableByteCount: Int
     private var scratchSpace = [16 of UInt8](repeating: 0)
     private var cursor = 0
@@ -390,7 +389,6 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
         previousSpanAggregateByteCount += cursor
         currentSpan = span
         cursor = 0
-        currentSpanByteCount = currentSpan.byteCount
         return true
     }
     private var totalBytesWritten: Int {
@@ -412,9 +410,9 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
     }
     private var remaining: Int {
         #if DEBUG
-        precondition(currentSpanByteCount >= cursor)
+        precondition(currentSpan.byteCount >= cursor)
         #endif
-        return currentSpanByteCount - cursor
+        return currentSpan.byteCount - cursor
     }
     private func hasRoom(_ length: Int) -> Bool {
         internalResult.isValid && remaining >= length

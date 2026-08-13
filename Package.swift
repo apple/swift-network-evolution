@@ -45,7 +45,7 @@ let settings: [SwiftSetting] = [
     .define("EXPORT_SWIFTTLS"),
     .define("IMPORT_CRYPTO"),
     .define("SWIFTTLS_CERTIFICATE_VERIFICATION"),
-    .unsafeFlags(["-Xfrontend", "-experimental-spi-only-imports"]),
+    .unsafeFlags(["-Xfrontend", "-experimental-spi-only-imports", "-cross-module-optimization", "-enable-cmo-everything"]),
     .enableExperimentalFeature("Lifetimes"),
     .enableExperimentalFeature("AnyAppleOSAvailability"),
     .enableUpcomingFeature("ExistentialAny"),
