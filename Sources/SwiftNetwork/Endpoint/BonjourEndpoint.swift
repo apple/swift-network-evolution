@@ -68,18 +68,18 @@ public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendabl
         func copy() -> Self {
             .init(storage: self.storage)
         }
-		var storage: Storage {
-			get {
-				_storage.withLock { $0 }
-			}
-			set {
-				_storage.withLock { $0 = newValue }
-			}
-		}
-		private let _storage: NetworkMutex<Storage>
-		init(storage: Storage) {
-			self._storage = NetworkMutex(storage)
-		}
+        var storage: Storage {
+            get {
+                _storage.withLock { $0 }
+            }
+            set {
+                _storage.withLock { $0 = newValue }
+            }
+        }
+        private let _storage: NetworkMutex<Storage>
+        init(storage: Storage) {
+            self._storage = NetworkMutex(storage)
+        }
     }
     private typealias Backing = BonjourBackingClass
     private var backing: Backing

@@ -66,18 +66,18 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
         func copy() -> Self {
             .init(storage: self.storage)
         }
-		var storage: Storage {
-			get {
-				_storage.withLock { $0 }
-			}
-			set {
-				_storage.withLock { $0 = newValue }
-			}
-		}
-		private let _storage: NetworkMutex<Storage>
-		init(storage: Storage) {
-			self._storage = NetworkMutex(storage)
-		}
+        var storage: Storage {
+            get {
+                _storage.withLock { $0 }
+            }
+            set {
+                _storage.withLock { $0 = newValue }
+            }
+        }
+        private let _storage: NetworkMutex<Storage>
+        init(storage: Storage) {
+            self._storage = NetworkMutex(storage)
+        }
     }
     typealias Backing = AppSVCBackingClass
     var backing: Backing
