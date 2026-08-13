@@ -230,6 +230,29 @@ where UpperProtocol == InboundDatagramLinkage, LowerProtocol == OutboundDatagram
     mutating func sendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError)
 }
 
+/// One-to-one protocol with an upper datagram linkage and a lower stream linkage.
+/// Used by tunnel protocols (e.g. MASQUE CONNECT-UDP) that encapsulate datagrams over a stream.
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+public protocol OneToOneDatagramToStreamProtocol: ~Copyable, OneToOneDatapathProtocol
+where UpperProtocol == InboundDatagramLinkage, LowerProtocol == OutboundStreamLinkage {
+
+    mutating func receiveDatagrams(maximumDatagramCount: Int) throws(NetworkError) -> FrameArray?
+
+    mutating func getDatagramsToSend(
+        maximumDatagramCount: Int,
+        minimumDatagramSize: Int
+    ) throws(NetworkError) -> FrameArray?
+
+    mutating func sendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError)
+
+    mutating func receiveStreamData(minimumBytes: Int, maximumBytes: Int) throws(NetworkError) -> FrameArray?
+
+    mutating func getOutboundStreamDataRoomAvailable() throws(NetworkError) -> Int
+
+    mutating func sendStreamData(_ streamData: consuming FrameArray) throws(NetworkError)
+}
+
 // MARK: - One-to-One Protocol Implementation Details
 
 @available(Network 0.1.0, *)
@@ -819,4 +842,42 @@ extension OneToOneStreamProtocol where Self: ~Copyable {
     // Default implementations
     public mutating func handleInboundAbortedEvent(error: NetworkError?) {}
     public mutating func handleOutboundAbortedEvent(error: NetworkError?) {}
+}
+
+@available(Network 0.1.0, *)
+extension OneToOneDatagramToStreamProtocol where Self: ~Copyable {
+    public mutating func receiveDatagrams(
+        _ from: ProtocolInstanceReference,
+        maximumDatagramCount: Int
+    ) throws(NetworkError) -> FrameArray? {
+        do { try validate(upper: from, #function) } catch { throw NetworkError.posix(EINVAL) }
+        guard passthroughEvents || isConnected else { throw NetworkError.posix(ENOTCONN) }
+        return try self.receiveDatagrams(maximumDatagramCount: maximumDatagramCount)
+    }
+    public mutating func getDatagramsToSend(
+        _ from: ProtocolInstanceReference,
+        maximumDatagramCount: Int,
+        minimumDatagramSize: Int
+    ) throws(NetworkError) -> FrameArray? {
+        do { try validate(upper: from, #function) } catch { throw NetworkError.posix(EINVAL) }
+        guard passthroughEvents || isConnected else { throw NetworkError.posix(ENOTCONN) }
+        return try self.getDatagramsToSend(
+            maximumDatagramCount: maximumDatagramCount,
+            minimumDatagramSize: minimumDatagramSize
+        )
+    }
+    public mutating func sendDatagrams(
+        _ from: ProtocolInstanceReference,
+        datagrams: consuming FrameArray
+    ) throws(NetworkError) {
+        do { try validate(upper: from, #function) } catch {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
+        guard passthroughEvents || isConnected else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(ENOTCONN)
+        }
+        try self.sendDatagrams(datagrams)
+    }
 }
