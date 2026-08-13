@@ -1429,6 +1429,7 @@ struct Protector: ~Copyable, PrefixedLoggable {
 // Availability due to Swift's `RawSpan` type
 @available(macOS 10.14.4, iOS 12.2, tvOS 12.2, watchOS 5.2, *)
 extension RawSpan {
+    @usableFromInline
     subscript(index: Int) -> UInt8 {
         unsafeLoad(fromByteOffset: index, as: UInt8.self)
     }

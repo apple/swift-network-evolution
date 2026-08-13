@@ -37,7 +37,8 @@ public struct Frame: ~Copyable {
         case customFinalizer(buffer: UnsafeMutableRawBufferPointer, finalizer: (UnsafeMutableRawBufferPointer) -> Void)
     }
 
-    var _bytes: NetworkUniqueArray<UInt8> = .init()
+    @usableFromInline
+    var _bytes: UniqueArray<UInt8> = .init()
     var protocolMetadatas: NetworkUniqueDeque<FrameProtocolMetadata> = .init(minimumCapacity: 0)
     var ipPacketValues: IPPacketValues? = nil
     public var buffer: Buffer
@@ -61,10 +62,12 @@ public struct Frame: ~Copyable {
         get { Int(_endOffset) }
         set { _endOffset = UInt32(newValue) }
     }
+    @usableFromInline
     var effectiveBufferLength: Int {
         get { Int(_effectiveBufferLength) }
         set { _effectiveBufferLength = UInt32(newValue) }
     }
+    @usableFromInline
     var aggregateBufferLength: Int {
         get { Int(_aggregateBufferLength) }
         set { _aggregateBufferLength = UInt32(newValue) }
@@ -136,13 +139,15 @@ public struct Frame: ~Copyable {
 
     // MARK: - Byte access
 
-    @inline(__always)
+    @inlinable
+    @inline(always)
     public var unclaimedLength: Int {
         if effectiveBufferLength == 0 { return 0 }
         return effectiveBufferLength - (startOffset + endOffset)
     }
 
-    @inline(__always)
+    @inlinable
+    @inline(always)
     public var span: Span<UInt8>? {
         @_lifetime(borrow self)
         get {
@@ -160,7 +165,8 @@ public struct Frame: ~Copyable {
         }
     }
 
-    @inline(__always)
+    @inlinable
+    @inline(always)
     public var bytes: RawSpan? {
         @_lifetime(borrow self)
         get {
@@ -177,7 +183,8 @@ public struct Frame: ~Copyable {
         }
     }
 
-    @inline(__always)
+    @inlinable
+    @inline(always)
     public var mutableSpan: MutableSpan<UInt8>? {
         @_lifetime(&self)
         mutating get {
@@ -198,7 +205,8 @@ public struct Frame: ~Copyable {
         }
     }
 
-    @inline(__always)
+    @inlinable
+    @inline(always)
     var allBytes: RawSpan? {
         guard isValid else { return nil }
         switch buffer {
@@ -225,7 +233,8 @@ public struct Frame: ~Copyable {
     }
 
     // Only unclaimed bytes in frame, for unsafe types
-    private var unsafeUnclaimedBuffer: UnsafeMutableRawBufferPointer? {
+    @usableFromInline
+    var unsafeUnclaimedBuffer: UnsafeMutableRawBufferPointer? {
         switch buffer {
         case .empty:
             return nil
@@ -245,7 +254,8 @@ public struct Frame: ~Copyable {
     }
 
     // All bytes in frame, including claimed bytes, for unsafe types
-    private var unsafeBuffer: UnsafeMutableRawBufferPointer? {
+    @usableFromInline
+    var unsafeBuffer: UnsafeMutableRawBufferPointer? {
         switch buffer {
         case .empty:
             return nil
