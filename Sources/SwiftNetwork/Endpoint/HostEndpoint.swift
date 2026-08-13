@@ -14,7 +14,7 @@
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct HostEndpoint: EndpointProtocol, EndpointCommonProtocol {
+public struct HostEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendable {
     public var common: EndpointCommon
     public let name: String
     public let port: UInt16

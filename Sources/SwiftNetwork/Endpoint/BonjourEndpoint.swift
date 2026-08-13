@@ -14,7 +14,7 @@
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol {
+public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendable {
     public var common: EndpointCommon {
         get { backing.storage.common }
         set {
@@ -51,7 +51,7 @@ public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol {
         )
     }
 
-    private final class BonjourBackingClass: Hashable {
+    private final class BonjourBackingClass: Hashable, Sendable {
         static func == (lhs: BonjourEndpoint.BonjourBackingClass, rhs: BonjourEndpoint.BonjourBackingClass) -> Bool {
             lhs.storage == rhs.storage
         }
@@ -68,9 +68,22 @@ public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol {
         func copy() -> Self {
             .init(storage: self.storage)
         }
-        var storage: Storage
+		var storage: Storage {
+			get {
+				lock.withLock { _ in
+					_storage
+				}
+			}
+			set {
+				lock.withLock { _ in
+					_storage = newValue
+				}
+			}
+		}
+		private nonisolated(unsafe) var _storage: Storage
+		private let lock = NetworkMutex(())
         init(storage: Storage) {
-            self.storage = storage
+            self._storage = storage
         }
     }
     private typealias Backing = BonjourBackingClass

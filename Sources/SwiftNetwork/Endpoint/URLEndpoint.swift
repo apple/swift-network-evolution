@@ -18,7 +18,7 @@ import Foundation
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct URLEndpoint: EndpointProtocol, EndpointCommonProtocol {
+public struct URLEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendable {
     public var common: EndpointCommon
     public let url: URL
     public let schemeIsSecure: Bool

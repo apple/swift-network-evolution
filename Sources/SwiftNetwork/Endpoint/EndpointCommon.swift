@@ -91,7 +91,7 @@ protocol EndpointProtocol: CustomStringConvertible {
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct EndpointCommon: Equatable, Hashable {
+public struct EndpointCommon: Equatable, Hashable, Sendable {
     let interface: Interface?
     #if NETWORK_PRIVATE
     let commonPrivate: EndpointCommon_Private?

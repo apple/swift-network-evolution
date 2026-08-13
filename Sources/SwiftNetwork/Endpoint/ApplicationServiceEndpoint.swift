@@ -14,7 +14,7 @@
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtocol {
+public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendable {
     public var common: EndpointCommon {
         get { backing.storage.common }
         set {
@@ -44,7 +44,7 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
         }
     }
 
-    internal final class AppSVCBackingClass: Hashable {
+    internal final class AppSVCBackingClass: Hashable, Sendable {
         static func == (
             lhs: ApplicationServiceEndpoint.AppSVCBackingClass,
             rhs: ApplicationServiceEndpoint.AppSVCBackingClass
@@ -54,7 +54,7 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
         public func hash(into hasher: inout Hasher) {
             hasher.combine(storage)
         }
-        internal struct Storage: Hashable {
+        internal struct Storage: Hashable, Sendable {
             var common: EndpointCommon
             let name: String  // Name is informational for application-service endpoints.
             var applicationService: String
@@ -66,9 +66,22 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
         func copy() -> Self {
             .init(storage: self.storage)
         }
-        var storage: Storage
+		var storage: Storage {
+			get {
+				lock.withLock { _ in
+					_storage
+				}
+			}
+			set {
+				lock.withLock { _ in
+					_storage = newValue
+				}
+			}
+		}
+		private nonisolated(unsafe) var _storage: Storage
+		private let lock = NetworkMutex(())
         init(storage: Storage) {
-            self.storage = storage
+            self._storage = storage
         }
     }
     typealias Backing = AppSVCBackingClass

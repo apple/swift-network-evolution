@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 @available(Network 0.1.0, *)
-public struct EthernetAddress: Hashable, CustomDebugStringConvertible {
+public struct EthernetAddress: Hashable, CustomDebugStringConvertible, Sendable {
 
     public static var broadcast: EthernetAddress {
         EthernetAddress(EthernetAddressStorage(repeating: 0xff))
