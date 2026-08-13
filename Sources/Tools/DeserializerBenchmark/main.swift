@@ -44,6 +44,6 @@ func runtest() {
         }
     }
 }
-if #available(macOS 26.0, *) {
+if #available(anyAppleOS 26, *) {
     runtest()
 }
