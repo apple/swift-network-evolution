@@ -258,6 +258,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
 
     var isRouteEstablished: Bool { state.isRouteEstablished }
 
+    @_optimize(speed)
     var smoothedRTT: NetworkDuration {
         rtt.smoothedRTT
     }
