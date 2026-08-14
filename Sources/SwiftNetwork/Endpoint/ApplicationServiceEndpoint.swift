@@ -12,6 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#if canImport(Synchronization)
+internal import Synchronization
+#endif
+
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendable {
