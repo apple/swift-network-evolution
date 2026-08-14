@@ -50,7 +50,7 @@ internal import os
 #if canImport(SwiftTLS)
 
 @available(Network 0.1.0, *)
-final class QUICTestHarness {
+class QUICTestHarness {
     // 127.0.0.1
     static let clientIPv4Address: [UInt8] = [0x7f, 0x00, 0x00, 0x01]
     static let serverIPv4Address: [UInt8] = [0x7f, 0x00, 0x00, 0x01]
@@ -89,8 +89,7 @@ final class QUICTestHarness {
         serverEndpoint = Endpoint(address: IPv4Address(QUICTestHarness.serverIPv4Address)!, port: serverPort)
     }
 
-    private func wait(for expectations: [XCTestExpectation], timeout seconds: TimeInterval, expectTimeout: Bool = false)
-    {
+    func wait(for expectations: [XCTestExpectation], timeout seconds: TimeInterval, expectTimeout: Bool = false) {
         let result = XCTWaiter.wait(for: expectations, timeout: seconds)
         if expectTimeout {
             XCTAssertEqual(result, .timedOut)
@@ -99,7 +98,7 @@ final class QUICTestHarness {
         }
     }
 
-    private func updateQUICOptions(
+    func updateQUICOptions(
         _ quicOptions: ProtocolOptions<QUICProtocol>,
         server: Bool = false,
         datagram: Bool = false
@@ -129,7 +128,7 @@ final class QUICTestHarness {
         }
     }
 
-    private func quicHandshake(
+    func quicHandshake(
         datagram: Bool = false,
         expectHandshakeError: NetworkError? = nil,
         clientLinkDelay: NetworkDuration = .zero,
@@ -358,7 +357,7 @@ final class QUICTestHarness {
         }
     }
 
-    private func createNewStream(
+    func createNewStream(
         identifier: String,
         quicOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverInitiated: Bool = false
