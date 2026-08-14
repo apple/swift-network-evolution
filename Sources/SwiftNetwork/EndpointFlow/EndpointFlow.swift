@@ -319,15 +319,14 @@ final class EndpointFlow: CustomDebugStringConvertible {
             self.cancelRequested = true
             Logger.connection.debug("EndpointFlow: \(self.debugDescription) cancel called (force=\(force))")
 
-            // 1. Stop the current flow.
-            // Graceful close of a flow defers teardown until
+            // Fail anything still queued; it can no longer complete
+            self.failPendingRequests()
+
+            // Stop the current flow. Graceful close of a flow defers teardown until
             // the `disconnected` event arrives.
             let teardownDeferred = self.stopFlow(force: force, error: error)
 
-            // 2. Fail anything still queued; it can no longer complete
-            self.failPendingRequests()
-
-            // 3. Detach and mark cancelled (now, or from the disconnected
+            // Detach and mark cancelled (now, or from the disconnected
             // callback for the deferred graceful path).
             if !teardownDeferred {
                 self.completeTeardown()
