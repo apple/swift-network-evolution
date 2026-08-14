@@ -89,8 +89,7 @@ class QUICTestHarness {
         serverEndpoint = Endpoint(address: IPv4Address(QUICTestHarness.serverIPv4Address)!, port: serverPort)
     }
 
-    func wait(for expectations: [XCTestExpectation], timeout seconds: TimeInterval, expectTimeout: Bool = false)
-    {
+    func wait(for expectations: [XCTestExpectation], timeout seconds: TimeInterval, expectTimeout: Bool = false) {
         let result = XCTWaiter.wait(for: expectations, timeout: seconds)
         if expectTimeout {
             XCTAssertEqual(result, .timedOut)
