@@ -1107,7 +1107,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         }
 
         let stream: QUICStreamInstance
-        if let flowID = connection.knownFlows[streamID] {
+        if let flowID = connection.knownFlows[streamID.value] {
             // The stream id is known. The flow object may still be missing
             // if the stream was torn down without clearing `knownFlows`; in
             // that case there is no one to deliver the reset to, so drop it.
@@ -1136,7 +1136,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
                 // frame as handled.
                 return true
             }
-            guard let flowID = connection.knownFlows[streamID],
+            guard let flowID = connection.knownFlows[streamID.value],
                 let created = connection.flow(for: flowID)
             else {
                 Logger.proto.error(
@@ -1286,7 +1286,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
             return false
         }
 
-        guard let flowID = connection.knownFlows[streamID] else {
+        guard let flowID = connection.knownFlows[streamID.value] else {
             return true
         }
         guard let stream = connection.flow(for: flowID) else {
