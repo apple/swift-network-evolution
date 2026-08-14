@@ -166,14 +166,23 @@ where Path.LowerProtocol == OutboundDatagramLinkage {
     }
 
     public func hash(into hasher: inout Hasher) {
+        hasher.combine(self.rawHashKey)
+    }
+
+    private var rawHashKey: UInt64 {
+        // Use the bottom two bits as a discriminator for the different cases.
         switch self {
         case .allFlows:
-            hasher.combine(0)
+            return 0
         case .outboundFlow(let index):
-            hasher.combine(index)
+            return UInt64(bitPattern: Int64(index)) << 2 | 0b01
         case .inboundFlow(let index):
-            hasher.combine(index)
+            return UInt64(bitPattern: Int64(index)) << 2 | 0b10
         }
+    }
+
+    public func _rawHashValue(seed: Int) -> Int {
+        self.rawHashKey._rawHashValue(seed: seed)
     }
 
     public var debugDescription: String {
