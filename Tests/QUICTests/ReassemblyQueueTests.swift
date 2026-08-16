@@ -30,7 +30,7 @@ extension ReassemblyQueue {
         offset: Int,
         fin: Bool
     ) -> Int {
-        append(frame: .init(copyBuffer: buffer), offset: offset, fin: fin)
+        append(frame: .init(copyBuffer: buffer), offset: offset, fin: fin).sizeAdded
     }
 }
 

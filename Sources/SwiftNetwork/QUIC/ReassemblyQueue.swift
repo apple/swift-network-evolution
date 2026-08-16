@@ -91,13 +91,33 @@ struct ReassemblyQueue: ~Copyable {
         #endif
     }
 
-    // Append data to the reassembly queue. Returns the amount of data added.
+    struct AppendResult {
+        var sizeAdded: Int
+        var lastOffset: Int
+        var hasFin: Bool
+        var finOffset: Int
+        var currentOffset: Int
+        var availableToDequeue: Int
+    }
+
+    @inline(always)
+    private func appendResult(sizeAdded: Int) -> AppendResult {
+        AppendResult(
+            sizeAdded: sizeAdded,
+            lastOffset: lastOffset,
+            hasFin: hasFin,
+            finOffset: finOffset,
+            currentOffset: currentOffset,
+            availableToDequeue: availableToDequeue
+        )
+    }
+
     @discardableResult
     mutating func append(
         frame: consuming Frame,
         offset: Int,
         fin: Bool
-    ) -> Int {
+    ) -> AppendResult {
         var frame = frame
         var offset = offset
         let originalBufferLength = frame.unclaimedLength
@@ -111,7 +131,7 @@ struct ReassemblyQueue: ~Copyable {
                     "FIN offset already set, old \(finOffset), new \(offset + originalBufferLength)"
                 )
                 frame.finalize(success: false)
-                return 0
+                return appendResult(sizeAdded: 0)
             }
             finOffset = offset + originalBufferLength
             log.datapath("FIN offset set to \(finOffset)")
@@ -119,19 +139,19 @@ struct ReassemblyQueue: ~Copyable {
         if originalBufferLength == 0 && size != 0 {
             // We already set FIN offset, so we don't need to create a fake item to handle the FIN bit
             frame.finalize(success: false)
-            return 0
+            return appendResult(sizeAdded: 0)
         }
 
         let oldSize = size
         var newItem: ReassemblyQueueItem
         if offset < currentOffset {
-            if offset + originalBufferLength > currentOffset {
+            if offset &+ originalBufferLength > currentOffset {
                 let startingPoint = currentOffset - offset
                 log.datapath(
                     "ignoring duplicate bytes [\(offset), \(offset + startingPoint)]"
                 )
-                offset += startingPoint
-                bufferStartPoint += startingPoint
+                offset &+= startingPoint
+                bufferStartPoint &+= startingPoint
 
                 // Use a truncated buffer
                 _ = frame.claim(fromStart: bufferStartPoint)
@@ -144,14 +164,14 @@ struct ReassemblyQueue: ~Copyable {
                 log.datapath(
                     "dropping duplicate buffer [\(offset), \(offset + originalBufferLength)]"
                 )
-                return 0
+                return appendResult(sizeAdded: 0)
             }
         } else {
             // Use the whole buffer
             newItem = ReassemblyQueueItem(offset: offset, frame: frame)
         }
         lastOffset =
-            (offset == 0 && newItem.length == 0) ? 0 : max(lastOffset, offset + newItem.length - 1)
+            (offset == 0 && newItem.length == 0) ? 0 : max(lastOffset, offset &+ newItem.length - 1)
         traceDump()
         log.datapath("appending to reassq: offset \(newItem.offset) len \(newItem.length)")
         // Case 0: empty reassembly queue
@@ -165,21 +185,21 @@ struct ReassemblyQueue: ~Copyable {
             } else {
                 availableToDequeue = 0
             }
-            return size
+            return appendResult(sizeAdded: size)
         }
         // Case 1: append to the reassembly queue when in-order
         let itemCount = items.count
-        let lastItemOffset = items[itemCount - 1].offset
-        let lastItemLength = items[itemCount - 1].length
-        if newItem.offset == lastItemOffset + lastItemLength {
+        let lastItemOffset = items[itemCount &- 1].offset
+        let lastItemLength = items[itemCount &- 1].length
+        if newItem.offset == lastItemOffset &+ lastItemLength {
             let newItemLength = newItem.length
             items.append(newItem)
             // When everything is in order, we can dequeue this item
             if availableToDequeue == size {
-                availableToDequeue += newItemLength
+                availableToDequeue &+= newItemLength
             }
-            size += newItemLength
-            return newItemLength
+            size &+= newItemLength
+            return appendResult(sizeAdded: newItemLength)
         }
         // Case 2: insert somewhere else while handling overlapping data
         // This algorithm is the same used in the TCP stack
@@ -208,25 +228,25 @@ struct ReassemblyQueue: ~Copyable {
         }
 
         if let prevItemOffset, let prevItemLength {
-            let overlappedLength = prevItemOffset + prevItemLength - newItem.offset
+            let overlappedLength = prevItemOffset &+ prevItemLength &- newItem.offset
             if overlappedLength > 0 {
                 if overlappedLength >= newItem.length {
                     // The existing item already covers the same data as the new item
                     newItem.frame.finalize(success: false)
-                    return 0
+                    return appendResult(sizeAdded: 0)
                 }
                 // Advance the new entry when it overlaps with the existing one
-                bufferStartPoint += overlappedLength
-                newItem.offset += overlappedLength
+                bufferStartPoint &+= overlappedLength
+                newItem.offset &+= overlappedLength
                 _ = newItem.frame.claim(fromStart: overlappedLength)
                 // Add the overlapped adjustment
                 bytesRemoved += overlappedLength
             }
         }
         // Iterate over the existing entries trying while taking care of overlaps and entries that are completely covered by the new entry
-        iterIndex = foundInsertionPoint ? iterIndex : iterIndex + 1
+        iterIndex = foundInsertionPoint ? iterIndex : iterIndex &+ 1
         while iterIndex < items.count {
-            let overlapLength = newItem.offset + newItem.length - items[iterIndex].offset
+            let overlapLength = newItem.offset &+ newItem.length &- items[iterIndex].offset
             if overlapLength <= 0 {
                 // Terminate once we cannot adjust nor remove any more entries.
                 break
@@ -234,32 +254,32 @@ struct ReassemblyQueue: ~Copyable {
             let existingLength = items[iterIndex].length
             if overlapLength < existingLength {
                 // Adjust the current entry since it overlaps with the existing one.
-                bytesRemoved += overlapLength
-                items[iterIndex].offset += overlapLength
+                bytesRemoved &+= overlapLength
+                items[iterIndex].offset &+= overlapLength
                 _ = items[iterIndex].frame.claim(fromStart: overlapLength)
                 break
             }
             // The new entry completely covers the existing one. Give preference to the new entry.
             var oldEntry = items.remove(at: iterIndex)
             oldEntry.frame.finalize(success: false)
-            bytesRemoved += existingLength
+            bytesRemoved &+= existingLength
         }
         if let prevIndex {
-            trailingIndex = prevIndex + 2
+            trailingIndex = prevIndex &+ 2
             items.insert(newItem, at: prevIndex + 1)
         } else {
             trailingIndex = 1
             items.insert(newItem, at: 0)
         }
-        size += newItemLength - bytesRemoved
-        let newEnd = newItemOffset + newItemLength
+        size += newItemLength &- bytesRemoved
+        let newEnd = newItemOffset &+ newItemLength
         // Iterate through the remaining items from the new insertion index to calculate available dequeue items
         if newItemOffset <= contiguousEnd && newEnd > contiguousEnd {
-            availableToDequeue += (newEnd - contiguousEnd)
+            availableToDequeue += (newEnd &- contiguousEnd)
             if trailingIndex < items.count {
                 for i in trailingIndex..<items.count {
-                    if items[i].offset == currentOffset + availableToDequeue {
-                        availableToDequeue += items[i].length
+                    if items[i].offset == currentOffset &+ availableToDequeue {
+                        availableToDequeue &+= items[i].length
                     }
                 }
             }
@@ -268,9 +288,9 @@ struct ReassemblyQueue: ~Copyable {
         if _slowPath(size < oldSize) {
             traceDump()
             log.fault("Reassq length went backwards \(size) < \(oldSize)")
-            return 0
+            return appendResult(sizeAdded: 0)
         }
-        return size - oldSize
+        return appendResult(sizeAdded: size - oldSize)
     }
 
     // Dequeue an item from the reassembly queue

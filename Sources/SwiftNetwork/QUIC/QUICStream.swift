@@ -328,7 +328,7 @@ struct StreamListMembership: OptionSet {
 // Also note that a flow identifier can exist in multiple lists at one time.
 @available(Network 0.1.0, *)
 struct QUICStreamList: ~Copyable {
-    private var list = Deque<MultiplexedFlowIdentifier>()
+    private var list = Deque<MultiplexedFlowIdentifier>(minimumCapacity: 1)
     private let name: StaticString
     private let listType: StreamListMembership
 
@@ -360,15 +360,9 @@ struct QUICStreamList: ~Copyable {
 
     mutating func append(_ stream: QUICStreamInstance) {
         guard !stream.listMembership.contains(listType) else {
-            stream.log.error("Stream is already in list: \(name)")
             return
         }
-        let identifier = stream.identifier
-        guard !list.contains(where: { $0 == identifier }) else {
-            stream.log.error("Stream is already on list")
-            return
-        }
-        list.append(identifier)
+        list.append(stream.identifier)
         stream.listMembership.insert(listType)
     }
 
@@ -417,27 +411,6 @@ struct QUICStreamList: ~Copyable {
                 stream.listMembership.remove(listType)
             }
         }
-    }
-
-    func streamList(
-        continueAfterStreamID: QUICStreamID?,
-        connection: QUICConnection
-    ) -> [QUICStreamInstance] {
-        var result: [QUICStreamInstance] = []
-        var foundStart = continueAfterStreamID == nil
-        for identifier in list {
-            guard let stream = connection.flow(for: identifier) else {
-                continue
-            }
-            if !foundStart {
-                if stream.streamID == continueAfterStreamID {
-                    foundStart = true
-                }
-                continue
-            }
-            result.append(stream)
-        }
-        return result
     }
 }
 
@@ -705,18 +678,19 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
     ) -> Bool {
         startTrackingInboundFlowControlInterval(connection: connection)
 
+        let maximumUnreadInboundBytesAllowed = flowControlState.maximumUnreadInboundBytesAllowed
         // NOTE: This won't work with retransmissions if we don't
         // have enough space to take the stream data
-        if frame.length > flowControlState.maximumUnreadInboundBytesAllowed {
+        if frame.length > maximumUnreadInboundBytesAllowed {
             log.error(
-                "Not enough receive buffer space \(frame.length) > \(flowControlState.maximumUnreadInboundBytesAllowed)"
+                "Not enough receive buffer space \(frame.length) > \(maximumUnreadInboundBytesAllowed)"
             )
             frame.frame.finalize(success: false)
             return false
         }
 
         let canAppendResult = reassemblyQueue.canAppendItemsForByteLimit(
-            flowControlState.maximumUnreadInboundBytesAllowed
+            maximumUnreadInboundBytesAllowed
         )
         guard canAppendResult.acceptable else {
             connection.log.error(
@@ -727,46 +701,24 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
             return false
         }
 
-        if canAppendResult == .warning {
-            // If we have a concerning number of reassembly queue items, check to see if we're at a connection-wide limit.
-            // This is a more expensive check so should be avoided in normal cases where reassembly queues aren't being
-            // potentially abused.
-            var connectionReassemblyItemCount = 0
-            connection.applyToAllFlows { otherStream in
-                connectionReassemblyItemCount += otherStream.reassemblyQueue.items.count
-            }
-            guard
-                ReassemblyQueue.canAppendItemsForByteLimit(
-                    itemCount: connectionReassemblyItemCount,
-                    byteLimit: connection.flowControlState.maximumUnreadInboundBytesAllowed
-                ).acceptable
-            else {
-                connection.log.error(
-                    "Connection stream reassembly queues have too many items, closing"
-                )
-                frame.frame.finalize(success: false)
-                connection.close(with: .internalError, "exceeded connection reassembly queue limits")
-                return false
-            }
-        }
-
         // Offset is from a VLE so should not be bigger than a 62bit value
         // so does not represent a problem in 64bit systems.
-        let sizeAdded = reassemblyQueue.append(
+        let appendResult = reassemblyQueue.append(
             frame: frame.frame,
             offset: Int(frame.offset),
             fin: frame.isFinal
         )
-        let dataAdded = sizeAdded != 0
+        let dataAdded = appendResult.sizeAdded != 0
 
-        let frameFinalSize = frame.isFinal ? frame.offset + UInt64(frame.length) : nil
+        let frameFinalSize = frame.isFinal ? frame.offset &+ UInt64(frame.length) : nil
 
-        let lastOffsetDelta = self.updateLastOffset(
-            connection: connection,
-            newLastOffset: UInt64(reassemblyQueue.lastOffset),
-            newFinalSize: frameFinalSize
-        )
-        guard let _ = lastOffsetDelta else {
+        guard
+            let _ = self.updateLastOffset(
+                connection: connection,
+                newLastOffset: UInt64(appendResult.lastOffset),
+                newFinalSize: frameFinalSize
+            )
+        else {
             log.error("final_size invariants violated")
             connection.close(with: .internalError, "final_size invariants violated")
             return false
@@ -776,24 +728,31 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
             self.receiveState.change(logIDString: logPrefix, to: .sizeKnown)
         }
 
-        if dataAdded || reassemblyQueue.hasFin {
+        if dataAdded || appendResult.hasFin {
+            #if SignpostOutput
             if let streamID {
-                QUICSignpost.dataReceived(id: connection.signpostID, streamID: streamID.value, nbytes: sizeAdded)
+                QUICSignpost.dataReceived(
+                    id: connection.signpostID,
+                    streamID: streamID.value,
+                    nbytes: appendResult.sizeAdded
+                )
             }
+            #endif
 
             updateInboundFlowControlCredit(
-                dataLengthAdded: UInt64(sizeAdded),
+                dataLengthAdded: UInt64(appendResult.sizeAdded),
                 connection: connection,
                 connectionOnly: false
             )
+            let finOffset = appendResult.finOffset
 
-            let newOffset = reassemblyQueue.currentOffset + reassemblyQueue.availableToDequeue
-            if newOffset == reassemblyQueue.finOffset {
+            let newOffset = appendResult.currentOffset &+ appendResult.availableToDequeue
+            if newOffset == finOffset {
                 receiveState.change(logIDString: logPrefix, to: .dataReceived)
             }
-            if newOffset > reassemblyQueue.finOffset {
+            if newOffset > finOffset {
                 log.error(
-                    "Bytes received \(newOffset) > fin offset \(reassemblyQueue.finOffset)"
+                    "Bytes received \(newOffset) > fin offset \(finOffset)"
                 )
                 connection.close(with: .internalError, "bytes received larger than FIN offset")
                 return false
@@ -838,6 +797,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
     //
     // Otherwise, the function will return the amount by which
     // the `lastOffset` was incremented.
+    @_optimize(speed)
     func updateLastOffset(
         connection: QUICConnection,
         newLastOffset: UInt64,

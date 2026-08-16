@@ -380,7 +380,7 @@ final class QUICTransfer {
 
 if #available(anyAppleOS 26, *) {
     // Take command line arguments
-    var iterations = 1  // 5gb total (if 500000 sendSize)
+    var iterations = 10000  // 5gb total (if 500000 sendSize)
     var loggingHandler: LoggingHandle = LoggingHandle(loggingType: .none)
     var sendSize = 500000  // 500kb
     var linkDelay = NetworkDuration.zero
