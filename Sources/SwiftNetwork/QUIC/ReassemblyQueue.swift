@@ -94,10 +94,10 @@ struct ReassemblyQueue: ~Copyable {
     struct AppendResult {
         var sizeAdded: Int
         var lastOffset: Int
-        var hasFin: Bool
         var finOffset: Int
         var currentOffset: Int
         var availableToDequeue: Int
+        var hasFin: Bool
     }
 
     @inline(always)
@@ -105,10 +105,10 @@ struct ReassemblyQueue: ~Copyable {
         AppendResult(
             sizeAdded: sizeAdded,
             lastOffset: lastOffset,
-            hasFin: hasFin,
             finOffset: finOffset,
             currentOffset: currentOffset,
-            availableToDequeue: availableToDequeue
+            availableToDequeue: availableToDequeue,
+            hasFin: hasFin
         )
     }
 

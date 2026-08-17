@@ -309,7 +309,7 @@ extension QUICConnection {
         )
     }
 
-    @inline(__always)
+    @inline(always)
     func sendInboundFlowControlCredit() {
         guard !state.isTerminal else {
             return
