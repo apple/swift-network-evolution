@@ -147,35 +147,35 @@ let package = Package(
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/QUICHandshake",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings + [.unsafeFlags(["-cross-module-optimization"])],
+            swiftSettings: availabilityMacros + settings
         ),
         .executableTarget(
             name: "IPUDPTransfer",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/IPUDPTransfer",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings + [.unsafeFlags(["-cross-module-optimization"])],
+            swiftSettings: availabilityMacros + settings
         ),
         .executableTarget(
             name: "QUICTransfer",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/QUICTransfer",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings + [.unsafeFlags(["-cross-module-optimization"])],
+            swiftSettings: availabilityMacros + settings
         ),
         .executableTarget(
             name: "QUICStreamLoad",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/QUICStreamLoad",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings + [.unsafeFlags(["-cross-module-optimization"])]
+            swiftSettings: availabilityMacros + settings
         ),
         .executableTarget(
             name: "SocketTransfer",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/SocketTransfer",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings + [.unsafeFlags(["-cross-module-optimization"])]
+            swiftSettings: availabilityMacros + settings
         ),
     ]
 )
