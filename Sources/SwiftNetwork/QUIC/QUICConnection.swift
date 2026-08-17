@@ -299,10 +299,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // List of streams that have app input data in their reassembly queue.
     var pendingReassemblyDequeue = QUICStreamList.pendingReassemblyDequeueList()
 
-    // The logical key choice is 'QUICStreamID', however, Swift special cases the hashing of
-    // various primitives (by avoiding the construction of a Hasher altogether). The result is
-    // that hashing the raw value is significantly cheaper which adds up on hot paths.
-    private(set) var knownFlows = [UInt64: MultiplexedFlowIdentifier]()
+    private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
 
     private(set) var localCIDLength: Int = 0
     private var initialSourceConnectionID: QUICConnectionID?
@@ -2449,7 +2446,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 if dataLength > 0 {
                     processOutbound(frame: frame, flowID: flowID, stream: stream, isLast: isFinal)
                     continue
-                } else if isFinal, let _ = knownFlows[streamID.value] {
+                } else if isFinal, let _ = knownFlows[streamID] {
                     log.datapath("Treating zero length fin as a stop message")
                     disconnect(flow: flowID, direction: .outbound)
                 } else {
@@ -2634,7 +2631,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         if let streamID {
             log.debug("Set known flow \(flowID.debugDescription) for key \(streamID)")
-            knownFlows[streamID.value] = flowID
+            knownFlows[streamID] = flowID
             if isUnidirectional {
                 self.unidirectionalStreams.incrementActiveStreams()
             } else {
@@ -4326,7 +4323,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     func deliverInboundAbortedEvent(stream: QUICStreamInstance, error: NetworkError?) {
         guard let streamID = stream.streamID,
-            let _ = knownFlows[streamID.value]
+            let _ = knownFlows[streamID]
         else {
             log.error("Cannot deliver inbound aborted event: no flow for stream \(stream.streamID?.value ?? 0)")
             return
@@ -4336,7 +4333,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     func handleStreamClose(stream: QUICStreamInstance, error: NetworkError?) {
         guard let streamID = stream.streamID,
-            let flowID = knownFlows[streamID.value]
+            let flowID = knownFlows[streamID]
         else {
             return
         }
@@ -4350,7 +4347,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         stream.closed = true
         deliverDisconnectedEvent(flow: flowID, error: error)
-        knownFlows.removeValue(forKey: streamID.value)
+        knownFlows.removeValue(forKey: streamID)
         log.datapath("closed stream \(streamID.value)")
 
         if let streamID = stream.streamID {
@@ -4562,7 +4559,7 @@ extension QUICConnection {
             return false
         }
 
-        let knownFlowID = knownFlows[streamID.value]
+        let knownFlowID = knownFlows[streamID]
         if knownFlowID == nil {
             let inboundStreamResult = createInboundStreams(streamID: streamID)
             if frame.isFinal && inboundStreamResult.checkZombie {
@@ -4580,7 +4577,7 @@ extension QUICConnection {
                 return false
             }
         }
-        guard let flowID = knownFlowID ?? knownFlows[streamID.value] else {
+        guard let flowID = knownFlowID ?? knownFlows[streamID] else {
             frame.frame.finalize(success: true)
             return true
         }
@@ -4681,7 +4678,7 @@ extension QUICConnection {
         }
 
         // 2. Lookup stream
-        let knownFlowID = knownFlows[streamID.value]
+        let knownFlowID = knownFlows[streamID]
 
         // 3. If new stream
         if knownFlowID == nil {
@@ -5221,7 +5218,7 @@ extension QUICConnection {
 
         log.debug("Updating flow \(flowID.debugDescription) for key \(streamID)")
 
-        knownFlows[streamID.value] = flowID
+        knownFlows[streamID] = flowID
         if !stream.unidirectional {
             self.bidirectionalStreams.incrementActiveStreams()
             stream.receiveState.change(logIDString: stream.logPrefix, to: .receive)
@@ -5428,7 +5425,7 @@ extension QUICConnection {
             let newFlowIdentifier = newStream.identifier
             multiplexedFlows[newFlowIdentifier] = newStream
 
-            knownFlows[newStreamID.value] = newFlowIdentifier
+            knownFlows[newStreamID] = newFlowIdentifier
             newStream.setup(
                 streamID: newStreamID,
                 logPrefixer: logPrefixer
@@ -5758,7 +5755,7 @@ extension QUICConnection {
     }
 
     func streamFromStreamID(_ streamID: QUICStreamID) -> QUICStreamInstance? {
-        let knownFlowID = knownFlows[streamID.value]
+        let knownFlowID = knownFlows[streamID]
         guard let flowID = knownFlowID else {
             return nil
         }

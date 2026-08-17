@@ -136,6 +136,11 @@ struct QUICStreamID: Comparable, Hashable {
     }
 
     var quicStreamType: QUICStreamType { self.isBidirectional ? .bidirectional : .unidirectional }
+
+    func _rawHashValue(seed: Int) -> Int {
+        // This is a 'Hashable' fast path which elides the creation of Hasher
+        self.value._rawHashValue(seed: seed)
+    }
 }
 
 // MARK: QUICStreamID computations
