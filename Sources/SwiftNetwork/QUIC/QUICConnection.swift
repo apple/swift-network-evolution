@@ -2371,13 +2371,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         // Service streams that are pending application reads
         while let stream = pendingReassemblyDequeue.removeFirst(connection: self) {
-            let flowID = stream.identifier
             guard let frameArray = stream.dequeueReassembledData(connection: self) else {
                 continue
             }
-
-            try? deliverInboundStreamData(flow: flowID, streamData: frameArray)
-
+            try? deliverInboundStreamData(flow: stream, streamData: frameArray)
             // When the stream is already in `resetReceived` state,
             // it should be closed when we receive STOP_SENDING, so we
             // only need to handle the `dataRead` state here.
