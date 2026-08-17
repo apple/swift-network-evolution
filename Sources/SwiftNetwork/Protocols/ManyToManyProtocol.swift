@@ -1400,18 +1400,16 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
         streamData: consuming FrameArray
     ) throws(NetworkError) {
         guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
-        try flow.addToUpperReceiveQueue(streamData)
-        flow.serviceUpperReceiveQueue()
+        try deliverInboundStreamData(flow: &flow, streamData: streamData)
     }
 
     // Enqueue and deliver the stream data directly to the flow
     public func deliverInboundStreamData(
-        flow existingFlow: Flow?,
+        flow existingFlow: inout Flow,
         streamData: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = existingFlow else { throw NetworkError.posix(EINVAL) }
-        try flow.addToUpperReceiveQueue(streamData)
-        flow.serviceUpperReceiveQueue()
+        try existingFlow.addToUpperReceiveQueue(streamData)
+        existingFlow.serviceUpperReceiveQueue()
     }
 }
 
@@ -1655,18 +1653,16 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
         guard var flow = self.secondaryFlow(for: flowID) else { throw NetworkError.posix(EINVAL) }
-        try flow.addToUpperReceiveQueue(datagrams)
-        flow.serviceUpperReceiveQueue()
+        try deliverInboundDatagrams(flow: &flow, datagrams: datagrams)
     }
 
     // Enqueue and deliver the datagrams directly to the flow
     public func deliverInboundDatagrams(
-        flow existingFlow: SecondaryFlow?,
+        flow existingFlow: inout SecondaryFlow,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = existingFlow else { throw NetworkError.posix(EINVAL) }
-        try flow.addToUpperReceiveQueue(datagrams)
-        flow.serviceUpperReceiveQueue()
+        try existingFlow.addToUpperReceiveQueue(datagrams)
+        existingFlow.serviceUpperReceiveQueue()
     }
 }
 
