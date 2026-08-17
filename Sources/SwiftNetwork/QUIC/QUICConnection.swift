@@ -1561,9 +1561,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Detect if any received packet contains a QUIC Frame that unblocks
         // all streams, such as a new MAX_DATA. Includes setting
         // triggerAllStreamsUnblocked = false
-        initialPendingItems.inboundStarting()
-        handshakePendingItems.inboundStarting()
-        applicationPendingItems.inboundStarting()
+        withPendingItemsForKeyState { $0.inboundStarting() }
 
         // Tell recovery that a batch of packets is starting to be processed; suppress timer updates.
         // Ending recovery is deferred until servicing is done.
@@ -2387,10 +2385,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         sendFrames()
-
-        initialPendingItems.inboundStopped()
-        handshakePendingItems.inboundStopped()
-        applicationPendingItems.inboundStopped()
+        withPendingItemsForKeyState { $0.inboundStopped() }
     }
 
     // Handle an outbound write to stream, queue the data for sending in the
@@ -2916,6 +2911,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var handshakePendingItems = PendingItems(packetNumberSpace: .handshake)
     var applicationPendingItems = PendingItems(packetNumberSpace: .applicationData)
     @discardableResult
+    @inline(always)
     func withPendingItems<T>(
         for packetNumberSpace: PacketNumberSpace,
         block: (inout PendingItems) -> T
@@ -2945,6 +2941,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
     @discardableResult
+    @inline(always)
     func withPendingItemsForKeyState<T>(block: (inout PendingItems) -> T) -> T {
         let packetNumberSpace = PacketNumberSpace.fromKeyState(keyState: self.keyState)
         return withPendingItems(for: packetNumberSpace) { block(&$0) }
