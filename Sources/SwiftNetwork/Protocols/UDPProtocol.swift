@@ -112,6 +112,19 @@ public struct UDPProtocol: NetworkProtocol {
 
         var passthroughEvents = true
 
+        enum UDPStats {
+            case inboundPackets
+            case outboundPackets
+            case headerDrops
+            case badlength
+            case badChecksum
+            case softwareChecksumReceive
+            case softwareChecksumSend
+            case addNetControlProtocolBytesReceived
+            case addNetControlProtocolBytesSent
+            case clear
+        }
+
         var ipv4Local: IPv4Address = IPv4Address.any
         var ipv4Remote: IPv4Address = IPv4Address.any
         var ipv6Local: IPv6Address = IPv6Address.any
@@ -291,15 +304,18 @@ public struct UDPProtocol: NetworkProtocol {
                     return nil
                 }
 
+                var totalReceivedBytes: Int = 0
                 frameArray.iterateMutableFrames { frame in
                     guard frame.isValid else {
                         log.info("UDP frame is no longer valid")
                         frame.finalize(success: false)
+                        recordStatsEvent(stat: .clear)
                         return .removeFrameAndContinue
                     }
 
                     let frameLength = frame.unclaimedLength
 
+                    recordStatsEvent(stat: .inboundPackets)
                     var length: UInt16 = 0
                     var checksum: UInt16 = 0
                     let result = Deserializer.deserialize(&frame, claim: false) { read throws(DeserializationError) in
@@ -311,7 +327,7 @@ public struct UDPProtocol: NetworkProtocol {
 
                     guard result.isValid else {
                         log.info("Failed to parse UDP header: \(result)")
-
+                        recordStatsEvent(stat: .headerDrops)
                         // Keep processing other frames even if some are invalid.
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
@@ -319,12 +335,14 @@ public struct UDPProtocol: NetworkProtocol {
 
                     guard length <= frameLength else {
                         log.error("Received length \(length) > \(frameLength)")
+                        recordStatsEvent(stat: .badlength)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
 
                     guard isIPv4 || checksum != 0 else {
                         log.error("Received an IPv6 packet with zero checksum")
+                        recordStatsEvent(stat: .badChecksum)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
@@ -334,6 +352,7 @@ public struct UDPProtocol: NetworkProtocol {
                             frame.finalize(success: false)
                             return .removeFrameAndContinue
                         }
+                        recordStatsEvent(stat: .softwareChecksumReceive, value: frame.unclaimedLength)
                     }
 
                     #if !NETWORK_EMBEDDED
@@ -355,9 +374,11 @@ public struct UDPProtocol: NetworkProtocol {
                     }
 
                     self.receiveByteCount += (frameLength - UDPProtocol.headerLength)
+                    totalReceivedBytes += frameLength
                     return .continueIterating
                 }
 
+                recordStatsEvent(stat: .addNetControlProtocolBytesReceived, value: totalReceivedBytes)
                 guard !frameArray.isEmpty else {
                     log.error("Dropped inbound packets, checking for more")
                     continue
@@ -397,6 +418,7 @@ public struct UDPProtocol: NetworkProtocol {
 
         mutating func sendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
             datagrams.iterateMutableFrames { frame in
+                recordStatsEvent(stat: .outboundPackets)
                 guard frame.unclaim(fromStart: UDPProtocol.headerLength) else {
                     frame.finalize(success: false)
                     return .removeFrameAndContinue
@@ -461,8 +483,10 @@ public struct UDPProtocol: NetworkProtocol {
                         if checksumOffloadDisabled {
                             do throws(ChecksumError) {
                                 try frame.finalizeIPChecksum(checksumOffset: checksumOffset, zeroInvert: true)
+                                recordStatsEvent(stat: .softwareChecksumSend, value: frame.unclaimedLength)
                             } catch {
                                 log.error("Failed to finalize UDP checksum")
+                                recordStatsEvent(stat: .clear)
                                 frame.finalize(success: false)
                                 return .removeFrameAndContinue
                             }
@@ -470,6 +494,7 @@ public struct UDPProtocol: NetworkProtocol {
                     }
                 }
                 transmitByteCount += length - UDPProtocol.headerLength
+                recordStatsEvent(stat: .addNetControlProtocolBytesSent, value: frame.unclaimedLength)
 
                 return .continueIterating
             }
@@ -485,6 +510,12 @@ public struct UDPProtocol: NetworkProtocol {
             snapshot.receivedTransportByteCount = UInt64(receiveByteCount)
             snapshot.sentTransportByteCount = UInt64(transmitByteCount)
         }
+
+        mutating func handleDisconnectedEvent(_ from: ProtocolInstanceReference, error: NetworkError?) {
+            recordStatsEvent(stat: .clear)
+        }
+
+        mutating func recordStatsEvent(stat: UDPStats, value: Int? = nil) {}
     }
 
     public init() {}
