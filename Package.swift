@@ -177,5 +177,11 @@ let package = Package(
             exclude: ["README.md"],
             swiftSettings: availabilityMacros + settings
         ),
+        .executableTarget(
+            name: "DeserializerBenchmark",
+            dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
+            path: "Sources/Tools/DeserializerBenchmark",
+            swiftSettings: availabilityMacros + settings
+        ),
     ]
 )

@@ -100,6 +100,7 @@ public struct FrameArraySpanFactory: ~Copyable, ~Escapable, DeserializerSpanFact
     public private(set) var availableByteCount: Int
 
     /// Extracts the frame array from the factory, consuming the factory in the process.
+    @usableFromInline
     consuming func takeFrameArray() -> FrameArray {
         frameArray
     }
@@ -119,6 +120,7 @@ public struct FrameArraySpanFactory: ~Copyable, ~Escapable, DeserializerSpanFact
     // lifetime dependency. @_lifetime(immortal) is correct for a self-contained
     // ~Escapable type whose data is fully owned.
     @_lifetime(immortal)
+    @usableFromInline
     init(_ frameArray: consuming FrameArray) {
         self.spanCount = frameArray.count
         self.availableByteCount = frameArray.unclaimedLength
