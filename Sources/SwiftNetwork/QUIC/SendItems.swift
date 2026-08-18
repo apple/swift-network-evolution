@@ -2684,18 +2684,6 @@ struct PendingItems: ~Copyable {
         self.packetNumberSpace = packetNumberSpace
     }
 
-    mutating func inboundStarting() {
-        precondition(unblockedSendStreams.isEmpty, "Something left unblocked streams in list")
-        triggerAllStreamsUnblocked = false
-    }
-
-    mutating func inboundStopped() {
-        precondition(
-            unblockedSendStreams.isEmpty,
-            "inbound stopping left unblocked streams in list"
-        )
-    }
-
     var hasPendingItems: Bool {
         simpleSendableItems.rawValue > 0
     }

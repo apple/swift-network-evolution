@@ -250,6 +250,7 @@ enum PacketNumberSpace: UInt8, Comparable, CaseIterable {
     case initial = 0
     case handshake = 1
     case applicationData = 2
+    @inline(always)
     static func fromKeyState(keyState: PacketKeyState) -> PacketNumberSpace {
         switch keyState {
         case .earlyData, .phase0, .phase1:
