@@ -2029,6 +2029,14 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         body(&path.lowerReceiveQueue)
     }
 
+    public func accessReceivedDatagrams(
+        path pathID: MultiplexingPathIdentifier,
+        _ body: (inout FrameArray, Path) -> Void
+    ) {
+        guard var path = self.path(for: pathID) else { return }
+        body(&path.lowerReceiveQueue, path)
+    }
+
     public func sendAllEnqueuedOutboundDatagrams() {
         allPathIdentifiers { pathID in
             try? sendEnqueuedOutboundDatagrams(path: pathID)
