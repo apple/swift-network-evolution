@@ -40,8 +40,12 @@ public struct TimerReference: Equatable, Hashable {
 
     public init() {
         var index: UInt64 = 0
-        TimerReference.nextTimerReference.withLock { nextValue in
-            index = nextValue
+        TimerReference.nextTimerReference.withLock {
+            index = $0
+
+            // If this value wraps, it will assert, but with this being UInt64, that would
+            // take many, many years.
+            $0 += 1
         }
         self.index = index
     }

@@ -61,4 +61,36 @@ final class SwiftNetworkContextTests: NetTestCase {
         wait(for: [expectation], timeout: 5.0)
         context.unscheduleTimer(timerReference)
     }
+
+    func testContextTimerMultipleTimers() {
+        let context = NetworkContext(identifier: "test")
+
+        let expectation = XCTestExpectation()
+
+        let timerReference1 = context.scheduleTimer(duration: .seconds(2)) {
+            expectation.fulfill()
+        }
+
+        let timerReference2 = context.scheduleTimer(duration: .seconds(1)) {
+            // Do nothing
+        }
+
+        XCTAssertNotEqual(timerReference1, timerReference2)
+
+        context.unscheduleTimer(timerReference2)
+
+        wait(for: [expectation], timeout: 5.0)
+        context.unscheduleTimer(timerReference1)
+    }
+
+    func testContextTimerReferences() {
+        // Ensure timer references are unique
+        let timerReference1 = TimerReference()
+        let timerReference2 = TimerReference()
+        let timerReference3 = TimerReference()
+
+        XCTAssertNotEqual(timerReference1, timerReference2)
+        XCTAssertNotEqual(timerReference2, timerReference3)
+        XCTAssertNotEqual(timerReference3, timerReference1)
+    }
 }
