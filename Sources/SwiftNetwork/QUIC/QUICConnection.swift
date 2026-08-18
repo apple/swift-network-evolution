@@ -1557,11 +1557,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Save a timestamp to avoid calculating `now` again during processing
         currentInboundReceiveTimestamp = .now
 
-        // Start anew with pendingItems
+        // Start anew with pendingItems for applicationPendingItems
         // Detect if any received packet contains a QUIC Frame that unblocks
         // all streams, such as a new MAX_DATA. Includes setting
         // triggerAllStreamsUnblocked = false
-        withPendingItemsForKeyState { $0.inboundStarting() }
+        applicationPendingItems.triggerAllStreamsUnblocked = false
 
         // Tell recovery that a batch of packets is starting to be processed; suppress timer updates.
         // Ending recovery is deferred until servicing is done.
@@ -2385,7 +2385,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         sendFrames()
-        withPendingItemsForKeyState { $0.inboundStopped() }
     }
 
     // Handle an outbound write to stream, queue the data for sending in the
