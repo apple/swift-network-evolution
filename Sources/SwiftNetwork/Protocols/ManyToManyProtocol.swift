@@ -2025,7 +2025,10 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
     }
 
     public func accessReceivedDatagrams(path pathID: MultiplexingPathIdentifier, _ body: (inout FrameArray) -> Void) {
-        guard var path = self.path(for: pathID) else { return }
+        guard var path = self.path(for: pathID) else {
+            log.error("Unknown path for id: \(pathID)")
+            return
+        }
         body(&path.lowerReceiveQueue)
     }
 
@@ -2033,7 +2036,10 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         path pathID: MultiplexingPathIdentifier,
         _ body: (inout FrameArray, Path) -> Void
     ) {
-        guard var path = self.path(for: pathID) else { return }
+        guard var path = self.path(for: pathID) else {
+            log.error("Unknown path for id: \(pathID)")
+            return
+        }
         body(&path.lowerReceiveQueue, path)
     }
 
