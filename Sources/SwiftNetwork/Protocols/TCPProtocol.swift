@@ -380,6 +380,7 @@ public struct TCPProtocol: NetworkProtocol {
         var passthroughEvents = false
         var log = NetworkLoggerState()
         var eventManager = ProtocolEventManager()
+        let timerReference = TimerReference()
         func setup(
             remote: Endpoint?,
             local: Endpoint?,

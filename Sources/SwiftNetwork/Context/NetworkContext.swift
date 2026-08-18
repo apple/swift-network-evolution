@@ -33,7 +33,18 @@ internal import Synchronization
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public struct TimerReference: Equatable, Hashable {
-    var index: Int?
+
+    private static let nextTimerReference = NetworkMutex<UInt64>(1)
+
+    let index: UInt64
+
+    public init() {
+        var index: UInt64 = 0
+        TimerReference.nextTimerReference.withLock { nextValue in
+            index = nextValue
+        }
+        self.index = index
+    }
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(index)
@@ -403,6 +414,16 @@ extension NetworkContext {
     enum FutureTime {
         case unschedule
         case milliseconds(UInt64, () -> Void)  // Milliseconds into the future
+    }
+
+    public func scheduleTimer(duration: NetworkDuration, completion: @escaping () -> Void) -> TimerReference {
+        let newReference = TimerReference()
+        resetTimer(for: newReference, to: .milliseconds(UInt64(duration.milliseconds), completion))
+        return newReference
+    }
+
+    public func unscheduleTimer(_ timerReference: TimerReference) {
+        resetTimer(for: timerReference, to: .unschedule)
     }
 
     #if !NETWORK_PRIVATE || NETWORK_STANDALONE

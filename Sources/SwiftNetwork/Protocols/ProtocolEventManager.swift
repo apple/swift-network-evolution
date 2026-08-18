@@ -578,12 +578,13 @@ extension NetworkContext {
 
     fileprivate func scheduleWakeup(
         index: NetworkStateIndex,
+        timerReference: TimerReference,
         referenceToWakeup: ProtocolInstanceReference,
         milliseconds: UInt64
     ) {
         self.softAssert()
         self.resetTimer(
-            for: referenceToWakeup.timerReference,
+            for: timerReference,
             to: .milliseconds(
                 milliseconds,
                 {
@@ -784,16 +785,13 @@ extension ProtocolInstanceReference {
         }
     }
 
-    var timerReference: TimerReference {
-        TimerReference(index: self._protocolEventStateIndex?.rawValue ?? 0)
-    }
-
-    public func scheduleWakeup(milliseconds: UInt64) {
+    func scheduleWakeup(milliseconds: UInt64,
+                               timerReference: TimerReference) {
         let protocolEventStateIndex = protocolEventStateIndex()!
-        context.scheduleWakeup(index: protocolEventStateIndex, referenceToWakeup: self, milliseconds: milliseconds)
+        context.scheduleWakeup(index: protocolEventStateIndex, timerReference: timerReference, referenceToWakeup: self, milliseconds: milliseconds)
     }
 
-    public func unscheduleWakeup() {
+    func unscheduleWakeup(timerReference: TimerReference) {
         context.assert()
         self.context.resetTimer(for: timerReference, to: .unschedule)
     }

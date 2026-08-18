@@ -37,13 +37,28 @@ final class SwiftNetworkContextTests: NetTestCase {
 
         let expectation = XCTestExpectation()
 
+        let timerReference = TimerReference()
+
         context.resetTimer(
-            for: TimerReference(index: 13),
+            for: timerReference,
             to: .milliseconds(2000) {
                 expectation.fulfill()
             }
         )
 
         wait(for: [expectation], timeout: 5.0)
+    }
+
+    func testContextTimerConvenience() {
+        let context = NetworkContext(identifier: "test")
+
+        let expectation = XCTestExpectation()
+
+        let timerReference = context.scheduleTimer(duration: .seconds(2)) {
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5.0)
+        context.unscheduleTimer(timerReference)
     }
 }

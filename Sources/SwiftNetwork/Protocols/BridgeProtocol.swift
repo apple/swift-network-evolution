@@ -128,6 +128,8 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
         public var reference: ProtocolInstanceReference { ProtocolInstanceReference(custom: self) }
         var log = NetworkLoggerState()
         public var eventManager = ProtocolEventManager()
+        public let timerReference = TimerReference()
+
         var localEndpoint: Endpoint?
         var remoteEndpoint: Endpoint?
         private var incomingFrames = FrameArray()
@@ -160,7 +162,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
             } else {
                 guard !timerSet else { return }
                 timerSet = true
-                self.reference.scheduleWakeup(milliseconds: UInt64(linkDelay.milliseconds))
+                self.scheduleWakeup(milliseconds: UInt64(linkDelay.milliseconds))
             }
         }
 
