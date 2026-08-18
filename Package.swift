@@ -147,7 +147,7 @@ let package = Package(
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/QUICHandshake",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings,
+            swiftSettings: availabilityMacros + settings
         ),
         .executableTarget(
             name: "IPUDPTransfer",

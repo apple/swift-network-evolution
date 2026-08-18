@@ -200,6 +200,7 @@ struct FlowControlState: ~Copyable {
     }
 
     // Returns true if changed
+    @inline(always)
     fileprivate mutating func recalculateInboundMaxData() -> Bool {
         // The new inbound max data is equal the number of bytes already delivered
         // to the application, plus the number of bytes we are willing to add
@@ -308,6 +309,7 @@ extension QUICConnection {
         )
     }
 
+    @inline(always)
     func sendInboundFlowControlCredit() {
         guard !state.isTerminal else {
             return
@@ -319,6 +321,7 @@ extension QUICConnection {
         }
     }
 
+    @inline(always)
     fileprivate func updateMaximumUnreadInboundBytesAllowed(increment: UInt64) {
         let oldValue = flowControlState.maximumUnreadInboundBytesAllowed
         flowControlState.maximumUnreadInboundBytesAllowed = min(
@@ -496,6 +499,7 @@ extension QUICStreamInstance {
         )
     }
 
+    @inline(always)
     fileprivate func sendInboundFlowControlCredit(
         connection: QUICConnection,
         sendStreamCredit: Bool,
@@ -603,6 +607,7 @@ extension QUICStreamInstance {
         return min(connectionCredit, streamCredit)
     }
 
+    @inline(always)
     func updateLastReceivedOffset(
         to newLastReceivedOffset: UInt64,
         connection: QUICConnection
@@ -638,6 +643,7 @@ extension QUICStreamInstance {
         return delta
     }
 
+    @inline(always)
     func startTrackingInboundFlowControlInterval(connection: QUICConnection) {
         // Start of a new measurement interval
         if flowControlStreamState.receiveHighWaterMarkTime == .zero {
@@ -647,6 +653,7 @@ extension QUICStreamInstance {
 
     // Updates inbound flow control credit, and recalculates
     // `maximumUnreadInboundBytesAllowed` values.
+    @inline(always)
     func updateInboundFlowControlCredit(
         dataLengthAdded: UInt64,
         connection: QUICConnection,
@@ -686,6 +693,7 @@ extension QUICStreamInstance {
     // Grow the receive buffer based on 2*BDP to ensure
     // that sender can send at full rate.
     // Returns true if maximum was updated.
+    @inline(always)
     fileprivate func updateMaximumUnreadInboundBytesAllowed(
         dataLengthAdded: UInt64,
         connection: QUICConnection
@@ -726,6 +734,7 @@ extension QUICStreamInstance {
         return false
     }
 
+    @inline(always)
     fileprivate func updateMaximumUnreadInboundBytesAllowed(increment: UInt64) {
         let oldValue = flowControlState.maximumUnreadInboundBytesAllowed
         flowControlState.maximumUnreadInboundBytesAllowed = min(
@@ -734,33 +743,34 @@ extension QUICStreamInstance {
         )
     }
 
+    @inline(always)
     fileprivate func computeReceiveHighWaterMarkIncrease(
         dataLength: UInt64,
         connection: QUICConnection,
         now: NetworkClock.Instant
     ) -> UInt64 {
-        if flowControlStreamState.receiveHighWaterMarkTime > now {
+        let receiveHighWaterMarkTime = flowControlStreamState.receiveHighWaterMarkTime
+        if receiveHighWaterMarkTime > now {
             log.fault("Timestamp should be greater than now")
             return 0
         }
 
         var increment: UInt64 = 0
-        flowControlStreamState.receiveHighWaterMarkCount += dataLength
+        let receiveHighWaterMarkCount = flowControlStreamState.receiveHighWaterMarkCount + dataLength
 
         // If one RTT has elapsed, we can stop counting the bytes.
         // Here, we estimate if the bandwidth measured in this RTT
         // is more than a certain value of the bandwidth measured
         // in the previous RTT.
         let rtt = connection.currentPath?.smoothedRTT ?? .zero
-        if now >= flowControlStreamState.receiveHighWaterMarkTime.advanced(by: rtt) {
-            if flowControlStreamState.receiveHighWaterMarkCount
-                > flowControlStreamState.receiveHighWaterMarkPreviousCount
-            {
+        if now >= receiveHighWaterMarkTime.advanced(by: rtt) {
+            let receiveHighWaterMarkPreviousCount = flowControlStreamState.receiveHighWaterMarkPreviousCount
+            var newPreviousCount = receiveHighWaterMarkPreviousCount
+            if receiveHighWaterMarkCount > receiveHighWaterMarkPreviousCount {
                 let mss = UInt64(connection.currentPath?.mss ?? 0)
                 let shift: Int
-                if flowControlStreamState.receiveHighWaterMarkCount
-                    > (flowControlStreamState.receiveHighWaterMarkPreviousCount
-                        + (flowControlStreamState.receiveHighWaterMarkPreviousCount >> 1))
+                if receiveHighWaterMarkCount
+                    > (receiveHighWaterMarkPreviousCount + (receiveHighWaterMarkPreviousCount >> 1))
                 {
 
                     // If we received more than 1.5 times
@@ -770,14 +780,13 @@ extension QUICStreamInstance {
                     shift = 1
                 }
                 log.datapath(
-                    "Estimated BDP \(flowControlStreamState.receiveHighWaterMarkCount)B, current RTT \(rtt)us, estimated bandwidth 8 * \(flowControlStreamState.receiveHighWaterMarkCount) / \(rtt) Mbps"
+                    "Estimated BDP \(receiveHighWaterMarkCount)B, current RTT \(rtt)us, estimated bandwidth 8 * \(receiveHighWaterMarkCount) / \(rtt) Mbps"
                 )
 
-                let (incr, overflow) = (flowControlStreamState.receiveHighWaterMarkCount << shift)
+                let (incr, overflow) = (receiveHighWaterMarkCount << shift)
                     .subtractingReportingOverflow(flowControlState.maximumUnreadInboundBytesAllowed)
                 if !overflow {
-                    flowControlStreamState.receiveHighWaterMarkPreviousCount =
-                        flowControlStreamState.receiveHighWaterMarkCount
+                    newPreviousCount = receiveHighWaterMarkCount
                     // Align the increase to whole segments. Increases of a fraction of an MSS isn't useful as it won't fill a whole packet.
                     if mss != 0 {
                         increment = (incr / mss) * mss
@@ -786,8 +795,11 @@ extension QUICStreamInstance {
             }
 
             // Reset the measurement
+            flowControlStreamState.receiveHighWaterMarkPreviousCount = newPreviousCount
             flowControlStreamState.receiveHighWaterMarkCount = 0
             flowControlStreamState.receiveHighWaterMarkTime = .zero
+        } else {
+            flowControlStreamState.receiveHighWaterMarkCount = receiveHighWaterMarkCount
         }
 
         return increment
