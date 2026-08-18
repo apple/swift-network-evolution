@@ -103,18 +103,22 @@ struct ProtocolEventManagerState: ~Copyable {
             }
         }
 
-        fileprivate consuming func deliver() -> ProtocolInstanceReference {
-            let toReference: ProtocolInstanceReference
+        @inline(always)
+        fileprivate var toReference: ProtocolInstanceReference {
             switch self {
-            case .connected(_, let to): toReference = to
-            case .disconnected(_, let to, _): toReference = to
-            case .inboundDataAvailable(_, let to): toReference = to
-            case .outboundRoomAvailable(_, let to): toReference = to
-            case .inboundAborted(_, let to, _): toReference = to
-            case .outboundAborted(_, let to, _): toReference = to
-            case .newInboundFlow(_, let to, _, _): toReference = to
-            case .networkProtocolEvent(_, let to, _): toReference = to
+            case .connected(_, let to): return to
+            case .disconnected(_, let to, _): return to
+            case .inboundDataAvailable(_, let to): return to
+            case .outboundRoomAvailable(_, let to): return to
+            case .inboundAborted(_, let to, _): return to
+            case .outboundAborted(_, let to, _): return to
+            case .newInboundFlow(_, let to, _, _): return to
+            case .networkProtocolEvent(_, let to, _): return to
             }
+        }
+
+        fileprivate consuming func deliver() -> ProtocolInstanceReference {
+            let toReference = self.toReference
             if !toReference.isNone {
                 toReference.addEventFromLowerProtocol(event: self)
             }
@@ -216,14 +220,28 @@ struct ProtocolEventManagerState: ~Copyable {
         eventState = .idle
     }
 
-    mutating func startDrainingPendingEventsFromLower() -> Int {
-        guard eventState == .idle, !pendingEventsFromLowerProtocol.isEmpty else {
+    mutating func startDrainingPendingEventsFromLower(hasNewEvent: Bool = false) -> Int {
+        guard eventState == .idle else {
             // Fast exit if we're not fully unwound
             return 0
         }
 
+        guard !pendingEventsFromLowerProtocol.isEmpty else {
+            // Fast path case for no pending events
+            if hasNewEvent {
+                eventState = .processingEventFromLowerProtocol
+                return 1
+            } else {
+                return 0
+            }
+        }
+
         eventState = .processingEventFromLowerProtocol
-        return pendingEventsFromLowerProtocol.count
+        if hasNewEvent {
+            return pendingEventsFromLowerProtocol.count + 1
+        } else {
+            return pendingEventsFromLowerProtocol.count
+        }
     }
 
     mutating func readPendingEventFromLower() -> PendingEvent {
@@ -312,8 +330,8 @@ extension NetworkContext {
         self.assert()
         #endif
     }
-    @inline(__always)
-    fileprivate func runEvent(referenceToTrigger: ProtocolInstanceReference) {
+    @inline(always)
+    fileprivate func runEvents(on referenceToTrigger: ProtocolInstanceReference) {
         guard !referenceToTrigger.isNone,
             let indexToTrigger = referenceToTrigger.protocolEventStateIndex()
         else { return }
@@ -327,6 +345,34 @@ extension NetworkContext {
             drainPendingEvents(index: indexToTrigger)
         }
     }
+
+    @inline(always)
+    fileprivate func runEvent(_ event: consuming ProtocolEventManagerState.PendingEvent) {
+        let referenceToTrigger = event.toReference
+        guard !referenceToTrigger.isNone,
+            let indexToTrigger = referenceToTrigger.protocolEventStateIndex()
+        else { return }
+
+        let eventCount = protocolEventStates[indexToTrigger].startDrainingPendingEventsFromLower(hasNewEvent: true)
+        if eventCount == 0 {
+            // Cannot run events. Enqueue new event.
+            protocolEventStates[indexToTrigger].addEventFromLowerProtocol(event: event)
+            return
+        } else if eventCount == 1 {
+            // Fast path for common case. Just run the new event, don't enqueue.
+            event.run()
+        } else {
+            // Enqueue new event, then run all events.
+            protocolEventStates[indexToTrigger].addEventFromLowerProtocol(event: event)
+            for _ in 0..<eventCount {
+                let pendingEvent = protocolEventStates[indexToTrigger].readPendingEventFromLower()
+                pendingEvent.run()
+            }
+        }
+        protocolEventStates[indexToTrigger].finishDrainingPendingEventsFromLower()
+        drainPendingEvents(index: indexToTrigger)
+    }
+
     fileprivate func drainPendingEvents(index: NetworkStateIndex) {
         if protocolEventStates[index].isIdle && !protocolEventStates[index].drainingEvents {
             protocolEventStates[index].drainingEvents = true
@@ -342,7 +388,7 @@ extension NetworkContext {
                 if upperEvents == 1 {
                     // For cases with one event, just deliver to the lower protocol queue and run
                     if let pendingEvent = protocolEventStates[index].readPendingEventToUpper() {
-                        runEvent(referenceToTrigger: pendingEvent.deliver())
+                        runEvent(pendingEvent)
                     }
                 } else {
                     // For cases with more than one event, batch all of the events in the lower protocol queue and run them in one pass
@@ -353,7 +399,7 @@ extension NetworkContext {
                         }
                     }
                     while let referenceToTrigger = referencesToTrigger.popFirst() {
-                        runEvent(referenceToTrigger: referenceToTrigger)
+                        runEvents(on: referenceToTrigger)
                     }
                 }
                 upperEvents = protocolEventStates[index].countPendingEventsToUpper()
@@ -609,7 +655,7 @@ extension ProtocolInstance where Self: ~Copyable {
         reference.canCallDisconnect
     }
 
-    @inline(__always)
+    @inline(always)
     var isConnected: Bool {
         reference.isConnected
     }
@@ -633,25 +679,25 @@ extension ProtocolInstanceReference {
         return context.canCallDisconnect(index: _protocolEventStateIndex)
     }
 
-    @inline(__always)
+    @inline(always)
     var isConnected: Bool {
         guard let _protocolEventStateIndex else { return false }
         return context.isConnected(index: _protocolEventStateIndex)
     }
 
-    @inline(__always)
+    @inline(always)
     func handleCallFromUpperProtocol<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
         let protocolEventStateIndex = protocolEventStateIndex()!
         return try context.handleCallFromUpperProtocol(index: protocolEventStateIndex, body)
     }
 
-    @inline(__always)
+    @inline(always)
     func handleCallFromUpperProtocol<R: ~Copyable, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
         let protocolEventStateIndex = protocolEventStateIndex()!
         return try context.handleCallFromUpperProtocol(index: protocolEventStateIndex, body)
     }
 
-    @inline(__always)
+    @inline(always)
     func handleCallFromUpperProtocol<R, T: ~Copyable, E: Error>(
         _ value: consuming T,
         _ body: (consuming T) throws(E) -> R
@@ -660,7 +706,7 @@ extension ProtocolInstanceReference {
         return try context.handleCallFromUpperProtocol(index: protocolEventStateIndex, value, body)
     }
 
-    @inline(__always)
+    @inline(always)
     func deliverEventToUpperProtocol(event: consuming ProtocolEventManagerState.PendingEvent) {
         guard let _protocolEventStateIndex else { return }
         context.deliverEventToUpperProtocol(
@@ -670,7 +716,7 @@ extension ProtocolInstanceReference {
         )
     }
 
-    @inline(__always)
+    @inline(always)
     func enqueuePendingEventForUpperProtocol(event: consuming ProtocolEventManagerState.PendingEvent) {
         guard let _protocolEventStateIndex else { return }
         context.enqueuePendingEventForUpperProtocol(
@@ -679,7 +725,7 @@ extension ProtocolInstanceReference {
         )
     }
 
-    @inline(__always)
+    @inline(always)
     func reassignQueuedPendingEventsForUpperProtocol(to newUpper: ProtocolInstanceReference) {
         guard let _protocolEventStateIndex else { return }
         context.reassignQueuedPendingEventsForUpperProtocol(
@@ -689,13 +735,13 @@ extension ProtocolInstanceReference {
         )
     }
 
-    @inline(__always)
+    @inline(always)
     func discardPendingEventsForUpperProtocol() {
         guard let _protocolEventStateIndex else { return }
         context.discardPendingEventsForUpperProtocol(index: _protocolEventStateIndex)
     }
 
-    @inline(__always)
+    @inline(always)
     func addEventFromLowerProtocol(event: consuming ProtocolEventManagerState.PendingEvent) {
         guard let protocolEventStateIndex = protocolEventStateIndex() else { return }
         context.addEventFromLowerProtocol(index: protocolEventStateIndex, event: event)
