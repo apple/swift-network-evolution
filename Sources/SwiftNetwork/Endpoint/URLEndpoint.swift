@@ -185,7 +185,7 @@ public struct URLEndpoint: EndpointProtocol, EndpointCommonProtocol {
         #if !NETWORK_EMBEDDED
         let scheme = scheme.lowercased()
         #endif
-        return scheme == "https" || scheme == "https+unix" || scheme == "wss" || scheme == "wss+unix"
+        return scheme == "https" || scheme == "wss" || scheme.hasSuffix("+unix")
     }
 
     // MARK: -- Internal --
