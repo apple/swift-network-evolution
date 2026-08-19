@@ -5597,79 +5597,56 @@ extension QUICConnection {
         packetNumberSpace: PacketNumberSpace,
         path: QUICPath
     ) -> Bool {
-        let type = frame.frameType
-        switch type {
-        case .padding:
-            guard case .padding(let frame) = frame else { return false }
+        switch consume frame {
+        case .padding(let frame):
             return frame.process()
-        case .ping:
-            guard case .ping(let frame) = frame else { return false }
+        case .ping(let frame):
             return frame.process()
-        case .ack, .ackECN:
-            guard case .ack(let frame) = frame else { return false }
+        case .ack(let frame):
             return processAckFrame(frame, packetNumberSpace: packetNumberSpace, path: path)
-        case .resetStream:
-            guard case .resetStream(let frame) = frame else { return false }
+        case .resetStream(let frame):
             return frame.process(connection: self)
-        case .stopSending:
-            guard case .stopSending(let frame) = frame else { return false }
+        case .stopSending(let frame):
             return frame.process(connection: self)
-        case .crypto:
-            guard case .crypto(let frame) = frame else { return false }
+        case .crypto(let frame):
             return processCryptoFrame(frame, packetNumberSpace: packetNumberSpace)
-        case .newToken:
-            guard case .newToken(let frame) = frame else { return false }
+        case .newToken(let frame):
             return processNewTokenFrame(frame)
-        case .stream:
-            guard case .stream(let frame) = frame else { return false }
+        case .stream(let frame):
             return processStreamFrame(frame)
-        case .maxData:
-            guard case .maxData(let frame) = frame else { return false }
+        case .streamSend:
+            return false
+        case .maxData(let frame):
             return processMaxDataFrame(frame)
-        case .maxStreamData:
-            guard case .maxStreamData(let frame) = frame else { return false }
+        case .maxStreamData(let frame):
             return processMaxStreamDataFrame(frame)
-        case .maxStreamsBidirectional:
-            guard case .maxStreamsBidirectional(let frame) = frame else { return false }
+        case .maxStreamsBidirectional(let frame):
             return processMaxStreamsBidirectionalFrame(frame)
-        case .maxStreamsUnidirectional:
-            guard case .maxStreamsUnidirectional(let frame) = frame else { return false }
+        case .maxStreamsUnidirectional(let frame):
             return processMaxStreamsUnidirectionalFrame(frame)
-        case .dataBlocked:
-            guard case .dataBlocked(let frame) = frame else { return false }
+        case .dataBlocked(let frame):
             return processDataBlocked(frame: frame)
-        case .streamDataBlocked:
-            guard case .streamDataBlocked(let frame) = frame else { return false }
+        case .streamDataBlocked(let frame):
             return processStreamDataBlocked(frame: frame)
-        case .streamsBlockedBidirectional:
-            guard case .streamsBlockedBidirectional(let frame) = frame else { return false }
+        case .streamsBlockedBidirectional(let frame):
             return processStreamsBlockedBidirectionalFrame(frame)
-        case .streamsBlockedUnidirectional:
-            guard case .streamsBlockedUnidirectional(let frame) = frame else { return false }
+        case .streamsBlockedUnidirectional(let frame):
             return processStreamsBlockedUnidirectionalFrame(frame)
-        case .newConnectionID:
-            guard case .newConnectionID(let frame) = frame else { return false }
+        case .newConnectionID(let frame):
             return processNewConnectionIDFrame(frame)
-        case .retireConnectionID:
-            guard case .retireConnectionID(let frame) = frame else { return false }
+        case .retireConnectionID(let frame):
             return processRetireConnectionIDFrame(frame)
-        case .pathChallenge:
-            guard case .pathChallenge(let frame) = frame else { return false }
+        case .pathChallenge(let frame):
             return handlePathChallengeFrame(frame, path: path)
-        case .pathResponse:
-            guard case .pathResponse(let frame) = frame else { return false }
+        case .pathResponse(let frame):
             return handlePathChallengeResponseFrame(frame, path: path)
-        case .connectionClose:
-            guard case .connectionClose(let frame) = frame else { return false }
+        case .connectionClose(let frame):
             return processConnectionCloseFrame(frame)
-        case .applicationClose:
-            guard case .applicationClose(let frame) = frame else { return false }
+        case .applicationClose(let frame):
             return processApplicationCloseFrame(frame)
-        case .handshakeDone:
-            guard case .handshakeDone(let frame) = frame else { return false }
+        case .handshakeDone(let frame):
             return frame.process(connection: self)
-        case .datagram:
-            guard case .datagram(let frame) = frame else { return false }
+        case .datagram(let frame):
             return processDatagramFrame(frame)
         }
     }
