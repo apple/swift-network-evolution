@@ -785,10 +785,17 @@ extension ProtocolInstanceReference {
         }
     }
 
-    func scheduleWakeup(milliseconds: UInt64,
-                               timerReference: TimerReference) {
+    func scheduleWakeup(
+        milliseconds: UInt64,
+        timerReference: TimerReference
+    ) {
         let protocolEventStateIndex = protocolEventStateIndex()!
-        context.scheduleWakeup(index: protocolEventStateIndex, timerReference: timerReference, referenceToWakeup: self, milliseconds: milliseconds)
+        context.scheduleWakeup(
+            index: protocolEventStateIndex,
+            timerReference: timerReference,
+            referenceToWakeup: self,
+            milliseconds: milliseconds
+        )
     }
 
     func unscheduleWakeup(timerReference: TimerReference) {
