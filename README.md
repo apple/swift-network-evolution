@@ -37,6 +37,13 @@ Unit tests can also be run by filtering a specific class or function:
 % swift test --filter SwiftNetworkUDPTests.testUDPEcho
 ```
 
+Some tests depend on hooks that are compiled into the library only on demand, because they cost a small amount of performance on hot paths.
+Pass the define on the command line to compile them in:
+
+```
+% swift test -Xswiftc -DNETWORK_INTERNAL_TESTS
+```
+
 All unit tests are run automatically upon creation or update of a Pull Request. See [CONTRIBUTING](https://github.com/apple/swift-network-evolution/blob/main/CONTRIBUTING.md) for details.
 
 ### Versioning
