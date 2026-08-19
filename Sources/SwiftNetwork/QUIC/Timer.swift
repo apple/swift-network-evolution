@@ -72,6 +72,7 @@ final class Timer: PrefixedLoggable {
 
     var log: LogPrefixer
     private var reference: ProtocolInstanceReference? = nil
+    private var timerReference: TimerReference
     private var nextID: TimerID = 1
     private var timerCancelled = false
     private var avoidRecalculate = false
@@ -98,13 +99,15 @@ final class Timer: PrefixedLoggable {
 
     static let timerThreshold = NetworkDuration.milliseconds(1)
 
-    init(reference: ProtocolInstanceReference, logPrefixer: LogPrefixer) {
+    init(reference: ProtocolInstanceReference, timerReference: TimerReference, logPrefixer: LogPrefixer) {
         self.log = logPrefixer
         self.reference = reference
+        self.timerReference = timerReference
     }
 
-    internal init(logPrefixer: LogPrefixer) {
+    internal init(timerReference: TimerReference, logPrefixer: LogPrefixer) {
         self.log = logPrefixer
+        self.timerReference = timerReference
     }
     func insert(
         description: String,
@@ -143,7 +146,7 @@ final class Timer: PrefixedLoggable {
             log.debug("Stopping timer")
             timerCancelled = true
             wakeup = .idle
-            reference?.unscheduleWakeup()
+            reference?.unscheduleWakeup(timerReference: timerReference)
         }
         if final {
             entries.removeAll()
@@ -215,7 +218,7 @@ final class Timer: PrefixedLoggable {
         log.datapath(
             "arming timer for the next \(delta) (now \(now)), new deadline \(nextDeadline) old deadline \(oldDeadline)"
         )
-        reference?.scheduleWakeup(milliseconds: UInt64(delta.milliseconds))
+        reference?.scheduleWakeup(milliseconds: UInt64(delta.milliseconds), timerReference: timerReference)
     }
 
     private func find(_ identifier: TimerID) -> Int? {

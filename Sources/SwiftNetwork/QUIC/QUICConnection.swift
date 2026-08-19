@@ -187,6 +187,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public private(set) var context: NetworkContext
 
     public var eventManager = ProtocolEventManager()
+    public let timerReference = TimerReference()
 
     public var state: QUICConnectionState = .invalid
     var flowControlState = FlowControlState(isStream: false)
@@ -424,7 +425,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         self.recovery = Recovery(logPrefixer: self.logPrefixer)
         self.localTransportParameters = TransportParameters(logPrefixer: self.logPrefixer)
-        self.timer = Timer(logPrefixer: self.logPrefixer)
+        self.timer = Timer(timerReference: timerReference, logPrefixer: self.logPrefixer)
         self.ecn = ECN()
         self.stats = Statistics()
     }
@@ -445,7 +446,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Setup metadata callbacks
         self.setMetadataHandlers()
 
-        self.timer = Timer(reference: self.reference, logPrefixer: logPrefixer)
+        self.timer = Timer(reference: self.reference, timerReference: timerReference, logPrefixer: logPrefixer)
         let ackTimerID = timer.insert(description: "ACK") {
             self.ack.timerFired(timeNow: .now)
         }

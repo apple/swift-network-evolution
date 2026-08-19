@@ -32,7 +32,7 @@ let timerTestsLogPrefixer = LogPrefixer("[TimerTests]")
 final class TimerTests: XCTestCase {
 
     func testOneTimer() {
-        let timer = QUICTimer(logPrefixer: timerTestsLogPrefixer)
+        let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
         let oneId = timer.insert(description: "one", fromNow: .milliseconds(1000), timerNow: .zero) {
             semaphore.signal()
@@ -47,7 +47,7 @@ final class TimerTests: XCTestCase {
     }
 
     func testReschedule() {
-        let timer = QUICTimer(logPrefixer: timerTestsLogPrefixer)
+        let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
         let oneId = timer.insert(description: "one-reschedule", timerNow: .zero) {
             semaphore.signal()
@@ -64,7 +64,7 @@ final class TimerTests: XCTestCase {
     }
 
     func testTwoTimersAtSameTime() throws {
-        let timer = QUICTimer(logPrefixer: timerTestsLogPrefixer)
+        let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
         let oneId = timer.insert(description: "one", fromNow: .milliseconds(1000), timerNow: .zero) {
             semaphore.signal()
@@ -88,7 +88,7 @@ final class TimerTests: XCTestCase {
     }
 
     func testTwoTimersAtDifferentTimes() throws {
-        let timer = QUICTimer(logPrefixer: timerTestsLogPrefixer)
+        let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
         let oneId = timer.insert(description: "one", fromNow: .milliseconds(2000), timerNow: .zero) {
             semaphore.signal()
@@ -115,7 +115,7 @@ final class TimerTests: XCTestCase {
     }
 
     func testRecalculateAfterMissingTimer() throws {
-        let timer = QUICTimer(logPrefixer: timerTestsLogPrefixer)
+        let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
         let oneId = timer.insert(description: "one", fromNow: .milliseconds(1000), timerNow: .zero) {
             semaphore.signal()
@@ -144,7 +144,7 @@ final class TimerTests: XCTestCase {
 
     // Test that recalculating within 1ms for future times doesn't update the timer
     func testRecalculateWithinThreshold() throws {
-        let timer = QUICTimer(logPrefixer: timerTestsLogPrefixer)
+        let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
         let oneId = timer.insert(description: "one", fromNow: .microseconds(1_000_000), timerNow: .zero) {
             semaphore.signal()
@@ -181,7 +181,7 @@ final class TimerTests: XCTestCase {
     }
 
     func testSpuriousFireRearmsRemainingTimer() {
-        let timer = QUICTimer(logPrefixer: timerTestsLogPrefixer)
+        let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
 
         // A, in 2s
@@ -226,7 +226,7 @@ final class TimerTests: XCTestCase {
     }
 
     func testCancellationFollowedByCloseInsertRearmsTimer() {
-        let timer = QUICTimer(logPrefixer: timerTestsLogPrefixer)
+        let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
 
         let idA = timer.insert(description: "A", fromNow: .seconds(2), timerNow: .zero) {

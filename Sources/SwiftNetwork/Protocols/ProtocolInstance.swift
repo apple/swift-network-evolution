@@ -83,6 +83,20 @@ extension ProtocolInstance where Self: ~Copyable {
 public protocol TimerSchedulable: ~Copyable, ProtocolInstance {
     /// Handles a wakeup from a timer.
     func wakeup()
+
+    /// A reference for a timer, which should be initialized as `TimerSchedulable()`
+    var timerReference: TimerReference { get }
+}
+
+@available(Network 0.1.0, *)
+extension TimerSchedulable {
+    public func scheduleWakeup(milliseconds: UInt64) {
+        reference.scheduleWakeup(milliseconds: milliseconds, timerReference: timerReference)
+    }
+
+    public func unscheduleWakeup() {
+        reference.unscheduleWakeup(timerReference: timerReference)
+    }
 }
 
 // MARK: Loggable Protocol
