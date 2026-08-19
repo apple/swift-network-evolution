@@ -395,6 +395,14 @@ extension QUICStreamInstance {
         flowControlState.totalOutboundBytesSent += bytes
         connection.flowControlState.pendingOutboundBytesToSend -= bytes
         connection.flowControlState.totalOutboundBytesSent += bytes
+
+        // Draining can reopen a permit that transient backpressure latched to 0
+        if self.maximumStreamDataSize == 0 {
+            updateOutboundFlowControlCredit(connection: connection)
+            if self.maximumStreamDataSize > 0 {
+                upper.deliverOutboundRoomAvailableEvent(reference)
+            }
+        }
     }
 
     func removePendingOutboundBytesFromFlowControl(connection: QUICConnection) {
