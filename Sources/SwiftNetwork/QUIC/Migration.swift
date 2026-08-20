@@ -30,7 +30,7 @@ struct Migration: ~Copyable {
 
     private func sendPendingChallenges(
         connection: QUICConnection,
-        now: NetworkClock.Instant = NetworkClock.Instant.now
+        now: NetworkClock.Instant
     ) {
         connection.applyToAllPaths { path in
             if path.hasPendingItems(now: now) {
@@ -45,7 +45,7 @@ struct Migration: ~Copyable {
             return
         }
 
-        let now = NetworkClock.Instant.now
+        let now = connection.now
         sendPendingChallenges(connection: connection, now: now)
 
         var firstChallengeTime: NetworkClock.Instant?
@@ -92,7 +92,7 @@ struct Migration: ~Copyable {
     func timerFired(connection: QUICConnection) {
         connection.log.debug("Migration timer fired")
 
-        sendPendingChallenges(connection: connection)
+        sendPendingChallenges(connection: connection, now: connection.now)
     }
 
     func migrate(to path: QUICPath, connection: QUICConnection) {

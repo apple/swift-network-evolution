@@ -888,7 +888,8 @@ final class AckTests: XCTestCase {
             for: .applicationData,
             isAckSet: false,
             setAckFrame: testSetAckFrame,
-            ecnCounter: nil
+            ecnCounter: nil,
+            now: .testBase
         )
         wait(for: [pingExpectation], timeout: 2.0)
         XCTAssertTrue(
@@ -924,7 +925,8 @@ final class AckTests: XCTestCase {
             for: .applicationData,
             isAckSet: false,
             setAckFrame: testSetAckFrame,
-            ecnCounter: nil
+            ecnCounter: nil,
+            now: .testBase
         )
         wait(for: [pingExpectation], timeout: 2.0)
         // Verify that a PING frame was NOT requested

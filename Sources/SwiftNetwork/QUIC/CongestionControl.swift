@@ -92,18 +92,19 @@ enum CongestionControl {
         path: QUICPath?,
         mss: Int,
         packetsLost: Bool,
+        now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
         switch self {
         case .cubic(algorithm: var cubic):
-            cubic.ackEnd(rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, qlog: qlog)
+            cubic.ackEnd(rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
             self = .cubic(algorithm: cubic)
         #if !NETWORK_EMBEDDED
         case .ledbat(algorithm: var ledbat):
-            ledbat.ackEnd(rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, qlog: qlog)
+            ledbat.ackEnd(rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
             self = .ledbat(algorithm: ledbat)
         case .prague(algorithm: var prague):
-            prague.ackEnd(rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, qlog: qlog)
+            prague.ackEnd(rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
             self = .prague(algorithm: prague)
         #endif
         }
@@ -145,7 +146,8 @@ enum CongestionControl {
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
-        smoothedRTT: NetworkDuration
+        smoothedRTT: NetworkDuration,
+        now: NetworkClock.Instant
     ) -> Bool {
         switch self {
         case .cubic(algorithm: var cubic):
@@ -153,7 +155,8 @@ enum CongestionControl {
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
-                smoothedRTT: smoothedRTT
+                smoothedRTT: smoothedRTT,
+                now: now
             )
             self = .cubic(algorithm: cubic)
             return reducedCongestionWindow
@@ -163,7 +166,8 @@ enum CongestionControl {
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
-                smoothedRTT: smoothedRTT
+                smoothedRTT: smoothedRTT,
+                now: now
             )
             self = .ledbat(algorithm: ledbat)
             return reducedCongestionWindow
@@ -172,7 +176,8 @@ enum CongestionControl {
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
-                smoothedRTT: smoothedRTT
+                smoothedRTT: smoothedRTT,
+                now: now
             )
             self = .prague(algorithm: prague)
             return reducedCongestionWindow
@@ -329,11 +334,12 @@ protocol CongestionControlProtocol: PrefixedLoggable {
         path: QUICPath?,
         mss: Int,
         packetsLost: Bool,
+        now: NetworkClock.Instant,
         qlog: QLog?
     )
     mutating func spuriousRetransmit(qlog: QLog?)
     mutating func idleTimeout(mss: Int, qlog: QLog?)
-    mutating func enterRecovery(mss: Int, qlog: QLog?)
+    mutating func enterRecovery(mss: Int, now: NetworkClock.Instant, qlog: QLog?)
     mutating func processECN(
         path: QUICPath?,
         ceCount: Int,
@@ -343,6 +349,7 @@ protocol CongestionControlProtocol: PrefixedLoggable {
         largestAckedSentTime: NetworkClock.Instant,
         mss: Int,
         smoothedRTT: NetworkDuration,
+        now: NetworkClock.Instant,
         qlog: QLog?
     )
     mutating func packetLost(
@@ -351,9 +358,15 @@ protocol CongestionControlProtocol: PrefixedLoggable {
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
         smoothedRTT: NetworkDuration,
+        now: NetworkClock.Instant,
         qlog: QLog?
     ) -> Bool
-    mutating func linkFlowControl(largestAckSentTime: NetworkClock.Instant, mss: Int, qlog: QLog?)
+    mutating func linkFlowControl(
+        largestAckSentTime: NetworkClock.Instant,
+        mss: Int,
+        now: NetworkClock.Instant,
+        qlog: QLog?
+    )
     mutating func persistentCongestion(mss: Int, qlog: QLog?)
     mutating func mssChanged(mss: Int, qlog: QLog?)
     mutating func packetDiscarded(bytesSent: Int, qlog: QLog?)
@@ -469,22 +482,24 @@ extension CongestionControlProtocol {
     mutating func congestionEvent(
         sentTime: NetworkClock.Instant,
         mss: Int,
+        now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) -> Bool {
         // If the packet was sent before recovery started, do nothing
         if packetInRecovery(sentTime: sentTime) { return false }
         // Enter recovery if the packet was sent
         // after start of the previous recovery period
-        enterRecovery(mss: mss, qlog: qlog)
+        enterRecovery(mss: mss, now: now, qlog: qlog)
         return true
     }
 
     mutating func linkFlowControl(
         largestAckSentTime: NetworkClock.Instant,
         mss: Int,
+        now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
-        congestionEvent(sentTime: largestAckSentTime, mss: mss, qlog: qlog)
+        congestionEvent(sentTime: largestAckSentTime, mss: mss, now: now, qlog: qlog)
         log.debug(
             "Link was flow controlled, reduced congestion window is \(congestionWindow) bytes"
         )
@@ -526,8 +541,7 @@ extension CongestionControlProtocol {
         }
     }
 
-    mutating func revalidateCongestionWindow(smoothedRTT: NetworkDuration) -> Bool {
-        let now = NetworkClock.Instant.now
+    mutating func revalidateCongestionWindow(smoothedRTT: NetworkDuration, now: NetworkClock.Instant) -> Bool {
         if pipeAckSampleEnd == .zero {
             pipeAckNewRound(target: now.advanced(by: smoothedRTT))
         }

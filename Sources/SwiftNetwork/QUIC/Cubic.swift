@@ -141,8 +141,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         #endif
     }
 
-    private mutating func getTarget(mss: Int, smoothedRTT: NetworkDuration) -> UInt64 {
-        let now = NetworkClock.Instant.now
+    private mutating func getTarget(mss: Int, smoothedRTT: NetworkDuration, now: NetworkClock.Instant) -> UInt64 {
         if epochStart == .zero {
             // If we exit slow start without any packet
             // loss, CUBIC switches to CA where t is the elapsed
@@ -189,11 +188,12 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
     private mutating func processAckCongestionAvoidance(
         bytesAcked: UInt64,
         smoothedRTT: NetworkDuration,
-        mss: Int
+        mss: Int,
+        now: NetworkClock.Instant
     ) {
         totalAcked += bytesAcked
         // compute W(t+RTT)
-        let WCubicNext = getTarget(mss: mss, smoothedRTT: smoothedRTT)
+        let WCubicNext = getTarget(mss: mss, smoothedRTT: smoothedRTT, now: now)
         updateTCPWindow(bytesAcked: bytesAcked, mss: mss)
         if congestionWindow < WCubicNext {
             // Either concave or convex region
@@ -245,22 +245,23 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
         smoothedRTT: NetworkDuration,
+        now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) -> Bool {
         decrementBytesInFlight(UInt64(bytesLost))
         let reducedCongestionWindow = congestionEvent(
             sentTime: largestLostSentTime,
             mss: mss,
+            now: now,
             qlog: qlog
         )
         updatePacerState(path: path, smoothedRTT: smoothedRTT)
         return reducedCongestionWindow
     }
 
-    mutating func enterRecovery(mss: Int, qlog: QLog? = nil) {
+    mutating func enterRecovery(mss: Int, now: NetworkClock.Instant, qlog: QLog? = nil) {
         log.datapath("Entering Recovery: current cwin=\(congestionWindow)")
-        let timeNow = NetworkClock.Instant.now
-        recoveryStartTime = timeNow
+        recoveryStartTime = now
         lastMaxCongestionWindow = maxCongestionWindow
         maxCongestionWindow = congestionWindow
         congestionWindow = UInt64(Double(lossFlightSize) * Cubic.beta)
@@ -284,7 +285,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         // Note that K = 0 if we enter congestion avoidance without loss.
         setK(mss: mss)
         // Set the start of current congestion avoidance and the origin point
-        epochStart = timeNow
+        epochStart = now
         originPoint = maxCongestionWindow
         // Reset tcpCongestionWindow to be in sync with cubic
         tcpCongestionWindow = congestionWindow
@@ -300,6 +301,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         path: QUICPath? = nil,
         mss: Int,
         packetsLost: Bool,
+        now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
         if packetsLost {
@@ -312,7 +314,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             return
         }
         let smoothedRTT = rtt.smoothedRTT
-        if !revalidateCongestionWindow(smoothedRTT: smoothedRTT) {
+        if !revalidateCongestionWindow(smoothedRTT: smoothedRTT, now: now) {
             bytesAcked = 0
             return
         }
@@ -325,7 +327,8 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             processAckCongestionAvoidance(
                 bytesAcked: bytesAcked,
                 smoothedRTT: smoothedRTT,
-                mss: mss
+                mss: mss,
+                now: now
             )
         }
         // Should be a minimum of 2*MSS
@@ -345,6 +348,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         largestAckedSentTime: NetworkClock.Instant,
         mss: Int,
         smoothedRTT: NetworkDuration,
+        now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
         if _slowPath(ceCount < ecnCECounter) {
@@ -381,7 +385,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             // Haven't elapsed one RTT yet from last CWR
             return
         }
-        congestionEvent(sentTime: largestAckedSentTime, mss: mss, qlog: qlog)
+        congestionEvent(sentTime: largestAckedSentTime, mss: mss, now: now, qlog: qlog)
         // Update pacer state as congestionWindow has changed
         updatePacerState(path: path, smoothedRTT: smoothedRTT)
         // Start new round for CWR

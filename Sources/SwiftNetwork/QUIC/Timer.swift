@@ -59,7 +59,7 @@ private struct TimerEntry: ~Copyable {
     mutating func disable() {
         deadline = .zero
     }
-    mutating func schedule(fromNow: NetworkDuration, timerNow: NetworkClock.Instant = .now) {
+    mutating func schedule(fromNow: NetworkDuration, timerNow: NetworkClock.Instant) {
         precondition(fromNow != .zero)
         self.deadline = timerNow.advanced(by: fromNow)
     }
@@ -112,7 +112,7 @@ final class Timer: PrefixedLoggable {
     func insert(
         description: String,
         fromNow: NetworkDuration = .zero,
-        timerNow: NetworkClock.Instant = .now,
+        timerNow: NetworkClock.Instant,
         closure: @escaping () -> Void
     ) -> TimerID {
         let identifier = nextID
@@ -237,7 +237,7 @@ final class Timer: PrefixedLoggable {
     func reschedule(
         identifier: TimerID,
         fromNow: NetworkDuration,
-        timerNow: NetworkClock.Instant = .now
+        timerNow: NetworkClock.Instant
     ) {
         guard let index = find(identifier) else {
             return
@@ -255,7 +255,7 @@ final class Timer: PrefixedLoggable {
         }
     }
 
-    public func timerFired(timeNow: NetworkClock.Instant = .now) {
+    public func timerFired(timeNow: NetworkClock.Instant) {
         // Timer fired means the kernel woke us up.
         wakeup = .idle
 

@@ -447,13 +447,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.setMetadataHandlers()
 
         self.timer = Timer(reference: self.reference, timerReference: timerReference, logPrefixer: logPrefixer)
-        let ackTimerID = timer.insert(description: "ACK") {
-            self.ack.timerFired(timeNow: .now)
+        let ackTimerID = timer.insert(description: "ACK", timerNow: self.now) {
+            self.ack.timerFired(timeNow: self.now)
         }
         self.ack = Ack(connection: self, timerID: ackTimerID, logPrefixer: logPrefixer)
 
-        let recoveryTimerID = timer.insert(description: "Recovery") {
-            self.recovery.timerFired(timeNow: .now)
+        let recoveryTimerID = timer.insert(description: "Recovery", timerNow: self.now) {
+            self.recovery.timerFired(timeNow: self.now)
         }
         self.recovery = Recovery(
             connection: self,
@@ -461,7 +461,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             logPrefixer: logPrefixer
         )
 
-        migration.timerID = timer.insert(description: "Migration") {
+        migration.timerID = timer.insert(description: "Migration", timerNow: self.now) {
             self.migration.timerFired(connection: self)
         }
 
@@ -1313,7 +1313,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } else {
             if state == .idle {
                 // Record handshake start time start
-                handshakeStartTime = .now
+                handshakeStartTime = self.now
 
                 // Start idle timer to terminate unresponded to connection
                 guard clientStartIdleTimer() else {
@@ -1366,7 +1366,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         idleTimerID = timer.insert(
             description: "Idle timeout",
-            fromNow: idleTimeout
+            fromNow: idleTimeout,
+            timerNow: self.now
         ) {
             self.idleTimeoutFired()
         }
@@ -1410,7 +1411,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         //   - client: initial packet sent
 
         // Check when the last activity was recorded
-        let now = NetworkClock.Instant.now
+        let now = self.now
         guard now >= lastPacketReceivedTimestamp else {
             log.fault("Now should not be less than lastPacketReceivedTimestamp")
             return
@@ -2753,7 +2754,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             withCurrentPath { path in
                 _ = timer.insert(
                     description: "draining",
-                    fromNow: path.recoveryState.getMaxPTODrainTime(idleTimeout: self.idleTimeout)
+                    fromNow: path.recoveryState.getMaxPTODrainTime(idleTimeout: self.idleTimeout),
+                    timerNow: self.now
                 ) {
                     self.drain()
                 }
@@ -2834,7 +2836,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // We try to delay the keep-alive by some delta amount
         // depending on when we last received a valid packet
         // from the remote side.
-        let now = NetworkClock.Instant.now
+        let now = self.now
         if _slowPath(now < lastPacketReceivedTimestamp) {
             log.fault("Bogus lastPacketReceivedTimestamp")
             return
@@ -2874,7 +2876,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             minIdleTime = .milliseconds(min(idleTimeoutLocal, idleTimeoutRemote))
         }
         if keepaliveTimerID == nil {
-            keepaliveTimerID = timer.insert(description: "keepalive") {
+            keepaliveTimerID = timer.insert(description: "keepalive", timerNow: self.now) {
                 self.keepaliveHandler()
             }
         }
@@ -3429,7 +3431,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let tagSize = protector.getTagSize(for: keyState)
 
         if isPacing {
-            let now = NetworkClock.Instant.now
+            let now = self.now
             // lastAckElicitingPacketSentTimestamp can be in the future for kernel packet pacing.
             if now > lastAckElicitingPacketSentTimestamp {
                 let idleTime = lastAckElicitingPacketSentTimestamp.duration(to: now)
@@ -3742,7 +3744,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private func log(packet: inout Packet, coalesced: Bool = false, outbound: Bool) {
         #if !NETWORK_EMBEDDED
         if Logger.swiftNetworkDatapathLoggingEnabled {
-            let now = NetworkClock.Instant.now
+            let now = self.now
             var delta: NetworkDuration = .milliseconds(0)
             if lastShorthandTimestamp != .zero {
                 delta = lastShorthandTimestamp.duration(to: now)
@@ -4172,7 +4174,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        handshakeDuration = handshakeStartTime.duration(to: .now)
+        handshakeDuration = handshakeStartTime.duration(to: self.now)
         var currentRTT: NetworkDuration = .milliseconds(0)
         if let currentPath = currentPath {
             currentRTT = currentPath.rtt.smoothedRTT
@@ -4300,7 +4302,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     public func wakeup() {
-        self.timer.timerFired()
+        self.timer.timerFired(timeNow: self.now)
     }
 
     func setupStreamID(isUnidirectional: Bool, isServer: Bool) -> QUICStreamID? {

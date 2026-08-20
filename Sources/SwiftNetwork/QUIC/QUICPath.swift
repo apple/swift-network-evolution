@@ -363,7 +363,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         )
     }
 
-    func updateBDP(length: Int, now: NetworkClock.Instant = NetworkClock.Instant.now) {
+    func updateBDP(length: Int, now: NetworkClock.Instant) {
         if bdp.timestamp == .zero {
             bdp.timestamp = now
         }
@@ -610,7 +610,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
             return
         }
         log.debug("Valid path challenge response received: \(data)")
-        let now = NetworkClock.Instant.now
+        let now = parentProtocol.now
         let responseDuration = pendingOutboundChallenge.sentTime.duration(to: now)
         pendingOutboundChallenges.removeAll()
         challengesSent = 0
@@ -655,7 +655,14 @@ extension QUICPath {
 
     @inline(__always)
     func congestionControlAckEnd(rtt: borrowing RTT, path: QUICPath?, mss: Int, packetsLost: Bool, qlog: QLog? = nil) {
-        congestionControl?.ackEnd(rtt: rtt, path: self, mss: mss, packetsLost: packetsLost, qlog: qlog)
+        congestionControl?.ackEnd(
+            rtt: rtt,
+            path: self,
+            mss: mss,
+            packetsLost: packetsLost,
+            now: parentProtocol.now,
+            qlog: qlog
+        )
     }
 
     @inline(__always)
@@ -679,7 +686,8 @@ extension QUICPath {
             bytesLost: bytesLost,
             largestLostSentTime: largestLostSentTime,
             mss: mss,
-            smoothedRTT: smoothedRTT
+            smoothedRTT: smoothedRTT,
+            now: parentProtocol.now
         ) ?? false
     }
 
@@ -740,6 +748,7 @@ extension QUICPath {
                 largestAckedSentTime: largestAckedSentTime,
                 mss: mss,
                 smoothedRTT: smoothedRTT,
+                now: parentProtocol.now,
                 qlog: qlog
             )
         #if !NETWORK_EMBEDDED
@@ -752,6 +761,7 @@ extension QUICPath {
                 largestAckedSentTime: largestAckedSentTime,
                 mss: mss,
                 smoothedRTT: smoothedRTT,
+                now: parentProtocol.now,
                 qlog: qlog
             )
         case .prague(var prague):
@@ -763,6 +773,7 @@ extension QUICPath {
                 largestAckedSentTime: largestAckedSentTime,
                 mss: mss,
                 smoothedRTT: smoothedRTT,
+                now: parentProtocol.now,
                 qlog: qlog
             )
         #endif

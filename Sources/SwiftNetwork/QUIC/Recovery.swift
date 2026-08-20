@@ -988,7 +988,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     mutating func findLostPacket(
         pnSpace: PacketNumberSpace? = nil,
         path: QUICPath? = nil,
-        timeNow: NetworkClock.Instant = NetworkClock.Instant.now,
+        timeNow: NetworkClock.Instant,
         connection: QUICConnection
     ) -> Bool {
         var packetLost = false
@@ -1281,7 +1281,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         )
         if lossTime != .zero {
             log.datapath("Recovery timer fired, finding lost packets")
-            findLostPacket(connection: connection)
+            findLostPacket(timeNow: timeNow, connection: connection)
         } else {
             log.datapath("Recovery timer fired, PTO")
             connection.withCurrentPath { path in

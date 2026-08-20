@@ -559,7 +559,7 @@ final class Ack: PrefixedLoggable, TimerUser {
     func append(
         packetNumberSpace: PacketNumberSpace,
         packetNumber: PacketNumber,
-        now: NetworkClock.Instant = .now
+        now: NetworkClock.Instant
     ) {
         withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
             ackSpace.append(packetNumber, packetNumberSpace: packetNumberSpace, now: now)
@@ -598,7 +598,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         isAckSet: Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
         ecnCounter: ECNCounter?,
-        now: NetworkClock.Instant = .now
+        now: NetworkClock.Instant
     ) -> Bool {
         var shouldSend = false
         if isAckSet {
@@ -1244,7 +1244,8 @@ extension Ack {
     func buildForTesting(
         for packetNumberSpace: PacketNumberSpace,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
-        ecnCounter: ECNCounter? = nil
+        ecnCounter: ECNCounter? = nil,
+        now: NetworkClock.Instant
     ) -> Int {
         var size = 0
         withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
@@ -1254,7 +1255,7 @@ extension Ack {
                 delaySize: delaySize,
                 setAckFrame: setAckFrame,
                 ecnCounter: ecnCounter,
-                now: .now
+                now: now
             )
             return true
         }

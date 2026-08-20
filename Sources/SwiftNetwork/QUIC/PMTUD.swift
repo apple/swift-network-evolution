@@ -131,7 +131,7 @@ struct PMTUDState: ~Copyable {
 
         if timerID == nil {
             let pathID = path.identifier
-            timerID = connection.timer.insert(description: "PMTUD") {
+            timerID = connection.timer.insert(description: "PMTUD", timerNow: connection.now) {
                 let innerPath = connection.path(for: pathID)
                 guard let innerPath else { return }
                 innerPath.pmtudState.timerFired(timeNow: connection.now, path: innerPath)
