@@ -753,8 +753,12 @@ final class SwiftNetworkSocketTests: NetTestCase {
         }
         wait(for: [received], timeout: 5.0)
 
-        // Give the bottom a moment to observe the peer's FIN (EOF), then sample
-        // CPU across an otherwise-idle second.
+        // Both sleeps are load-bearing. The first waits for the bottom to observe the peer's FIN,
+        // which has no observable substitute: a second `receive` never completes on it.
+        //
+        // The second *is* the measurement -- no read event firing is only observable as an absence
+        // over an interval -- and it has to stay long, because the assertion is a ratio of CPU to
+        // wall time and a short window reports one descheduling of this process as noise.
         Thread.sleep(forTimeInterval: 0.3)
         let before = Self.processCPUSeconds()
         Thread.sleep(forTimeInterval: 1.0)

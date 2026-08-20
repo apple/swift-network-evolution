@@ -720,12 +720,26 @@ final class SplitSendServer: SocketTestServer, @unchecked Sendable {
 
         // First segment, then a gap so the client processes it (and, if buggy,
         // suspends its read source) before the remainder arrives.
+        //
+        // This sleep is load-bearing: the gap is the condition the test reproduces. Shrink it and
+        // the two writes may coalesce into one segment, the receive no longer spans a segment
+        // boundary, and the test passes without exercising the bug.
         sendAll(payload.prefix(firstChunk))
         Thread.sleep(forTimeInterval: gap)
         sendAll(payload.suffix(total - firstChunk))
 
-        // Hold the connection open long enough for the client to finish.
-        Thread.sleep(forTimeInterval: 1.0)
+        // Hold the connection open until the client is done, which is exactly its FIN: `read` on
+        // this blocking descriptor returns 0 then. 0 is that FIN and a negative result means the
+        // descriptor has already gone; either way there is nothing left to wait for. The client
+        // sends nothing, so a positive result is not expected but costs nothing to ignore.
+        var readBuffer = [UInt8](repeating: 0, count: 16)
+        while true {
+            let bytesRead = readBuffer.withUnsafeMutableBytes { buffer -> Int in
+                guard let base = buffer.baseAddress else { return -1 }
+                return read(connFd, base, buffer.count)
+            }
+            if bytesRead <= 0 { break }
+        }
     }
 }
 
