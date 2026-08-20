@@ -27,7 +27,7 @@ internal import Logging
 internal import os
 #endif
 
-#if !NETWORK_NO_SWIFT_QUIC && !NETWORK_NO_TESTING_HARNESS
+#if !NETWORK_NO_TESTING_HARNESS
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
@@ -814,6 +814,7 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
     public var newOutboundCIDEventCount = 0
     public func handleNetworkProtocolEvent(_ from: ProtocolInstanceReference, event: NetworkProtocolEvent) {
         log.debug("Received network protocol event: \(event)")
+#if !NETWORK_NO_SWIFT_QUIC
         if let quicEvent = event.quicEvent {
             switch quicEvent {
             case .newInboundConnectionID: newInboundCIDEventCount += 1
@@ -821,6 +822,7 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
             default: break
             }
         }
+#endif
     }
 
     public func teardown() {

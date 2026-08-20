@@ -303,10 +303,10 @@ extension ProtocolInstanceReference {
                 return try instance.receiveStreamData(from, minimumBytes: minimumBytes, maximumBytes: maximumBytes)
             case .quicCrypto(let instance):
                 return try instance.receiveStreamData(from, minimumBytes: minimumBytes, maximumBytes: maximumBytes)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .streamLowerHarness(var instance):
                 return try instance.receiveStreamData(from, minimumBytes: minimumBytes, maximumBytes: maximumBytes)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -329,9 +329,9 @@ extension ProtocolInstanceReference {
             #if !NETWORK_NO_SWIFT_QUIC
             case .quicStream(let instance): return try instance.getOutboundStreamDataRoomAvailable(from)
             case .quicCrypto(let instance): return try instance.getOutboundStreamDataRoomAvailable(from)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .streamLowerHarness(var instance): return try instance.getOutboundStreamDataRoomAvailable(from)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -360,9 +360,9 @@ extension ProtocolInstanceReference {
             #if !NETWORK_NO_SWIFT_QUIC
             case .quicStream(var instance): try instance.sendStreamData(from, streamData: streamData)
             case .quicCrypto(let instance): try instance.sendStreamData(from, streamData: streamData)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .streamLowerHarness(var instance): try instance.sendStreamData(from, streamData: streamData)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -453,9 +453,9 @@ extension ProtocolInstanceReference {
         case .streamEndpointFlow(let instance): instance.handleInboundAbortedEvent(from, error: error)
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicCrypto(let instance): instance.handleInboundAbortedEvent(from, error: error)
+        #endif
         #if !NETWORK_NO_TESTING_HARNESS
         case .streamUpperHarness(let instance): instance.handleInboundAbortedEvent(from, error: error)
-        #endif
         #endif
         #if !NETWORK_EMBEDDED
         case .custom(let container, let index):
@@ -475,9 +475,9 @@ extension ProtocolInstanceReference {
         case .streamEndpointFlow(let instance): instance.handleOutboundAbortedEvent(from, error: error)
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicCrypto(let instance): instance.handleOutboundAbortedEvent(from, error: error)
+        #endif
         #if !NETWORK_NO_TESTING_HARNESS
         case .streamUpperHarness(let instance): instance.handleOutboundAbortedEvent(from, error: error)
-        #endif
         #endif
         #if !NETWORK_EMBEDDED
         case .custom(let container, let index):

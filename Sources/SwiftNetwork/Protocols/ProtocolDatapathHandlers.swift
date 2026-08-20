@@ -34,10 +34,10 @@ extension ProtocolInstanceReference {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicPath(var instance): instance.handleInboundDataAvailableEvent(from)
         case .quicCrypto(let instance): instance.handleInboundDataAvailableEvent(from)
+        #endif
         #if !NETWORK_NO_TESTING_HARNESS
         case .streamUpperHarness(let instance): instance.handleInboundDataAvailableEvent(from)
         case .datagramUpperHarness(let instance): instance.handleInboundDataAvailableEvent(from)
-        #endif
         #endif
         #if !NETWORK_EMBEDDED
         case .custom(let container, let index):
@@ -59,10 +59,10 @@ extension ProtocolInstanceReference {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicPath(var instance): instance.handleOutboundRoomAvailableEvent(from)
         case .quicCrypto(let instance): instance.handleOutboundRoomAvailableEvent(from)
+        #endif
         #if !NETWORK_NO_TESTING_HARNESS
         case .streamUpperHarness(let instance): instance.handleOutboundRoomAvailableEvent(from)
         case .datagramUpperHarness(let instance): instance.handleOutboundRoomAvailableEvent(from)
-        #endif
         #endif
 
         #if !NETWORK_EMBEDDED
