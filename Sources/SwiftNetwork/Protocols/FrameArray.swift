@@ -238,6 +238,14 @@ public struct FrameArray: ~Copyable {
                     let claimed = frames[0].claim(fromStart: 0, fromEnd: partialBytesToKeep)
                     precondition(claimed)
 
+                    // The flag belongs with the last byte, which is the tail being kept. `swap`
+                    // exchanges whole frame values, so it would carry the flag out with the prefix
+                    // instead. Move it first, while each name still refers to what it says.
+                    if frames[0].connectionComplete {
+                        frames[0].connectionComplete = false
+                        splitFrame.connectionComplete = true
+                    }
+
                     // Swap the new frame with the original frame
                     swap(&splitFrame, &frames[0])
 
@@ -265,6 +273,12 @@ public struct FrameArray: ~Copyable {
             return true
         }
         return length
+    }
+
+    /// Marks the end of the stream, on the last frame only.
+    public mutating func markEndOfStream() {
+        if frames.isEmpty { return }
+        frames[frames.count - 1].connectionComplete = true
     }
 
     /// Whether this array ends the stream, which is a question about its final frame.
