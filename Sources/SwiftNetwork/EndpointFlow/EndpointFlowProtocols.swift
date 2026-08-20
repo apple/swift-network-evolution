@@ -528,7 +528,8 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<InboundStreamLinkag
         }
     }
 
-    func read(minimumBytes: Int, maximumBytes: Int) -> [UInt8]? {
+    /// Reads buffered stream bytes, reporting whether the read reached the end of the stream.
+    func read(minimumBytes: Int, maximumBytes: Int) -> (content: [UInt8], isComplete: Bool)? {
         fromExternal {
             do throws(NetworkError) {
                 guard
@@ -542,9 +543,16 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<InboundStreamLinkag
                     return nil
                 }
                 var returnBuffer: [UInt8]? = nil
+                var reachedEndOfStream = false
                 frames.iterateMutableFrames { frame in
                     var buffer = [UInt8]()
                     let length = frame.unclaimedLength
+                    // The FIN rides on the frames, set by the socket bottom on EOF and by QUIC on
+                    // its last data frame. They are finalized below, so it has to leave with the
+                    // content or the caller cannot recover it.
+                    if frame.connectionComplete {
+                        reachedEndOfStream = true
+                    }
                     if length > 0 {
                         _ = Deserializer.deserialize(&frame, claim: false) { read throws(DeserializationError) in
                             try read.buffer(&buffer, length: length)
@@ -558,7 +566,10 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<InboundStreamLinkag
                     frame.finalize(success: true)
                     return true
                 }
-                return returnBuffer
+                guard let returnBuffer else {
+                    return nil
+                }
+                return (content: returnBuffer, isComplete: reachedEndOfStream)
             } catch {
                 return nil
             }
