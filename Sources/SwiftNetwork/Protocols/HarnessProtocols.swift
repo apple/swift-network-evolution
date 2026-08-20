@@ -814,7 +814,7 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
     public var newOutboundCIDEventCount = 0
     public func handleNetworkProtocolEvent(_ from: ProtocolInstanceReference, event: NetworkProtocolEvent) {
         log.debug("Received network protocol event: \(event)")
-#if !NETWORK_NO_SWIFT_QUIC
+        #if !NETWORK_NO_SWIFT_QUIC
         if let quicEvent = event.quicEvent {
             switch quicEvent {
             case .newInboundConnectionID: newInboundCIDEventCount += 1
@@ -822,7 +822,7 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
             default: break
             }
         }
-#endif
+        #endif
     }
 
     public func teardown() {
