@@ -370,23 +370,30 @@ final class SwiftNetworkSocketTests: NetTestCase {
     }
 
     func testTCPConnectionRefusedDeliversFailure() {
-        // No listener on this port: connect should fail.
+        // Nothing is listening on this port, so connect must fail. `.ready` is asserted absent from
+        // the recorded sequence, which catches it anywhere before the failure rather than only
+        // during a fixed wait, and the sequence is dumped when it does appear.
         let failed = XCTestExpectation(description: "tcp failed")
         let cancelled = XCTestExpectation(description: "tcp cancelled")
-        let ready = XCTestExpectation(description: "tcp ready")
-        ready.isInverted = true
+        let observedStates = NetworkMutex<[NetworkConnection<TCP>.State]>([])
 
         let remote = Endpoint(address: IPv4Address.loopback, port: discoverFreeLoopbackPort())
         let conn = NetworkConnection(to: remote, using: makeTCPParams())
             .onStateUpdate { _, state in
+                observedStates.withLock { $0.append(state) }
                 if case .failed = state { failed.fulfill() }
                 if case .cancelled = state { cancelled.fulfill() }
-                if case .ready = state { ready.fulfill() }
             }
         conn.start()
-        wait(for: [failed, ready], timeout: 5.0)
+        wait(for: [failed], timeout: 5.0)
         conn.cancel()
         wait(for: [cancelled], timeout: 5.0)
+
+        let states = observedStates.withLock { $0 }
+        XCTAssertFalse(
+            states.contains(.ready),
+            "connection reported ready with nothing listening on the port: \(states)"
+        )
     }
 
     // MARK: - Basic data path (TCP)
