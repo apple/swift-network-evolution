@@ -1576,9 +1576,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             log.fault("Pending Reassembly Dequeue is not empty")
         }
 
-        accessReceivedDatagrams(path: pathID) { datagrams in
+        accessReceivedDatagrams(path: pathID) { (datagrams, path) in
             while let frame = datagrams.popFirst() {
-                handleInbound(frame: frame, from: pathID)
+                handleInbound(frame: frame, from: path)
             }
         }
 
@@ -1591,7 +1591,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     func handleInbound(
         frame: consuming Frame,
-        from pathID: MultiplexingPathIdentifier
+        from path: QUICPath
     ) {
         deferClosing = true
         defer {
@@ -1616,11 +1616,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         log.datapath("Handling inbound packet (length: \(dataLength))")
-
-        guard let path = path(for: pathID) else {
-            log.error("Dropping packet from unknown path \(pathID.description)")
-            return
-        }
 
         var unvalidatedPath = false
         // Attempt path validation if this is the first packet that we have received on this path.
