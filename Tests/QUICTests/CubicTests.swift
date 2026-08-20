@@ -470,6 +470,32 @@ final class CubicTests: XCTestCase {
                 == Constants.maxBurstIntervalKernelPacing.milliseconds
         )
     }
+
+    /// A smoothed RTT that rounds to zero microseconds must not reach the pacing-rate division; it
+    /// traps there.
+    func testCubicPacerSurvivesASubMicrosecondSmoothedRTT() {
+        let connection = QUICConnection(context: NetworkContext.implicitContext)
+        let path = QUICPath(parent: connection)
+        path.pacePackets = true
+        path.set(interface: nil, priority: 1, isInitial: true)
+        path.pacer.setInitialState(10_000_000, 10000)
+        path.pacer.reset()
+
+        rtt.smoothedRTT = .nanoseconds(400)
+
+        // double-check that the rounding happens as expected
+        XCTAssertEqual(rtt.smoothedRTT.microseconds, 0, "smoothedRTT is expected to round to zero microseconds")
+
+        let time = NetworkClock.Instant.now
+        path.congestionControlPacketsSent(bytesSent: 1000)
+        path.congestionControlAckBegin()
+        path.congestionControlPacketsAcked(bytesAcked: 1000, sentTime: time)
+        path.congestionControlAckEnd(rtt: rtt, path: path, mss: path.mss, packetsLost: false)
+
+        // Now that we haven't trapped, assert the rate is as expected. One packet
+        // acked takes the window to 13000, slow start doubles it, and the 100ms fallback divides.
+        XCTAssertEqual(path.pacer.rate, 26000 * System.Time.USEC_PER_SEC / 100_000)
+    }
 }
 
 #endif

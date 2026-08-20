@@ -226,13 +226,20 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         guard let path, path.pacer.enabled else {
             return
         }
+
+        // Zero microseconds means either that no measurement has landed yet or that one rounded
+        // down from under half a microsecond, and dividing by it below would trap. Fall back to the
+        // initial estimate in both cases.
+        let smoothedRTTInMicroseconds =
+            smoothedRTT.microseconds == 0 ? pacingInitialRTT.microseconds : smoothedRTT.microseconds
+
         var rate = congestionWindow
+
         // Use 200% rate when in slow start
         if congestionWindow < slowStartThreshold {
             rate *= 2
         }
-        // Multiply by USEC_PER_SEC as srtt is in microseconds
-        rate = (rate * System.Time.USEC_PER_SEC) / UInt64(smoothedRTT.microseconds)
+        rate = (rate * System.Time.USEC_PER_SEC) / UInt64(smoothedRTTInMicroseconds)
         let burst = rate >> burstQueueShift
         path.pacer.setRate(rate: rate)
         path.pacer.setBurstSize(burstSize: UInt32(truncatingIfNeeded: burst))
