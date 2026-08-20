@@ -31,6 +31,7 @@ public struct ProtocolInstanceReference: Hashable {
         case quicDatagram(_ instance: QUICDatagramFlow)
         case quicPath(_ instance: QUICPath)
         case quicCrypto(_ instance: QUICCrypto)
+        #endif
         #if !NETWORK_NO_TESTING_HARNESS
         case streamUpperHarness(_ instance: StreamUpperHarness)
         case datagramUpperHarness(_ instance: DatagramUpperHarness)
@@ -38,7 +39,6 @@ public struct ProtocolInstanceReference: Hashable {
         case streamLowerHarness(_ instance: StreamLowerHarness)
         case newStreamFlowHarness(_ instance: NewStreamFlowHarness)
         case newDatagramFlowHarness(_ instance: NewDatagramFlowHarness)
-        #endif
         #endif
         #if !NETWORK_EMBEDDED
         case custom(container: any ProtocolInstanceContainer, index: Int?)
@@ -179,6 +179,8 @@ public struct ProtocolInstanceReference: Hashable {
         self.context = instance.context
         self._protocolEventStateIndex = instance.eventManager.register(with: self.context)
     }
+    #endif
+
     #if !NETWORK_NO_TESTING_HARNESS
     init(streamUpperHarness instance: StreamUpperHarness) {
         self.reference = .streamUpperHarness(instance)
@@ -215,7 +217,6 @@ public struct ProtocolInstanceReference: Hashable {
         self.context = instance.context
         self._protocolEventStateIndex = instance.eventManager.register(with: self.context)
     }
-    #endif
     #endif
 
     #if !NETWORK_EMBEDDED

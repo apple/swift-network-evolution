@@ -251,10 +251,10 @@ extension ProtocolInstanceReference {
             #if !NETWORK_NO_SWIFT_QUIC
             case .quicDatagram(var instance):
                 return try instance.receiveDatagrams(from, maximumDatagramCount: maximumDatagramCount)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(var instance):
                 return try instance.receiveDatagrams(from, maximumDatagramCount: maximumDatagramCount)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -295,6 +295,7 @@ extension ProtocolInstanceReference {
                     maximumDatagramCount: maximumDatagramCount,
                     minimumDatagramSize: minimumDatagramSize
                 )
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(var instance):
                 return try instance.getDatagramsToSend(
@@ -302,7 +303,6 @@ extension ProtocolInstanceReference {
                     maximumDatagramCount: maximumDatagramCount,
                     minimumDatagramSize: minimumDatagramSize
                 )
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -334,9 +334,9 @@ extension ProtocolInstanceReference {
             case .ip(let index): try context.ipInstances[index].sendDatagrams(from, datagrams: datagrams)
             #if !NETWORK_NO_SWIFT_QUIC
             case .quicDatagram(var instance): try instance.sendDatagrams(from, datagrams: datagrams)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(var instance): try instance.sendDatagrams(from, datagrams: datagrams)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):

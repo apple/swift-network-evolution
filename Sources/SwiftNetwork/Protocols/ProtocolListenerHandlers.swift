@@ -31,7 +31,7 @@ extension ProtocolInstanceReference {
     ) {
         switch reference {
         case .none: return
-        #if !NETWORK_NO_SWIFT_QUIC && !NETWORK_NO_TESTING_HARNESS
+        #if !NETWORK_NO_TESTING_HARNESS
         case .newStreamFlowHarness(let instance):
             return instance.handleNewInboundFlowEvent(from, flowReference: flowReference, flowMetadata: flowMetadata)
         case .newDatagramFlowHarness(let instance):

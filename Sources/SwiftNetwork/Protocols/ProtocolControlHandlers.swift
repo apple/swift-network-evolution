@@ -48,12 +48,12 @@ extension ProtocolInstanceReference {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicPath(let instance): instance.handleConnectedEvent(from)
         case .quicCrypto(let instance): instance.handleConnectedEvent(from)
+        #endif
         #if !NETWORK_NO_TESTING_HARNESS
         case .streamUpperHarness(let instance): instance.handleConnectedEvent(from)
         case .datagramUpperHarness(let instance): instance.handleConnectedEvent(from)
         case .newStreamFlowHarness(let instance): instance.handleConnectedEvent(from)
         case .newDatagramFlowHarness(let instance): instance.handleConnectedEvent(from)
-        #endif
         #endif
         #if !NETWORK_EMBEDDED
         case .custom(let container, let index):
@@ -75,12 +75,12 @@ extension ProtocolInstanceReference {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicPath(let instance): instance.handleDisconnectedEvent(from, error: error)
         case .quicCrypto(let instance): instance.handleDisconnectedEvent(from, error: error)
+        #endif
         #if !NETWORK_NO_TESTING_HARNESS
         case .streamUpperHarness(let instance): instance.handleDisconnectedEvent(from, error: error)
         case .datagramUpperHarness(let instance): instance.handleDisconnectedEvent(from, error: error)
         case .newStreamFlowHarness(let instance): instance.handleDisconnectedEvent(from, error: error)
         case .newDatagramFlowHarness(let instance): instance.handleDisconnectedEvent(from, error: error)
-        #endif
         #endif
         #if !NETWORK_EMBEDDED
         case .custom(let container, let index):
@@ -103,12 +103,12 @@ extension ProtocolInstanceReference {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicPath(var instance): instance.handleNetworkProtocolEvent(from, event: event)
         case .quicCrypto(let instance): instance.handleNetworkProtocolEvent(from, event: event)
+        #endif
         #if !NETWORK_NO_TESTING_HARNESS
         case .streamUpperHarness(let instance): instance.handleNetworkProtocolEvent(from, event: event)
         case .datagramUpperHarness(let instance): instance.handleNetworkProtocolEvent(from, event: event)
         case .newStreamFlowHarness(let instance): instance.handleNetworkProtocolEvent(from, event: event)
         case .newDatagramFlowHarness(let instance): instance.handleNetworkProtocolEvent(from, event: event)
-        #endif
         #endif
         #if !NETWORK_EMBEDDED
         case .custom(let container, let index):
@@ -165,10 +165,10 @@ extension ProtocolInstanceReference {
             case .quicStream(let instance): instance.connect(from)
             case .quicDatagram(let instance): instance.connect(from)
             case .quicCrypto(let instance): instance.connect(from)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(let instance): instance.connect(from)
             case .streamLowerHarness(let instance): instance.connect(from)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index): return container.accessLower(at: index) { $0.connect(from) }
@@ -192,10 +192,10 @@ extension ProtocolInstanceReference {
             case .quicStream(let instance): instance.disconnect(from, error: error)
             case .quicDatagram(let instance): instance.disconnect(from, error: error)
             case .quicCrypto(let instance): instance.disconnect(from, error: error)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(let instance): instance.disconnect(from, error: error)
             case .streamLowerHarness(let instance): instance.disconnect(from, error: error)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -219,10 +219,10 @@ extension ProtocolInstanceReference {
             case .quicStream(let instance): instance.handleApplicationEvent(from, event: event)
             case .quicDatagram(let instance): instance.handleApplicationEvent(from, event: event)
             case .quicCrypto(let instance): instance.handleApplicationEvent(from, event: event)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(let instance): instance.handleApplicationEvent(from, event: event)
             case .streamLowerHarness(let instance): instance.handleApplicationEvent(from, event: event)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -309,6 +309,8 @@ extension ProtocolInstanceReference {
                     parameters: parameters,
                     path: path
                 )
+            #endif
+            #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(var instance):
                 return try instance.attachUpperProtocol(
                     from,
@@ -387,6 +389,7 @@ extension ProtocolInstanceReference {
                     parameters: parameters,
                     path: path
                 )
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .streamLowerHarness(var instance):
                 return try instance.attachUpperStreamProtocol(
@@ -396,7 +399,6 @@ extension ProtocolInstanceReference {
                     parameters: parameters,
                     path: path
                 )
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -450,6 +452,7 @@ extension ProtocolInstanceReference {
                     parameters: parameters,
                     path: path
                 )
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(var instance):
                 return try instance.attachUpperDatagramProtocol(
@@ -459,7 +462,6 @@ extension ProtocolInstanceReference {
                     parameters: parameters,
                     path: path
                 )
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -562,6 +564,8 @@ extension ProtocolInstanceReference {
                     parameters: parameters,
                     path: path
                 )
+            #endif
+            #if !NETWORK_NO_TESTING_HARNESS
             case .streamUpperHarness(var instance):
                 try instance.attachLowerProtocol(
                     lowerProtocol,
@@ -662,6 +666,7 @@ extension ProtocolInstanceReference {
                     parameters: parameters,
                     path: path
                 )
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramUpperHarness(var instance):
                 try instance.attachLowerDatagramProtocol(
@@ -671,7 +676,6 @@ extension ProtocolInstanceReference {
                     parameters: parameters,
                     path: path
                 )
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -733,6 +737,7 @@ extension ProtocolInstanceReference {
                     parameters: parameters,
                     path: path
                 )
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .streamUpperHarness(var instance):
                 try instance.attachLowerStreamProtocol(
@@ -742,7 +747,6 @@ extension ProtocolInstanceReference {
                     parameters: parameters,
                     path: path
                 )
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -878,10 +882,10 @@ extension ProtocolInstanceReference {
             case .quicStream(var instance): try instance.detach(from)
             case .quicDatagram(var instance): try instance.detach(from)
             case .quicCrypto(let instance): try instance.detach(from)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(var instance): try instance.detach(from)
             case .streamLowerHarness(var instance): try instance.detach(from)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
@@ -907,10 +911,10 @@ extension ProtocolInstanceReference {
             case .quicStream(let instance): return instance.getMetadata(from)
             case .quicDatagram(let instance): return instance.getMetadata(from)
             case .quicCrypto(let instance): return instance.getMetadata(from)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(let instance): return instance.getMetadata(from)
             case .streamLowerHarness(let instance): return instance.getMetadata(from)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index): return container.accessLower(at: index) { $0.getMetadata(from) }
@@ -941,12 +945,12 @@ extension ProtocolInstanceReference {
                 return instance.getMetrics(from, requestedNetworkMetric: requestedNetworkMetric)
             case .quicCrypto(let instance):
                 return instance.getMetrics(from, requestedNetworkMetric: requestedNetworkMetric)
+            #endif
             #if !NETWORK_NO_TESTING_HARNESS
             case .datagramLowerHarness(let instance):
                 return instance.getMetrics(from, requestedNetworkMetric: requestedNetworkMetric)
             case .streamLowerHarness(let instance):
                 return instance.getMetrics(from, requestedNetworkMetric: requestedNetworkMetric)
-            #endif
             #endif
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
