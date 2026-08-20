@@ -2811,6 +2811,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 $0.isKeepalive = true
             }
 
+            // The PING is queued but this send is timer-driven, not driven by an
+            // application write, so nothing else will report the connection
+            // active before the packet is transmitted.
+            checkConnectionIdle()
+
             // Re-arm the timer
             if let keepaliveTimerID = keepaliveTimerID {
                 timer.reschedule(
@@ -5822,6 +5827,12 @@ extension QUICConnection {
 
         // Recovery has outstanding packets, not idle
         if recovery.hasOutstandingPackets {
+            return false
+        }
+
+        // We owe the peer an ACK, either already queued or still waiting on the
+        // delayed-ACK timer. A transmission is pending either way, so not idle.
+        if ack.unackedPacketCount > 0 {
             return false
         }
 
