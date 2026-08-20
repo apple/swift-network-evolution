@@ -12,10 +12,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if canImport(Synchronization)
-internal import Synchronization
-#endif
-
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendable {
@@ -48,7 +44,7 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
         }
     }
 
-    internal final class AppSVCBackingClass: Hashable, Sendable {
+    internal final class AppSVCBackingClass: Hashable, @unchecked Sendable {
         static func == (
             lhs: ApplicationServiceEndpoint.AppSVCBackingClass,
             rhs: ApplicationServiceEndpoint.AppSVCBackingClass
@@ -70,17 +66,9 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
         func copy() -> Self {
             .init(storage: self.storage)
         }
-        var storage: Storage {
-            get {
-                _storage.withLock { $0 }
-            }
-            set {
-                _storage.withLock { $0 = newValue }
-            }
-        }
-        private let _storage: NetworkMutex<Storage>
+        var storage: Storage
         init(storage: Storage) {
-            self._storage = NetworkMutex(storage)
+            self.storage = storage
         }
     }
     typealias Backing = AppSVCBackingClass
