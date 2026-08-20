@@ -57,7 +57,7 @@ enum QUICFrame: ~Copyable {
     /* RFC 9221 */
     case datagram(frame: FrameDatagram)
 
-    @inline(__always)
+    @inline(always)
     static func isAckEliciting(frame: borrowing QUICFrame) -> Bool {
         switch frame {
         case .padding:
@@ -88,7 +88,7 @@ enum QUICFrame: ~Copyable {
         }
     }
 
-    @inline(__always)
+    @inline(always)
     static func isProbing(frame: borrowing QUICFrame) -> Bool {
         switch frame {
         case .padding:
@@ -104,7 +104,7 @@ enum QUICFrame: ~Copyable {
         }
     }
 
-    @inline(__always)
+    @inline(always)
     static func isAllowedDuringHandshake(frame: borrowing QUICFrame) -> Bool {
         // N.B.: APPLICATION_CLOSE is NOT allowed during the handshake.
         switch frame {
@@ -123,7 +123,7 @@ enum QUICFrame: ~Copyable {
         }
     }
 
-    @inline(__always)
+    @inline(always)
     static func isValidInInitial(frame: borrowing QUICFrame) -> Bool {
         // Returns true if the frame is valid in an INITIAL packet.
         switch frame {
