@@ -253,6 +253,7 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
     case receivedRemoteTransportParameters(transportParameters: [UInt8])
     case pathChanged(_ info: QUICPathInfo)
     case pathValidated(_ info: QUICPathInfo)
+    case pathUnreachable(_ info: QUICPathInfo)
 
     public var description: String {
         switch self {
@@ -284,6 +285,9 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
         case .pathValidated(let pathInfo):
             return
                 "QUIC: Path validated local: \(pathInfo.local.description) remote: \(pathInfo.remote.description)"
+        case .pathUnreachable(let pathInfo):
+            return
+                "QUIC: Path unreachable local: \(pathInfo.local.description) remote: \(pathInfo.remote.description)"
         }
     }
 }

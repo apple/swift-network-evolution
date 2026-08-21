@@ -223,13 +223,18 @@ extension QUICConnection {
                 "Path \(path.identifier) \(path.state) over \(path.interface?.description ?? "nil")"
             )
         }
-
         // Notify the stack about a path change event
-        if let datagramPathEndpoints = path.lower.invokeGetPathEndpoints(path.reference) {
+        if case .available(let local, let remote, _, _) = event,
+            let local, let remote,
+            case .address(let localAddress) = local.type,
+            case .address(let remoteAddress) = remote.type
+        {
+            path.localEndpoint = local
+            path.remoteEndpoint = remote
             let pathInfo = QUICPathInfo(
                 isValidated: path.isValidated,
-                remote: datagramPathEndpoints.remote,
-                local: datagramPathEndpoints.local
+                remote: remoteAddress,
+                local: localAddress
             )
             deliverNetworkProtocolEvent(flow: .allFlows, event: .init(quicEvent: .pathChanged(pathInfo)))
         }

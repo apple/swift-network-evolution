@@ -233,7 +233,7 @@ extension MultiplexingPathIdentifier {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 @frozen public enum MultiplexingPathEvent: CustomStringConvertible {
-    case available
+    case available(Endpoint?, Endpoint?, PathProperties?, Parameters?)
     case unavailable
     case established
 
@@ -262,13 +262,6 @@ public protocol MultiplexingPath: UpperProtocolHandler {
 @available(Network 0.1.0, *)
 public protocol MultiplexingDatapathPath: MultiplexingPath
 where LowerProtocol: OutboundDataLinkage, ParentProtocol: ManyToManyDatapathProtocol {}
-
-@_spi(ProtocolProvider)
-@available(Network 0.1.0, *)
-public struct DatagramPathEndpoints: Sendable {
-    let local: AddressEndpoint
-    let remote: AddressEndpoint
-}
 
 // MARK: Implementations
 
@@ -372,7 +365,11 @@ extension ManyToManyProtocolHandler {
         try newPath.attachLowerProtocol(lowerProtocol, remote: remote, local: local, parameters: parameters, path: path)
         if multiplexingPaths.isEmpty { newPath.pathIsPrimary = true }
         multiplexingPaths[newPath.identifier] = newPath
-        handlePathChanged(path: newPath.identifier, event: .available, isPrimary: newPath.pathIsPrimary)
+        handlePathChanged(
+            path: newPath.identifier,
+            event: .available(local, remote, path, parameters),
+            isPrimary: newPath.pathIsPrimary
+        )
     }
     #endif
 
@@ -991,7 +988,11 @@ extension ManyToManyDatapathProtocol where Path.ParentProtocol == Self, Path: In
         if path?.hasMigrationInfo == true { newPath.pathHasMigrationInfo = true }
         multiplexingPaths[newPath.identifier] = newPath
         if !isFirstPath {
-            handlePathChanged(path: newPath.identifier, event: .available, isPrimary: newPath.pathIsPrimary)
+            handlePathChanged(
+                path: newPath.identifier,
+                event: .available(local, remote, path, parameters),
+                isPrimary: newPath.pathIsPrimary
+            )
         }
     }
 }
@@ -1825,7 +1826,7 @@ extension MultiplexingPath {
             }
             parentProtocol.handlePathChanged(
                 path: identifier,
-                event: isConnected ? .established : .available,
+                event: isConnected ? .established : .available(nil, nil, nil, nil),
                 isPrimary: pathIsPrimary
             )
             return
