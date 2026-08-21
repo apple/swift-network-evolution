@@ -664,4 +664,26 @@ final class SwiftNetworkFrameArrayTests: NetTestCase {
         XCTAssertEqual(collectBytes(array), [4, 5, 6, 1, 2, 3])
         array.finalizeAllFramesAsFailed()
     }
+    func testConnectionCompleteIsAboutTheFinalFrame() {
+        var head = Frame(copyBuffer: [1, 2, 3] as [UInt8])
+        head.connectionComplete = true
+        var array = FrameArray(frame: head)
+        XCTAssertTrue(array.connectionComplete)
+
+        array.add(frame: Frame(copyBuffer: [4, 5, 6] as [UInt8]))
+        XCTAssertFalse(array.connectionComplete, "bytes follow the marked frame, so the stream has not ended")
+
+        var tail = Frame(copyBuffer: [7, 8, 9] as [UInt8])
+        tail.connectionComplete = true
+        array.add(frame: tail)
+        XCTAssertTrue(array.connectionComplete)
+
+        array.finalizeAllFramesAsFailed()
+    }
+
+    func testConnectionCompleteIsFalseWhenEmpty() {
+        var array = FrameArray()
+        XCTAssertFalse(array.connectionComplete)
+        array.finalizeAllFramesAsFailed()
+    }
 }

@@ -267,15 +267,9 @@ public struct FrameArray: ~Copyable {
         return length
     }
 
+    /// Whether this array ends the stream, which is a question about its final frame.
     public var connectionComplete: Bool {
-        var connectionComplete = false
-        iterateImmutableFrames { frame in
-            if frame.connectionComplete {
-                connectionComplete = true
-                return false
-            }
-            return true
-        }
-        return connectionComplete
+        if frames.isEmpty { return false }
+        return frames[frames.count - 1].connectionComplete
     }
 }
