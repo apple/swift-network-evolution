@@ -457,7 +457,7 @@ protocol SocketTestServer: AnyObject, Sendable {
 @available(Network 0.1.0, *)
 func discoverFreeLoopbackPorts(_ count: Int) -> [UInt16] {
     var descriptors: [CInt] = []
-    defer { descriptors.forEach { close($0) } }
+    defer { for descriptor in descriptors { close(descriptor) } }
 
     for _ in 0..<count {
         #if canImport(Glibc)
