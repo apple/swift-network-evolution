@@ -233,7 +233,7 @@ extension MultiplexingPathIdentifier {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 @frozen public enum MultiplexingPathEvent: CustomStringConvertible {
-    case available(Endpoint?, Endpoint?, PathProperties?, Parameters?)
+    case available(local: Endpoint?, remote: Endpoint?, path: PathProperties?, parameters: Parameters?)
     case unavailable
     case established
 
@@ -367,7 +367,7 @@ extension ManyToManyProtocolHandler {
         multiplexingPaths[newPath.identifier] = newPath
         handlePathChanged(
             path: newPath.identifier,
-            event: .available(local, remote, path, parameters),
+            event: .available(local: local, remote: remote, path: path, parameters: parameters),
             isPrimary: newPath.pathIsPrimary
         )
     }
@@ -990,7 +990,7 @@ extension ManyToManyDatapathProtocol where Path.ParentProtocol == Self, Path: In
         if !isFirstPath {
             handlePathChanged(
                 path: newPath.identifier,
-                event: .available(local, remote, path, parameters),
+                event: .available(local: local, remote: remote, path: path, parameters: parameters),
                 isPrimary: newPath.pathIsPrimary
             )
         }
@@ -1826,7 +1826,7 @@ extension MultiplexingPath {
             }
             parentProtocol.handlePathChanged(
                 path: identifier,
-                event: isConnected ? .established : .available(nil, nil, nil, nil),
+                event: isConnected ? .established : .available(local: nil, remote: nil, path: nil, parameters: nil),
                 isPrimary: pathIsPrimary
             )
             return
