@@ -13,8 +13,8 @@
 ##
 ##===----------------------------------------------------------------------===##
 
-# Builds the package for every Apple platform with xcodebuild, then runs the
-# test suite on macOS.
+# Builds the package for most Apple platforms with xcodebuild, then runs the
+# test suite on macOS.  Also see ci-ios.sh.
 #
 # Usage: ci-macos.sh [swift flags...]
 #
@@ -28,16 +28,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=ci-support.sh
 . "${script_dir}/ci-support.sh"
 
-scheme='swift-network-evolution-Package'
-
-# xcodebuild_step <name> <destination>
-xcodebuild_step() {
-    ci_run "$1" /usr/bin/xcodebuild -quiet -scheme "${scheme}" -destination "$2" build
-}
-
 xcodebuild_step 'macOS build' 'generic/platform=macos,variant=macos'
 xcodebuild_step 'Mac Catalyst build' 'generic/platform=macos,variant=Mac Catalyst'
-xcodebuild_step 'iOS build' 'generic/platform=ios'
 xcodebuild_step 'watchOS build' 'generic/platform=watchos'
 xcodebuild_step 'tvOS build' 'generic/platform=tvos'
 xcodebuild_step 'visionOS build' 'generic/platform=visionos'

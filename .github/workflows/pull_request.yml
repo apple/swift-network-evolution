@@ -14,6 +14,9 @@ jobs:
       enable_macos_checks: true
       macos_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}]"
       macos_build_command: bash .github/workflows/scripts/ci-macos.sh
+      enable_ios_checks: true
+      ios_host_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}]"
+      ios_build_command: bash .github/workflows/scripts/ci-ios.sh
       enable_linux_checks: true
       linux_swift_versions: '["nightly-6.3", "6.3"]'
       linux_build_command: bash .github/workflows/scripts/ci-linux.sh
