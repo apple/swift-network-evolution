@@ -64,3 +64,9 @@ ci_finish() {
 
     exit "${ci_exit_code}"
 }
+
+# xcodebuild_step <name> <destination>
+xcodebuild_step() {
+    local scheme='swift-network-evolution-Package'
+    ci_run "$1" /usr/bin/xcodebuild -scheme "${scheme}" -destination "$2" build
+}
