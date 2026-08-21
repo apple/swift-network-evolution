@@ -10,6 +10,7 @@
 **/Package.resolved
 .editorconfig
 .shellcheckrc
+.spi.yml
 Package.swift
 Benchmarks/Package.swift
 Package@swift-*.swift
