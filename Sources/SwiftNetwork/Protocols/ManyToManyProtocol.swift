@@ -265,12 +265,9 @@ where LowerProtocol: OutboundDataLinkage, ParentProtocol: ManyToManyDatapathProt
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public struct DatagramPathEndpoints: Sendable, Equatable {
+public struct DatagramPathEndpoints: Sendable {
     let local: AddressEndpoint
     let remote: AddressEndpoint
-    public static func == (lhs: DatagramPathEndpoints, rhs: DatagramPathEndpoints) -> Bool {
-        lhs.local == rhs.local && lhs.remote == rhs.remote
-    }
 }
 
 // MARK: Implementations
