@@ -263,6 +263,16 @@ public protocol MultiplexingPath: UpperProtocolHandler {
 public protocol MultiplexingDatapathPath: MultiplexingPath
 where LowerProtocol: OutboundDataLinkage, ParentProtocol: ManyToManyDatapathProtocol {}
 
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+public struct DatagramPathEndpoints: Sendable, Equatable {
+    let local: AddressEndpoint
+    let remote: AddressEndpoint
+    public static func == (lhs: DatagramPathEndpoints, rhs: DatagramPathEndpoints) -> Bool {
+        lhs.local == rhs.local && lhs.remote == rhs.remote
+    }
+}
+
 // MARK: Implementations
 
 @available(Network 0.1.0, *)

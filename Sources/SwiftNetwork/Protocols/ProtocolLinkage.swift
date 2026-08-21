@@ -284,6 +284,12 @@ public struct OutboundDatagramLinkage: OutboundDataLinkage {
     ) throws(NetworkError) {
         try reference.sendDatagrams(from, datagrams: datagrams)
     }
+
+    public func invokeGetPathEndpoints(
+        _ from: ProtocolInstanceReference
+    ) -> DatagramPathEndpoints? {
+        reference.getPathEndpoints(from)
+    }
 }
 
 @_spi(ProtocolProvider)

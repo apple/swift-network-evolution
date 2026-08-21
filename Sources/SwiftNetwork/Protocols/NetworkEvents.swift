@@ -21,6 +21,14 @@ public struct NetworkEventDomain: Sendable, Hashable, CustomStringConvertible {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
+public struct QUICPathInfo: Sendable, Equatable {
+    public let isValidated: Bool
+    public let remote: AddressEndpoint
+    public let local: AddressEndpoint
+}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
 /// An extensible event that a lower protocol reports to upper protocols.
 public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible {
     enum InternalEvent: Equatable {
@@ -243,6 +251,8 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
     case maxStreamsLimitUnidirectionalUpdated(maximumStreams: Int)
     case earlyDataRejected
     case receivedRemoteTransportParameters(transportParameters: [UInt8])
+    case pathChanged(_ info: QUICPathInfo)
+    case pathValidated(_ info: QUICPathInfo)
 
     public var description: String {
         switch self {
@@ -268,6 +278,12 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
             return "QUIC: Early data rejected"
         case .receivedRemoteTransportParameters:
             return "QUIC: Received remote transport parameters"
+        case .pathChanged(let pathInfo):
+            return
+                "QUIC: Path changed local: \(pathInfo.local.description) remote: \(pathInfo.remote.description) validated: \(pathInfo.isValidated)"
+        case .pathValidated(let pathInfo):
+            return
+                "QUIC: Path validated local: \(pathInfo.local.description) remote: \(pathInfo.remote.description)"
         }
     }
 }

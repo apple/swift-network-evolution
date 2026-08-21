@@ -516,6 +516,20 @@ public struct UDPProtocol: NetworkProtocol {
         }
 
         mutating func recordStatsEvent(stat: UDPStats, value: Int? = nil) {}
+
+        func pathEndpoints() -> DatagramPathEndpoints? {
+            if isIPv4 {
+                return DatagramPathEndpoints(
+                    local: AddressEndpoint(address: ipv4Local, port: localPort),
+                    remote: AddressEndpoint(address: ipv4Remote, port: remotePort)
+                )
+            } else {
+                return DatagramPathEndpoints(
+                    local: AddressEndpoint(address: ipv6Local, port: localPort),
+                    remote: AddressEndpoint(address: ipv6Remote, port: remotePort)
+                )
+            }
+        }
     }
 
     public init() {}
