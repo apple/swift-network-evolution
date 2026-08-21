@@ -44,11 +44,28 @@ public enum TransportParameterTypes: UInt64, CaseIterable {
     case activeConnectionIDLimit = 14
     case initialSCID = 15
     case retrySCID = 16
+
     case maxDatagramFrameSize = 32
     case minAckDelay = 0xff03_de1a
 
     /* Apple Private Relay custom TP. */
     case migrationVersion = 0xff08_0808
+
+    /// The index used by `TransportParameters` underlying storage.
+    var index: Int {
+        switch self.rawValue {
+        case 0...16:
+            return Int(self.rawValue)
+        case Self.maxDatagramFrameSize.rawValue:
+            return 17
+        case Self.minAckDelay.rawValue:
+            return 18
+        case Self.migrationVersion.rawValue:
+            return 19
+        default:
+            fatalError("Missing case")
+        }
+    }
 }
 
 enum TransportParameterDecodeErrors: Int, Error {
@@ -696,30 +713,36 @@ public struct TransportParameters: PrefixedLoggable {
     // the transport parameter can have.
     public static let maxUDPPayloadSize = 65527
     public static let maxDatagramFrameSize: UInt64 = 65535
-    private var parameterCollection: [TransportParameterTypes: TransportParameter] = [:]
+    private var parameters: [TransportParameter?]
 
     init(logPrefixer: LogPrefixer = .init()) {
         self.log = logPrefixer
+        self.parameters = Array(
+            repeating: nil,
+            count: TransportParameterTypes.allCases.count
+        )
     }
 
     subscript(_ type: TransportParameterTypes) -> TransportParameter? {
-        parameterCollection[type]
+        self.parameters[type.index]
     }
 
     mutating func append(_ parameter: TransportParameter) {
-        parameterCollection[parameter.type] = parameter
+        self.parameters[parameter.type.index] = parameter
     }
 
     mutating func remove(_ parameter: TransportParameter) {
-        parameterCollection[parameter.type] = nil
+        self.remove(parameter.type)
     }
 
     mutating func remove(_ type: TransportParameterTypes) {
-        parameterCollection[type] = nil
+        self.parameters[type.index] = nil
     }
 
     mutating func removeAll() {
-        parameterCollection.removeAll()
+        for index in self.parameters.indices {
+            self.parameters[index] = nil
+        }
     }
 
     func serialize(
@@ -727,7 +750,7 @@ public struct TransportParameters: PrefixedLoggable {
     ) throws(QUICError) -> [UInt8] {
         var buffer = [UInt8]()
         // N.B.: we shuffle the parameters to randomize the order in which they are serialized.
-        for parameter in parameterCollection.values.shuffled() {
+        for parameter in parameters.lazy.compactMap({ $0 }).shuffled() {
             if forEarlyData && !parameter.serializeForEarlyData {
                 continue
             }
@@ -823,7 +846,7 @@ public struct TransportParameters: PrefixedLoggable {
             if case .minAckDelay(_, let value) = parameter {
                 minAckDelay = value
             }
-            parameters.parameterCollection[parameter.type] = parameter
+            parameters.append(parameter)
         }
         // minAckDelay must be smaller than maxAckDelay.
         // If maxAckDelay wasn't sent, we use the default.
@@ -842,7 +865,7 @@ public struct TransportParameters: PrefixedLoggable {
     // Return the integer value for the specified TransportParameter type
     // If the specified type does not have an integer value, the function will fail and error out
     func intValue(_ forType: TransportParameterTypes) -> Int {
-        guard let transportParameter = parameterCollection[forType] else {
+        guard let transportParameter = self[forType] else {
             guard let defaultValue = TransportParameter.defaultValue(forType: forType) else {
                 fatalError("Parameter not set and no default value provided")
             }

@@ -521,6 +521,13 @@ final class TransportParametersTests: XCTestCase {
         XCTAssertNotEqual(data1, data2)
 
     }
+
+    func testParameterTypesHaveContiguousIndices() {
+        // Each value should contribute a unique index, the order doesn't matter. Check
+        // against 'allCases' as that's guaranteed to have one unique index per element.
+        let indices = TransportParameterTypes.allCases.map { $0.index }.sorted()
+        XCTAssertEqual(Array(TransportParameterTypes.allCases.indices), indices)
+    }
 }
 
 #endif
