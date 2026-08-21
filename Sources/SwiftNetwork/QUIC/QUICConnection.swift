@@ -300,7 +300,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // List of streams that have app input data in their reassembly queue.
     var pendingReassemblyDequeue = QUICStreamList.pendingReassemblyDequeueList()
 
-    private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
+    private(set) var knownFlows = [UInt64: MultiplexedFlowIdentifier]()
 
     private(set) var localCIDLength: Int = 0
     private var initialSourceConnectionID: QUICConnectionID?

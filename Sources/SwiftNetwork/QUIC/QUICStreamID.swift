@@ -326,4 +326,16 @@ extension QUICStreamID: CustomStringConvertible {
         String(value)
     }
 }
+
+@available(Network 0.1.0, *)
+extension Dictionary where Key == UInt64 {
+    subscript(streamID: QUICStreamID) -> Value? {
+        get { self[streamID.value] }
+        set { self[streamID.value] = newValue }
+    }
+    @discardableResult
+    mutating func removeValue(forKey streamID: QUICStreamID) -> Value? {
+        removeValue(forKey: streamID.value)
+    }
+}
 #endif
