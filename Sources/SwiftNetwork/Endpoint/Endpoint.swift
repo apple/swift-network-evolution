@@ -33,7 +33,7 @@ public class EndpointParent: Hashable, Equatable {
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public final class Endpoint: EndpointParent, EndpointProtocol {
-    public enum EndpointType {
+    public enum EndpointType: Sendable {
         case address(AddressEndpoint)
         case applicationService(ApplicationServiceEndpoint)
         case bonjour(BonjourEndpoint)

@@ -14,7 +14,7 @@
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol {
+public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendable {
     public var common: EndpointCommon {
         get { backing.storage.common }
         set {
@@ -24,10 +24,42 @@ public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol {
             backing.storage.common = newValue
         }
     }
-    public var name: String { backing.storage.name }
-    public var type: String { backing.storage.type }
-    public var domain: String { backing.storage.domain }
-    public var composite: String { backing.storage.composite }
+    public var name: String {
+        get { backing.storage.name }
+        set {
+            if !isKnownUniquelyReferenced(&self.backing) {
+                self.backing = self.backing.copy()
+            }
+            backing.storage.name = newValue
+        }
+    }
+    public var type: String {
+        get { backing.storage.type }
+        set {
+            if !isKnownUniquelyReferenced(&self.backing) {
+                self.backing = self.backing.copy()
+            }
+            backing.storage.type = newValue
+        }
+    }
+    public var domain: String {
+        get { backing.storage.domain }
+        set {
+            if !isKnownUniquelyReferenced(&self.backing) {
+                self.backing = self.backing.copy()
+            }
+            backing.storage.domain = newValue
+        }
+    }
+    public var composite: String {
+        get { backing.storage.composite }
+        set {
+            if !isKnownUniquelyReferenced(&self.backing) {
+                self.backing = self.backing.copy()
+            }
+            backing.storage.composite = newValue
+        }
+    }
 
     // MARK: -- Initializers --
 
@@ -51,7 +83,7 @@ public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol {
         )
     }
 
-    private final class BonjourBackingClass: Hashable {
+    private final class BonjourBackingClass: Hashable, @unchecked Sendable {
         static func == (lhs: BonjourEndpoint.BonjourBackingClass, rhs: BonjourEndpoint.BonjourBackingClass) -> Bool {
             lhs.storage == rhs.storage
         }
@@ -60,18 +92,18 @@ public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol {
         }
         internal struct Storage: Hashable {
             public var common: EndpointCommon
-            public let name: String  // Name is informational for application-service endpoints.
-            public let type: String
-            public let domain: String
-            public let composite: String
+            public var name: String  // Name is informational for application-service endpoints.
+            public var type: String
+            public var domain: String
+            public var composite: String
         }
         func copy() -> Self {
             .init(storage: self.storage)
         }
-        var storage: Storage
         init(storage: Storage) {
             self.storage = storage
         }
+        var storage: Storage
     }
     private typealias Backing = BonjourBackingClass
     private var backing: Backing

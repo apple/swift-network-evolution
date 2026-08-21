@@ -14,7 +14,7 @@
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct SRVEndpoint: EndpointProtocol, EndpointCommonProtocol {
+public struct SRVEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendable {
     public var common: EndpointCommon
     let name: String
 
