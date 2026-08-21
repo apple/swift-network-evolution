@@ -64,7 +64,7 @@ final class SwiftNetworkPathParametersTests: NetTestCase {
     // Reading must not allocate a backing. An absent backing and an allocated-but-empty one are not
     // equal, so a read that allocates would make two untouched values compare unequal.
     func testReadingAPreferenceDoesNotMakeValuesUnequal() {
-        var read = PathParameters()
+        let read = PathParameters()
         let untouched = PathParameters()
 
         XCTAssertNil(read.prohibitedInterfaceTypes)
