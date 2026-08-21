@@ -29,7 +29,7 @@ internal import os
 
 @available(Network 0.1.0, *)
 struct PathParameters: Hashable, CustomStringConvertible {
-    struct ProcessPathValue: Hashable {
+    struct ProcessPathValue: Hashable, Sendable {
         // Parameters that influence path selection for process delegation, by value, that
         // can be compared and copied.
         // These items are used for compatibility evaluation for most modes.
@@ -70,7 +70,7 @@ struct PathParameters: Hashable, CustomStringConvertible {
         #endif
     }
 
-    struct PathValue: Hashable {
+    struct PathValue: Hashable, Sendable {
         // Parameters that influence path selection, by value, that can be compared and copied
         // These items are used for compatibility evaluation
         var trafficClass: UInt32 = 0
@@ -135,7 +135,7 @@ struct PathParameters: Hashable, CustomStringConvertible {
         }
     }
 
-    struct JoinablePathValue: Hashable {
+    struct JoinablePathValue: Hashable, Sendable {
         // Parameters that influence path selection but do not influence compatibility when joining,
         // by value, that can be compared and copied
         // These items are not used for compatibility evaluation for joining protocol stacks.
@@ -229,12 +229,65 @@ struct PathParameters: Hashable, CustomStringConvertible {
             func hash(into hasher: inout Hasher) {
                 hasher.combine(storage)
             }
-        }
-        var backing: InterfacePreferenceValuesBacking?
 
-        mutating func setupBacking() {
+            init() {}
+
+            init(storage: Storage) {
+                self.storage = storage
+            }
+
+            func copy() -> InterfacePreferenceValuesBacking {
+                .init(storage: storage)
+            }
+        }
+        private var backing: InterfacePreferenceValuesBacking?
+
+        /// Guarantees a backing that this value uniquely owns, allocating one if absent and copying
+        /// it first if it is shared.
+        ///
+        /// Every mutating path must go through here. Mutating `backing` directly would let a write
+        /// land on storage another copy can see, which is what the copy-on-write is preventing.
+        private mutating func ensureUniquelyReferencedBacking() {
             if self.backing == nil {
                 self.backing = InterfacePreferenceValuesBacking()
+            } else if !isKnownUniquelyReferenced(&self.backing) {
+                self.backing = self.backing?.copy()
+            }
+        }
+
+        var requiredInterface: Interface? {
+            get { self.backing?.storage.requiredInterface }
+            set {
+                self.ensureUniquelyReferencedBacking()
+                self.backing!.storage.requiredInterface = newValue
+            }
+        }
+        var prohibitedInterfaceTypes: Deque<InterfaceType>? {
+            get { self.backing?.storage.prohibitedInterfaceTypes }
+            set {
+                self.ensureUniquelyReferencedBacking()
+                self.backing!.storage.prohibitedInterfaceTypes = newValue
+            }
+        }
+        var prohibitedInterfaceSubtypes: Deque<InterfaceSubtype>? {
+            get { self.backing?.storage.prohibitedInterfaceSubtypes }
+            set {
+                self.ensureUniquelyReferencedBacking()
+                self.backing!.storage.prohibitedInterfaceSubtypes = newValue
+            }
+        }
+        var preferredInterfaceSubtypes: Deque<InterfaceSubtype>? {
+            get { self.backing?.storage.preferredInterfaceSubtypes }
+            set {
+                self.ensureUniquelyReferencedBacking()
+                self.backing!.storage.preferredInterfaceSubtypes = newValue
+            }
+        }
+        var prohibitedInterfaces: Deque<Interface>? {
+            get { self.backing?.storage.prohibitedInterfaces }
+            set {
+                self.ensureUniquelyReferencedBacking()
+                self.backing!.storage.prohibitedInterfaces = newValue
             }
         }
 
@@ -252,38 +305,33 @@ struct PathParameters: Hashable, CustomStringConvertible {
     var interfacePreferenceValues = InterfacePreferenceValues()
 
     var requiredInterface: Interface? {
-        get { interfacePreferenceValues.backing?.storage.requiredInterface }
+        get { self.interfacePreferenceValues.requiredInterface }
         set {
-            interfacePreferenceValues.setupBacking()
-            interfacePreferenceValues.backing!.storage.requiredInterface = newValue
+            self.interfacePreferenceValues.requiredInterface = newValue
         }
     }
     var prohibitedInterfaceTypes: Deque<InterfaceType>? {
-        get { interfacePreferenceValues.backing?.storage.prohibitedInterfaceTypes }
+        get { self.interfacePreferenceValues.prohibitedInterfaceTypes }
         set {
-            interfacePreferenceValues.setupBacking()
-            interfacePreferenceValues.backing!.storage.prohibitedInterfaceTypes = newValue
+            self.interfacePreferenceValues.prohibitedInterfaceTypes = newValue
         }
     }
     var prohibitedInterfaceSubtypes: Deque<InterfaceSubtype>? {
-        get { interfacePreferenceValues.backing?.storage.prohibitedInterfaceSubtypes }
+        get { self.interfacePreferenceValues.prohibitedInterfaceSubtypes }
         set {
-            interfacePreferenceValues.setupBacking()
-            interfacePreferenceValues.backing!.storage.prohibitedInterfaceSubtypes = newValue
+            self.interfacePreferenceValues.prohibitedInterfaceSubtypes = newValue
         }
     }
     var preferredInterfaceSubtypes: Deque<InterfaceSubtype>? {
-        get { interfacePreferenceValues.backing?.storage.preferredInterfaceSubtypes }
+        get { self.interfacePreferenceValues.preferredInterfaceSubtypes }
         set {
-            interfacePreferenceValues.setupBacking()
-            interfacePreferenceValues.backing!.storage.preferredInterfaceSubtypes = newValue
+            self.interfacePreferenceValues.preferredInterfaceSubtypes = newValue
         }
     }
     var prohibitedInterfaces: Deque<Interface>? {
-        get { interfacePreferenceValues.backing?.storage.prohibitedInterfaces }
+        get { self.interfacePreferenceValues.prohibitedInterfaces }
         set {
-            interfacePreferenceValues.setupBacking()
-            interfacePreferenceValues.backing!.storage.prohibitedInterfaces = newValue
+            self.interfacePreferenceValues.prohibitedInterfaces = newValue
         }
     }
     #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
@@ -366,6 +414,10 @@ struct PathParameters: Hashable, CustomStringConvertible {
 
     init() {}
 }
+
+// @unchecked Sendable because access is controlled by getters and copy-on-write setters giving this value semantics.
+@available(Network 0.1.0, *)
+extension PathParameters.InterfacePreferenceValues: @unchecked Sendable {}
 
 // MARK: - Copying and comparing
 @available(Network 0.1.0, *)
