@@ -53,19 +53,6 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
         self.log = logPrefixer
     }
 
-    mutating func coalesce() {
-        var index = 1
-        while index < blocks.count {
-            let current = blocks[index]
-            if blocks[index - 1].end == current.start - 1 {
-                blocks[index - 1].end = current.end
-                blocks.remove(at: index)
-            } else {
-                index += 1
-            }
-        }
-    }
-
     mutating func append(
         _ packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
@@ -95,18 +82,22 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
         // Case 1: extends an existing block
         // N.B.: we walk the array backwards because it's likely that we'll
         // find a matching block at the end of the array.
-        var coalesceLater = true
         var handled = false
         for index in blocks.indices.reversed() {
             if packetNumber >= blocks[index].start && packetNumber <= blocks[index].end {
-                // Duplicate packet number, ignore and don't call coalesce().
+                // Duplicate packet number, ignore.
                 handled = true
-                coalesceLater = false
                 break
             }
             if blocks[index].start != 0 && packetNumber == blocks[index].start - Int64(1) {
                 blocks[index].start -= 1
                 handled = true
+                // Merge both blocks
+                if index > 0 && blocks[index - 1].end == blocks[index].start - 1 {
+                    // Absorb blocks[index] into blocks[index - 1] and drop the now-redundant block.
+                    blocks[index - 1].end = blocks[index].end
+                    blocks.remove(at: index)
+                }
                 break
             }
 
@@ -115,6 +106,11 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
             {
                 blocks[index].end += 1
                 handled = true
+                // Merge both blocks
+                if index + 1 < blocks.count && blocks[index + 1].start == blocks[index].end + 1 {
+                    blocks[index].end = blocks[index + 1].end
+                    blocks.remove(at: index + 1)
+                }
                 break
             }
             if packetNumber > blocks[index].end {
@@ -135,10 +131,6 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
                 }
             }
             blocks.insert(block, at: candidateBlockIndex)
-            coalesceLater = false
-        }
-        if coalesceLater {
-            coalesce()
         }
         if packetNumber > oldLargest {
             largestTimestamp = now
@@ -425,7 +417,7 @@ struct AckBlockSequence: Sequence {
 }
 
 @available(Network 0.1.0, *)
-final class Ack: PrefixedLoggable, TimerUser {
+struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     var log: LogPrefixer
 
     // When an outgoing ACK reports more than this many blocks (i.e. this many gaps
@@ -510,7 +502,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         self.applicationAckSpace = AckSpace(logPrefixer: logPrefixer)
     }
 
-    func reset() {
+    mutating func reset() {
         connection?.timer.stop()
         connection = nil
     }
@@ -521,7 +513,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    func timerFired(timeNow: NetworkClock.Instant) {
+    mutating func timerFired(timeNow: NetworkClock.Instant) {
         log.datapath("delayed ACK timer fired")
         if let connection = connection {
             if sendPending(
@@ -542,7 +534,7 @@ final class Ack: PrefixedLoggable, TimerUser {
     }
 
     @discardableResult
-    func withAckSpace(
+    mutating func withAckSpace(
         packetNumberSpace: PacketNumberSpace,
         closure: (_: inout AckSpace) -> Bool
     ) -> Bool {
@@ -556,7 +548,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    func append(
+    mutating func append(
         packetNumberSpace: PacketNumberSpace,
         packetNumber: PacketNumber,
         now: NetworkClock.Instant = .now
@@ -567,7 +559,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    func packetsMissingBetween(
+    mutating func packetsMissingBetween(
         packetNumberSpace: PacketNumberSpace,
         packetNumberLow: PacketNumber,
         packetNumberHigh: PacketNumber
@@ -593,7 +585,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    func assemble(
+    mutating func assemble(
         for packetNumberSpace: PacketNumberSpace,
         isAckSet: Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
@@ -605,13 +597,14 @@ final class Ack: PrefixedLoggable, TimerUser {
             log.datapath("ACK frame already in the builder")
             shouldSend = true
         } else {
+            let delayExponent = localDelayExponent
             withAckSpace(packetNumberSpace: packetNumberSpace) {
                 ackSpace in
                 // We may be bundling an ACK, so set this to false to avoid sending
                 // another ACK when the delayed ACK timer fires.
                 let ackSize = ackSpace.build(
                     packetNumberSpace: packetNumberSpace,
-                    delayExponent: localDelayExponent,
+                    delayExponent: delayExponent,
                     setAckFrame: setAckFrame,
                     ecnCounter: ecnCounter,
                     now: now
@@ -624,7 +617,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         return shouldSend
     }
 
-    func assemble(
+    mutating func assemble(
         for path: QUICPath,
         delayExponent: Int,
         isAckSet: (PacketNumberSpace) -> Bool,
@@ -668,7 +661,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         return shouldSend
     }
 
-    func sent(_ sentTime: NetworkClock.Instant) {
+    mutating func sent(_ sentTime: NetworkClock.Instant) {
         unackedPacketCount = 0
         lastSentTime = sentTime
         if immediateAcks > 0 {
@@ -676,7 +669,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    private func schedulePending(
+    private mutating func schedulePending(
         on path: QUICPath,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
@@ -696,7 +689,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         return shouldSend
     }
 
-    func sendPending(
+    mutating func sendPending(
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
         ecn: borrowing ECN
@@ -756,7 +749,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         )
     }
 
-    func scheduleDelayedAck() {
+    mutating func scheduleDelayedAck() {
         // ACK timer is already scheduled
         if timerScheduled {
             return
@@ -774,7 +767,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    private func processPending(
+    private mutating func processPending(
         on path: QUICPath,
         connectionWindow: Int,
         isAckSet: (PacketNumberSpace) -> Bool,
@@ -814,7 +807,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    func processPending(
+    mutating func processPending(
         connectionWindow: Int,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
@@ -836,7 +829,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    func acknowledged(
+    mutating func acknowledged(
         packetNumberSpace: PacketNumberSpace,
         between startPN: PacketNumber,
         and endPN: PacketNumber
@@ -847,33 +840,33 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    func ackAgressively() {
+    mutating func ackAgressively() {
         immediateAcks = Ack.immediateAcks
     }
 
-    func ackImmediately() {
+    mutating func ackImmediately() {
         if immediateAcks == 0 {
             immediateAcks = 1
         }
     }
 
-    func shouldTransmit(packetNumberSpace: PacketNumberSpace) {
+    mutating func shouldTransmit(packetNumberSpace: PacketNumberSpace) {
         withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
             ackSpace.needsTransmission = true
             return true
         }
     }
 
-    func flush(for packetNumberSpace: PacketNumberSpace) {
+    mutating func flush(for packetNumberSpace: PacketNumberSpace) {
+        log.debug("Flushing all PN for \(packetNumberSpace)")
         withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
-            log.debug("Flushing all PN for \(packetNumberSpace)")
             ackSpace.blocks = []
             ackSpace.needsTransmission = false
             return true
         }
     }
 
-    func getGenerationCount(
+    mutating func getGenerationCount(
         for packetNumberSpace: PacketNumberSpace,
         now: Int
     ) -> Int {
@@ -917,7 +910,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         return true
     }
 
-    func updateLargestAckElicitingPacketNumber(
+    mutating func updateLargestAckElicitingPacketNumber(
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
     ) {
@@ -928,7 +921,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    func updateLargestPacketNumber(
+    mutating func updateLargestPacketNumber(
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace
     ) {
@@ -939,7 +932,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         }
     }
 
-    func getLargestReceivedPacketNumber(
+    mutating func getLargestReceivedPacketNumber(
         packetNumberSpace: PacketNumberSpace
     ) -> PacketNumber? {
         var largestReceivedPacketNumber: PacketNumber? = nil
@@ -950,7 +943,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         return largestReceivedPacketNumber
     }
 
-    func getLargestAckElicitingPacketNumber(
+    mutating func getLargestAckElicitingPacketNumber(
         packetNumberSpace: PacketNumberSpace
     ) -> PacketNumber {
         var largestAckElicitingPacketNumber: PacketNumber = .none
@@ -961,7 +954,7 @@ final class Ack: PrefixedLoggable, TimerUser {
         return largestAckElicitingPacketNumber
     }
 
-    func blocksForPacketNumberSpace(
+    mutating func blocksForPacketNumberSpace(
         packetNumberSpace: PacketNumberSpace
     ) -> Int {
         var blocks = 0
@@ -1241,16 +1234,18 @@ struct AckBitstringSequence: Sequence {
 extension Ack {
     // Builds the ACK frame and inserts it in the packetBuilder, otherwise just calculates the size.
     // This function is only used in testing
-    func buildForTesting(
+    mutating func buildForTesting(
         for packetNumberSpace: PacketNumberSpace,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
         ecnCounter: ECNCounter? = nil
     ) -> Int {
         var size = 0
+        let delayExponent = localDelayExponent
+        let delaySize = self.delaySize
         withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
             size = ackSpace.build(
                 packetNumberSpace: packetNumberSpace,
-                delayExponent: localDelayExponent,
+                delayExponent: delayExponent,
                 delaySize: delaySize,
                 setAckFrame: setAckFrame,
                 ecnCounter: ecnCounter,

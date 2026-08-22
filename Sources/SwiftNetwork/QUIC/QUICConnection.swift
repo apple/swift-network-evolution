@@ -215,7 +215,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var remoteMaximumUDPPayloadSize = 0
 
     var timer: Timer
-    private(set) var ack: Ack
+    var ack: Ack
     private(set) var ecn: ECN
     var recovery: Recovery
     private(set) var migration = Migration()
