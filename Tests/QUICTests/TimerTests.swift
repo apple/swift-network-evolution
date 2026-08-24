@@ -121,7 +121,8 @@ final class TimerTests: XCTestCase {
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
-        let twoId = timer.insert(description: "two", fromNow: .milliseconds(1000), timerNow: .init(milliseconds: 1500)) { _ in
+        let twoId = timer.insert(description: "two", fromNow: .milliseconds(1000), timerNow: .init(milliseconds: 1500))
+        { _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1500))
