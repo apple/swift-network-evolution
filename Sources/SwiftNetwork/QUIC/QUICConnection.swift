@@ -2971,7 +2971,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Storage for the packets recorded by a single sendFrames() call.
     private var sentPackets = NetworkUniqueDeque<SentPacketRecord>(minimumCapacity: 10)
 
-    private func capacityForPacketNumberSpace() -> Int {
+    private func capacityForPacketNumberSpace(applicationPendingItems: inout PendingItems) -> Int {
         let packetNumberSpace = PacketNumberSpace.fromKeyState(keyState: self.keyState)
         if packetNumberSpace == .applicationData {
             if !applicationPendingItems.stream {
@@ -2984,18 +2984,36 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    private func shrinkSentPacketsIfNecessary() {
-        assert(self.sentPackets.isEmpty)
+    private func shrinkSentPacketsIfNecessary(sentPackets: inout NetworkUniqueDeque<SentPacketRecord>) {
+        assert(sentPackets.isEmpty)
         // 'sentPackets' is held onto for the lifetime of the connection. If a send burst grows it
         // beyond a certain limit then drop the capacity. This avoids bursty traffic bloating memory
         // indefinitely.
-        if self.sentPackets.capacity > QUICPreferences.shared.maxSentPacketsCapacity {
-            self.sentPackets = NetworkUniqueDeque()
+        if sentPackets.capacity > QUICPreferences.shared.maxSentPacketsCapacity {
+            sentPackets = NetworkUniqueDeque()
         }
     }
 
+    // Adds recovery and applicationPendingItems to avoid extra begin/end acccess checking overhead
     @discardableResult
     func sendFrames(ignoreCongestionWindow: Bool = false, delayedACK: Bool = false) -> Bool {
+        sendFrames(
+            ignoreCongestionWindow: ignoreCongestionWindow,
+            delayedACK: delayedACK,
+            sentPackets: &sentPackets,
+            recovery: &recovery,
+            applicationPendingItems: &applicationPendingItems
+        )
+    }
+
+    @discardableResult
+    func sendFrames(
+        ignoreCongestionWindow: Bool = false,
+        delayedACK: Bool = false,
+        sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
+        recovery: inout Recovery,
+        applicationPendingItems: inout PendingItems
+    ) -> Bool {
         // Make sure there are packets to send
         guard
             initialPendingItems.hasPendingItems
@@ -3011,33 +3029,47 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             ack.scheduleDelayedAck()
             return false
         }
-        return withCurrentPath { path in
-            self.sentPackets.reserveCapacity(capacityForPacketNumberSpace())
-            var discardInitialRecoveryState = false
-
-            let success = sendFramesInternal(
+        guard let path = currentPath else {
+            return false
+        }
+        sentPackets.reserveCapacity(capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems))
+        let success: Bool
+        if initialKeysDiscarded && isHandshakeConfirmed {
+            // Once the handshake is complete only
+            // send application data from then on out.
+            success = sendApplicationFrames(
                 path: path,
                 ignoreCongestionWindow: ignoreCongestionWindow,
                 retransmission: false,
-                sentPackets: &self.sentPackets,
+                sentPackets: &sentPackets,
+                applicationPendingItems: &applicationPendingItems
+            )
+        } else {
+            var discardInitialRecoveryState = false
+            success = sendFramesInternal(
+                path: path,
+                ignoreCongestionWindow: ignoreCongestionWindow,
+                retransmission: false,
+                sentPackets: &sentPackets,
+                initialPendingItems: &initialPendingItems,
+                handshakePendingItems: &handshakePendingItems,
+                applicationPendingItems: &applicationPendingItems,
                 discardInitialRecoveryState: &discardInitialRecoveryState
             )
-
-            // Trigger PMTUD if necessary
-            var pmtudPackets = path.pmtudState.sendProbe(on: path)
-            while let pmtudPacket = pmtudPackets.popFirst() {
-                self.sentPackets.append(pmtudPacket)
-            }
-            recovery.recordSentPackets(&self.sentPackets, connection: self)
-            self.shrinkSentPacketsIfNecessary()
             if discardInitialRecoveryState {
                 recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
-                withCurrentPath {
-                    recovery.resetPTOCount(path: $0)
-                }
+                recovery.resetPTOCount(path: path)
             }
-            return success
         }
+
+        // Trigger PMTUD if necessary.
+        var pmtudPackets = path.pmtudState.sendProbe(on: path, applicationPendingItems: &applicationPendingItems)
+        while let pmtudPacket = pmtudPackets.popFirst() {
+            sentPackets.append(pmtudPacket)
+        }
+        recovery.recordSentPackets(&sentPackets, connection: self)
+        self.shrinkSentPacketsIfNecessary(sentPackets: &sentPackets)
+        return success
     }
 
     @discardableResult
@@ -3046,22 +3078,25 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         ignoreCongestionWindow: Bool = false,
         retransmission: Bool = false
     ) -> Bool {
-        self.sentPackets.reserveCapacity(capacityForPacketNumberSpace())
+        self.sentPackets.reserveCapacity(
+            capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
+        )
         var discardInitialRecoveryState = false
         let success = sendFramesInternal(
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
             retransmission: retransmission,
             sentPackets: &self.sentPackets,
+            initialPendingItems: &initialPendingItems,
+            handshakePendingItems: &handshakePendingItems,
+            applicationPendingItems: &applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState
         )
         recovery.recordSentPackets(&self.sentPackets, connection: self)
-        self.shrinkSentPacketsIfNecessary()
+        self.shrinkSentPacketsIfNecessary(sentPackets: &sentPackets)
         if discardInitialRecoveryState {
             recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
-            withCurrentPath {
-                recovery.resetPTOCount(path: $0)
-            }
+            recovery.resetPTOCount(path: path)
         }
         return success
     }
@@ -3073,12 +3108,35 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         retransmission: Bool = false,
         discardInitialRecoveryState: inout Bool
     ) -> NetworkUniqueDeque<SentPacketRecord> {
-        var sentPackets = NetworkUniqueDeque<SentPacketRecord>(minimumCapacity: capacityForPacketNumberSpace())
+        sendFramesFromRecovery(
+            on: path,
+            ignoreCongestionWindow: ignoreCongestionWindow,
+            retransmission: retransmission,
+            applicationPendingItems: &applicationPendingItems,
+            discardInitialRecoveryState: &discardInitialRecoveryState
+        )
+    }
+
+    // Sends with pending items attached
+    @discardableResult
+    func sendFramesFromRecovery(
+        on path: QUICPath,
+        ignoreCongestionWindow: Bool = false,
+        retransmission: Bool = false,
+        applicationPendingItems: inout PendingItems,
+        discardInitialRecoveryState: inout Bool
+    ) -> NetworkUniqueDeque<SentPacketRecord> {
+        var sentPackets = NetworkUniqueDeque<SentPacketRecord>(
+            minimumCapacity: capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
+        )
         _ = sendFramesInternal(
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
             retransmission: retransmission,
             sentPackets: &sentPackets,
+            initialPendingItems: &initialPendingItems,
+            handshakePendingItems: &handshakePendingItems,
+            applicationPendingItems: &applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState
         )
         return sentPackets
@@ -3094,7 +3152,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         sendFrames(on: path)
     }
 
-    private func buildOutboundFrameBatch(availableCongestionWindow: UInt64) -> FrameArray {
+    private func buildOutboundFrameBatch(
+        availableCongestionWindow: UInt64,
+        applicationPendingItems: inout PendingItems
+    ) -> FrameArray {
         var outboundBatch = FrameArray()
         // If ACK is only set or the connection is blocked just send empty batch
         if applicationPendingItems.isAckSet || self.hasSentDataBlocked {
@@ -3145,12 +3206,185 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
+    // Shared by sendApplicationFrames and sendFramesInternal to build the datagram batch.
+    private func prepareApplicationDatagramBatch(
+        path: QUICPath,
+        availableCongestionWindow: UInt64,
+        totalSendBytes: UInt64,
+        startSendingTimestamp: NetworkClock.Instant,
+        applicationPendingItems: inout PendingItems
+    ) -> FrameArray {
+        let datagramBatch: FrameArray
+        if self.flowControlState.pendingOutboundBytesToSend > 0 && availableCongestionWindow > 0 {
+            datagramBatch = buildOutboundFrameBatch(
+                availableCongestionWindow: (availableCongestionWindow - totalSendBytes),
+                applicationPendingItems: &applicationPendingItems
+            )
+        } else {
+            datagramBatch = FrameArray()
+        }
+
+        // Sending on the current path.
+        // Add the path frames to the items for application data
+        path.addPendingItems(&applicationPendingItems, now: startSendingTimestamp)
+        return datagramBatch
+    }
+
+    // Shared by sendApplicationFrames and sendFramesInternal.
+    private func runApplicationBurstLoop(
+        keyState: PacketKeyState,
+        path: QUICPath,
+        ignoreCongestionWindow: Bool,
+        retransmission: Bool,
+        startSendingTimestamp: NetworkClock.Instant,
+        availableCongestionWindow: inout UInt64,
+        totalSendBytes: inout UInt64,
+        datagramBatch: inout FrameArray,
+        outboundFrames: inout FrameArray,
+        sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
+        applicationPendingItems: inout PendingItems
+    ) {
+        var packetBurst = 0
+        var packetBurstTotal = 0
+        while applicationPendingItems.hasPendingItems {
+            guard
+                buildSinglePacketForKeyState(
+                    keyState,
+                    pendingItems: &applicationPendingItems,
+                    sentPackets: &sentPackets,
+                    on: path,
+                    ignoreCongestionWindow: ignoreCongestionWindow,
+                    availableCongestionWindow: &availableCongestionWindow,
+                    totalSendBytes: &totalSendBytes,
+                    retransmission: retransmission,
+                    datagramBatch: &datagramBatch,
+                    outboundFrames: &outboundFrames,
+                    protector: &protector,
+                    ack: ack,
+                    stats: &stats,
+                    ecn: &ecn
+                )
+            else {
+                break
+            }
+
+            if !ignoreCongestionWindow && totalSendBytes >= availableCongestionWindow {
+                break
+            }
+
+            var shouldEndBurst = false
+            packetBurst += 1
+            packetBurstTotal += 1
+
+            if packetBurstTotal >= Constants.maxPacketBurstCount {
+                // The maximum total packet count has been reached
+                shouldEndBurst = true
+            } else if packetBurst >= Constants.packetBurstCount {
+                // The packet burst count has been reached, check the time
+                if startSendingTimestamp.duration(to: .now) >= Constants.maxPacketBurstDuration {
+                    // The maximum burst time has been reached
+                    shouldEndBurst = true
+                } else {
+                    // Reset the local burst count and continue
+                    packetBurst = 0
+                    if datagramBatch.isEmpty {
+                        // If sending packet bursts and the original batch of prefetched datagrams is empty, fetch a new batch
+                        datagramBatch = buildOutboundFrameBatch(
+                            availableCongestionWindow: (availableCongestionWindow - totalSendBytes),
+                            applicationPendingItems: &applicationPendingItems
+                        )
+                    }
+                }
+            }
+            // If we've exceeded the send burst limit, trigger an async before servicing more data
+            if shouldEndBurst {
+                log.datapath("burst limit application data")
+                applicationPendingItems.rotateFirstStreamToService()
+                burstLimitReached()
+                break
+            }
+        }
+    }
+
+    // Used to send only application data
+    private func sendApplicationFrames(
+        path: QUICPath,
+        ignoreCongestionWindow: Bool = false,
+        retransmission: Bool = false,
+        sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
+        applicationPendingItems: inout PendingItems
+    ) -> Bool {
+        // Handle the case of having additional paths at the very beginning of the connection.
+        if path.mss == 0 {
+            setInitialMSS(on: path)
+        }
+
+        var drop = false
+        guard canSendFrames(on: path, drop: &drop) else {
+            return drop
+        }
+
+        var totalSendBytes: UInt64 = 0
+        // Ignoring is equivalent to an infinite window
+        var availableCongestionWindow = UInt64.max
+        if !ignoreCongestionWindow {
+            availableCongestionWindow = path.congestionControlAvailableCongestionWindow
+        }
+
+        let startSendingTimestamp = self.now
+
+        // Make sure there is something to send, do not allocate empty frame arrays if we do not have to.
+        guard applicationPendingItems.hasPendingItems else {
+            return false
+        }
+
+        var datagramBatch = prepareApplicationDatagramBatch(
+            path: path,
+            availableCongestionWindow: availableCongestionWindow,
+            totalSendBytes: totalSendBytes,
+            startSendingTimestamp: startSendingTimestamp,
+            applicationPendingItems: &applicationPendingItems
+        )
+
+        defer {
+            if !datagramBatch.isEmpty {
+                datagramBatch.finalizeAllFramesAsFailed()
+            }
+        }
+
+        var outboundFrameArray = FrameArray()
+        // keyState can only be .phase0 or .phase1 here: initial keys are discarded and the
+        // handshake is confirmed, so .earlyData is no longer possible.
+        let packetKeyState: PacketKeyState = self.keyState == .phase1 ? .phase1 : .phase0
+
+        runApplicationBurstLoop(
+            keyState: packetKeyState,
+            path: path,
+            ignoreCongestionWindow: ignoreCongestionWindow,
+            retransmission: retransmission,
+            startSendingTimestamp: startSendingTimestamp,
+            availableCongestionWindow: &availableCongestionWindow,
+            totalSendBytes: &totalSendBytes,
+            datagramBatch: &datagramBatch,
+            outboundFrames: &outboundFrameArray,
+            sentPackets: &sentPackets,
+            applicationPendingItems: &applicationPendingItems
+        )
+        if !outboundFrameArray.isEmpty {
+            sendOutboundFrames(outboundFrameArray, on: path)
+        }
+        return true
+    }
+
     // Don't use directly, use above sendFrames*()
     private func sendFramesInternal(
         path: QUICPath,
         ignoreCongestionWindow: Bool = false,
         retransmission: Bool = false,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
+        initialPendingItems: inout PendingItems,
+        handshakePendingItems: inout PendingItems,
+        applicationPendingItems: inout PendingItems,
         discardInitialRecoveryState: inout Bool
     ) -> Bool {
         // Handle the case of having additional paths at the very beginning of the connection.
@@ -3183,7 +3417,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             var datagramBatch = FrameArray()
             if self.flowControlState.pendingOutboundBytesToSend > 0 && availableCongestionWindow > 0 {
                 datagramBatch = buildOutboundFrameBatch(
-                    availableCongestionWindow: (availableCongestionWindow - totalSendBytes)
+                    availableCongestionWindow: (availableCongestionWindow - totalSendBytes),
+                    applicationPendingItems: &applicationPendingItems
                 )
             }
             var outboundFrameArray = FrameArray()
@@ -3197,7 +3432,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 totalSendBytes: &totalSendBytes,
                 retransmission: retransmission,
                 datagramBatch: &datagramBatch,
-                outboundFrames: &outboundFrameArray
+                outboundFrames: &outboundFrameArray,
+                protector: &protector,
+                ack: ack,
+                stats: &stats,
+                ecn: &ecn
             )
             if !outboundFrameArray.isEmpty {
                 sendOutboundFrames(outboundFrameArray, on: path)
@@ -3213,20 +3452,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return false
         }
 
-        var datagramBatch: FrameArray
-        if self.flowControlState.pendingOutboundBytesToSend > 0 && availableCongestionWindow > 0 {
-            datagramBatch = buildOutboundFrameBatch(
-                availableCongestionWindow: (availableCongestionWindow - totalSendBytes)
-            )
-        } else {
-            datagramBatch = FrameArray()
-        }
-
-        // Sending on the current path.
-        // Add the path frames to the items for application data
-        withPendingItems(for: .applicationData) {
-            path.addPendingItems(&$0, now: startSendingTimestamp)
-        }
+        var datagramBatch = prepareApplicationDatagramBatch(
+            path: path,
+            availableCongestionWindow: availableCongestionWindow,
+            totalSendBytes: totalSendBytes,
+            startSendingTimestamp: startSendingTimestamp,
+            applicationPendingItems: &applicationPendingItems
+        )
 
         defer {
             if !datagramBatch.isEmpty {
@@ -3253,7 +3485,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         totalSendBytes: &totalSendBytes,
                         retransmission: retransmission,
                         datagramBatch: &datagramBatch,
-                        outboundFrames: &outboundFrameArray
+                        outboundFrames: &outboundFrameArray,
+                        protector: &protector,
+                        ack: ack,
+                        stats: &stats,
+                        ecn: &ecn
                     )
                 else {
                     break
@@ -3273,7 +3509,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Discard keys first to make sure we have room in congestion control
             if !isServer && !initialKeysDiscarded {
                 discardInitialRecoveryState = true
-                discardKeys(keyState: .initial, discardRecoveryState: false)
+                discardKeys(keyState: .initial, pendingItems: &initialPendingItems, discardRecoveryState: false)
                 initialKeysDiscarded = true
             }
 
@@ -3288,7 +3524,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     totalSendBytes: &totalSendBytes,
                     retransmission: retransmission,
                     datagramBatch: &datagramBatch,
-                    outboundFrames: &outboundFrameArray
+                    outboundFrames: &outboundFrameArray,
+                    protector: &protector,
+                    ack: ack,
+                    stats: &stats,
+                    ecn: &ecn
                 )
             else {
                 break
@@ -3298,71 +3538,28 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        var packetBurst = 0
-        var packetBurstTotal = 0
-        while applicationPendingItems.hasPendingItems {
-            let keyState: PacketKeyState
-            if self.keyState == .initial {
-                keyState = .earlyData
-            } else if self.keyState == .phase1 {
-                keyState = .phase1
-            } else {
-                keyState = .phase0
-            }
-
-            guard
-                buildSinglePacketForKeyState(
-                    keyState,
-                    pendingItems: &applicationPendingItems,
-                    sentPackets: &sentPackets,
-                    on: path,
-                    ignoreCongestionWindow: ignoreCongestionWindow,
-                    availableCongestionWindow: &availableCongestionWindow,
-                    totalSendBytes: &totalSendBytes,
-                    retransmission: retransmission,
-                    datagramBatch: &datagramBatch,
-                    outboundFrames: &outboundFrameArray
-                )
-            else {
-                break
-            }
-
-            if !ignoreCongestionWindow && totalSendBytes >= availableCongestionWindow {
-                break
-            }
-
-            var shouldEndBurst = false
-            packetBurst += 1
-            packetBurstTotal += 1
-
-            if packetBurstTotal >= Constants.maxPacketBurstCount {
-                // The maximum total packet count has been reached
-                shouldEndBurst = true
-            } else if packetBurst >= Constants.packetBurstCount {
-                // The packet burst count has been reached, check the time
-                if startSendingTimestamp.duration(to: .now) >= Constants.maxPacketBurstDuration {
-                    // The maximum burst time has been reached
-                    shouldEndBurst = true
-                } else {
-                    // Reset the local burst count and continue
-                    packetBurst = 0
-                    if datagramBatch.isEmpty {
-                        // If sending packet bursts and the original batch of prefetched datagrams is empty, fetch a new batch
-                        datagramBatch = buildOutboundFrameBatch(
-                            availableCongestionWindow: (availableCongestionWindow - totalSendBytes)
-                        )
-                    }
-                }
-            }
-
-            // If we've exceeded the send burst limit, trigger an async before servicing more data
-            if shouldEndBurst {
-                log.datapath("burst limit application data")
-                applicationPendingItems.rotateFirstStreamToService()
-                burstLimitReached()
-                break
-            }
+        let applicationKeyState: PacketKeyState
+        if self.keyState == .initial {
+            applicationKeyState = .earlyData
+        } else if self.keyState == .phase1 {
+            applicationKeyState = .phase1
+        } else {
+            applicationKeyState = .phase0
         }
+
+        runApplicationBurstLoop(
+            keyState: applicationKeyState,
+            path: path,
+            ignoreCongestionWindow: ignoreCongestionWindow,
+            retransmission: retransmission,
+            startSendingTimestamp: startSendingTimestamp,
+            availableCongestionWindow: &availableCongestionWindow,
+            totalSendBytes: &totalSendBytes,
+            datagramBatch: &datagramBatch,
+            outboundFrames: &outboundFrameArray,
+            sentPackets: &sentPackets,
+            applicationPendingItems: &applicationPendingItems
+        )
         if !outboundFrameArray.isEmpty {
             sendOutboundFrames(outboundFrameArray, on: path)
         }
@@ -3379,14 +3576,22 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         totalSendBytes: inout UInt64,
         retransmission: Bool,
         datagramBatch: inout FrameArray,
-        outboundFrames: inout FrameArray
+        outboundFrames: inout FrameArray,
+        protector: inout Protector,
+        ack: Ack,
+        stats: inout Statistics,
+        ecn: inout ECN
     ) -> Bool {
-        let packetNumberSpace = pendingItems.packetNumberSpace
 
         if path.isFlowControlled {
             log.datapath("Path is flow controlled")
             return false
         }
+
+        let packetNumberSpace = pendingItems.packetNumberSpace
+        let isPacing = isPacing
+        let isServer = isServer
+        let testSendingShortPackets = testSendingShortPackets
 
         // Server must not send more than 3x the number of bytes received, until
         // the client's address has been validated by receiving a handshake
@@ -3430,6 +3635,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         if isPacing {
             let now = NetworkClock.Instant.now
+            let lastAckElicitingPacketSentTimestamp = lastAckElicitingPacketSentTimestamp
             // lastAckElicitingPacketSentTimestamp can be in the future for kernel packet pacing.
             if now > lastAckElicitingPacketSentTimestamp {
                 let idleTime = lastAckElicitingPacketSentTimestamp.duration(to: now)
@@ -3522,8 +3728,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     connection: self,
                     availableCongestionWindow: availableCongestionWindow,
                     token: initialToken,
-                    stats: &self.stats,
-                    version: currentVersion
+                    stats: &stats,
+                    version: currentVersion,
+                    isServer: isServer,
+                    testSendingShortPackets: testSendingShortPackets
                 )
             } catch {
                 if totalBytesWrittenInFrame > 0 {
@@ -3543,8 +3751,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             let isInFlightEligible = sentPacketRecord.isInFlightEligible
             outFrame.ecnFlag = ECN.outgoingIPCodepoint(
-                ecn: self.ecn,
-                path: currentPath,
+                ecn: ecn,
+                path: path,
                 stats: &stats,
                 packet: &sentPacketRecord
             )
@@ -3598,13 +3806,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             stats.increment(.txBytes, by: totalPacketLength)
             stats.increment(.txPackets)
-            withCurrentPath { (path: borrowing QUICPath) -> Void in
-                path.pathStatistics[.txPackets] += 1
-                path.pathStatistics[.txBytes] += Int(totalPacketLength)
-            }
+            path.pathStatistics[.txPackets] += 1
+            path.pathStatistics[.txBytes] += Int(totalPacketLength)
+
             // Seal packet, incidentally this also effectively takes the packet number!
             do throws(QUICError) {
-                try self.protector.seal(&packet, frame: &outFrame)
+                try protector.seal(&packet, frame: &outFrame)
             } catch {
                 self.log.error(
                     "Failed to seal packet: \(error.info.description), code \(error.info.code)"
@@ -4273,12 +4480,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.connectionMetadata.remoteMaxDatagramFrameSize = UInt16(truncatingIfNeeded: remoteMaxDatagramFrameSize)
     }
 
-    private func discardKeys(keyState: PacketKeyState, discardRecoveryState: Bool = true) {
-        let space = PacketNumberSpace.fromKeyState(keyState: keyState)
-
-        // Flush first so that we won't send out frames other than ACKs with older key
-        withPendingItems(for: space) { $0.flush() }
-
+    private func discardKeysInternal(
+        keyState: PacketKeyState,
+        space: PacketNumberSpace,
+        discardRecoveryState: Bool = true
+    ) {
         protector.drop(keyState: keyState)
 
         if discardRecoveryState {
@@ -4297,6 +4503,24 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         #endif
         ack.flush(for: space)
+    }
+
+    private func discardKeys(
+        keyState: PacketKeyState,
+        pendingItems: inout PendingItems,
+        discardRecoveryState: Bool = true
+    ) {
+        let space = PacketNumberSpace.fromKeyState(keyState: keyState)
+        // Flush first so that we won't send out frames other than ACKs with older key
+        pendingItems.flush()
+        discardKeysInternal(keyState: keyState, space: space, discardRecoveryState: discardRecoveryState)
+    }
+
+    private func discardKeys(keyState: PacketKeyState, discardRecoveryState: Bool = true) {
+        let space = PacketNumberSpace.fromKeyState(keyState: keyState)
+        // Flush first so that we won't send out frames other than ACKs with older key
+        withPendingItems(for: space) { $0.flush() }
+        discardKeysInternal(keyState: keyState, space: space, discardRecoveryState: discardRecoveryState)
     }
 
     public func wakeup() {

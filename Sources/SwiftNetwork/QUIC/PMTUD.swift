@@ -186,6 +186,14 @@ struct PMTUDState: ~Copyable {
 
     mutating func canSendProbe(on path: QUICPath) -> Bool {
         let connection = path.parentProtocol
+        let hasPendingItems = connection.withPendingItemsForKeyState { pendingItems in
+            pendingItems.hasPendingItems
+        }
+        return canSendProbe(on: path, hasPendingItems: hasPendingItems)
+    }
+
+    mutating func canSendProbe(on path: QUICPath, hasPendingItems: Bool) -> Bool {
+        let connection = path.parentProtocol
         guard enabled, canProbe, !searchCompleted else {
             path.log.datapath("Not probing PMTUD, not in correct state")
             return false
@@ -206,9 +214,6 @@ struct PMTUDState: ~Copyable {
             return false
         }
 
-        let hasPendingItems = connection.withPendingItemsForKeyState { pendingItems in
-            pendingItems.hasPendingItems
-        }
         guard !hasPendingItems else {
             path.log.datapath("Not probing PMTUD, already have pending items")
             return false
@@ -328,8 +333,17 @@ struct PMTUDState: ~Copyable {
     }
 
     mutating func sendProbe(on path: QUICPath) -> NetworkUniqueDeque<SentPacketRecord> {
+        let connection = path.parentProtocol
+        return sendProbe(on: path, applicationPendingItems: &connection.applicationPendingItems)
+    }
+
+    // Used in the send path when the caller has ownership of applicationPendingItems already
+    mutating func sendProbe(
+        on path: QUICPath,
+        applicationPendingItems: inout PendingItems
+    ) -> NetworkUniqueDeque<SentPacketRecord> {
         pendingTransmission = false
-        guard canSendProbe(on: path) else {
+        guard canSendProbe(on: path, hasPendingItems: applicationPendingItems.hasPendingItems) else {
             return .init()
         }
 
@@ -340,11 +354,9 @@ struct PMTUDState: ~Copyable {
         }
         let probeMSS = (nextProbeMTU - ipUDPHeaderSize)
 
-        connection.withPendingItemsForKeyState { pendingItems in
-            pendingItems.ping = true
-            pendingItems.pmtudProbeMSS = probeMSS
-            pendingItems.paddingApproach = .padToEnd
-        }
+        applicationPendingItems.ping = true
+        applicationPendingItems.pmtudProbeMSS = probeMSS
+        applicationPendingItems.paddingApproach = .padToEnd
 
         // The probe is queued but not sent yet. A probe can be driven by the PMTUD
         // timer rather than by an application write, in which case nothing else
@@ -354,6 +366,7 @@ struct PMTUDState: ~Copyable {
         var discardInitialRecoveryState = false
         let sentPackets = connection.sendFramesFromRecovery(
             on: path,
+            applicationPendingItems: &applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState
         )
         guard !sentPackets.isEmpty else {
