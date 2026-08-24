@@ -34,7 +34,7 @@ final class TimerTests: XCTestCase {
     func testOneTimer() {
         let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
-        let oneId = timer.insert(description: "one", fromNow: .milliseconds(1000), timerNow: .zero) {
+        let oneId = timer.insert(description: "one", fromNow: .milliseconds(1000), timerNow: .zero) { _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
@@ -49,7 +49,7 @@ final class TimerTests: XCTestCase {
     func testReschedule() {
         let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
-        let oneId = timer.insert(description: "one-reschedule", timerNow: .zero) {
+        let oneId = timer.insert(description: "one-reschedule", timerNow: .zero) { _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .zero)
@@ -66,10 +66,10 @@ final class TimerTests: XCTestCase {
     func testTwoTimersAtSameTime() throws {
         let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
-        let oneId = timer.insert(description: "one", fromNow: .milliseconds(1000), timerNow: .zero) {
+        let oneId = timer.insert(description: "one", fromNow: .milliseconds(1000), timerNow: .zero) { _ in
             semaphore.signal()
         }
-        let twoId = timer.insert(description: "two", fromNow: .milliseconds(1000), timerNow: .zero) {
+        let twoId = timer.insert(description: "two", fromNow: .milliseconds(1000), timerNow: .zero) { _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
@@ -90,11 +90,11 @@ final class TimerTests: XCTestCase {
     func testTwoTimersAtDifferentTimes() throws {
         let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
-        let oneId = timer.insert(description: "one", fromNow: .milliseconds(2000), timerNow: .zero) {
+        let oneId = timer.insert(description: "one", fromNow: .milliseconds(2000), timerNow: .zero) { _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 2000))
-        let twoId = timer.insert(description: "two", fromNow: .milliseconds(1000), timerNow: .zero) {
+        let twoId = timer.insert(description: "two", fromNow: .milliseconds(1000), timerNow: .zero) { _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
@@ -117,12 +117,11 @@ final class TimerTests: XCTestCase {
     func testRecalculateAfterMissingTimer() throws {
         let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
-        let oneId = timer.insert(description: "one", fromNow: .milliseconds(1000), timerNow: .zero) {
+        let oneId = timer.insert(description: "one", fromNow: .milliseconds(1000), timerNow: .zero) { _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
-        let twoId = timer.insert(description: "two", fromNow: .milliseconds(1000), timerNow: .init(milliseconds: 1500))
-        {
+        let twoId = timer.insert(description: "two", fromNow: .milliseconds(1000), timerNow: .init(milliseconds: 1500)) { _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1500))
@@ -146,7 +145,7 @@ final class TimerTests: XCTestCase {
     func testRecalculateWithinThreshold() throws {
         let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
-        let oneId = timer.insert(description: "one", fromNow: .microseconds(1_000_000), timerNow: .zero) {
+        let oneId = timer.insert(description: "one", fromNow: .microseconds(1_000_000), timerNow: .zero) { _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(microseconds: 1_000_000))
@@ -156,7 +155,7 @@ final class TimerTests: XCTestCase {
             description: "two",
             fromNow: .microseconds(1_000_000),
             timerNow: .init(microseconds: 2)
-        ) {
+        ) { _ in
             semaphore.signal()
         }
 
@@ -185,7 +184,7 @@ final class TimerTests: XCTestCase {
         let semaphore = DispatchSemaphore(value: 0)
 
         // A, in 2s
-        let idA = timer.insert(description: "A", fromNow: .seconds(2), timerNow: .zero) {
+        let idA = timer.insert(description: "A", fromNow: .seconds(2), timerNow: .zero) { _ in
             XCTFail("A was disabled and must not fire")
         }
         XCTAssertEqual(timer.nextDeadline, .init(.seconds(2)))
@@ -195,7 +194,7 @@ final class TimerTests: XCTestCase {
             description: "B",
             fromNow: .seconds(2) + .microseconds(999),
             timerNow: .zero
-        ) {
+        ) { _ in
             semaphore.signal()
         }
         // A was earlier, deadline is unchanged
@@ -229,7 +228,7 @@ final class TimerTests: XCTestCase {
         let timer = QUICTimer(timerReference: TimerReference(), logPrefixer: timerTestsLogPrefixer)
         let semaphore = DispatchSemaphore(value: 0)
 
-        let idA = timer.insert(description: "A", fromNow: .seconds(2), timerNow: .zero) {
+        let idA = timer.insert(description: "A", fromNow: .seconds(2), timerNow: .zero) { _ in
             XCTFail("A was cancelled and must not fire")
         }
         XCTAssertEqual(timer.nextDeadline, .init(.seconds(2)))
@@ -242,7 +241,7 @@ final class TimerTests: XCTestCase {
             description: "B",
             fromNow: .seconds(2) + .microseconds(500),
             timerNow: .zero
-        ) {
+        ) { _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(.seconds(2) + .microseconds(500)))

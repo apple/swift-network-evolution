@@ -46,9 +46,9 @@ private struct TimerEntry: ~Copyable {
     let identifier: Timer.TimerID
     var deadline: NetworkClock.Instant = .zero
     let description: String
-    let closure: () -> Void
+    let closure: (NetworkClock.Instant) -> Void
 
-    init(identifier: Timer.TimerID, description: String, closure: @escaping () -> Void) {
+    init(identifier: Timer.TimerID, description: String, closure: @escaping (NetworkClock.Instant) -> Void) {
         self.identifier = identifier
         self.description = description
         self.closure = closure
@@ -113,7 +113,7 @@ final class Timer: PrefixedLoggable {
         description: String,
         fromNow: NetworkDuration = .zero,
         timerNow: NetworkClock.Instant,
-        closure: @escaping () -> Void
+        closure: @escaping (NetworkClock.Instant) -> Void
     ) -> TimerID {
         let identifier = nextID
         var entry = TimerEntry(identifier: nextID, description: description, closure: closure)
@@ -289,7 +289,7 @@ final class Timer: PrefixedLoggable {
                     )
                 }
                 entries[index].disable()
-                entries[index].closure()
+                entries[index].closure(timeNow)
                 ranOne = true
             }
             index += 1

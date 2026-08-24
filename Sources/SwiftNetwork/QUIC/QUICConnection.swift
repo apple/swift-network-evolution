@@ -447,13 +447,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.setMetadataHandlers()
 
         self.timer = Timer(reference: self.reference, timerReference: timerReference, logPrefixer: logPrefixer)
-        let ackTimerID = timer.insert(description: "ACK", timerNow: self.now) {
-            self.ack.timerFired(timeNow: self.now)
+        let ackTimerID = timer.insert(description: "ACK", timerNow: self.now) { firedAt in
+            self.ack.timerFired(timeNow: firedAt)
         }
         self.ack = Ack(connection: self, timerID: ackTimerID, logPrefixer: logPrefixer)
 
-        let recoveryTimerID = timer.insert(description: "Recovery", timerNow: self.now) {
-            self.recovery.timerFired(timeNow: self.now)
+        let recoveryTimerID = timer.insert(description: "Recovery", timerNow: self.now) { firedAt in
+            self.recovery.timerFired(timeNow: firedAt)
         }
         self.recovery = Recovery(
             connection: self,
@@ -461,7 +461,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             logPrefixer: logPrefixer
         )
 
-        migration.timerID = timer.insert(description: "Migration", timerNow: self.now) {
+        migration.timerID = timer.insert(description: "Migration", timerNow: self.now) { _ in
             self.migration.timerFired(connection: self)
         }
 
@@ -1369,7 +1369,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             description: "Idle timeout",
             fromNow: idleTimeout,
             timerNow: self.now
-        ) {
+        ) { _ in
             self.idleTimeoutFired()
         }
 
@@ -2757,7 +2757,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     description: "draining",
                     fromNow: path.recoveryState.getMaxPTODrainTime(idleTimeout: self.idleTimeout),
                     timerNow: self.now
-                ) {
+                ) { _ in
                     self.drain()
                 }
             }
@@ -2877,7 +2877,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             minIdleTime = .milliseconds(min(idleTimeoutLocal, idleTimeoutRemote))
         }
         if keepaliveTimerID == nil {
-            keepaliveTimerID = timer.insert(description: "keepalive", timerNow: self.now) {
+            keepaliveTimerID = timer.insert(description: "keepalive", timerNow: self.now) { _ in
                 self.keepaliveHandler()
             }
         }
