@@ -2185,8 +2185,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         stats.increment(.rxPackets)
         stats.increment(.rxBytes, by: packetLength)
         withCurrentPath { (path: borrowing QUICPath) -> Void in
-            path.pathStatistics[.rxPackets] += 1
-            path.pathStatistics[.rxBytes] += Int(packetLength)
+            path.pathStatistics.increment(.rxPackets)
+            path.pathStatistics.increment(.rxBytes, by: Int(packetLength))
         }
         return true
     }
@@ -2293,8 +2293,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         stats.increment(.rxPackets)
         stats.increment(.rxBytes, by: packetLength)
         withCurrentPath { (path: borrowing QUICPath) -> Void in
-            path.pathStatistics[.rxPackets] += 1
-            path.pathStatistics[.rxBytes] += Int(packetLength)
+            path.pathStatistics.increment(.rxPackets)
+            path.pathStatistics.increment(.rxBytes, by: Int(packetLength))
         }
         self.ack.append(
             packetNumberSpace: packet.numberSpace,
@@ -3806,8 +3806,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             stats.increment(.txBytes, by: totalPacketLength)
             stats.increment(.txPackets)
-            path.pathStatistics[.txPackets] += 1
-            path.pathStatistics[.txBytes] += Int(totalPacketLength)
+            path.pathStatistics.increment(.txPackets)
+            path.pathStatistics.increment(.txBytes, by: Int(totalPacketLength))
 
             // Seal packet, incidentally this also effectively takes the packet number!
             do throws(QUICError) {
@@ -4214,7 +4214,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             stats.increment(.rxReorderedPackets)
             stats.increment(.rxReorderedBytes, by: Int(packet.totalLength))
             withCurrentPath { path in
-                path.pathStatistics[.rxReorderedBytes] += Int(packet.totalLength)
+                path.pathStatistics.increment(.rxReorderedBytes, by: Int(packet.totalLength))
             }
             return true
         }
