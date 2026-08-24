@@ -633,7 +633,7 @@ final class QLog {
         }
     }
 
-    func packetSent(_ packet: borrowing Packet, timestamp: NetworkClock.Instant = .now) {
+    func packetSent(_ packet: borrowing Packet, timestamp: NetworkClock.Instant) {
         let packetType = PacketType(packet: packet)
         let packetHeader = PacketHeader(packet: packet)
         let frameList = EventFrames(packet: packet)
@@ -651,7 +651,7 @@ final class QLog {
     func packetReceived(
         _ packet: borrowing Packet,
         coalesced isCoalesced: Bool,
-        timestamp: NetworkClock.Instant = .now
+        timestamp: NetworkClock.Instant
     ) {
         let packetEvent = EventPacket(
             packetType: PacketType(packet: packet),
@@ -667,7 +667,7 @@ final class QLog {
     func packetLost(
         _ packet: borrowing SentPacketRecord,
         trigger: QLogPacketLostTrigger?,
-        timestamp: NetworkClock.Instant = .now
+        timestamp: NetworkClock.Instant
     ) {
         let packetEvent = EventPacket(
             packetType: PacketType(packet: packet),
@@ -691,7 +691,7 @@ final class QLog {
         slowStartThresh: UInt64 = UInt64.max,
         packetsInFlight: UInt64 = UInt64.max,
         inRecovery: Bool?,
-        timestamp: NetworkClock.Instant = .now
+        timestamp: NetworkClock.Instant
     ) {
         let metricEvent = EventMetrics(
             minRTT: minRTT,
@@ -712,7 +712,7 @@ final class QLog {
     public func recoveryUpdated(
         ptoCount: UInt64,
         inRecovery: Bool?,
-        timestamp: NetworkClock.Instant = .now
+        timestamp: NetworkClock.Instant
     ) {
         metricsUpdated(
             minRTT: .zero,
@@ -756,7 +756,7 @@ final class QLog {
         smoothedRTT: NetworkDuration,
         latestRTT: NetworkDuration,
         rttVariance: NetworkDuration,
-        timestamp: NetworkClock.Instant = .now
+        timestamp: NetworkClock.Instant
     ) {
         metricsUpdated(
             minRTT: minRTT,
@@ -778,7 +778,7 @@ final class QLog {
         oldStreamState: QLogStreamState,
         newStreamState: QLogStreamState,
         streamSide: QLogStreamSide?,
-        timestamp: NetworkClock.Instant = .now
+        timestamp: NetworkClock.Instant
     ) {
         if let streamID = stream.streamID, let streamType = stream.streamType {
             let streamEvent = StreamEvent(
@@ -819,7 +819,7 @@ final class QLog {
         owner: QLogOwner?,
         oldStreamType: QUICStreamType,
         newStreamType: QUICStreamType,
-        timestamp: NetworkClock.Instant = .now
+        timestamp: NetworkClock.Instant
     ) {
         let streamTypeSetEvent = StreamTypeSetEvent(
             streamID: streamID,
@@ -855,7 +855,7 @@ final class QLog {
         initialMaxStreamsBidirectional: Int?,
         initialMaxStreamsUnidirectional: Int?,
         preferredAddress: PreferredAddress?,
-        timestamp: NetworkClock.Instant = .now
+        timestamp: NetworkClock.Instant
     ) {
         let parametersEvent = EventParametersSet(
             owner: owner,
@@ -885,7 +885,8 @@ final class QLog {
 
     public func parametersSet(
         owner: QLogOwner?,
-        transportParameters: TransportParameters
+        transportParameters: TransportParameters,
+        timestamp: NetworkClock.Instant
     ) {
         parametersSet(
             owner: owner,
@@ -923,7 +924,8 @@ final class QLog {
                 TransportParameterTypes.initialMaxStreamsUnidirectional
             ]?.value,
             preferredAddress: transportParameters[TransportParameterTypes.preferredAddress]?
-                .preferredAddress
+                .preferredAddress,
+            timestamp: timestamp
         )
     }
 

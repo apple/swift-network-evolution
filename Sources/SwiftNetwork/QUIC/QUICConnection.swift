@@ -1135,7 +1135,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         if let qLog {
             qLog.parametersSet(
                 owner: owner,
-                transportParameters: transportParameters
+                transportParameters: transportParameters,
+                timestamp: self.now
             )
         }
         #endif
@@ -3763,9 +3764,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         #if QlogOutput
         if let qLog {
             if outbound {
-                qLog.packetSent(packet)
+                qLog.packetSent(packet, timestamp: self.now)
             } else {
-                qLog.packetReceived(packet, coalesced: coalesced)
+                qLog.packetReceived(packet, coalesced: coalesced, timestamp: self.now)
             }
         }
         #endif
@@ -4294,7 +4295,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         if let qLog {
             qLog.recoveryUpdated(
                 ptoCount: 0,
-                inRecovery: nil
+                inRecovery: nil,
+                timestamp: self.now
             )
         }
         #endif

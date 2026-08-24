@@ -833,7 +833,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     static func logAckElicitingPacketsInFlight(packetCount: Int, connection: QUICConnection) {
         #if QlogOutput
         if let qLog = connection.qLog {
-            qLog.congestionControlUpdated(packetsInFlight: UInt64(packetCount))
+            qLog.congestionControlUpdated(packetsInFlight: UInt64(packetCount), timestamp: connection.now)
         }
         #endif
     }
@@ -847,7 +847,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         if let qLog = connection.qLog {
             qLog.packetLost(
                 packet,
-                trigger: trigger
+                trigger: trigger,
+                timestamp: connection.now
             )
         }
         #endif
@@ -1253,7 +1254,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             qLog.recoveryUpdated(
                 ptoCount: UInt64(path.recoveryState.PTOCount),
                 inRecovery: nil,
-                timestamp: .now
+                timestamp: connection.now
             )
         }
         #endif
@@ -1494,7 +1495,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                                 minRTT: sentPath.rtt.minRTT,
                                 smoothedRTT: sentPath.rtt.smoothedRTT,
                                 latestRTT: sentPath.rtt.latestRTT,
-                                rttVariance: sentPath.rtt.RTTVariance
+                                rttVariance: sentPath.rtt.RTTVariance,
+                                timestamp: connection.now
                             )
                         }
                         #endif
