@@ -580,13 +580,13 @@ extension NetworkContext {
         index: NetworkStateIndex,
         timerReference: TimerReference,
         referenceToWakeup: ProtocolInstanceReference,
-        milliseconds: UInt64
+        after delay: NetworkDuration
     ) {
         self.softAssert()
         self.resetTimer(
             for: timerReference,
-            to: .milliseconds(
-                milliseconds,
+            to: .after(
+                delay,
                 {
                     self.assert()
                     self.protocolEventStates[index].startTimerWakeupCall()
@@ -786,7 +786,7 @@ extension ProtocolInstanceReference {
     }
 
     func scheduleWakeup(
-        milliseconds: UInt64,
+        after delay: NetworkDuration,
         timerReference: TimerReference
     ) {
         let protocolEventStateIndex = protocolEventStateIndex()!
@@ -794,7 +794,7 @@ extension ProtocolInstanceReference {
             index: protocolEventStateIndex,
             timerReference: timerReference,
             referenceToWakeup: self,
-            milliseconds: milliseconds
+            after: delay
         )
     }
 

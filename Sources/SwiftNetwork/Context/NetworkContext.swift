@@ -83,9 +83,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         /// Runs an immediate task. No assumptions are made about how the task is run.
         func runImmediate(_ task: @escaping (() -> Void))
         /// Schedules a task to run after a delay, using a reference.
-        ///
-        /// The `milliseconds` parameter specifies the delay before the task runs.
-        func schedule(_ task: @escaping (() -> Void), milliseconds: Int64, reference: TimerReference)
+        func schedule(_ task: @escaping (() -> Void), after delay: NetworkDuration, reference: TimerReference)
         /// Unschedules a task with a reference.
         func unschedule(reference: TimerReference)
         /// A Boolean value that indicates whether the current code is running in the scheduler.
@@ -368,10 +366,12 @@ extension NetworkContext {
             globals.queue.async(execute: DispatchWorkItem(block: task))
         }
         /// Schedules a task to run after a delay, using a reference.
-        ///
-        /// The `milliseconds` parameter specifies the delay before the task runs.
-        func schedule(_ task: @escaping (() -> Void), milliseconds: Int64, reference: TimerReference) {
-            let targetTime = DispatchTime.now() + DispatchTimeInterval.milliseconds(Int(milliseconds))
+        func schedule(_ task: @escaping (() -> Void), after delay: NetworkDuration, reference: TimerReference) {
+            let nanoseconds = max(delay.nanoseconds, 0)
+            let targetTime =
+                DispatchTime.now()
+                + .seconds(Int(clamping: nanoseconds / 1_000_000_000))
+                + .nanoseconds(Int(nanoseconds % 1_000_000_000))
             globals.timerList.insert(targetTime: targetTime, reference: reference, task: task)
         }
         /// Unschedules a task with a reference.
@@ -417,12 +417,12 @@ extension NetworkContext {
 
     enum FutureTime {
         case unschedule
-        case milliseconds(UInt64, () -> Void)  // Milliseconds into the future
+        case after(NetworkDuration, () -> Void)
     }
 
     public func scheduleTimer(duration: NetworkDuration, completion: @escaping () -> Void) -> TimerReference {
         let newReference = TimerReference()
-        resetTimer(for: newReference, to: .milliseconds(UInt64(duration.milliseconds), completion))
+        resetTimer(for: newReference, to: .after(duration, completion))
         return newReference
     }
 
@@ -435,8 +435,8 @@ extension NetworkContext {
         switch time {
         case .unschedule:
             scheduler.unschedule(reference: reference)
-        case .milliseconds(let milliseconds, let block):
-            scheduler.schedule(block, milliseconds: Int64(milliseconds), reference: reference)
+        case .after(let delay, let block):
+            scheduler.schedule(block, after: delay, reference: reference)
         }
     }
     #endif

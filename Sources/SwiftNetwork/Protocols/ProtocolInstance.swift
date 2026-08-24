@@ -90,8 +90,8 @@ public protocol TimerSchedulable: ~Copyable, ProtocolInstance {
 
 @available(Network 0.1.0, *)
 extension TimerSchedulable {
-    public func scheduleWakeup(milliseconds: UInt64) {
-        reference.scheduleWakeup(milliseconds: milliseconds, timerReference: timerReference)
+    public func scheduleWakeup(after delay: NetworkDuration) {
+        reference.scheduleWakeup(after: delay, timerReference: timerReference)
     }
 
     public func unscheduleWakeup() {

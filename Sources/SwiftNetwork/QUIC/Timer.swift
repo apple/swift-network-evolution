@@ -97,6 +97,12 @@ final class Timer: PrefixedLoggable {
         case armed(NetworkClock.Instant)
     }
 
+    /// How far a deadline may move before the pending wakeup is re-armed.
+    ///
+    /// A deadline that shifts from e.g. 5ms out to 4.5ms out keeps the wakeup it already has, so this
+    /// bounds re-arm precision independently of what the scheduler can express: the scheduler takes
+    /// a `NetworkDuration` and so resolves nanoseconds, but a *revision* smaller than this is still
+    /// ignored. Tightening it trades re-arms for precision and wants a benchmark behind it.
     static let timerThreshold = NetworkDuration.milliseconds(1)
 
     init(reference: ProtocolInstanceReference, timerReference: TimerReference, logPrefixer: LogPrefixer) {
@@ -218,7 +224,7 @@ final class Timer: PrefixedLoggable {
         log.datapath(
             "arming timer for the next \(delta) (now \(now)), new deadline \(nextDeadline) old deadline \(oldDeadline)"
         )
-        reference?.scheduleWakeup(milliseconds: UInt64(delta.milliseconds), timerReference: timerReference)
+        reference?.scheduleWakeup(after: delta, timerReference: timerReference)
     }
 
     private func find(_ identifier: TimerID) -> Int? {
