@@ -301,25 +301,20 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
             return
         }
 
-        // Zero microseconds means either that no measurement has landed yet or that one rounded
-        // down from under half a microsecond, and dividing by it below would trap. Fall back to the
-        // initial estimate in both cases.
+        // A same-host RTT can round to zero: `RTT.processNewSample` stores the sample as whole
+        // microseconds, so an ack duration under 500ns becomes 0µs and dividing by it below would
+        // trap. Fall back to the initial estimate.
         let smoothedRTTInMicroseconds =
             smoothedRTT.microseconds == 0 ? pacingInitialRTT.microseconds : smoothedRTT.microseconds
 
-        var rate = congestionWindow
-
         // Use 200% rate when in slow start
-        if congestionWindow < slowStartThreshold {
-            rate *= 2
-        }
+        let pacedWindow = congestionWindow < slowStartThreshold ? congestionWindow * 2 : congestionWindow
+        let rateInBytesPerSecond =
+            pacedWindow * System.Time.USEC_PER_SEC / UInt64(smoothedRTTInMicroseconds)
+        let burstSize = rateInBytesPerSecond >> burstQueueShift
 
-        // Multiply by USEC_PER_SEC as sRTT is in microseconds
-        rate = (rate * System.Time.USEC_PER_SEC) / UInt64(smoothedRTTInMicroseconds)
-        let burst = rate >> burstQueueShift
-
-        path.pacer.setRate(rate: rate)
-        path.pacer.setBurstSize(burstSize: UInt32(truncatingIfNeeded: burst))
+        path.pacer.setRate(rate: rateInBytesPerSecond)
+        path.pacer.setBurstSize(burstSize: UInt32(truncatingIfNeeded: burstSize))
     }
 
     private func packetInRecovery(sentTime: NetworkClock.Instant) -> Bool {
