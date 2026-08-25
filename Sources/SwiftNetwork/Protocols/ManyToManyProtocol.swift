@@ -233,6 +233,7 @@ extension MultiplexingPathIdentifier {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 @frozen public enum MultiplexingPathEvent: CustomStringConvertible {
+    // During bringup of the path it is possible that the endpoints may have changed
     case available(local: Endpoint?, remote: Endpoint?, path: PathProperties?, parameters: Parameters?)
     case unavailable
     case established
