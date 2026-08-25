@@ -227,7 +227,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             return
         }
 
-        // A same-host RTT can round to zero: `RTT.processNewSample` stores the sample as whole
+        // A short RTT can round to zero: `RTT.processNewSample` stores the sample as whole
         // microseconds, so an ack duration under 500ns becomes 0µs and dividing by it below would
         // trap. Fall back to the initial estimate.
         let smoothedRTTInMicroseconds =
