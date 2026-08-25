@@ -19,7 +19,6 @@ import XCTest
 import Glibc
 #elseif canImport(Musl)
 import Musl
-#elseif canImport(os)
 #endif
 
 @available(Network 0.1.0, *)
