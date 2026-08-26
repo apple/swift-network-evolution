@@ -179,8 +179,8 @@ struct PMTUDState: ~Copyable {
         )
 
         updateProbeSize(on: path)
-        connection.recordSentPackets {
-            sendProbe(on: path)
+        connection.recordSentPackets { sentPackets in
+            sendProbe(on: path, sentPackets: &sentPackets)
         }
     }
 
@@ -254,8 +254,8 @@ struct PMTUDState: ~Copyable {
         } else if PMTUDState.minimumMTU <= nextMTU && nextMTU < currentPathMTU {
             path.log.info("Packet too big MTU < current path MTU \(currentPathMTU)")
             packetTooBigMTU = (packetTooBigMTU == 0) ? nextMTU : min(packetTooBigMTU, nextMTU)
-            path.parentProtocol.recordSentPackets {
-                enterBlackholeDetection(on: path)
+            path.parentProtocol.recordSentPackets { sentPackets in
+                enterBlackholeDetection(on: path, sentPackets: &sentPackets)
             }
         } else if currentPathMTU < nextMTU && nextMTU < probedMTU {
             path.log.info("Current path MTU < packet too big MTU size < probed MTU")
@@ -324,27 +324,39 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    mutating func ptoEvent(on path: QUICPath, ptoCount: Int) -> NetworkUniqueDeque<SentPacketRecord> {
+    mutating func ptoEvent(
+        on path: QUICPath,
+        ptoCount: Int,
+        sentPackets: inout NetworkUniqueDeque<SentPacketRecord>
+    ) {
         guard !path.isFlowControlled,
             ptoCount > PMTUDState.blackholeThreshold,
             enabled
-        else { return .init() }
-        return enterBlackholeDetection(on: path)
+        else { return }
+        enterBlackholeDetection(on: path, sentPackets: &sentPackets)
     }
 
-    mutating func sendProbe(on path: QUICPath) -> NetworkUniqueDeque<SentPacketRecord> {
+    mutating func sendProbe(on path: QUICPath, sentPackets: inout NetworkUniqueDeque<SentPacketRecord>) {
         let connection = path.parentProtocol
-        return sendProbe(on: path, applicationPendingItems: &connection.applicationPendingItems)
+        sendProbe(
+            on: path,
+            sentPackets: &sentPackets,
+            initialPendingItems: &connection.initialPendingItems,
+            handshakePendingItems: &connection.handshakePendingItems,
+            applicationPendingItems: &connection.applicationPendingItems
+        )
     }
 
-    // Used in the send path when the caller has ownership of applicationPendingItems already
     mutating func sendProbe(
         on path: QUICPath,
+        sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
+        initialPendingItems: inout PendingItems,
+        handshakePendingItems: inout PendingItems,
         applicationPendingItems: inout PendingItems
-    ) -> NetworkUniqueDeque<SentPacketRecord> {
+    ) {
         pendingTransmission = false
         guard canSendProbe(on: path, hasPendingItems: applicationPendingItems.hasPendingItems) else {
-            return .init()
+            return
         }
 
         let connection = path.parentProtocol
@@ -361,24 +373,30 @@ struct PMTUDState: ~Copyable {
         // The probe is queued but not sent yet. A probe can be driven by the PMTUD
         // timer rather than by an application write, in which case nothing else
         // reports the connection active before the packet is transmitted.
-        connection.checkConnectionIdle()
+        connection.checkConnectionIdle(
+            initialPendingItemsHasPendingItems: initialPendingItems.hasPendingItems,
+            handshakePendingItemsHasPendingItems: handshakePendingItems.hasPendingItems,
+            applicationPendingItemsHasPendingItems: applicationPendingItems.hasPendingItems
+        )
 
         var discardInitialRecoveryState = false
-        let sentPackets = connection.sendFramesFromRecovery(
+        let countBeforeSend = sentPackets.count
+        connection.sendFramesFromRecovery(
             on: path,
+            sentPackets: &sentPackets,
+            initialPendingItems: &initialPendingItems,
+            handshakePendingItems: &handshakePendingItems,
             applicationPendingItems: &applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState
         )
-        guard !sentPackets.isEmpty else {
+        guard sentPackets.count > countBeforeSend else {
             path.log.error("Failed to send PMTUD probe packet")
-            return sentPackets
+            return
         }
 
         path.log.info("Probe for MTU \(nextProbeMTU) sent")
         canProbe = false
         probedMTU = nextProbeMTU
-
-        return sentPackets
     }
 
     mutating func stop(on path: QUICPath) {
@@ -389,22 +407,25 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    mutating func tryToSend(on path: QUICPath) -> NetworkUniqueDeque<SentPacketRecord> {
-        guard pendingTransmission else { return .init() }
-        return sendProbe(on: path)
+    mutating func tryToSend(on path: QUICPath, sentPackets: inout NetworkUniqueDeque<SentPacketRecord>) {
+        guard pendingTransmission else { return }
+        sendProbe(on: path, sentPackets: &sentPackets)
     }
 
     mutating func timerFired(timeNow: NetworkClock.Instant, path: QUICPath) {
         path.log.debug("PMTUD timer fired")
         self.searchCompleted = false
         self.updateProbeSize(on: path)
-        path.parentProtocol.recordSentPackets {
-            sendProbe(on: path)
+        path.parentProtocol.recordSentPackets { sentPackets in
+            sendProbe(on: path, sentPackets: &sentPackets)
         }
     }
 
-    private mutating func enterBlackholeDetection(on path: QUICPath) -> NetworkUniqueDeque<SentPacketRecord> {
-        guard enabled else { return .init() }
+    private mutating func enterBlackholeDetection(
+        on path: QUICPath,
+        sentPackets: inout NetworkUniqueDeque<SentPacketRecord>
+    ) {
+        guard enabled else { return }
         path.log.info("Entering blackhole detection, setting path MTU to \(PMTUDState.minimumMTU)")
         currentPathMTU = PMTUDState.minimumMTU
         searchCompleted = false
@@ -419,7 +440,7 @@ struct PMTUDState: ~Copyable {
 
         // Reset probe size
         updateProbeSize(on: path)
-        return sendProbe(on: path)
+        sendProbe(on: path, sentPackets: &sentPackets)
     }
 
     private func findNextMTU(mtu: Int, findLarger: Bool) -> Int {
