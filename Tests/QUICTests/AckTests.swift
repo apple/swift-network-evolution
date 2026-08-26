@@ -26,6 +26,13 @@ import XCTest
 func setAckFrame(_: PacketNumberSpace, _: consuming QUICFrame, _: Bool) {
 }
 
+/// Test-only conveniences that supply a fixed time.
+///
+/// The production signatures deliberately require a time, so that datapath code cannot
+/// silently reach for the real clock. Most ACK tests are about packet-number bookkeeping
+/// and not about time at all, so restating `now:` several hundred times would be noise.
+/// The default here is a *fixed* instant, so those tests stay deterministic. A test
+/// whose premise is timing calls the full form and passes its own instant.
 @available(Network 0.1.0, *)
 extension Ack {
     // only required by the test currently
@@ -37,6 +44,27 @@ extension Ack {
             for: packetNumberSpace,
             setAckFrame: setAckFrame,
             ecnCounter: ecnCounter
+        )
+    }
+
+    func append(packetNumberSpace: PacketNumberSpace, packetNumber: PacketNumber) {
+        self.append(
+            packetNumberSpace: packetNumberSpace,
+            packetNumber: packetNumber,
+            now: .testBase
+        )
+    }
+
+    func buildForTesting(
+        for packetNumberSpace: PacketNumberSpace,
+        setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
+        ecnCounter: ECNCounter? = nil
+    ) -> Int {
+        self.buildForTesting(
+            for: packetNumberSpace,
+            setAckFrame: setAckFrame,
+            ecnCounter: ecnCounter,
+            now: .testBase
         )
     }
 }
