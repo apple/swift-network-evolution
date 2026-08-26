@@ -3352,7 +3352,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        var outboundFrameArray = FrameArray()
+        var outboundFrameArray = FrameArray(capacity: datagramBatch.count)
         // keyState can only be .phase0 or .phase1 here: initial keys are discarded and the
         // handshake is confirmed, so .earlyData is no longer possible.
         let packetKeyState: PacketKeyState = self.keyState == .phase1 ? .phase1 : .phase0
@@ -3466,7 +3466,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        var outboundFrameArray = FrameArray()
+        var outboundFrameArray = FrameArray(capacity: datagramBatch.count)
         if !initialKeysDiscarded {
             while initialPendingItems.hasPendingItems {
                 if initialKeysDiscarded {
