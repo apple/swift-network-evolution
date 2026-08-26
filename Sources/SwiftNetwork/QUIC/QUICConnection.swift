@@ -3070,10 +3070,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             handshakePendingItems: &handshakePendingItems,
             applicationPendingItems: &applicationPendingItems
         )
-        // Record the newly-built packets (including any Initial-space packet from this same
-        // call) into recovery before discarding Initial recovery state, otherwise that packet's
-        // bytesInFlight accounting is added after the space is reset and can never be undone
-        // since Initial keys are already dropped by this point.
         recovery.recordSentPackets(&sentPackets, connection: self)
         self.shrinkSentPacketsIfNecessary(sentPackets: &sentPackets)
         if discardInitialRecoveryState {
@@ -3123,6 +3119,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             on: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
             retransmission: retransmission,
+            initialPendingItems: &initialPendingItems,
+            handshakePendingItems: &handshakePendingItems,
             applicationPendingItems: &applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState
         )
@@ -3134,6 +3132,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         on path: QUICPath,
         ignoreCongestionWindow: Bool = false,
         retransmission: Bool = false,
+        initialPendingItems: inout PendingItems,
+        handshakePendingItems: inout PendingItems,
         applicationPendingItems: inout PendingItems,
         discardInitialRecoveryState: inout Bool
     ) -> NetworkUniqueDeque<SentPacketRecord> {
@@ -6125,9 +6125,6 @@ extension QUICConnection {
         reportIdleState(isIdle: connectionIsIdleForAllStreams)
     }
 
-    // Used in the send path when the caller already holds an `inout` on
-    // connection.{initial,handshake,application}PendingItems, to avoid
-    // re-accessing those properties on `self` while they're exclusively borrowed.
     func checkConnectionIdle(
         initialPendingItemsHasPendingItems: Bool,
         handshakePendingItemsHasPendingItems: Bool,
