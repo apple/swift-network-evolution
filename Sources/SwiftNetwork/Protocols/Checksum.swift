@@ -52,7 +52,8 @@ extension UInt32 {
     }
 }
 
-enum ChecksumError: Error {
+@available(Network 0.1.0, *)
+public enum ChecksumError: Error {
     case invalidLength
     case invalidBuffer
 }
@@ -128,31 +129,45 @@ struct Checksum: ~Copyable {
 
 @available(Network 0.1.0, *)
 extension Frame {
+    @usableFromInline
     func checksum16(offset: Int, length: Int) throws(ChecksumError) -> UInt16 {
         let frameLength = self.unclaimedLength
         guard offset <= frameLength else {
             Logger.proto.fault("Offset \(offset) > frame length \(frameLength) in checksum16")
             throw ChecksumError.invalidLength
         }
-
         guard length <= (frameLength - offset) else {
             Logger.proto.fault(
                 "Checksum length \(length) > effective frame length \(frameLength - offset) in checksum16"
             )
             throw ChecksumError.invalidLength
         }
-
-        guard let buffer = self.bytes else {
-            Logger.proto.info("Frame is no longer valid in checksum16")
-            throw ChecksumError.invalidBuffer
-        }
-
-        return buffer.withUnsafeBytes { buffer in
-            let offsetBuffer = UnsafeRawBufferPointer(start: buffer.baseAddress!.advanced(by: offset), count: length)
+        // Operate directly on the underlying storage
+        switch buffer {
+        case .bytes:
+            let lowerBound = startOffset + offset
+            return _bytes.span.withUnsafeBytes { raw in
+                let offsetBuffer = UnsafeRawBufferPointer(
+                    start: raw.baseAddress!.advanced(by: lowerBound),
+                    count: length
+                )
+                return offsetBuffer.checksum16()
+            }
+        default:
+            guard let unsafeUnclaimedBuffer else {
+                Logger.proto.info("Frame is no longer valid in checksum16")
+                throw ChecksumError.invalidBuffer
+            }
+            let offsetBuffer = UnsafeRawBufferPointer(
+                start: unsafeUnclaimedBuffer.baseAddress!.advanced(by: offset),
+                count: length
+            )
             return offsetBuffer.checksum16()
         }
     }
 
+    @inlinable
+    @inline(always)
     func ipChecksum(offset: Int, length: Int) throws(ChecksumError) -> UInt16 {
         let value = try self.checksum16(offset: offset, length: length)
         return ((~value) & 0xffff)
@@ -183,44 +198,25 @@ extension Frame {
 }
 
 extension UnsafeRawBufferPointer {
+    @inlinable
+    @inline(always)
     func checksum16() -> UInt16 {
-        let divisibleBuffer: UnsafeRawBufferPointer
-        let remainderBuffer: UnsafeRawBufferPointer?
-        if self.count % MemoryLayout<UInt32>.size != 0 {
-            // Need to extract a remainder
-            let divisibleCount = (self.count / MemoryLayout<UInt32>.size) * MemoryLayout<UInt32>.size
-            let remainder = self.count - divisibleCount
-            divisibleBuffer = UnsafeRawBufferPointer(start: self.baseAddress!, count: divisibleCount)
-            remainderBuffer = UnsafeRawBufferPointer(
-                start: self.baseAddress!.advanced(by: divisibleCount),
-                count: remainder
-            )
-        } else {
-            divisibleBuffer = self
-            remainderBuffer = nil
+        guard let baseAddress else { return 0 }
+        let byteCount = count
+        let wordCount = byteCount / 2
+        let words = UnsafeBufferPointer(
+            start: baseAddress.bindMemory(to: UInt16.self, capacity: wordCount),
+            count: wordCount
+        )
+        var sum: UInt32 = 0
+        for word in words {
+            sum &+= UInt32(word)
         }
-        var partial = divisibleBuffer.withMemoryRebound(to: UInt32.self) { elements in
-            elements.reduce(into: UInt64(0)) { $0 &+= UInt64($1) }
+        if byteCount % 2 != 0 {
+            sum &+= UInt32(baseAddress.load(fromByteOffset: byteCount &- 1, as: UInt8.self))
         }
-
-        if let remainderBuffer = remainderBuffer {
-            if remainderBuffer.count == 3 {
-                partial &+= UInt64(remainderBuffer.load(as: UInt16.self))
-                partial &+= UInt64(remainderBuffer[2])
-            } else if remainderBuffer.count == 2 {
-                partial &+= UInt64(remainderBuffer.load(as: UInt16.self))
-            } else {
-                partial &+= UInt64(remainderBuffer[0])
-            }
-        }
-        var sum: UInt64 = (UInt64(partial) >> 32) &+ UInt64(partial & 0xffff_ffff)
-        sum = (sum >> 32) &+ (sum & 0xffff_ffff)
-
-        var finalAccumulator: UInt32 =
-            UInt32(sum >> 48) &+ UInt32((sum >> 32) & 0xffff) &+ UInt32((sum >> 16) & 0xffff) &+ UInt32(sum & 0xffff)
-        finalAccumulator = (finalAccumulator >> 16) &+ (finalAccumulator & 0xffff)
-        finalAccumulator = (finalAccumulator >> 16) &+ (finalAccumulator & 0xffff)
-
-        return UInt16(truncatingIfNeeded: finalAccumulator)
+        sum = (sum >> 16) &+ (sum & 0xffff)
+        sum = (sum >> 16) &+ (sum & 0xffff)
+        return UInt16(sum)
     }
 }
