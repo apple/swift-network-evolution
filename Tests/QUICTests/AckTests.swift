@@ -47,7 +47,7 @@ extension Ack {
         )
     }
 
-    func append(packetNumberSpace: PacketNumberSpace, packetNumber: PacketNumber) {
+    mutating func append(packetNumberSpace: PacketNumberSpace, packetNumber: PacketNumber) {
         self.append(
             packetNumberSpace: packetNumberSpace,
             packetNumber: packetNumber,
@@ -55,7 +55,7 @@ extension Ack {
         )
     }
 
-    func buildForTesting(
+    mutating func buildForTesting(
         for packetNumberSpace: PacketNumberSpace,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
         ecnCounter: ECNCounter? = nil
