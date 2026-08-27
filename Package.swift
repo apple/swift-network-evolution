@@ -99,7 +99,7 @@ let package = Package(
             name: "DISABLE_SHIM_CRYPTO_SPAN_APIS",
             description: "Disable backwards compatible crypto shim for performance sensitive cases"
         ),
-        .default(enabledTraits: ["DisableDebugLogging", "DisableErrorLogging"]),
+        .default(enabledTraits: []),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),

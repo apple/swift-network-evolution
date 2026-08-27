@@ -97,6 +97,48 @@ final class FlowControlTests: XCTestCase {
         connection.currentPath = nil
     }
 
+    func testSendPermitReopensAfterDrainWithoutMaxStreamData() {
+        let logPrefixer = LogPrefixer("[FlowControlTests]")
+        let context = NetworkContext(identifier: "test context")
+        context.activate()
+
+        // Run on the context queue: reopening the permit delivers an upper-layer
+        // event, which asserts it is running in-context.
+        let done = XCTestExpectation(description: "permit reopen check complete")
+        context.async {
+            let connection = QUICConnection(context: context)
+            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            stream.setup(
+                streamID: QUICStreamID(0),
+                logPrefixer: logPrefixer
+            )
+
+            // Ample peer credit at both levels, so this is not peer flow control
+            _ = stream.updateOutboundMaxData(to: 8_000_000)
+            _ = connection.updateOutboundMaxData(to: 8_000_000)
+
+            // One 16 KB buffer exceeds the 10 * MSS (12,000 B) watermark, so the
+            // permit latches to 0
+            stream.updateFlowControlWithEnqueuedBytesToSend(16_384, connection: connection)
+            stream.updateOutboundFlowControlCredit(connection: connection)
+            XCTAssertEqual(stream.maximumStreamDataSize, 0)
+            XCTAssertEqual(try? stream.getOutboundStreamDataRoomAvailable(), 0)
+
+            // Send the bytes to drain the backlog, with no MAX_STREAM_DATA
+            // arriving. Run inside an external cycle so the reopen event has a
+            // valid event state, as a real send does.
+            stream.fromExternal {
+                stream.updateFlowControlWithSentBytes(16_384, connection: connection)
+            }
+
+            // Draining reopens the permit without an inbound MAX_STREAM_DATA
+            XCTAssertGreaterThan(stream.maximumStreamDataSize, 0)
+            XCTAssertGreaterThan((try? stream.getOutboundStreamDataRoomAvailable()) ?? 0, 0)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5.0)
+    }
+
     func testDuplicateResetStreamOverflow() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let connection = QUICConnection(

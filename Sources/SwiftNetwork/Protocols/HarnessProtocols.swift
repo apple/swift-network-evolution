@@ -759,6 +759,9 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
         public var disconnected: (() -> Void)?
         var newFlow = Deque<(() -> Void)>()
         public var error: ((NetworkError) -> Void)?  // invoked when error detected
+        public var pathChanged: ((QUICPathInfo) -> Void)?
+        public var pathValidated: ((QUICPathInfo) -> Void)?
+        public var pathUnreachable: ((QUICPathInfo) -> Void)?
         public init() {}
     }
     public var completions: Completions = .init()
@@ -819,6 +822,18 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
             switch quicEvent {
             case .newInboundConnectionID: newInboundCIDEventCount += 1
             case .newOutboundConnectionID: newOutboundCIDEventCount += 1
+            case .pathChanged(let info):
+                if let completion = completions.pathChanged {
+                    completion(info)
+                }
+            case .pathValidated(let info):
+                if let completion = completions.pathValidated {
+                    completion(info)
+                }
+            case .pathUnreachable(let info):
+                if let completion = completions.pathUnreachable {
+                    completion(info)
+                }
             default: break
             }
         }

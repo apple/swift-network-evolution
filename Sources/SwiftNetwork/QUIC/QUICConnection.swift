@@ -215,7 +215,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var remoteMaximumUDPPayloadSize = 0
 
     var timer: Timer
-    private(set) var ack: Ack
+    var ack: Ack
     private(set) var ecn: ECN
     var recovery: Recovery
     private(set) var migration = Migration()
@@ -1586,7 +1586,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // to this external event
         QUICSignpost.inboundStopping(inboundInterval)
         inboundStopping(path: pathID)
-        checkConnectionIdle()
+        checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
     }
 
     func handleInbound(
@@ -2448,7 +2448,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             applicationPendingItems.appendStreamToService(stream)
         }
         // Note: trigger sending of any frames based on this external event
-        checkConnectionIdle()
+        checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
 
         guard !pendOutboundData else {
             log.datapath("Outbound data pended, ignore send frames")
@@ -2814,7 +2814,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // The PING is queued but this send is timer-driven, not driven by an
             // application write, so nothing else will report the connection
             // active before the packet is transmitted.
-            checkConnectionIdle()
+            checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
 
             // Re-arm the timer
             if let keepaliveTimerID = keepaliveTimerID {
@@ -3280,7 +3280,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         outboundFrames: inout FrameArray,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         protector: inout Protector,
-        ack: inout Ack,
         stats: inout Statistics,
         ecn: inout ECN,
         applicationPendingItems: inout PendingItems
@@ -3301,7 +3300,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     datagramBatch: &datagramBatch,
                     outboundFrames: &outboundFrames,
                     protector: &protector,
-                    ack: ack,
                     stats: &stats,
                     ecn: &ecn
                 )
@@ -3405,7 +3403,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             outboundFrames: &outboundFrameArray,
             sentPackets: &sentPackets,
             protector: &protector,
-            ack: &ack,
             stats: &stats,
             ecn: &ecn,
             applicationPendingItems: &applicationPendingItems
@@ -3474,7 +3471,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 datagramBatch: &datagramBatch,
                 outboundFrames: &outboundFrameArray,
                 protector: &protector,
-                ack: ack,
                 stats: &stats,
                 ecn: &ecn
             )
@@ -3527,7 +3523,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         datagramBatch: &datagramBatch,
                         outboundFrames: &outboundFrameArray,
                         protector: &protector,
-                        ack: ack,
                         stats: &stats,
                         ecn: &ecn
                     )
@@ -3566,7 +3561,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     datagramBatch: &datagramBatch,
                     outboundFrames: &outboundFrameArray,
                     protector: &protector,
-                    ack: ack,
                     stats: &stats,
                     ecn: &ecn
                 )
@@ -3599,7 +3593,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             outboundFrames: &outboundFrameArray,
             sentPackets: &sentPackets,
             protector: &protector,
-            ack: &ack,
             stats: &stats,
             ecn: &ecn,
             applicationPendingItems: &applicationPendingItems
@@ -3622,7 +3615,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         datagramBatch: inout FrameArray,
         outboundFrames: inout FrameArray,
         protector: inout Protector,
-        ack: Ack,
         stats: inout Statistics,
         ecn: inout ECN
     ) -> Bool {
@@ -5759,7 +5751,7 @@ extension QUICConnection {
         }
 
         // Note: trigger sendFrames() based on this external event
-        checkConnectionIdle()
+        checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
 
         guard !pendOutboundData else {
             log.datapath("Outbound data pended, ignore send frames")
@@ -6050,7 +6042,7 @@ extension QUICConnection {
             datagramFlow.applicationMarkedIdle = true
             flowsHaveEverMarkedIdle = true
         }
-        checkConnectionIdle()
+        checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
     }
 
     fileprivate func handleConnectionReusedForFlow(_ flowID: MultiplexedFlowIdentifier) {
@@ -6059,30 +6051,18 @@ extension QUICConnection {
         } else if let datagramFlow = secondaryFlow(for: flowID) {
             datagramFlow.applicationMarkedIdle = false
         }
-        checkConnectionIdle()
+        checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
     }
 
-    fileprivate var connectionIsIdleForAllStreams: Bool {
-        connectionIsIdleForAllStreams(
-            initialPendingItemsHasPendingItems: initialPendingItems.hasPendingItems,
-            handshakePendingItemsHasPendingItems: handshakePendingItems.hasPendingItems,
-            applicationPendingItemsHasPendingItems: applicationPendingItems.hasPendingItems
-        )
-    }
-
-    fileprivate func connectionIsIdleForAllStreams(
-        initialPendingItemsHasPendingItems: Bool,
-        handshakePendingItemsHasPendingItems: Bool,
-        applicationPendingItemsHasPendingItems: Bool
-    ) -> Bool {
+    fileprivate func connectionIsIdleForAllStreams(unackedPacketCount: Int) -> Bool {
         // Fast exit if no flow has marked idle
         guard flowsHaveEverMarkedIdle else {
             return false
         }
 
         // If there are pending send items, not idle
-        if initialPendingItemsHasPendingItems || handshakePendingItemsHasPendingItems
-            || applicationPendingItemsHasPendingItems
+        if initialPendingItems.hasPendingItems || handshakePendingItems.hasPendingItems
+            || applicationPendingItems.hasPendingItems
         {
             return false
         }
@@ -6113,7 +6093,7 @@ extension QUICConnection {
 
         // We owe the peer an ACK, either already queued or still waiting on the
         // delayed-ACK timer. A transmission is pending either way, so not idle.
-        if ack.unackedPacketCount > 0 {
+        if unackedPacketCount > 0 {
             return false
         }
 
@@ -6121,25 +6101,8 @@ extension QUICConnection {
         return true
     }
 
-    func checkConnectionIdle() {
-        reportIdleState(isIdle: connectionIsIdleForAllStreams)
-    }
-
-    func checkConnectionIdle(
-        initialPendingItemsHasPendingItems: Bool,
-        handshakePendingItemsHasPendingItems: Bool,
-        applicationPendingItemsHasPendingItems: Bool
-    ) {
-        reportIdleState(
-            isIdle: connectionIsIdleForAllStreams(
-                initialPendingItemsHasPendingItems: initialPendingItemsHasPendingItems,
-                handshakePendingItemsHasPendingItems: handshakePendingItemsHasPendingItems,
-                applicationPendingItemsHasPendingItems: applicationPendingItemsHasPendingItems
-            )
-        )
-    }
-
-    private func reportIdleState(isIdle: Bool) {
+    func checkConnectionIdle(unackedPacketCount: Int) {
+        let isIdle = connectionIsIdleForAllStreams(unackedPacketCount: unackedPacketCount)
         applyToAllPaths { path in
             let pathIsIdle = isIdle && !path.isProbing && !path.shouldSendPathResponses
             if pathIsIdle && !path.reportedIdleEvent {

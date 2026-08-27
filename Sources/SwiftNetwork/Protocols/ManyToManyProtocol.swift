@@ -233,7 +233,8 @@ extension MultiplexingPathIdentifier {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 @frozen public enum MultiplexingPathEvent: CustomStringConvertible {
-    case available
+    // During bringup of the path it is possible that the endpoints may have changed
+    case available(local: Endpoint?, remote: Endpoint?, path: PathProperties?, parameters: Parameters?)
     case unavailable
     case established
 
@@ -365,7 +366,11 @@ extension ManyToManyProtocolHandler {
         try newPath.attachLowerProtocol(lowerProtocol, remote: remote, local: local, parameters: parameters, path: path)
         if multiplexingPaths.isEmpty { newPath.pathIsPrimary = true }
         multiplexingPaths[newPath.identifier] = newPath
-        handlePathChanged(path: newPath.identifier, event: .available, isPrimary: newPath.pathIsPrimary)
+        handlePathChanged(
+            path: newPath.identifier,
+            event: .available(local: local, remote: remote, path: path, parameters: parameters),
+            isPrimary: newPath.pathIsPrimary
+        )
     }
     #endif
 
@@ -984,7 +989,11 @@ extension ManyToManyDatapathProtocol where Path.ParentProtocol == Self, Path: In
         if path?.hasMigrationInfo == true { newPath.pathHasMigrationInfo = true }
         multiplexingPaths[newPath.identifier] = newPath
         if !isFirstPath {
-            handlePathChanged(path: newPath.identifier, event: .available, isPrimary: newPath.pathIsPrimary)
+            handlePathChanged(
+                path: newPath.identifier,
+                event: .available(local: local, remote: remote, path: path, parameters: parameters),
+                isPrimary: newPath.pathIsPrimary
+            )
         }
     }
 }
@@ -1818,7 +1827,7 @@ extension MultiplexingPath {
             }
             parentProtocol.handlePathChanged(
                 path: identifier,
-                event: isConnected ? .established : .available,
+                event: isConnected ? .established : .available(local: nil, remote: nil, path: nil, parameters: nil),
                 isPrimary: pathIsPrimary
             )
             return
