@@ -736,21 +736,36 @@ struct FramePadding: ~Copyable, QUICFrameProtocol {
     private mutating func countZeros(frame: inout Frame) throws(QUICError) {
         var extraPadding = 0
 
-        if let bytes = frame.span {
-            let count = bytes.count
-            for byte in 0..<count {
-                if bytes[byte] == 0x00 {
-                    extraPadding += 1
-                } else {
-                    break
-                }
-            }
+        if let bytes = frame.bytes {
+            extraPadding = Self.countLeadingZeroBytes(bytes)
         }
 
         guard frame.claim(fromStart: extraPadding) else {
             throw QUICError.frameParse(FrameParseError.parsingError)
         }
         self.extraPadding = extraPadding
+    }
+
+    private static func countLeadingZeroBytes(_ bytes: RawSpan) -> Int {
+        let count = bytes.byteCount
+        let wordSize = MemoryLayout<UInt64>.size
+        var offset = 0
+
+        while offset &+ wordSize <= count {
+            let word = bytes.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt64.self)
+
+            if word == 0 {
+                offset &+= wordSize
+            } else {
+                return offset &+ (UInt64(littleEndian: word).trailingZeroBitCount / 8)
+            }
+        }
+
+        while offset < count, bytes[offset] == 0x00 {
+            offset &+= 1
+        }
+
+        return offset
     }
 
     static func write(frame: inout Frame, length: Int) throws(QUICError) {
