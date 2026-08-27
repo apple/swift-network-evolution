@@ -86,7 +86,7 @@ final class EndpointFlow: CustomDebugStringConvertible {
     let context: NetworkContext
     let identifier: UInt64
     var writeRequests = NetworkUniqueDeque<WriteRequest>()
-    var readRequests = [ReadRequest]()
+    var readRequests = NetworkUniqueDeque<ReadRequest>()
     var stateUpdateHandler: ((State) -> Void)? = nil
     var cancelRequested = false
     var teardownComplete = false
@@ -233,37 +233,58 @@ final class EndpointFlow: CustomDebugStringConvertible {
 
         switch self.flowProtocol {
         case .stream(let flow):
-            while true {
-                if let readRequest = self.readRequests.first {
-                    if let content = flow.read(
-                        minimumBytes: readRequest.minimumBytes,
-                        maximumBytes: readRequest.maximumBytes
-                    ) {
-                        // TODO: Get the actual metadata
-                        readRequest.complete(content: content, isComplete: false, isFinal: true)
-                        // TODO: This is not efficient. Probably better to use an ArraySlice here
-                        self.readRequests.removeFirst()
-                    } else {
+            while !self.readRequests.isEmpty {
+                if self.readRequests[0].expectsSpan {
+                    guard var frames = flow.readFrames(minimumBytes: self.readRequests[0].minimumBytes,
+                                                       maximumBytes: self.readRequests[0].maximumBytes) else {
                         flow.waitForInboundDataAvailable(completion: self.inputAvailable)
                         break
                     }
+                    let readRequest = self.readRequests.removeFirst()
+                    frames.iterateMutableFrames { frame in
+                        if let bytes = frame.bytes {
+                            readRequest.complete(bytes: bytes, isComplete: frame.metadataComplete, isFinal: true)
+                        }
+                        frame.finalize(success: true)
+                        return .removeFrameAndContinue
+                    }
                 } else {
-                    break
+                    guard let content = flow.read(
+                        minimumBytes: self.readRequests[0].minimumBytes,
+                        maximumBytes: self.readRequests[0].maximumBytes
+                    ) else {
+                        flow.waitForInboundDataAvailable(completion: self.inputAvailable)
+                        break
+                    }
+                    // TODO: Get the actual metadata
+                    let readRequest = self.readRequests.removeFirst()
+                    readRequest.complete(content: content, isComplete: false, isFinal: true)
                 }
             }
         case .datagram(let flow):
-            while true {
-                if let readRequest = self.readRequests.first {
-                    if let content = flow.read() {
-                        readRequest.complete(content: content, isComplete: true, isFinal: false)
-                        // TODO: This is not efficient. Probably better to use an ArraySlice here
-                        self.readRequests.removeFirst()
-                    } else {
+            while !self.readRequests.isEmpty {
+                if self.readRequests[0].expectsSpan {
+                    guard var frames = flow.readFrames(maximumFrames: self.readRequests[0].maximumFrames) else {
                         flow.waitForInboundDataAvailable(completion: self.inputAvailable)
                         break
                     }
+
+                    let readRequest = self.readRequests.removeFirst()
+                    frames.iterateMutableFrames { frame in
+                        if let bytes = frame.bytes {
+                            readRequest.complete(bytes: bytes, isComplete: frame.metadataComplete, isFinal: false)
+                        }
+                        frame.finalize(success: true)
+                        return .removeFrameAndContinue
+                    }
                 } else {
-                    break
+                    guard let content = flow.read() else {
+                        flow.waitForInboundDataAvailable(completion: self.inputAvailable)
+                        break
+                    }
+
+                    let readRequest = self.readRequests.removeFirst()
+                    readRequest.complete(content: content, isComplete: true, isFinal: false)
                 }
             }
         case .none:
@@ -277,24 +298,25 @@ final class EndpointFlow: CustomDebugStringConvertible {
 
     func addWriteRequestOnContext(_ writeRequest: consuming WriteRequest) {
         var writeRequest: WriteRequest? = writeRequest
-        self.startIfNeeded()
+        startIfNeeded()
         if let takenRequest = writeRequest.take() {
-            self.writeRequests.append(takenRequest)
+            writeRequests.append(takenRequest)
         }
-        if self.state == .ready {
-            self.write()
+        if state == .ready {
+            write()
         }
     }
 
-    func addReadRequest(_ readRequest: ReadRequest) {
-        self.parameters.context.async {
-            self.startIfNeeded()
-            self.readRequests.append(readRequest)
-            // If state is ready and this is the first read request, then try to start reading.
-            // Otherwise, wait for inputAvailable to trigger a call to read()
-            if self.state == .ready && self.readRequests.count == 1 {
-                self.read()
-            }
+    func addReadRequestOnContext(_ readRequest: consuming ReadRequest) {
+        var readRequest: ReadRequest? = readRequest
+        startIfNeeded()
+        if let takenRequest = readRequest.take() {
+            readRequests.append(takenRequest)
+        }
+        // If state is ready and this is the first read request, then try to start reading.
+        // Otherwise, wait for inputAvailable to trigger a call to read()
+        if state == .ready && readRequests.count == 1 {
+            read()
         }
     }
 

@@ -364,6 +364,19 @@ final class DatagramEndpointFlowProtocol: EndpointFlowProtocol<InboundDatagramLi
         }
     }
 
+    func readFrames(maximumFrames: Int) -> FrameArray? {
+        fromExternal {
+            do throws(NetworkError) {
+                return try lower.invokeReceiveDatagrams(
+                    reference,
+                    maximumDatagramCount: maximumFrames
+                )
+            } catch {
+                return nil
+            }
+        }
+    }
+
     func read() -> [UInt8]? {
         fromExternal {
             do throws(NetworkError) {
@@ -525,6 +538,20 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<InboundStreamLinkag
             return true
         } catch {
             return false
+        }
+    }
+
+    func readFrames(minimumBytes: Int, maximumBytes: Int) -> FrameArray? {
+        fromExternal {
+            do throws(NetworkError) {
+                return try lower.invokeReceiveStreamData(
+                    reference,
+                    minimumBytes: minimumBytes,
+                    maximumBytes: maximumBytes
+                )
+            } catch {
+                return nil
+            }
         }
     }
 
