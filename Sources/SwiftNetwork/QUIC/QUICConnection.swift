@@ -215,7 +215,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var remoteMaximumUDPPayloadSize = 0
 
     var timer: Timer
-    private(set) var ack: Ack
+    var ack: Ack
     private(set) var ecn: ECN
     var recovery: Recovery
     private(set) var migration = Migration()
@@ -1588,7 +1588,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // to this external event
         QUICSignpost.inboundStopping(inboundInterval)
         inboundStopping(path: pathID)
-        checkConnectionIdle()
+        checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
     }
 
     func handleInbound(
@@ -2450,7 +2450,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             applicationPendingItems.appendStreamToService(stream)
         }
         // Note: trigger sending of any frames based on this external event
-        checkConnectionIdle()
+        checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
 
         guard !pendOutboundData else {
             log.datapath("Outbound data pended, ignore send frames")
@@ -2817,7 +2817,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // The PING is queued but this send is timer-driven, not driven by an
             // application write, so nothing else will report the connection
             // active before the packet is transmitted.
-            checkConnectionIdle()
+            checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
 
             // Re-arm the timer
             if let keepaliveTimerID = keepaliveTimerID {
@@ -5494,7 +5494,7 @@ extension QUICConnection {
         }
 
         // Note: trigger sendFrames() based on this external event
-        checkConnectionIdle()
+        checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
 
         guard !pendOutboundData else {
             log.datapath("Outbound data pended, ignore send frames")
@@ -5785,7 +5785,7 @@ extension QUICConnection {
             datagramFlow.applicationMarkedIdle = true
             flowsHaveEverMarkedIdle = true
         }
-        checkConnectionIdle()
+        checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
     }
 
     fileprivate func handleConnectionReusedForFlow(_ flowID: MultiplexedFlowIdentifier) {
@@ -5794,10 +5794,10 @@ extension QUICConnection {
         } else if let datagramFlow = secondaryFlow(for: flowID) {
             datagramFlow.applicationMarkedIdle = false
         }
-        checkConnectionIdle()
+        checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
     }
 
-    fileprivate var connectionIsIdleForAllStreams: Bool {
+    fileprivate func connectionIsIdleForAllStreams(unackedPacketCount: Int) -> Bool {
         // Fast exit if no flow has marked idle
         guard flowsHaveEverMarkedIdle else {
             return false
@@ -5836,7 +5836,7 @@ extension QUICConnection {
 
         // We owe the peer an ACK, either already queued or still waiting on the
         // delayed-ACK timer. A transmission is pending either way, so not idle.
-        if ack.unackedPacketCount > 0 {
+        if unackedPacketCount > 0 {
             return false
         }
 
@@ -5844,8 +5844,8 @@ extension QUICConnection {
         return true
     }
 
-    func checkConnectionIdle() {
-        let isIdle = connectionIsIdleForAllStreams
+    func checkConnectionIdle(unackedPacketCount: Int) {
+        let isIdle = connectionIsIdleForAllStreams(unackedPacketCount: unackedPacketCount)
         applyToAllPaths { path in
             let pathIsIdle = isIdle && !path.isProbing && !path.shouldSendPathResponses
             if pathIsIdle && !path.reportedIdleEvent {

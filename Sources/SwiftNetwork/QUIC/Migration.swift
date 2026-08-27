@@ -223,6 +223,21 @@ extension QUICConnection {
                 "Path \(path.identifier) \(path.state) over \(path.interface?.description ?? "nil")"
             )
         }
+        // Notify the stack about a path change event
+        if case .available(let local, let remote, _, _) = event,
+            let local, let remote,
+            case .address(let localAddress) = local.type,
+            case .address(let remoteAddress) = remote.type
+        {
+            path.localEndpoint = local
+            path.remoteEndpoint = remote
+            let pathInfo = QUICPathInfo(
+                isValidated: path.isValidated,
+                remote: remoteAddress,
+                local: localAddress
+            )
+            deliverNetworkProtocolEvent(flow: .allFlows, event: .init(quicEvent: .pathChanged(pathInfo)))
+        }
 
         // This is a new primary path. Migrate to it if we are the client.
         if !isServer, path != currentPath, isPrimary, path.isRouteEstablished {

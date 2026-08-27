@@ -36,7 +36,7 @@ func setAckFrame(_: PacketNumberSpace, _: consuming QUICFrame, _: Bool) {
 @available(Network 0.1.0, *)
 extension Ack {
     // only required by the test currently
-    func size(
+    mutating func size(
         for packetNumberSpace: PacketNumberSpace,
         ecnCounter: ECNCounter? = nil
     ) -> Int {
