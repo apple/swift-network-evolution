@@ -245,12 +245,17 @@ final class EndpointFlow: CustomDebugStringConvertible {
                         break
                     }
                     let readRequest = self.readRequests.removeFirst()
-                    frames.iterateMutableFrames { frame in
+                    while var frame = frames.popFirst() {
+                        let isLastFrame = frames.isEmpty
                         if let bytes = frame.bytes {
-                            readRequest.complete(bytes: bytes, isComplete: frame.metadataComplete, isFinal: true)
+                            readRequest.complete(
+                                bytes: bytes,
+                                isComplete: frame.metadataComplete,
+                                isFinal: true,
+                                lastChunkOfBatch: isLastFrame
+                            )
                         }
                         frame.finalize(success: true)
-                        return .removeFrameAndContinue
                     }
                 } else {
                     guard
@@ -276,12 +281,17 @@ final class EndpointFlow: CustomDebugStringConvertible {
                     }
 
                     let readRequest = self.readRequests.removeFirst()
-                    frames.iterateMutableFrames { frame in
+                    while var frame = frames.popFirst() {
+                        let isLastFrame = frames.isEmpty
                         if let bytes = frame.bytes {
-                            readRequest.complete(bytes: bytes, isComplete: frame.metadataComplete, isFinal: false)
+                            readRequest.complete(
+                                bytes: bytes,
+                                isComplete: frame.metadataComplete,
+                                isFinal: false,
+                                lastChunkOfBatch: isLastFrame
+                            )
                         }
                         frame.finalize(success: true)
-                        return .removeFrameAndContinue
                     }
                 } else {
                     guard let content = flow.read() else {

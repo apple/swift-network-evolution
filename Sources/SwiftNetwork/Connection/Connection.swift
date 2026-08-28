@@ -2108,13 +2108,15 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
 
     public struct StreamSpanMessage: ~Escapable {
         @_lifetime(borrow content)
-        init(content: RawSpan? = nil, isComplete: Bool = false) {
+        init(content: RawSpan? = nil, isComplete: Bool = false, lastChunkOfBatch: Bool = false) {
             self.content = content
             self.isComplete = isComplete
+            self.lastChunkOfBatch = lastChunkOfBatch
         }
 
         public let content: RawSpan?
         public let isComplete: Bool
+        public let lastChunkOfBatch: Bool
     }
 
     public func send(_ message: StreamMessage, completion: (@Sendable (Result<Void, NetworkError>) -> Void)? = nil) {
@@ -2176,11 +2178,13 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
         endpointFlow.async {
             let readRequest = ReadRequest(minimumBytes: minBytes, maximumBytes: maxBytes, maximumFrames: maximumChunks)
             {
-                (content, isComplete, isFinal, error) in
+                (content, isComplete, isFinal, lastChunkOfBatch, error) in
                 if let error = error {
                     completion(.failure(error))
                 } else {
-                    completion(.success(.init(content: content, isComplete: isComplete)))
+                    completion(
+                        .success(.init(content: content, isComplete: isComplete, lastChunkOfBatch: lastChunkOfBatch))
+                    )
                 }
             }
             self.endpointFlow.addReadRequestOnContext(readRequest)
