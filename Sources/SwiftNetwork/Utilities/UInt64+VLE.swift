@@ -22,6 +22,7 @@ internal import Logging
 internal import os
 #endif
 
+@usableFromInline
 enum VariableLengthEncodingError: Int, Error {
     case invalidValue
     case bufferTooShort
@@ -48,6 +49,8 @@ extension FixedWidthInteger {
 }
 
 extension UInt64 {
+    @inline(always)
+    @inlinable
     var safeVariableLengthSize: Int? {
         // RFC 9000 Section 16
         if self <= 63 { return 1 }
@@ -96,33 +99,42 @@ extension UInt64 {
 
     @available(macOS 10.14.4, iOS 12.2, tvOS 12.2, watchOS 5.2, *)
     @discardableResult
+    @inlinable
+    @inline(always)
     func variableLengthEncodeInto(
         _ bytes: inout MutableRawSpan,
         offset: Int = 0
     ) throws(VariableLengthEncodingError) -> Int {
-        guard let length = self.safeVariableLengthSize else {
+        // Get the size and ecode the value all in one pass
+        if _fastPath(self <= 63) {
+            guard offset &+ 1 <= bytes.byteCount else {
+                throw VariableLengthEncodingError.bufferTooShort
+            }
+            bytes.storeBytes(of: UInt8(self), toByteOffset: offset, as: UInt8.self)
+            return 1
+        }
+        if self <= 16383 {
+            guard offset &+ 2 <= bytes.byteCount else {
+                throw VariableLengthEncodingError.bufferTooShort
+            }
+            bytes.storeBytes(of: UInt16(1 << 14 | self).bigEndian, toByteOffset: offset, as: UInt16.self)
+            return 2
+        }
+        if self <= 1_073_741_823 {
+            guard offset &+ 4 <= bytes.byteCount else {
+                throw VariableLengthEncodingError.bufferTooShort
+            }
+            bytes.storeBytes(of: UInt32(1 << 31 | self).bigEndian, toByteOffset: offset, as: UInt32.self)
+            return 4
+        }
+        guard _fastPath(self <= 4_611_686_018_427_387_903) else {
             throw VariableLengthEncodingError.invalidValue
         }
-        guard offset + length <= bytes.byteCount else {
+        guard offset &+ 8 <= bytes.byteCount else {
             throw VariableLengthEncodingError.bufferTooShort
         }
-        var value: UInt64
-
-        switch length {
-        case 1:
-            value = self
-            bytes.storeBytes(of: UInt8(value), toByteOffset: offset, as: UInt8.self)
-        case 2:
-            value = (1 << 14 | self)
-            bytes.storeBytes(of: UInt16(value).bigEndian, toByteOffset: offset, as: UInt16.self)
-        case 4:
-            value = (1 << 31 | self)
-            bytes.storeBytes(of: UInt32(value).bigEndian, toByteOffset: offset, as: UInt32.self)
-        default:
-            value = (3 << 62 | self)
-            bytes.storeBytes(of: UInt64(value).bigEndian, toByteOffset: offset, as: UInt64.self)
-        }
-        return length
+        bytes.storeBytes(of: UInt64(3 << 62 | self).bigEndian, toByteOffset: offset, as: UInt64.self)
+        return 8
     }
 
     @available(macOS 11, iOS 14, tvOS 14, watchOS 7, *)
