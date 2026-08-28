@@ -235,8 +235,12 @@ final class EndpointFlow: CustomDebugStringConvertible {
         case .stream(let flow):
             while !self.readRequests.isEmpty {
                 if self.readRequests[0].expectsSpan {
-                    guard var frames = flow.readFrames(minimumBytes: self.readRequests[0].minimumBytes,
-                                                       maximumBytes: self.readRequests[0].maximumBytes) else {
+                    guard
+                        var frames = flow.readFrames(
+                            minimumBytes: self.readRequests[0].minimumBytes,
+                            maximumBytes: self.readRequests[0].maximumBytes
+                        )
+                    else {
                         flow.waitForInboundDataAvailable(completion: self.inputAvailable)
                         break
                     }
@@ -249,10 +253,12 @@ final class EndpointFlow: CustomDebugStringConvertible {
                         return .removeFrameAndContinue
                     }
                 } else {
-                    guard let content = flow.read(
-                        minimumBytes: self.readRequests[0].minimumBytes,
-                        maximumBytes: self.readRequests[0].maximumBytes
-                    ) else {
+                    guard
+                        let content = flow.read(
+                            minimumBytes: self.readRequests[0].minimumBytes,
+                            maximumBytes: self.readRequests[0].maximumBytes
+                        )
+                    else {
                         flow.waitForInboundDataAvailable(completion: self.inputAvailable)
                         break
                     }

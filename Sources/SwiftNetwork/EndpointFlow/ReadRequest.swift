@@ -26,7 +26,11 @@ struct ReadRequest: ~Copyable {
     let type: ReadRequestType
 
     init(minimumBytes: Int, maximumBytes: Int, completion: @escaping DataCompletion) {
-        type = ReadRequestType.stream(minimumBytes: minimumBytes, maximumBytes: maximumBytes, dataCompletion: completion)
+        type = ReadRequestType.stream(
+            minimumBytes: minimumBytes,
+            maximumBytes: maximumBytes,
+            dataCompletion: completion
+        )
     }
 
     init(maximumFrames: Int, completion: @escaping DataCompletion) {
@@ -34,7 +38,12 @@ struct ReadRequest: ~Copyable {
     }
 
     init(minimumBytes: Int, maximumBytes: Int, maximumFrames: Int, completion: @escaping SpanCompletion) {
-        type = ReadRequestType.streamSpan(minimumBytes: minimumBytes, maximumBytes: maximumBytes, maximumFrames: maximumFrames, spanCompletion: completion)
+        type = ReadRequestType.streamSpan(
+            minimumBytes: minimumBytes,
+            maximumBytes: maximumBytes,
+            maximumFrames: maximumFrames,
+            spanCompletion: completion
+        )
     }
 
     func complete(content: [UInt8]?, isComplete: Bool, isFinal: Bool, error: NetworkError? = nil) {

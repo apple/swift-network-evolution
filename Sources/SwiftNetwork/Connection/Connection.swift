@@ -2174,7 +2174,8 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
     ) {
         let endpointFlow = self.endpointFlow
         endpointFlow.async {
-            let readRequest = ReadRequest(minimumBytes: minBytes, maximumBytes: maxBytes, maximumFrames: maximumChunks) {
+            let readRequest = ReadRequest(minimumBytes: minBytes, maximumBytes: maxBytes, maximumFrames: maximumChunks)
+            {
                 (content, isComplete, isFinal, error) in
                 if let error = error {
                     completion(.failure(error))
