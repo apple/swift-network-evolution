@@ -52,8 +52,8 @@ extension UInt32 {
     }
 }
 
-@available(Network 0.1.0, *)
-public enum ChecksumError: Error {
+@usableFromInline
+enum ChecksumError: Error {
     case invalidLength
     case invalidBuffer
 }
