@@ -341,6 +341,7 @@ final class DatagramEndpointFlowProtocol: EndpointFlowProtocol<InboundDatagramLi
                     minimumDatagramSize: length
                 )
                 guard var frames = frames else {
+                    datagram.finalize(success: false)
                     log.error("Failed to get datagram to send")
                     return false
                 }
@@ -359,6 +360,7 @@ final class DatagramEndpointFlowProtocol: EndpointFlowProtocol<InboundDatagramLi
                 try lower.invokeSendDatagrams(reference, datagrams: frames)
                 return true
             } catch {
+                datagram.finalize(success: false)
                 return false
             }
         }

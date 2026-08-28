@@ -1404,7 +1404,10 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
         flow flowID: MultiplexedFlowIdentifier,
         streamData: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.flow(for: flowID) else {
+            streamData.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         return try flow.addToUpperReceiveQueue(streamData)
     }
 
@@ -1417,7 +1420,10 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
         flow flowID: MultiplexedFlowIdentifier,
         streamData: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.flow(for: flowID) else {
+            streamData.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         try deliverInboundStreamData(flow: &flow, streamData: streamData)
     }
 
@@ -1614,7 +1620,10 @@ extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagr
         flow flowID: MultiplexedFlowIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.flow(for: flowID) else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         return try flow.addToUpperReceiveQueue(datagrams)
     }
 
@@ -1628,7 +1637,10 @@ extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagr
         flow flowID: MultiplexedFlowIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.flow(for: flowID) else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         try flow.addToUpperReceiveQueue(datagrams)
         flow.serviceUpperReceiveQueue()
     }
@@ -1656,7 +1668,10 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
         flow flowID: MultiplexedFlowIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.secondaryFlow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.secondaryFlow(for: flowID) else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         return try flow.addToUpperReceiveQueue(datagrams)
     }
 
@@ -1670,7 +1685,10 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
         flow flowID: MultiplexedFlowIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.secondaryFlow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.secondaryFlow(for: flowID) else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         try deliverInboundDatagrams(flow: &flow, datagrams: datagrams)
     }
 
@@ -2033,7 +2051,10 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         path pathID: MultiplexingPathIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var path = self.path(for: pathID) else { throw NetworkError.posix(EINVAL) }
+        guard var path = self.path(for: pathID) else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         return try path.addToLowerSendQueue(datagrams)
     }
 

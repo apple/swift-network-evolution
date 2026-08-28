@@ -427,7 +427,10 @@ public struct DemuxProtocol: NetworkProtocol {
             _ from: ProtocolInstanceReference,
             datagrams: consuming FrameArray
         ) throws(NetworkError) {
-            do { try validate(upper: from, #function) } catch { throw NetworkError.posix(EINVAL) }
+            do { try validate(upper: from, #function) } catch {
+                datagrams.finalizeAllFramesAsFailed()
+                throw NetworkError.posix(EINVAL)
+            }
             try lower.invokeSendDatagrams(self.reference, datagrams: datagrams)
         }
 

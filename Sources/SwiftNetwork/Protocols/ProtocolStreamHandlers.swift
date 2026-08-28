@@ -400,7 +400,10 @@ extension ProtocolInstanceReference {
                 }
             #endif
             // Sending early stream data not supported on the protocol
-            default: throw NetworkError.posix(ENOTSUP)
+            default:
+                var streamData = streamData
+                streamData.finalizeAllFramesAsFailed()
+                throw NetworkError.posix(ENOTSUP)
             }
         }
     }
