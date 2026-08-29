@@ -139,7 +139,11 @@ public struct FrameArraySpanFactory: ~Copyable, ~Escapable, DeserializerSpanFact
         // Advance to the next span
         spanIndex += 1
 
-        return _overrideLifetime(frameArray.bytes(at: currentIndex), borrowing: self)
+        // `bytes(at:)` is mutating: only the mutable span reliably addresses the
+        // frame array's inline storage. The returned span's lifetime already
+        // derives from `self.frameArray`, which satisfies this method's
+        // `@_lifetime(&self)`, so no override is needed.
+        return frameArray.bytes(at: currentIndex)
     }
 }
 

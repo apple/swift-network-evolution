@@ -393,6 +393,62 @@ struct NetworkSmallUniqueDeque<
         return body(&_inlineBase().advanced(by: _slot(index)).pointee)
     }
 
+    /// Calls `body` with the element at `index`, borrowed in place, without
+    /// requiring mutable access to the deque.
+    ///
+    /// Prefer ``withElement(at:_:)`` where a mutable borrow is available. This
+    /// variant exists for non-`mutating` contexts. The address is derived inside
+    /// the span's scope and never escapes it — an *escaping* address taken from a
+    /// borrow of the inline storage may point into a temporary copy.
+    ///
+    /// - Precondition: `index` is a valid index of the deque.
+    @inlinable
+    @inline(__always)
+    borrowing func borrowingWithElement<R: ~Copyable>(
+        at index: Int,
+        _ body: (borrowing Element) -> R
+    ) -> R {
+        precondition(index >= 0 && index < _count, "Index out of range")
+        if index >= InlineCapacity {
+            return body(_overflowStorage[index &- InlineCapacity])
+        }
+        let span = _inlineStorage.span
+        return span.withUnsafeBufferPointer { buffer in
+            body(
+                UnsafeRawPointer(buffer.baseAddress.unsafelyUnwrapped)
+                    .advanced(by: _slot(index) &* MemoryLayout<Element>.stride)
+                    .assumingMemoryBound(to: Element.self)
+                    .pointee
+            )
+        }
+    }
+
+    /// The address of the element at `index`.
+    ///
+    /// This exists for callers that need an element *address* rather than a
+    /// borrow — to build a `Span` into the element's own storage, say, which a
+    /// closure accessor cannot return because non-escapable values cannot cross a
+    /// closure boundary.
+    ///
+    /// It is `mutating` because only the *mutable* span reliably addresses the
+    /// real inline storage; an address derived from a borrow may point into a
+    /// temporary copy of the trivial storage and silently read garbage.
+    ///
+    /// - Warning: The address is invalidated by any subsequent append, prepend,
+    ///   removal, or insertion.
+    /// - Precondition: `index` is a valid index of the deque.
+    @inlinable
+    @inline(__always)
+    mutating func elementAddress(at index: Int) -> UnsafeMutablePointer<Element> {
+        precondition(index >= 0 && index < _count, "Index out of range")
+        if index >= InlineCapacity {
+            // The overflow deque is a non-contiguous ring, so there is no span to
+            // take an address from; use its own mutable addressor.
+            return withUnsafeMutablePointer(to: &_overflowStorage[index &- InlineCapacity]) { $0 }
+        }
+        return _inlineBase().advanced(by: _slot(index))
+    }
+
     deinit {
         let inlineCount = _inlineCount
         if inlineCount > 0 {
