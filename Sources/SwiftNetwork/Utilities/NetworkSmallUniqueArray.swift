@@ -20,6 +20,7 @@ import BasicContainers
 ///
 /// Conformers must be bitwise-copyable and have no meaningful value of their
 /// own: ``NetworkSmallUniqueArray`` reinterprets them as element storage.
+@usableFromInline
 @available(Network 0.1.0, *)
 protocol NetworkInlineStorageSlot: BitwiseCopyable, Sendable {
     /// An all-zero instance, used to bring the raw storage into existence.
@@ -28,7 +29,7 @@ protocol NetworkInlineStorageSlot: BitwiseCopyable, Sendable {
 
 @available(Network 0.1.0, *)
 extension InlineArray: NetworkInlineStorageSlot where Element == UInt64 {
-    @inlinable
+    @usableFromInline
     @inline(__always)
     static var zero: Self { .init(repeating: 0) }
 }
@@ -54,6 +55,7 @@ extension InlineArray: NetworkInlineStorageSlot where Element == UInt64 {
 /// the element type past its slot traps with a clear message instead of
 /// corrupting memory. A test asserting the element's `stride` will catch it even
 /// earlier.
+@usableFromInline
 @available(Network 0.1.0, *)
 protocol NetworkInlineStorable: ~Copyable {
     /// Raw storage at least `MemoryLayout<Self>.stride` bytes wide, and at least
@@ -107,6 +109,7 @@ protocol NetworkInlineStorable: ~Copyable {
 /// expect to be common: inline storage is part of the containing value, so a
 /// large capacity times a large `Element` makes every move of the enclosing type
 /// more expensive.
+@usableFromInline
 @available(Network 0.1.0, *)
 struct NetworkSmallUniqueArray<
     Element: NetworkInlineStorable & ~Copyable,
@@ -116,22 +119,18 @@ struct NetworkSmallUniqueArray<
     ///
     /// Only the first `min(_count, InlineCapacity)` element-strides hold
     /// initialized elements; the rest is uninitialized garbage.
-    @usableFromInline
     var _inlineStorage: InlineArray<InlineCapacity, Element.InlineSlot>
 
     /// The total number of elements, inline plus overflow.
     ///
     /// This doubles as the tag: it is the only thing that says which inline
     /// slots are live.
-    @usableFromInline
     var _count: Int
 
     /// Elements past `InlineCapacity`. Allocates nothing while empty.
-    @usableFromInline
     var _overflowStorage: NetworkUniqueArray<Element>
 
     /// The number of elements that fit inline.
-    @inlinable
     @inline(__always)
     static var inlineCapacity: Int { InlineCapacity }
 
@@ -140,7 +139,6 @@ struct NetworkSmallUniqueArray<
     /// This is the one invariant a slot declaration has to satisfy. Swift has no
     /// static assertion, so it is checked on construction instead; the check
     /// folds away entirely when it holds.
-    @inlinable
     @inline(__always)
     static func _checkInlineSlot() {
         precondition(
@@ -153,7 +151,6 @@ struct NetworkSmallUniqueArray<
         )
     }
 
-    @inlinable
     @inline(__always)
     init() {
         Self._checkInlineSlot()
@@ -165,16 +162,13 @@ struct NetworkSmallUniqueArray<
     }
 
     /// The total number of elements.
-    @inlinable
     @inline(__always)
     var count: Int { _count }
 
-    @inlinable
     @inline(__always)
     var isEmpty: Bool { _count == 0 }
 
     /// The number of elements currently held in inline storage.
-    @inlinable
     @inline(__always)
     var _inlineCount: Int {
         Swift.min(_count, InlineCapacity)
@@ -183,7 +177,6 @@ struct NetworkSmallUniqueArray<
     // MARK: - Adding elements
 
     /// Appends an element, spilling to heap storage past the inline capacity.
-    @inlinable
     @inline(__always)
     mutating func append(_ element: consuming Element) {
         if _fastPath(_count < InlineCapacity) {
@@ -199,7 +192,6 @@ struct NetworkSmallUniqueArray<
     }
 
     /// Out-of-line slow path, kept separate so it does not bloat `append`.
-    @inlinable
     @inline(never)
     mutating func _appendToOverflow(_ element: consuming Element) {
         _overflowStorage.append(element)
@@ -210,7 +202,6 @@ struct NetworkSmallUniqueArray<
     /// Removes and returns the first element.
     ///
     /// - Precondition: The array is not empty.
-    @inlinable
     @inline(__always)
     mutating func removeFirst() -> Element {
         precondition(_count > 0, "Can't remove first element from an empty array")
@@ -220,7 +211,6 @@ struct NetworkSmallUniqueArray<
     /// Removes and returns the element at `index`.
     ///
     /// - Precondition: `index` is a valid index of the array.
-    @inlinable
     @discardableResult
     mutating func remove(at index: Int) -> Element {
         precondition(index >= 0 && index < _count, "Index out of range")
@@ -234,7 +224,6 @@ struct NetworkSmallUniqueArray<
     }
 
     /// Removes an element held in inline storage, closing the gap it leaves.
-    @inlinable
     @inline(__always)
     mutating func _removeInline(at index: Int) -> Element {
         let inlineCount = _inlineCount
@@ -256,7 +245,6 @@ struct NetworkSmallUniqueArray<
     }
 
     /// Moves the first overflow element into the given inline slot.
-    @inlinable
     @inline(never)
     mutating func _promoteFirstOverflowElement(to index: Int) {
         var shuttle: Element? = _overflowStorage.remove(at: 0)
@@ -273,7 +261,6 @@ struct NetworkSmallUniqueArray<
     /// point at the real storage.
     ///
     /// - Precondition: `index` is a valid index of the array.
-    @inlinable
     @inline(__always)
     mutating func withElement<R: ~Copyable>(
         at index: Int,
@@ -290,7 +277,6 @@ struct NetworkSmallUniqueArray<
     /// place. The element is never copied or moved.
     ///
     /// - Precondition: `index` is a valid index of the array.
-    @inlinable
     @inline(__always)
     mutating func withMutableElement<R: ~Copyable>(
         at index: Int,
@@ -318,7 +304,6 @@ struct NetworkSmallUniqueArray<
     /// makes the `Optional` shuttle escape into a heap box, which measured four
     /// `swift_slowDealloc` calls and 132 instructions on the hot path versus 27
     /// here.
-    @inlinable
     @inline(__always)
     mutating func _inlineBase() -> UnsafeMutablePointer<Element> {
         var span = _inlineStorage.mutableSpan
@@ -337,7 +322,7 @@ struct NetworkSmallUniqueArray<
             // mutating paths this only has to *read* the elements out to
             // destroy them, and `withUnsafePointer` guarantees the copy it may
             // make holds the same element values.
-            withUnsafePointer(to: _inlineStorage) { storage in
+            _ = withUnsafePointer(to: _inlineStorage) { storage in
                 UnsafeMutableRawPointer(mutating: UnsafeRawPointer(storage))
                     .assumingMemoryBound(to: Element.self)
                     .deinitialize(count: inlineCount)
@@ -356,12 +341,14 @@ struct NetworkSmallUniqueArray<
 /// `Frame` is 136 bytes.
 @available(Network 0.1.0, *)
 extension Frame: NetworkInlineStorable {
+    @usableFromInline
     typealias InlineSlot = InlineArray<17, UInt64>
 }
 
 /// `ProtocolEventManagerState.PendingEvent` is 328 bytes (326 rounded to stride).
 @available(Network 0.1.0, *)
 extension ProtocolEventManagerState.PendingEvent: NetworkInlineStorable {
+    @usableFromInline
     typealias InlineSlot = InlineArray<41, UInt64>
 }
 

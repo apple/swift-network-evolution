@@ -62,33 +62,28 @@ internal import DequeModule
 /// expect to be common: inline storage is part of the containing value, so a large
 /// capacity times a large `Element` makes every move of the enclosing type more
 /// expensive.
+@usableFromInline
 @available(Network 0.1.0, *)
 struct NetworkSmallUniqueDeque<
     Element: NetworkInlineStorable & ~Copyable,
     let InlineCapacity: Int
 >: ~Copyable {
     /// Trivial raw backing store, used as a ring buffer.
-    @usableFromInline
     var _inlineStorage: InlineArray<InlineCapacity, Element.InlineSlot>
 
     /// Slot holding logical index 0.
-    @usableFromInline
     var _head: Int
 
     /// The total number of elements, inline plus overflow.
-    @usableFromInline
     var _count: Int
 
     /// Elements past `InlineCapacity`, in order. Allocates nothing while empty.
-    @usableFromInline
     var _overflowStorage: NetworkUniqueDeque<Element>
 
     /// The number of elements that fit inline.
-    @inlinable
     @inline(__always)
     static var inlineCapacity: Int { InlineCapacity }
 
-    @inlinable
     @inline(__always)
     init() {
         NetworkSmallUniqueArray<Element, InlineCapacity>._checkInlineSlot()
@@ -101,16 +96,13 @@ struct NetworkSmallUniqueDeque<
     }
 
     /// The total number of elements.
-    @inlinable
     @inline(__always)
     var count: Int { _count }
 
-    @inlinable
     @inline(__always)
     var isEmpty: Bool { _count == 0 }
 
     /// The number of elements currently held in inline storage.
-    @inlinable
     @inline(__always)
     var _inlineCount: Int {
         Swift.min(_count, InlineCapacity)
@@ -121,7 +113,6 @@ struct NetworkSmallUniqueDeque<
     /// The slot holding logical index `index`.
     ///
     /// A compare-and-subtract rather than `%`: the modulus would emit a division.
-    @inlinable
     @inline(__always)
     func _slot(_ index: Int) -> Int {
         let raw = _head &+ index
@@ -129,7 +120,6 @@ struct NetworkSmallUniqueDeque<
     }
 
     /// The slot one position before `slot`, wrapping.
-    @inlinable
     @inline(__always)
     func _slotBefore(_ slot: Int) -> Int {
         slot == 0 ? InlineCapacity &- 1 : slot &- 1
@@ -140,7 +130,6 @@ struct NetworkSmallUniqueDeque<
     /// See ``NetworkSmallUniqueArray/_inlineBase()`` for why the address must come
     /// from `mutableSpan`, and why the pointer is extracted into a typed `let`
     /// rather than used inside the closure.
-    @inlinable
     @inline(__always)
     mutating func _inlineBase() -> UnsafeMutablePointer<Element> {
         var span = _inlineStorage.mutableSpan
@@ -156,7 +145,6 @@ struct NetworkSmallUniqueDeque<
     /// Appends an element to the back.
     ///
     /// - Complexity: O(1)
-    @inlinable
     @inline(__always)
     mutating func append(_ element: consuming Element) {
         if _fastPath(_count < InlineCapacity) {
@@ -171,7 +159,6 @@ struct NetworkSmallUniqueDeque<
         _count &+= 1
     }
 
-    @inlinable
     @inline(never)
     mutating func _appendToOverflow(_ element: consuming Element) {
         _overflowStorage.append(element)
@@ -180,7 +167,6 @@ struct NetworkSmallUniqueDeque<
     /// Prepends an element to the front.
     ///
     /// - Complexity: O(1)
-    @inlinable
     @inline(__always)
     mutating func prepend(_ element: consuming Element) {
         if _fastPath(_count < InlineCapacity) {
@@ -196,7 +182,6 @@ struct NetworkSmallUniqueDeque<
 
     /// Inline storage is full, so evict its last element to the *front* of
     /// overflow — preserving invariant 2 — and take the slot that frees up.
-    @inlinable
     @inline(never)
     mutating func _prependWhenInlineFull(_ element: consuming Element) {
         let lastSlot = _slot(InlineCapacity &- 1)
@@ -213,7 +198,6 @@ struct NetworkSmallUniqueDeque<
     /// Removes and returns the first element, or `nil` if the deque is empty.
     ///
     /// - Complexity: O(1)
-    @inlinable
     @inline(__always)
     mutating func popFirst() -> Element? {
         if _count == 0 { return nil }
@@ -229,7 +213,6 @@ struct NetworkSmallUniqueDeque<
     /// Removes and returns the last element, or `nil` if the deque is empty.
     ///
     /// - Complexity: O(1)
-    @inlinable
     @inline(__always)
     mutating func popLast() -> Element? {
         if _count == 0 { return nil }
@@ -247,7 +230,6 @@ struct NetworkSmallUniqueDeque<
     ///
     /// - Precondition: The deque is not empty.
     /// - Complexity: O(1)
-    @inlinable
     @inline(__always)
     mutating func removeFirst() -> Element {
         precondition(_count > 0, "Can't remove first element from an empty deque")
@@ -261,7 +243,6 @@ struct NetworkSmallUniqueDeque<
     /// `_count` has already been decremented by the caller, so the vacant logical
     /// index is `_inlineCount - 1`. Using `_inlineCount` here instead is an
     /// off-by-one that only shows up once overflow is non-empty.
-    @inlinable
     @inline(never)
     mutating func _refillTailFromOverflow() {
         var shuttle: Element? = _overflowStorage.popFirst()
@@ -274,7 +255,6 @@ struct NetworkSmallUniqueDeque<
     /// - Precondition: `index` is a valid index of the deque.
     /// - Complexity: O(`InlineCapacity`) for an inline index, plus the cost of
     ///   removing from the overflow deque otherwise.
-    @inlinable
     @discardableResult
     mutating func remove(at index: Int) -> Element {
         precondition(index >= 0 && index < _count, "Index out of range")
@@ -323,7 +303,6 @@ struct NetworkSmallUniqueDeque<
     ///
     /// - Precondition: `index` is a valid insertion index of the deque.
     /// - Complexity: O(*n*)
-    @inlinable
     mutating func insert(_ element: consuming Element, at index: Int) {
         precondition(index >= 0 && index <= _count, "Index out of range")
         if index >= InlineCapacity {
@@ -363,7 +342,6 @@ struct NetworkSmallUniqueDeque<
     /// such an address does not reliably point at the real storage.
     ///
     /// - Precondition: `index` is a valid index of the deque.
-    @inlinable
     @inline(__always)
     mutating func withElement<R: ~Copyable>(
         at index: Int,
@@ -380,7 +358,6 @@ struct NetworkSmallUniqueDeque<
     /// The element is never copied or moved.
     ///
     /// - Precondition: `index` is a valid index of the deque.
-    @inlinable
     @inline(__always)
     mutating func withMutableElement<R: ~Copyable>(
         at index: Int,
@@ -402,7 +379,6 @@ struct NetworkSmallUniqueDeque<
     /// borrow of the inline storage may point into a temporary copy.
     ///
     /// - Precondition: `index` is a valid index of the deque.
-    @inlinable
     @inline(__always)
     borrowing func borrowingWithElement<R: ~Copyable>(
         at index: Int,
@@ -437,7 +413,6 @@ struct NetworkSmallUniqueDeque<
     /// - Warning: The address is invalidated by any subsequent append, prepend,
     ///   removal, or insertion.
     /// - Precondition: `index` is a valid index of the deque.
-    @inlinable
     @inline(__always)
     mutating func elementAddress(at index: Int) -> UnsafeMutablePointer<Element> {
         precondition(index >= 0 && index < _count, "Index out of range")
