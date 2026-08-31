@@ -15,7 +15,7 @@
 @available(Network 0.1.0, *)
 struct ReadRequest: ~Copyable {
     typealias DataCompletion = ([UInt8]?, Bool, Bool, NetworkError?) -> Void
-    typealias SpanCompletion = (RawSpan, Bool, Bool, Bool, NetworkError?) -> Void
+    typealias SpanCompletion = (RawSpan?, Int, Bool, Bool, Bool, NetworkError?) -> Void
 
     enum ReadRequestType {
         case stream(minimumBytes: Int, maximumBytes: Int, dataCompletion: DataCompletion)
@@ -54,9 +54,17 @@ struct ReadRequest: ~Copyable {
         }
     }
 
-    func complete(bytes: RawSpan, isComplete: Bool, isFinal: Bool, lastChunkOfBatch: Bool, error: NetworkError? = nil) {
+    func complete(
+        bytes: RawSpan?,
+        offset: Int,
+        isComplete: Bool,
+        isFinal: Bool,
+        lastChunkOfBatch: Bool,
+        error: NetworkError? = nil
+    ) {
         switch type {
-        case .streamSpan(_, _, _, let completion): completion(bytes, isComplete, isFinal, lastChunkOfBatch, error)
+        case .streamSpan(_, _, _, let completion):
+            completion(bytes, offset, isComplete, isFinal, lastChunkOfBatch, error)
         default: break
         }
     }

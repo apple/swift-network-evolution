@@ -245,15 +245,18 @@ final class EndpointFlow: CustomDebugStringConvertible {
                         break
                     }
                     let readRequest = self.readRequests.removeFirst()
+                    var offset = 0
                     while var frame = frames.popFirst() {
                         let isLastFrame = frames.isEmpty
                         if let bytes = frame.bytes {
                             readRequest.complete(
                                 bytes: bytes,
+                                offset: offset,
                                 isComplete: frame.metadataComplete,
                                 isFinal: true,
                                 lastChunkOfBatch: isLastFrame
                             )
+                            offset += bytes.byteCount
                         }
                         frame.finalize(success: true)
                     }
@@ -281,15 +284,18 @@ final class EndpointFlow: CustomDebugStringConvertible {
                     }
 
                     let readRequest = self.readRequests.removeFirst()
+                    var offset = 0
                     while var frame = frames.popFirst() {
                         let isLastFrame = frames.isEmpty
                         if let bytes = frame.bytes {
                             readRequest.complete(
                                 bytes: bytes,
+                                offset: offset,
                                 isComplete: frame.metadataComplete,
                                 isFinal: false,
                                 lastChunkOfBatch: isLastFrame
                             )
+                            offset += bytes.byteCount
                         }
                         frame.finalize(success: true)
                     }
@@ -434,7 +440,18 @@ final class EndpointFlow: CustomDebugStringConvertible {
         }
         while !self.readRequests.isEmpty {
             let readRequest = self.readRequests.removeFirst()
-            readRequest.complete(content: nil, isComplete: false, isFinal: true, error: .posix(ECANCELED))
+            if readRequest.expectsSpan {
+                readRequest.complete(
+                    bytes: nil,
+                    offset: 0,
+                    isComplete: false,
+                    isFinal: true,
+                    lastChunkOfBatch: true,
+                    error: .posix(ECANCELED)
+                )
+            } else {
+                readRequest.complete(content: nil, isComplete: false, isFinal: true, error: .posix(ECANCELED))
+            }
         }
     }
 
