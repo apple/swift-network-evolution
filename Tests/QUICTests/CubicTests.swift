@@ -466,7 +466,7 @@ final class CubicTests: XCTestCase {
         let timeDifference = sendTimeAbsolute - initialBurstAbsoluteTime
         // This packet should get the default pacing rate of 10ms because the rate is low
         XCTAssertTrue(
-            timeDifference.time.milliseconds
+            timeDifference.milliseconds
                 == Constants.maxBurstIntervalKernelPacing.milliseconds
         )
     }

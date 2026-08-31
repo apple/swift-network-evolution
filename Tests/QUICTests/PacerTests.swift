@@ -155,7 +155,7 @@ final class PacerTests: XCTestCase {
         let timeDifference = sendTimeAbsolute - initialBurstAbsoluteTime
         // We should see a pacing time less than maxBurstIntervalKernelPacing (Should be around 1-2ms)
         XCTAssertTrue(
-            timeDifference.time.milliseconds <= Constants.maxBurstIntervalKernelPacing.milliseconds
+            timeDifference.milliseconds <= Constants.maxBurstIntervalKernelPacing.milliseconds
         )
     }
 }

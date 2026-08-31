@@ -788,7 +788,7 @@ extension QUICStreamInstance {
                     shift = 1
                 }
                 log.datapath(
-                    "Estimated BDP \(receiveHighWaterMarkCount)B, current RTT \(rtt)us, estimated bandwidth 8 * \(receiveHighWaterMarkCount) / \(rtt) Mbps"
+                    "Estimated BDP \(receiveHighWaterMarkCount)B, current RTT \(rtt), estimated bandwidth 8 * \(receiveHighWaterMarkCount) / \(rtt.microseconds) Mbps"
                 )
 
                 let (incr, overflow) = (receiveHighWaterMarkCount << shift)
