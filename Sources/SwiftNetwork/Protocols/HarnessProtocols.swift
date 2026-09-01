@@ -815,11 +815,13 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
 
     public var newInboundCIDEventCount = 0
     public var newOutboundCIDEventCount = 0
+    public var retiredOutboundCIDEventCount = 0
+    #if !NETWORK_NO_SWIFT_QUIC
     public var lastNewOutboundConnectionID: QUICConnectionID?
     public var lastNewOutboundStatelessResetToken: QUICStatelessResetToken?
-    public var retiredOutboundCIDEventCount = 0
     public var lastRetiredOutboundConnectionID: QUICConnectionID?
     public var lastRetiredOutboundStatelessResetToken: QUICStatelessResetToken?
+    #endif
     public func handleNetworkProtocolEvent(_ from: ProtocolInstanceReference, event: NetworkProtocolEvent) {
         log.debug("Received network protocol event: \(event)")
         #if !NETWORK_NO_SWIFT_QUIC

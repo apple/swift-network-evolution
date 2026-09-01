@@ -48,7 +48,6 @@ internal import os
 
 #if IMPORT_SWIFTTLS
 #if canImport(SwiftTLS)
-#if !NETWORK_PRIVATE
 // Uses cross module API for testing
 @available(Network 0.1.0, *)
 final class SwiftNetworkQUICCIDTests: NetTestCase {
@@ -122,7 +121,6 @@ final class SwiftNetworkQUICCIDTests: NetTestCase {
     }
 
 }
-#endif
 #endif
 #endif
 #endif
