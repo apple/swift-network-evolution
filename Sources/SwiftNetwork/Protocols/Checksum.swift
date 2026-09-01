@@ -142,26 +142,13 @@ extension Frame {
             )
             throw ChecksumError.invalidLength
         }
-        // Operate directly on the underlying storage
-        switch buffer {
-        case .bytes:
-            let lowerBound = startOffset + offset
-            return _bytes.span.withUnsafeBytes { raw in
-                let offsetBuffer = UnsafeRawBufferPointer(
-                    start: raw.baseAddress!.advanced(by: lowerBound),
-                    count: length
-                )
-                return offsetBuffer.checksum16()
-            }
-        default:
-            guard let unsafeUnclaimedBuffer else {
-                Logger.proto.info("Frame is no longer valid in checksum16")
-                throw ChecksumError.invalidBuffer
-            }
-            let offsetBuffer = UnsafeRawBufferPointer(
-                start: unsafeUnclaimedBuffer.baseAddress!.advanced(by: offset),
-                count: length
-            )
+        guard let buffer = self.bytes else {
+            Logger.proto.info("Frame is no longer valid in checksum16")
+            throw ChecksumError.invalidBuffer
+        }
+
+        return buffer.withUnsafeBytes { buffer in
+            let offsetBuffer = UnsafeRawBufferPointer(start: buffer.baseAddress!.advanced(by: offset), count: length)
             return offsetBuffer.checksum16()
         }
     }
