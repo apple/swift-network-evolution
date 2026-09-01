@@ -65,9 +65,10 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
                         harness.state?.clientInstance.initialToken,
                         "Client should have an initial retry token"
                     )
-                    XCTAssertNotNil(
+                    // The server's token was reset after verifying the client token.
+                    XCTAssertNil(
                         harness.state?.serverInstance.initialToken,
-                        "Server should have an initial retry token"
+                        "Server must discard the retry token once validated, so it is never sent in an INITIAL"
                     )
                     expectation.fulfill()
                 }
@@ -101,9 +102,10 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
                         harness.state?.clientInstance.initialToken,
                         "Client should have an initial retry token"
                     )
-                    XCTAssertNotNil(
+                    // The server's token was reset after verifying the client token.
+                    XCTAssertNil(
                         harness.state?.serverInstance.initialToken,
-                        "Server should have an initial retry token"
+                        "Server must discard the retry token once validated, so it is never sent in an INITIAL"
                     )
                     expectation.fulfill()
                 }
@@ -128,9 +130,10 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
                         harness.state?.clientInstance.initialToken,
                         "Client should have an initial retry token"
                     )
-                    XCTAssertNotNil(
+                    // The server's token was reset after verifying the client token.
+                    XCTAssertNil(
                         harness.state?.serverInstance.initialToken,
-                        "Server should have an initial retry token"
+                        "Server must discard the retry token once validated, so it is never sent in an INITIAL"
                     )
                     expectation.fulfill()
                 }
