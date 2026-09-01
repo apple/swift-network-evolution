@@ -569,6 +569,47 @@ final class SwiftNetworkFrameArrayTests: NetTestCase {
         array.finalizeAllFramesAsFailed()
     }
 
+    func testMarkEndOfStreamOnlyMarksTheFinalFrame() {
+        var array = FrameArray(frame: Frame(copyBuffer: Array(repeating: 1, count: 100)))
+        array.add(frame: Frame(copyBuffer: Array(repeating: 2, count: 100)))
+        array.add(frame: Frame(copyBuffer: Array(repeating: 3, count: 100)))
+        array.markEndOfStream()
+
+        var first = array.drainArray(maximumByteCount: 100)
+        XCTAssertEqual(first.unclaimedLength, 100)
+        XCTAssertFalse(first.connectionComplete, "end of stream reported with 200 bytes still queued")
+
+        var second = array.drainArray(maximumByteCount: 100)
+        XCTAssertEqual(second.unclaimedLength, 100)
+        XCTAssertFalse(second.connectionComplete, "end of stream reported with 100 bytes still queued")
+
+        var third = array.drainArray(maximumByteCount: 100)
+        XCTAssertEqual(third.unclaimedLength, 100)
+        XCTAssertTrue(third.connectionComplete, "end of stream not reported with the last bytes")
+
+        first.finalizeAllFramesAsFailed()
+        second.finalizeAllFramesAsFailed()
+        third.finalizeAllFramesAsFailed()
+    }
+
+    func testDrainByteCountSplitLeavesEndOfStreamWithTheTrailingBytes() {
+        var frame = Frame(copyBuffer: Array(0..<20))
+        frame.connectionComplete = true
+        var array = FrameArray(frame: frame)
+
+        var drained = array.drainArray(maximumByteCount: 12)
+        XCTAssertEqual(drained.unclaimedLength, 12)
+        XCTAssertFalse(drained.connectionComplete, "end of stream reported before the last byte")
+        XCTAssertEqual(array.unclaimedLength, 8)
+        XCTAssertTrue(array.connectionComplete, "end of stream lost from the remaining bytes")
+
+        var rest = array.drainArray(maximumByteCount: 8)
+        XCTAssertTrue(rest.connectionComplete)
+        drained.finalizeAllFramesAsFailed()
+        rest.finalizeAllFramesAsFailed()
+        array.finalizeAllFramesAsFailed()
+    }
+
     func testDrainByteCountSplitMajoritySentToNewArray() {
         // Split where the majority of the split frame's bytes go to the new array
         // Drain 18 of 20 bytes from a single frame
@@ -662,6 +703,28 @@ final class SwiftNetworkFrameArrayTests: NetTestCase {
         XCTAssertEqual(array.count, 2)
         XCTAssertEqual(array.unclaimedLength, 6)
         XCTAssertEqual(collectBytes(array), [4, 5, 6, 1, 2, 3])
+        array.finalizeAllFramesAsFailed()
+    }
+    func testConnectionCompleteIsAboutTheFinalFrame() {
+        var head = Frame(copyBuffer: [1, 2, 3] as [UInt8])
+        head.connectionComplete = true
+        var array = FrameArray(frame: head)
+        XCTAssertTrue(array.connectionComplete)
+
+        array.add(frame: Frame(copyBuffer: [4, 5, 6] as [UInt8]))
+        XCTAssertFalse(array.connectionComplete, "bytes follow the marked frame, so the stream has not ended")
+
+        var tail = Frame(copyBuffer: [7, 8, 9] as [UInt8])
+        tail.connectionComplete = true
+        array.add(frame: tail)
+        XCTAssertTrue(array.connectionComplete)
+
+        array.finalizeAllFramesAsFailed()
+    }
+
+    func testConnectionCompleteIsFalseWhenEmpty() {
+        var array = FrameArray()
+        XCTAssertFalse(array.connectionComplete)
         array.finalizeAllFramesAsFailed()
     }
 }

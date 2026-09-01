@@ -429,6 +429,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
     private var isConnecting = false
     private var inputSourceSuspended = false
     private var inputFinished = false
+    /// Whether the end-of-stream marker has been delivered to the consumer.
+    private var inputFinishedDelivered = false
     private var outputFinished = false
     private var pendingDisconnect = false
     private var incomingFrames = FrameArray()
@@ -571,25 +573,49 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
     // MARK: - BottomStreamProtocol
 
     public func receiveStreamData(minimumBytes: Int, maximumBytes: Int) throws(NetworkError) -> FrameArray? {
-        guard !incomingFrames.isEmpty,
-            incomingFrames.unclaimedLength >= minimumBytes || incomingFrames.connectionComplete
-        else {
-            // We don't have enough buffered to satisfy the consumer yet. If we
-            // had suspended on the high-water mark, resume — the consumer needs
-            // more than we're currently holding, so reading must continue even
-            // past the soft cap. Otherwise a large minimum would deadlock.
-            if inputSourceSuspended && !inputFinished {
-                inputSourceSuspended = false
-                dispatchReadSource?.resume()
+        if incomingFrames.isEmpty {
+            // Nothing buffered and nothing more coming, so report the end of the stream.
+            // It is synthesized rather than carried on a queued frame, so nothing has to
+            // be allocated to hold the flag once the queue has drained.
+            if inputFinished, !inputFinishedDelivered {
+                inputFinishedDelivered = true
+                return FrameArray(frame: Frame(count: 0, connectionComplete: true))
             }
+
+            resumeReadingIfSuspended()
             return nil
         }
+
+        // Either hold the consumer until its minimum can be met or if the peer has
+        // half-closed no more will arrive, so what is buffered is all it is ever going to get.
+        guard incomingFrames.unclaimedLength >= minimumBytes || inputFinished else {
+            resumeReadingIfSuspended()
+            return nil
+        }
+
         let result = incomingFrames.drainArray(maximumByteCount: maximumBytes)
+        // The flag sits on whichever frame carries the last byte, so a drain that takes it counts
+        // as delivery. Without this the branch above would synthesize a second, empty end of stream
+        // on the next receive.
+        if result.connectionComplete {
+            inputFinishedDelivered = true
+        }
         if inputSourceSuspended, incomingFrames.unclaimedLength < maximumInputSize {
             inputSourceSuspended = false
             dispatchReadSource?.resume()
         }
         return result
+    }
+
+    /// Resumes the read source if it was suspended on the high-water mark.
+    ///
+    /// The consumer wants more than is buffered, so reading has to continue past the soft cap or a
+    /// large minimum would deadlock. Not once the peer has half-closed: the source is cancelled by
+    /// then and no further event can arrive.
+    private func resumeReadingIfSuspended() {
+        guard inputSourceSuspended, !inputFinished else { return }
+        inputSourceSuspended = false
+        dispatchReadSource?.resume()
     }
 
     public func getOutboundStreamDataRoomAvailable() throws(NetworkError) -> Int {
@@ -756,7 +782,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
                 switch result {
                 case .processed(let bytesRead):
                     if bytesRead == 0 {
-                        // Stream EOF — mark the next frame as connectionComplete.
+                        // Stream EOF — the queued bytes are marked below.
                         reachedEOF = true
                     } else {
                         let frame = Frame(copyBuffer: UnsafeRawBufferPointer(start: readBuffer, count: bytesRead))
@@ -773,11 +799,10 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
 
             if reachedEOF {
                 inputFinished = true
-                // Tag the last incoming frame (or an empty one) with connectionComplete
-                // so the upper protocol sees stream completion.
-                var sentinel = Frame(count: 0)
-                sentinel.connectionComplete = true
-                incomingFrames.add(frame: sentinel)
+                // Mark the bytes already queued, so the read that returns the last of them also
+                // reports the end of the stream. With nothing queued, `receiveStreamData`
+                // synthesizes the marker instead.
+                incomingFrames.markEndOfStream()
                 receivedAny = true
                 // The stream is finished; stop the read source. EOF keeps the
                 // descriptor readable, so leaving it armed would spin forever.

@@ -657,6 +657,62 @@ final class SwiftNetworkConnectionTests: NetTestCase {
         )
     }
 
+    // A stream send marked `isComplete` must arrive marked complete.
+    func testStreamReceiveReportsEndOfStream() {
+        let group = DispatchGroup()
+        group.enter()
+        let c1 = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 7878),
+            using: .parameters {
+                NoTransport {
+                    StreamBridge()
+                }
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7877))
+        )
+        .onStateUpdate { _, state in
+            if case .cancelled = state { group.leave() }
+        }
+
+        group.enter()
+        let c2 = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 7877),
+            using: .parameters {
+                NoTransport {
+                    StreamBridge()
+                }
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7878))
+        )
+        .onStateUpdate { _, state in
+            if case .cancelled = state { group.leave() }
+        }
+
+        c1.start()
+        c2.start()
+
+        c1.send(.message(content: [1, 2, 3], isComplete: true)) { result in
+            if case .failure(let error) = result {
+                XCTFail("send failed with error \(error)")
+            }
+        }
+
+        c2.receive(atLeast: 1, atMost: Int.max) { result in
+            switch result {
+            case .success(let message):
+                XCTAssertEqual(message.content, [1, 2, 3])
+                XCTAssertTrue(message.isComplete, "end of stream was not reported to the receiver")
+            case .failure(let error):
+                XCTFail("receive failed with error \(error)")
+            }
+            c1.cancel()
+            c2.cancel()
+        }
+
+        XCTAssertEqual(
+            group.wait(timeout: DispatchTime.now() + .seconds(5)),
+            DispatchTimeoutResult.success
+        )
+    }
+
     #if HAS_SWIFTTLS_RECORD
     func testTLSNoTransportDataPath() {
         let group = DispatchGroup()

@@ -125,6 +125,13 @@ public struct Frame: ~Copyable {
         self.effectiveBufferLength = self.bufferLength
     }
 
+    /// A frame of `count` zero bytes carrying `connectionComplete`, for the marker a stream bottom
+    /// hands over once the peer has half-closed and its queue has drained.
+    init(count: Int, connectionComplete: Bool) {
+        self.init(count: count)
+        self.connectionComplete = connectionComplete
+    }
+
     init(bytes: consuming NetworkUniqueArray<UInt8>) {
         self._bytes = bytes
         self.buffer = .bytes
