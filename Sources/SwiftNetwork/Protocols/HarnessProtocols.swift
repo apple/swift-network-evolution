@@ -815,6 +815,8 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
 
     public var newInboundCIDEventCount = 0
     public var newOutboundCIDEventCount = 0
+    public var lastNewOutboundConnectionID: QUICConnectionID?
+    public var lastNewOutboundStatelessResetToken: QUICStatelessResetToken?
     public var retiredOutboundCIDEventCount = 0
     public var lastRetiredOutboundConnectionID: QUICConnectionID?
     public var lastRetiredOutboundStatelessResetToken: QUICStatelessResetToken?
@@ -824,7 +826,10 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
         if let quicEvent = event.quicEvent {
             switch quicEvent {
             case .newInboundConnectionID: newInboundCIDEventCount += 1
-            case .newOutboundConnectionID: newOutboundCIDEventCount += 1
+            case .newOutboundConnectionID(let connectionID, let statelessResetToken):
+                newOutboundCIDEventCount += 1
+                lastNewOutboundConnectionID = connectionID
+                lastNewOutboundStatelessResetToken = statelessResetToken
             case .retiredOutboundConnectionID(let connectionID, let statelessResetToken):
                 retiredOutboundCIDEventCount += 1
                 lastRetiredOutboundConnectionID = connectionID

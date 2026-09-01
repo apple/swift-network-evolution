@@ -54,6 +54,10 @@ internal import os
 final class SwiftNetworkQUICCIDTests: NetTestCase {
 
     func testQUICRetiredOutboundConnectionIDIncludesStatelessResetToken() {
+        var newOutboundConnectionID: QUICConnectionID?
+        var newOutboundStatelessResetToken: QUICStatelessResetToken?
+        var expectedNewStatelessResetToken: QUICStatelessResetToken?
+
         var retiredConnectionID: QUICConnectionID?
         var retiredStatelessResetToken: QUICStatelessResetToken?
         var expectedConnectionID: QUICConnectionID?
@@ -72,6 +76,26 @@ final class SwiftNetworkQUICCIDTests: NetTestCase {
                         return
                     }
 
+                    // The server announces additional CIDs to the client right after the handshake,
+                    // so the client harness should have a cid count here
+                    XCTAssertGreaterThan(
+                        clientHarness.newOutboundCIDEventCount,
+                        0,
+                        "Client should have received at least one new outbound connection ID"
+                    )
+                    newOutboundConnectionID = clientHarness.lastNewOutboundConnectionID
+                    newOutboundStatelessResetToken = clientHarness.lastNewOutboundStatelessResetToken
+                    if let newOutboundConnectionID {
+                        expectedNewStatelessResetToken =
+                            clientInstance.remoteCIDs.find(
+                                connectionID: newOutboundConnectionID
+                            )?.token
+                    }
+                    XCTAssertNotNil(
+                        expectedNewStatelessResetToken,
+                        "Connection ID should have an associated stateless reset token"
+                    )
+
                     expectedConnectionID = dcid
                     expectedStatelessResetToken = clientInstance.remoteCIDs.find(connectionID: dcid)?.token
                     XCTAssertNotNil(
@@ -88,6 +112,9 @@ final class SwiftNetworkQUICCIDTests: NetTestCase {
                 self.wait(for: [expectation], timeout: 5.0)
             }
         )
+
+        XCTAssertNotNil(newOutboundStatelessResetToken)
+        XCTAssertEqual(newOutboundStatelessResetToken, expectedNewStatelessResetToken)
 
         XCTAssertEqual(retiredConnectionID, expectedConnectionID)
         XCTAssertNotNil(retiredStatelessResetToken)

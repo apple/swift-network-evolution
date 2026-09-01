@@ -242,7 +242,7 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
     #if !NETWORK_NO_SWIFT_QUIC
     case newInboundConnectionID(_ connectionID: QUICConnectionID)
     case retiredInboundConnectionID(_ connectionID: QUICConnectionID)
-    case newOutboundConnectionID(_ connectionID: QUICConnectionID)
+    case newOutboundConnectionID(_ connectionID: QUICConnectionID, statelessResetToken: QUICStatelessResetToken)
     case retiredOutboundConnectionID(_ connectionID: QUICConnectionID, statelessResetToken: QUICStatelessResetToken)
     #endif
     case remoteBidirectionalStreamsBlocked(maximumStreams: Int)
@@ -262,8 +262,9 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
             return "QUIC: New inbound connection ID: \(connectionID)"
         case .retiredInboundConnectionID(let connectionID):
             return "QUIC: Retired inbound connection ID: \(connectionID)"
-        case .newOutboundConnectionID(let connectionID):
-            return "QUIC: New outbound connection ID: \(connectionID)"
+        case .newOutboundConnectionID(let connectionID, let statelessResetToken):
+            return
+                "QUIC: New outbound connection ID: \(connectionID), with stateless reset token: \(statelessResetToken)"
         case .retiredOutboundConnectionID(let connectionID, let statelessResetToken):
             return
                 "QUIC: Retired outbound connection ID: \(connectionID), with stateless reset token: \(statelessResetToken)"

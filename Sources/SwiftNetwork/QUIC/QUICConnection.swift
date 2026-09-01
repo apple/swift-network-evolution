@@ -6369,7 +6369,12 @@ extension QUICConnection {
                 )
                 deliverNetworkProtocolEvent(
                     flow: .allFlows,
-                    event: .init(quicEvent: .newOutboundConnectionID(frame.connectionID))
+                    event: .init(
+                        quicEvent: .newOutboundConnectionID(
+                            frame.connectionID,
+                            statelessResetToken: frame.statelessResetToken
+                        )
+                    )
                 )
                 migration.newDCID(frame.connectionID)
             } catch {
