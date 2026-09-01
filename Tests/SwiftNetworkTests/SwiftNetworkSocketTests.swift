@@ -43,8 +43,9 @@ final class SwiftNetworkSocketTests: NetTestCase {
         let ready = XCTestExpectation(description: "ready")
         let cancelled = XCTestExpectation(description: "cancelled")
 
-        let remote = Endpoint(address: IPv4Address.loopback, port: 10800)
-        let conn = NetworkConnection(to: remote, using: makeUDPParams(localPort: 10801))
+        let ports = discoverFreeLoopbackPorts(2)
+        let remote = Endpoint(address: IPv4Address.loopback, port: ports[0])
+        let conn = NetworkConnection(to: remote, using: makeUDPParams(localPort: ports[1]))
             .onStateUpdate { _, state in
                 if case .ready = state { ready.fulfill() }
                 if case .cancelled = state { cancelled.fulfill() }
@@ -60,35 +61,35 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - Basic data path (UDP)
 
     func testRoundTripEchoIPv4() {
-        let harness = UDPLoopbackHarness(basePort: 10810)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectRoundTripEcho([1, 2, 3, 4, 5])
         harness.teardown()
     }
 
     func testRoundTripEchoLargePayload() {
-        let harness = UDPLoopbackHarness(basePort: 10820)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectRoundTripEcho([UInt8](repeating: 0xAB, count: 1400))
         harness.teardown()
     }
 
     func testRoundTripEchoIPv6() {
-        let harness = UDPLoopbackHarness(basePort: 10830, ipv6: true)
+        let harness = UDPLoopbackHarness(ipv6: true)
         harness.start()
         harness.expectRoundTripEcho([10, 20, 30])
         harness.teardown()
     }
 
     func testSendSingleByteDatagram() {
-        let harness = UDPLoopbackHarness(basePort: 10840)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectDeliver([0xFF])
         harness.teardown()
     }
 
     func testMultipleMessagesSequentially() {
-        let harness = UDPLoopbackHarness(basePort: 10850)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectSequentialDeliver([
             [1], [2, 3], [4, 5, 6], [7, 8, 9, 10], [11, 12, 13, 14, 15],
@@ -97,7 +98,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     }
 
     func testBidirectionalSimultaneousTransfer() {
-        let harness = UDPLoopbackHarness(basePort: 10860)
+        let harness = UDPLoopbackHarness()
         harness.start()
 
         let bothDone = XCTestExpectation(description: "both received")
@@ -132,21 +133,21 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - Volume / stress (UDP)
 
     func testRapidBurst100Sends() {
-        let harness = UDPLoopbackHarness(basePort: 10870)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectBurstThenDrain((0..<100).map { [UInt8($0 % 256)] })
         harness.teardown()
     }
 
     func testHighVolumeEcho200Messages() {
-        let harness = UDPLoopbackHarness(basePort: 10880)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectSequentialEcho(count: 200) { [UInt8($0 % 256)] }
         harness.teardown()
     }
 
     func testVaryingPayloadSizes() {
-        let harness = UDPLoopbackHarness(basePort: 10890)
+        let harness = UDPLoopbackHarness()
         harness.start()
         let sizes = [1, 100, 500, 1000, 1400, 10]
         harness.expectSequentialDeliver(sizes.map { [UInt8](repeating: 0xAA, count: $0) })
@@ -156,14 +157,14 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - Backpressure (UDP)
 
     func testBurstSendsReceiveOneAtATime() {
-        let harness = UDPLoopbackHarness(basePort: 10900)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectBurstThenDrain((0..<5).map { [UInt8($0)] }, timeout: 15.0)
         harness.teardown()
     }
 
     func testMultipleSendsBeforeAnyReads() {
-        let harness = UDPLoopbackHarness(basePort: 10910)
+        let harness = UDPLoopbackHarness()
         harness.start()
         // Small delay to let sends queue up before reading.
         harness.expectBurstThenDrain((0..<10).map { [UInt8($0)] }, delayBeforeDrain: 0.1, timeout: 15.0)
@@ -171,7 +172,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     }
 
     func testDelayedConsumer() {
-        let harness = UDPLoopbackHarness(basePort: 10920)
+        let harness = UDPLoopbackHarness()
         harness.start()
 
         let allDone = XCTestExpectation(description: "delayed consumer")
@@ -201,8 +202,9 @@ final class SwiftNetworkSocketTests: NetTestCase {
     func testCancelBeforeStart() {
         let cancelled = XCTestExpectation(description: "cancelled")
 
-        let remote = Endpoint(address: IPv4Address.loopback, port: 10930)
-        let conn = NetworkConnection(to: remote, using: makeUDPParams(localPort: 10931))
+        let ports = discoverFreeLoopbackPorts(2)
+        let remote = Endpoint(address: IPv4Address.loopback, port: ports[0])
+        let conn = NetworkConnection(to: remote, using: makeUDPParams(localPort: ports[1]))
             .onStateUpdate { _, state in
                 if case .cancelled = state { cancelled.fulfill() }
             }
@@ -212,7 +214,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     }
 
     func testStartTwoConnectionsSameContext() {
-        let harness = UDPLoopbackHarness(basePort: 10940)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.waitBothReady()
         harness.teardown()
@@ -221,21 +223,21 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - Edge case payloads (UDP)
 
     func testEmptyPayload() {
-        let harness = UDPLoopbackHarness(basePort: 10950)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectDeliver([])
         harness.teardown()
     }
 
     func testMaxSizeDatagram() {
-        let harness = UDPLoopbackHarness(basePort: 10960)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectDeliver((0..<1472).map { UInt8($0 % 256) })
         harness.teardown()
     }
 
     func testPayloadWithAllByteValues() {
-        let harness = UDPLoopbackHarness(basePort: 10970)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectDeliver((0...255).map { UInt8($0) })
         harness.teardown()
@@ -244,14 +246,14 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - Multiple sequential echoes (UDP)
 
     func testEcho10RoundTrips() {
-        let harness = UDPLoopbackHarness(basePort: 10980)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectSequentialEcho(count: 10, timeout: 30.0) { [UInt8($0), UInt8($0 &* 2)] }
         harness.teardown()
     }
 
     func testEcho50RoundTripsLargePayload() {
-        let harness = UDPLoopbackHarness(basePort: 10990)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectSequentialEcho(count: 50) { [UInt8](repeating: UInt8($0 % 256), count: 1000) }
         harness.teardown()
@@ -260,14 +262,14 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - IPv6 additional tests (UDP)
 
     func testIPv6SingleByte() {
-        let harness = UDPLoopbackHarness(basePort: 11000, ipv6: true)
+        let harness = UDPLoopbackHarness(ipv6: true)
         harness.start()
         harness.expectDeliver([0x42])
         harness.teardown()
     }
 
     func testIPv6BidirectionalEcho() {
-        let harness = UDPLoopbackHarness(basePort: 11010, ipv6: true)
+        let harness = UDPLoopbackHarness(ipv6: true)
         harness.start()
 
         let bothDone = XCTestExpectation(description: "both echoed")
@@ -302,7 +304,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - Rapid send-receive patterns (UDP)
 
     func testAlternatingSendReceive() {
-        let harness = UDPLoopbackHarness(basePort: 11020)
+        let harness = UDPLoopbackHarness()
         harness.start()
 
         let allDone = XCTestExpectation(description: "alternating")
@@ -336,14 +338,14 @@ final class SwiftNetworkSocketTests: NetTestCase {
     }
 
     func testBurst50ThenDrain() {
-        let harness = UDPLoopbackHarness(basePort: 11030)
+        let harness = UDPLoopbackHarness()
         harness.start()
         harness.expectBurstThenDrain((0..<50).map { [UInt8($0 % 256)] })
         harness.teardown()
     }
 
     func testSendReceiveWithRandomPayloadSizes() {
-        let harness = UDPLoopbackHarness(basePort: 11040)
+        let harness = UDPLoopbackHarness()
         harness.start()
         let sizes = [7, 13, 42, 100, 256, 500, 1, 1000, 3, 1400]
         harness.expectSequentialDeliver(sizes.map { (0..<$0).map { UInt8($0 % 256) } })
@@ -361,57 +363,64 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - Connection lifecycle (TCP)
 
     func testTCPConnectionStateLifecycle() {
-        let harness = TCPClientHarness(port: 12000)
+        let harness = TCPClientHarness()
         harness.start()
         harness.waitReady()
         harness.teardown()
     }
 
     func testTCPConnectionRefusedDeliversFailure() {
-        // No listener on this port: connect should fail.
+        // Nothing is listening on this port, so connect must fail. `.ready` is asserted absent from
+        // the recorded sequence, which catches it anywhere before the failure rather than only
+        // during a fixed wait, and the sequence is dumped when it does appear.
         let failed = XCTestExpectation(description: "tcp failed")
         let cancelled = XCTestExpectation(description: "tcp cancelled")
-        let ready = XCTestExpectation(description: "tcp ready")
-        ready.isInverted = true
+        let observedStates = NetworkMutex<[NetworkConnection<TCP>.State]>([])
 
-        let remote = Endpoint(address: IPv4Address.loopback, port: 12001)
+        let remote = Endpoint(address: IPv4Address.loopback, port: discoverFreeLoopbackPort())
         let conn = NetworkConnection(to: remote, using: makeTCPParams())
             .onStateUpdate { _, state in
+                observedStates.withLock { $0.append(state) }
                 if case .failed = state { failed.fulfill() }
                 if case .cancelled = state { cancelled.fulfill() }
-                if case .ready = state { ready.fulfill() }
             }
         conn.start()
-        wait(for: [failed, ready], timeout: 5.0)
+        wait(for: [failed], timeout: 5.0)
         conn.cancel()
         wait(for: [cancelled], timeout: 5.0)
+
+        let states = observedStates.withLock { $0 }
+        XCTAssertFalse(
+            states.contains(.ready),
+            "connection reported ready with nothing listening on the port: \(states)"
+        )
     }
 
     // MARK: - Basic data path (TCP)
 
     func testTCPRoundTripEchoIPv4() {
-        let harness = TCPClientHarness(port: 12010)
+        let harness = TCPClientHarness()
         harness.start()
         harness.expectEcho([1, 2, 3, 4, 5])
         harness.teardown()
     }
 
     func testTCPRoundTripEchoIPv6() {
-        let harness = TCPClientHarness(port: 12120, ipv6: true)
+        let harness = TCPClientHarness(ipv6: true)
         harness.start()
         harness.expectEcho([10, 20, 30])
         harness.teardown()
     }
 
     func testTCPSendSingleByte() {
-        let harness = TCPClientHarness(port: 12030)
+        let harness = TCPClientHarness()
         harness.start()
         harness.expectEcho([0xFF])
         harness.teardown()
     }
 
     func testTCPLargePayloadEcho() {
-        let harness = TCPClientHarness(port: 12040)
+        let harness = TCPClientHarness()
         harness.start()
         // Stream may deliver the echo across multiple receives — drain.
         harness.expectEcho([UInt8](repeating: 0xAB, count: 8192), drain: true)
@@ -419,7 +428,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     }
 
     func testTCPMultipleSequentialMessages() {
-        let harness = TCPClientHarness(port: 12050)
+        let harness = TCPClientHarness()
         harness.start()
         harness.expectSequentialEcho([
             [1], [2, 3], [4, 5, 6], [7, 8, 9, 10], [11, 12, 13, 14, 15],
@@ -430,14 +439,14 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - Volume / stress (TCP)
 
     func testTCPHighVolumeEcho100Messages() {
-        let harness = TCPClientHarness(port: 12060)
+        let harness = TCPClientHarness()
         harness.start()
         harness.expectSequentialEcho(count: 100) { [UInt8($0 % 256), UInt8(($0 + 1) % 256)] }
         harness.teardown()
     }
 
     func testTCPVaryingPayloadSizes() {
-        let harness = TCPClientHarness(port: 12070)
+        let harness = TCPClientHarness()
         harness.start()
         let sizes = [1, 100, 500, 1000, 1400, 4096, 10]
         harness.expectSequentialEcho(sizes.map { [UInt8](repeating: 0xAA, count: $0) }, drain: true)
@@ -447,7 +456,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - Backpressure / lifecycle (TCP)
 
     func testTCPBurstSendsThenDrain() {
-        let harness = TCPClientHarness(port: 12080)
+        let harness = TCPClientHarness()
         harness.start()
         // Wait until connected before bursting: on Linux, sending on a socket
         // that is still connecting fails immediately with ENOBUFS.
@@ -489,7 +498,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     }
 
     func testTCPDelayedConsumer() {
-        let harness = TCPClientHarness(port: 12090)
+        let harness = TCPClientHarness()
         harness.start()
         harness.waitReady()
 
@@ -516,7 +525,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     }
 
     func testTCPPayloadWithAllByteValues() {
-        let harness = TCPClientHarness(port: 12100)
+        let harness = TCPClientHarness()
         harness.start()
         harness.expectEcho((0...255).map { UInt8($0) })
         harness.teardown()
@@ -525,7 +534,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     func testTCPCancelBeforeStart() {
         let cancelled = XCTestExpectation(description: "tcp cancelled")
 
-        let remote = Endpoint(address: IPv4Address.loopback, port: 12110)
+        let remote = Endpoint(address: IPv4Address.loopback, port: discoverFreeLoopbackPort())
         let conn = NetworkConnection(to: remote, using: makeTCPParams())
             .onStateUpdate { _, state in
                 if case .cancelled = state { cancelled.fulfill() }
@@ -538,7 +547,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // MARK: - Echo round trips (TCP)
 
     func testTCPEcho10RoundTrips() {
-        let harness = TCPClientHarness(port: 12130)
+        let harness = TCPClientHarness()
         harness.start()
         harness.expectSequentialEcho(count: 10, timeout: 30.0) {
             [UInt8($0), UInt8($0 &* 2), UInt8($0 &* 3)]
@@ -556,7 +565,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // Verifies that a cancelled connection can be garbage-collected promptly
     // (exercises deinit / teardown paths on both concrete types).
     func testUDPTeardownIsClean() {
-        let harness = UDPLoopbackHarness(basePort: 13000)
+        let harness = UDPLoopbackHarness()
         harness.c1.start()
         harness.c1.cancel()
         // teardown() waits for both peers' cancelled state; c2 was never
@@ -570,8 +579,9 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // not crash (exercises the write-source suspend path in cancelWriteSource).
     func testUDPCancelImmediatelyAfterStart() {
         let cancelled = XCTestExpectation(description: "cancelled immediately")
-        let remote = Endpoint(address: IPv4Address.loopback, port: 13020)
-        let conn = NetworkConnection(to: remote, using: makeUDPParams(localPort: 13021))
+        let ports = discoverFreeLoopbackPorts(2)
+        let remote = Endpoint(address: IPv4Address.loopback, port: ports[0])
+        let conn = NetworkConnection(to: remote, using: makeUDPParams(localPort: ports[1]))
             .onStateUpdate { _, state in
                 if case .cancelled = state { cancelled.fulfill() }
             }
@@ -584,7 +594,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
 
     func testTCPCancelImmediatelyAfterStart() {
         let cancelled = XCTestExpectation(description: "tcp cancelled immediately")
-        let remote = Endpoint(address: IPv4Address.loopback, port: 13030)
+        let remote = Endpoint(address: IPv4Address.loopback, port: discoverFreeLoopbackPort())
         let conn = NetworkConnection(to: remote, using: makeTCPParams())
             .onStateUpdate { _, state in
                 if case .cancelled = state { cancelled.fulfill() }
@@ -601,8 +611,9 @@ final class SwiftNetworkSocketTests: NetTestCase {
 
         // An explicit localPort verifies bindSocket in the base class succeeds
         // without error.
-        let remote = Endpoint(address: IPv4Address.loopback, port: 13040)
-        let conn = NetworkConnection(to: remote, using: makeUDPParams(localPort: 13041))
+        let ports = discoverFreeLoopbackPorts(2)
+        let remote = Endpoint(address: IPv4Address.loopback, port: ports[0])
+        let conn = NetworkConnection(to: remote, using: makeUDPParams(localPort: ports[1]))
             .onStateUpdate { _, state in
                 if case .ready = state { ready.fulfill() }
                 if case .cancelled = state { cancelled.fulfill() }
@@ -616,7 +627,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // Verifies that the write-source fires and triggerOutboundRoomAvailable
     // is called after a datagram send — the upper layer gets the room event.
     func testUDPOutboundRoomAvailableAfterSend() {
-        let harness = UDPLoopbackHarness(basePort: 13050)
+        let harness = UDPLoopbackHarness()
         harness.start()
 
         let sent = XCTestExpectation(description: "sent")
@@ -630,7 +641,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
 
     // Verifies write-source / triggerOutboundRoomAvailable for TCP.
     func testTCPOutboundRoomAvailableAfterSend() {
-        let harness = TCPClientHarness(port: 13060)
+        let harness = TCPClientHarness()
         harness.start()
         harness.waitReady()
 
@@ -648,9 +659,9 @@ final class SwiftNetworkSocketTests: NetTestCase {
     func testUDPMultipleCancelCycles() {
         for cycle in 0..<3 {
             let cancelled = XCTestExpectation(description: "cycle \(cycle) cancelled")
-            let port = UInt16(13070 + cycle * 2)
-            let remote = Endpoint(address: IPv4Address.loopback, port: port)
-            let conn = NetworkConnection(to: remote, using: makeUDPParams(localPort: port + 1))
+            let ports = discoverFreeLoopbackPorts(2)
+            let remote = Endpoint(address: IPv4Address.loopback, port: ports[0])
+            let conn = NetworkConnection(to: remote, using: makeUDPParams(localPort: ports[1]))
                 .onStateUpdate { _, state in
                     if case .cancelled = state { cancelled.fulfill() }
                 }
@@ -661,9 +672,8 @@ final class SwiftNetworkSocketTests: NetTestCase {
     }
 
     func testTCPMultipleCancelCycles() {
-        for cycle in 0..<3 {
-            let port = UInt16(13080 + cycle)
-            let harness = TCPClientHarness(port: port)
+        for _ in 0..<3 {
+            let harness = TCPClientHarness()
             harness.start()
             harness.waitReady()
             harness.teardown()
@@ -684,13 +694,11 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // before the rest arrives. With a correct implementation this completes
     // promptly; with the stall it times out.
     func testTCPReceiveAtLeastSpanningTwoSegments() {
-        let port: UInt16 = 12200
         let firstChunk = 4
         let total = 16  // atLeast spans both segments
 
         let harness = TCPClientHarness(
-            port: port,
-            server: SplitSendServer(port: port, firstChunk: firstChunk, total: total, gap: 0.5)
+            server: SplitSendServer(firstChunk: firstChunk, total: total, gap: 0.5)
         )
         harness.start()
 
@@ -730,8 +738,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
     // a busy-loop burns ~a full core; correct behavior consumes ~nothing.
     func testTCPNoBusyLoopAfterEOF() {
         let harness = TCPClientHarness(
-            port: 12210,
-            server: ClosingServer(port: 12210, payload: [1, 2, 3, 4])
+            server: ClosingServer(payload: [1, 2, 3, 4])
         )
         harness.start()
 
@@ -746,8 +753,12 @@ final class SwiftNetworkSocketTests: NetTestCase {
         }
         wait(for: [received], timeout: 5.0)
 
-        // Give the bottom a moment to observe the peer's FIN (EOF), then sample
-        // CPU across an otherwise-idle second.
+        // Both sleeps are load-bearing. The first waits for the bottom to observe the peer's FIN,
+        // which has no observable substitute: a second `receive` never completes on it.
+        //
+        // The second *is* the measurement -- no read event firing is only observable as an absence
+        // over an interval -- and it has to stay long, because the assertion is a ratio of CPU to
+        // wall time and a short window reports one descheduling of this process as noise.
         Thread.sleep(forTimeInterval: 0.3)
         let before = Self.processCPUSeconds()
         Thread.sleep(forTimeInterval: 1.0)
