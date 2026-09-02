@@ -2714,8 +2714,8 @@ final class SwiftNetworkSerializerTests: NetTestCase {
         XCTAssertEqual(factory.index, 1)
     }
 
-    func testDeserializeStreamFixedLengthUTF8InsaneAsk() {
-        // Make sure a request for an insane amount of bytes doesn't cause an alloc that would lead to a crash
+    func testDeserializeStreamFixedLengthUTF8UnreasonableAsk() {
+        // Make sure a request for an unreasonable amount of bytes will not lead to a crash / massive alloc
         var factory = TestSpanFactory([[0x41, 0x42], [0x43]])
 
         var str = ""
