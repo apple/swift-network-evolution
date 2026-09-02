@@ -754,16 +754,6 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
     var parameters: Parameters
     var path: PathProperties
 
-    public struct Completions {
-        public var connected: ((Bool) -> Void)?
-        public var disconnected: (() -> Void)?
-        var newFlow = Deque<(() -> Void)>()
-        public var error: ((NetworkError) -> Void)?  // invoked when error detected
-        public var pathChanged: ((QUICPathInfo) -> Void)?
-        public var pathValidated: ((QUICPathInfo) -> Void)?
-        public var pathUnreachable: ((QUICPathInfo) -> Void)?
-        public init() {}
-    }
     public var completions: Completions = .init()
 
     public var receivedConnected = false
@@ -822,37 +812,6 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
     public var lastRetiredOutboundConnectionID: QUICConnectionID?
     public var lastRetiredOutboundStatelessResetToken: QUICStatelessResetToken?
     #endif
-    public func handleNetworkProtocolEvent(_ from: ProtocolInstanceReference, event: NetworkProtocolEvent) {
-        log.debug("Received network protocol event: \(event)")
-        #if !NETWORK_NO_SWIFT_QUIC
-        if let quicEvent = event.quicEvent {
-            switch quicEvent {
-            case .newInboundConnectionID: newInboundCIDEventCount += 1
-            case .newOutboundConnectionID(let connectionID, let statelessResetToken):
-                newOutboundCIDEventCount += 1
-                lastNewOutboundConnectionID = connectionID
-                lastNewOutboundStatelessResetToken = statelessResetToken
-            case .retiredOutboundConnectionID(let connectionID, let statelessResetToken):
-                retiredOutboundCIDEventCount += 1
-                lastRetiredOutboundConnectionID = connectionID
-                lastRetiredOutboundStatelessResetToken = statelessResetToken
-            case .pathChanged(let info):
-                if let completion = completions.pathChanged {
-                    completion(info)
-                }
-            case .pathValidated(let info):
-                if let completion = completions.pathValidated {
-                    completion(info)
-                }
-            case .pathUnreachable(let info):
-                if let completion = completions.pathUnreachable {
-                    completion(info)
-                }
-            default: break
-            }
-        }
-        #endif
-    }
 
     public func teardown() {
         for upperHarness in upperHarnesses {
