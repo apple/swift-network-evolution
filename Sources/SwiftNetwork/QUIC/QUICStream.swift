@@ -944,6 +944,15 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
         // Record with flow control that bytes have been delivered, and update flow credits.
         deliveredInboundBytes(consumedLength: bytes, connection: parentProtocol)
 
+        // This notification is delivered from the application's read, which runs after the
+        // inbound batch has already been serviced and flushed. If the read opened up the
+        // receive window, we should send the credit here.
+        if parentProtocol.applicationPendingItems.maxData
+            || parentProtocol.applicationPendingItems.maxStreamData
+        {
+            parentProtocol.sendFrames()
+        }
+
         if let streamID {
             QUICSignpost.dataDelivered(id: parentProtocol.signpostID, streamID: streamID.value, nbytes: bytes)
         }
