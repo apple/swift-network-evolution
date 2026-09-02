@@ -258,8 +258,8 @@ class EndpointFlowProtocol<LinkageType: InboundDataLinkage>: ProtocolInstanceCon
 
     public func setApplicationError(_ applicationError: UInt64, applicationErrorReason: String) {
         if let metadata: ProtocolMetadata<QUICProtocol> = self.getMetadata() {
-            metadata.perProtocolMetadata?.quicConnectionMetadata?.applicationError = applicationError
-            metadata.perProtocolMetadata?.quicConnectionMetadata?.applicationErrorReason = applicationErrorReason
+            metadata.connectionMetadata?.applicationError = applicationError
+            metadata.connectionMetadata?.applicationErrorReason = applicationErrorReason
         }
     }
 }

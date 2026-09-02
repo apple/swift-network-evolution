@@ -2122,8 +2122,10 @@ public struct IPProtocol: NetworkProtocol {
     #if !NETWORK_EMBEDDED
     internal static func _staticMetadata(ecnFlag: ECN) -> ProtocolMetadata<IPProtocol> {
         let metadata = IPProtocol.definition.protocolMetadata()
-        metadata.perProtocolMetadata?.ecnFlag = ecnFlag
-        metadata.perProtocolMetadata?.isStatic = true
+        metadata.mutablePerProtocolMetadata { ipMetadata in
+            ipMetadata?.ecnFlag = ecnFlag
+            ipMetadata?.isStatic = true
+        }
         return metadata
     }
 

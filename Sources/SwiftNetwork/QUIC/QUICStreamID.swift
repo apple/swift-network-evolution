@@ -22,11 +22,13 @@ internal import Logging
 internal import os
 #endif
 
-enum QUICStreamType: CustomStringConvertible {
+@_spi(Essentials)
+@available(Network 0.1.0, *)
+public enum QUICStreamType: CustomStringConvertible {
     case bidirectional
     case unidirectional
 
-    var description: String {
+    public var description: String {
         switch self {
         case .bidirectional: return "bidirectional"
         case .unidirectional: return "unidirectional"
