@@ -264,7 +264,7 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
             return "QUIC: Retired inbound connection ID: \(connectionID)"
         case .newOutboundConnectionID(let connectionID, let statelessResetToken):
             return
-                "QUIC: New outbound connection ID: \(connectionID), with stateless reset token: \(statelessResetToken)"
+                "QUIC: New outbound connection ID: \(connectionID)"
         case .retiredOutboundConnectionID(let connectionID, let statelessResetToken):
             return
                 "QUIC: Retired outbound connection ID: \(connectionID), with stateless reset token: \(statelessResetToken)"
