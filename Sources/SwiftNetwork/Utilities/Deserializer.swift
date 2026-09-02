@@ -535,7 +535,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     @inline(always)
     public mutating func vle<T: FixedWidthInteger>(_ value: inout T) throws(DeserializationError) {
         guard let parsedValue = T(exactly: try decodeVariableLength().0) else {
-            throw .parsingFailed
+            try invalidate(.parsingFailed)
         }
         value = parsedValue
     }
@@ -544,7 +544,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     @inline(always)
     public mutating func vle<T: FixedWidthInteger>(_ value: inout T?) throws(DeserializationError) {
         guard let parsedValue = T(exactly: try decodeVariableLength().0) else {
-            throw .parsingFailed
+            try invalidate(.parsingFailed)
         }
         value = parsedValue
     }
@@ -583,7 +583,10 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         _ size: inout Int
     ) throws(DeserializationError) {
         let variable = try decodeVariableLength()
-        value = T(variable.0)
+        guard let parsedValue = T(exactly: variable.0) else {
+            try invalidate(.parsingFailed)
+        }
+        value = parsedValue
         size = variable.1
     }
 
@@ -612,6 +615,11 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     public mutating func fixedLengthUTF8(_ value: inout String, byteCount: Int) throws(DeserializationError) {
         guard byteCount > 0 else {
             return
+        }
+
+        // Fast fail if total available bytes across all spans is insufficient
+        guard availableByteCount - totalBytesParsed >= byteCount else {
+            try invalidate(.bufferTooShort)
         }
 
         guard hasRoom(byteCount) else {

@@ -908,6 +908,19 @@ final class SwiftNetworkSerializerTests: NetTestCase {
         }
     }
 
+    func testDeserializeVLEWithSizeOverflowsTargetType() {
+        // 300 requires the 2-byte VLE encoding but doesn't fit in UInt8.
+        let buffer = Serializer.serialize { write in
+            write.vle(UInt64(300))
+        }
+        var value: UInt8 = 0
+        var size = 0
+        let result = Deserializer.deserialize(buffer) { read throws(DeserializationError) in
+            try read.vleWithSize(&value, &size)
+        }
+        XCTAssertEqual(result, .error(.parsingFailed), "Should fail with parsingFailed instead of trapping")
+    }
+
     func testSerializeUUID() {
         var toWrite = TestStruct()
         toWrite.uuidBytes = SystemUUID()
@@ -2697,7 +2710,20 @@ final class SwiftNetworkSerializerTests: NetTestCase {
         }
 
         XCTAssertEqual(result, .error(.bufferTooShort), "Should fail with bufferTooShort")
-        XCTAssertEqual(factory.index, 2)
+        // The total-available check fails before a second span is pulled.
+        XCTAssertEqual(factory.index, 1)
+    }
+
+    func testDeserializeStreamFixedLengthUTF8InsaneAsk() {
+        // Make sure a request for an insane amount of bytes doesn't cause an alloc that would lead to a crash
+        var factory = TestSpanFactory([[0x41, 0x42], [0x43]])
+
+        var str = ""
+        let result = Deserializer<TestSpanFactory>.deserialize(&factory) { read throws(DeserializationError) in
+            try read.fixedLengthUTF8(&str, byteCount: Int.max)
+        }
+
+        XCTAssertEqual(result, .error(.bufferTooShort), "Should fail fast instead of allocating byteCount bytes")
     }
 
     func testDeserializeStreamStringFragmented() {
