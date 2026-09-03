@@ -1643,6 +1643,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 return
             }
 
+            if state == .retrySent {
+                // The token was validated and is no longer needed.
+                self.initialToken = nil
+            }
+
             // Change state from idle to initial received with key state = handshake
             state.change(to: .initialReceived, logIDString: logPrefixer.logIDString)
             keyState = .handshake
