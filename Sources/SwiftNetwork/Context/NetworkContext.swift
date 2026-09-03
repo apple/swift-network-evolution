@@ -368,10 +368,16 @@ extension NetworkContext {
         /// Schedules a task to run after a delay, using a reference.
         func schedule(_ task: @escaping (() -> Void), after delay: NetworkDuration, reference: TimerReference) {
             let nanoseconds = max(delay.nanoseconds, 0)
+            let seconds = nanoseconds / 1_000_000_000
+            // A sub-second delay is the common case and its nanosecond count fits an `Int` on every
+            // platform, so it costs one addition. Longer delays are split because
+            // `DispatchTimeInterval` takes an `Int`, which is 32 bits on 32-bit watchOS.
             let targetTime =
-                DispatchTime.now()
-                + .seconds(Int(clamping: nanoseconds / 1_000_000_000))
-                + .nanoseconds(Int(nanoseconds % 1_000_000_000))
+                seconds == 0
+                ? DispatchTime.now() + .nanoseconds(Int(nanoseconds))
+                : DispatchTime.now()
+                    + .seconds(Int(clamping: seconds))
+                    + .nanoseconds(Int(clamping: nanoseconds % 1_000_000_000))
             globals.timerList.insert(targetTime: targetTime, reference: reference, task: task)
         }
         /// Unschedules a task with a reference.
@@ -417,6 +423,10 @@ extension NetworkContext {
 
     enum FutureTime {
         case unschedule
+        /// A delay and the task to run once it elapses.
+        ///
+        /// A negative delay runs the task at the first opportunity. The delay resolves nanoseconds,
+        /// but how finely a scheduler can honour it is the scheduler's own limit.
         case after(NetworkDuration, () -> Void)
     }
 

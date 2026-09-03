@@ -103,6 +103,10 @@ final class Timer: PrefixedLoggable {
     /// bounds re-arm precision independently of what the scheduler can express: the scheduler takes
     /// a `NetworkDuration` and so resolves nanoseconds, but a *revision* smaller than this is still
     /// ignored. Tightening it trades re-arms for precision and wants a benchmark behind it.
+    ///
+    /// It also decides whether that coalescing is attempted at all. A deadline nearer than this
+    /// always re-arms, because tolerating up to a millisecond of error would dominate it: half a
+    /// millisecond out, a coalesced wakeup could land after the deadline had already passed.
     static let timerThreshold = NetworkDuration.milliseconds(1)
 
     init(reference: ProtocolInstanceReference, timerReference: TimerReference, logPrefixer: LogPrefixer) {
