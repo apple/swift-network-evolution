@@ -239,65 +239,81 @@ struct PathParameters: Hashable, CustomStringConvertible {
             func copy() -> InterfacePreferenceValuesBacking {
                 .init(storage: storage)
             }
-        }
-        private var backing: InterfacePreferenceValuesBacking?
 
-        /// Guarantees a backing that this value uniquely owns, allocating one if absent and copying
-        /// it first if it is shared.
+            /// The default backing, shared by every value not yet written to.
+            ///
+            /// Most values never set a preference at all, so they should not pay for a heap
+            /// allocation. Sharing one instance means a value only allocates once it is written to,
+            /// and optimized builds make the shared instance immortal, so copying a default value touches
+            /// no refcount.
+            ///
+            /// It must stay a `static let` of one instance. Holding that reference forever is what
+            /// makes `isKnownUniquelyReferenced` false for it, so a first write copies rather than
+            /// mutating the default every other value reads; it is also why `nonisolated(unsafe)` is
+            /// sound, since nothing ever mutates it. A computed property would allocate one per value,
+            /// defeating the point.
+            nonisolated(unsafe) static let empty = InterfacePreferenceValuesBacking()
+        }
+        private var backing: InterfacePreferenceValuesBacking = .empty
+
+        /// Guarantees a backing that this value uniquely owns, copying it first if it is shared.
         ///
         /// Every mutating path must go through here. Mutating `backing` directly would let a write
         /// land on storage another copy can see, which is what the copy-on-write is preventing.
         private mutating func ensureUniquelyReferencedBacking() {
-            if self.backing == nil {
-                self.backing = InterfacePreferenceValuesBacking()
-            } else if !isKnownUniquelyReferenced(&self.backing) {
-                self.backing = self.backing?.copy()
+            if !isKnownUniquelyReferenced(&self.backing) {
+                self.backing = self.backing.copy()
+            }
+        }
+
+        /// The stored preferences.
+        ///
+        /// Prefer the per-field accessors on `PathParameters`.
+        var _storage: InterfacePreferenceValuesBacking.Storage {
+            get { self.backing.storage }
+            // Per-field writes come through here rather than `set`, mutating the storage where it
+            // lives instead of copying the whole struct out and back. That copy costs time in
+            // proportion to the number of fields, whether or not they hold anything.
+            _modify {
+                self.ensureUniquelyReferencedBacking()
+                yield &self.backing.storage
+            }
+            set {
+                self.ensureUniquelyReferencedBacking()
+                self.backing.storage = newValue
             }
         }
 
         var requiredInterface: Interface? {
-            get { self.backing?.storage.requiredInterface }
-            set {
-                self.ensureUniquelyReferencedBacking()
-                self.backing!.storage.requiredInterface = newValue
-            }
+            get { self._storage.requiredInterface }
+            set { self._storage.requiredInterface = newValue }
         }
         var prohibitedInterfaceTypes: Deque<InterfaceType>? {
-            get { self.backing?.storage.prohibitedInterfaceTypes }
-            set {
-                self.ensureUniquelyReferencedBacking()
-                self.backing!.storage.prohibitedInterfaceTypes = newValue
-            }
+            get { self._storage.prohibitedInterfaceTypes }
+            set { self._storage.prohibitedInterfaceTypes = newValue }
         }
         var prohibitedInterfaceSubtypes: Deque<InterfaceSubtype>? {
-            get { self.backing?.storage.prohibitedInterfaceSubtypes }
-            set {
-                self.ensureUniquelyReferencedBacking()
-                self.backing!.storage.prohibitedInterfaceSubtypes = newValue
-            }
+            get { self._storage.prohibitedInterfaceSubtypes }
+            set { self._storage.prohibitedInterfaceSubtypes = newValue }
         }
         var preferredInterfaceSubtypes: Deque<InterfaceSubtype>? {
-            get { self.backing?.storage.preferredInterfaceSubtypes }
-            set {
-                self.ensureUniquelyReferencedBacking()
-                self.backing!.storage.preferredInterfaceSubtypes = newValue
-            }
+            get { self._storage.preferredInterfaceSubtypes }
+            set { self._storage.preferredInterfaceSubtypes = newValue }
         }
         var prohibitedInterfaces: Deque<Interface>? {
-            get { self.backing?.storage.prohibitedInterfaces }
-            set {
-                self.ensureUniquelyReferencedBacking()
-                self.backing!.storage.prohibitedInterfaces = newValue
-            }
+            get { self._storage.prohibitedInterfaces }
+            set { self._storage.prohibitedInterfaces = newValue }
         }
 
         init() {}
 
         init(deepCopy other: InterfacePreferenceValues) {
-            if let existing = other.backing?.storage {
-                let newBacking = InterfacePreferenceValuesBacking()
-                newBacking.storage = existing
-                self.backing = newBacking
+            // Copying the storage struct is a full copy here: every field is a value type, so
+            // there is nothing behind it left shared. A value still on `empty` has nothing to
+            // copy, and skipping the assignment leaves this one on `empty` too rather than
+            // allocating a backing that holds nothing.
+            if other.backing !== InterfacePreferenceValuesBacking.empty {
+                self._storage = other.backing.storage
             }
         }
     }
@@ -306,33 +322,23 @@ struct PathParameters: Hashable, CustomStringConvertible {
 
     var requiredInterface: Interface? {
         get { self.interfacePreferenceValues.requiredInterface }
-        set {
-            self.interfacePreferenceValues.requiredInterface = newValue
-        }
+        set { self.interfacePreferenceValues.requiredInterface = newValue }
     }
     var prohibitedInterfaceTypes: Deque<InterfaceType>? {
         get { self.interfacePreferenceValues.prohibitedInterfaceTypes }
-        set {
-            self.interfacePreferenceValues.prohibitedInterfaceTypes = newValue
-        }
+        set { self.interfacePreferenceValues.prohibitedInterfaceTypes = newValue }
     }
     var prohibitedInterfaceSubtypes: Deque<InterfaceSubtype>? {
         get { self.interfacePreferenceValues.prohibitedInterfaceSubtypes }
-        set {
-            self.interfacePreferenceValues.prohibitedInterfaceSubtypes = newValue
-        }
+        set { self.interfacePreferenceValues.prohibitedInterfaceSubtypes = newValue }
     }
     var preferredInterfaceSubtypes: Deque<InterfaceSubtype>? {
         get { self.interfacePreferenceValues.preferredInterfaceSubtypes }
-        set {
-            self.interfacePreferenceValues.preferredInterfaceSubtypes = newValue
-        }
+        set { self.interfacePreferenceValues.preferredInterfaceSubtypes = newValue }
     }
     var prohibitedInterfaces: Deque<Interface>? {
         get { self.interfacePreferenceValues.prohibitedInterfaces }
-        set {
-            self.interfacePreferenceValues.prohibitedInterfaces = newValue
-        }
+        set { self.interfacePreferenceValues.prohibitedInterfaces = newValue }
     }
     #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
     var pathParametersPrivate = PathParametersPrivate()
@@ -373,22 +379,70 @@ struct PathParameters: Hashable, CustomStringConvertible {
             func hash(into hasher: inout Hasher) {
                 hasher.combine(storage)
             }
-        }
-        var backing: ProtocolValuesBacking?
 
-        mutating func setupBacking() {
-            if self.backing == nil {
-                self.backing = ProtocolValuesBacking()
+            init() {}
+
+            init(storage: Storage) {
+                self.storage = storage
+            }
+
+            // Copy-on-write only has to unshare the storage struct; `init(deepCopy:)` is what unshares
+            // the protocol options it points at.
+            func copy() -> ProtocolValuesBacking {
+                .init(storage: storage)
+            }
+
+            /// The default backing, shared by every value not yet written to.
+            ///
+            /// Most values never set a preference at all, so they should not pay for a heap
+            /// allocation. Sharing one instance means a value only allocates once it is written to,
+            /// and optimized builds make the shared instance immortal, so copying a default value touches
+            /// no refcount.
+            ///
+            /// It must stay a `static let` of one instance. Holding that reference forever is what
+            /// makes `isKnownUniquelyReferenced` false for it, so a first write copies rather than
+            /// mutating the default every other value reads; it is also why `nonisolated(unsafe)` is
+            /// sound, since nothing ever mutates it. A computed property would allocate one per value,
+            /// defeating the point.
+            nonisolated(unsafe) static let empty = ProtocolValuesBacking()
+        }
+        private var backing: ProtocolValuesBacking = .empty
+
+        /// Guarantees a backing that this value uniquely owns, copying it first if it is shared.
+        ///
+        /// Every mutating path must go through here. Mutating `backing` directly would let a write
+        /// land on storage another copy can see, which is what the copy-on-write is preventing.
+        private mutating func ensureUniquelyReferencedBacking() {
+            if !isKnownUniquelyReferenced(&self.backing) {
+                self.backing = self.backing.copy()
+            }
+        }
+
+        /// The stored protocol values.
+        ///
+        /// Prefer the per-field accessors on `PathParameters`.
+        var _storage: ProtocolValuesBacking.Storage {
+            get { self.backing.storage }
+            // Per-field writes come through here rather than `set`, mutating the storage where it
+            // lives instead of copying the whole struct out and back. That copy costs time in
+            // proportion to the number of fields, whether or not they hold anything.
+            _modify {
+                self.ensureUniquelyReferencedBacking()
+                yield &self.backing.storage
+            }
+            set {
+                self.ensureUniquelyReferencedBacking()
+                self.backing.storage = newValue
             }
         }
 
         init() {}
 
         init(deepCopy other: ProtocolValues) {
-            if let existing = other.backing?.storage {
-                let newBacking = ProtocolValuesBacking()
-                newBacking.storage = ProtocolValuesBacking.Storage(deepCopy: existing)
-                self.backing = newBacking
+            // A value still on `empty` has nothing to copy; see the note on
+            // `InterfacePreferenceValues.init(deepCopy:)`.
+            if other.backing !== ProtocolValuesBacking.empty {
+                self._storage = ProtocolValuesBacking.Storage(deepCopy: other.backing.storage)
             }
         }
     }
@@ -396,17 +450,15 @@ struct PathParameters: Hashable, CustomStringConvertible {
     var protocolValues = ProtocolValues()
 
     var transportOptions: ProtocolStack.TransportProtocol? {
-        get { protocolValues.backing?.storage.transportOptions }
+        get { self.protocolValues._storage.transportOptions }
         set {
-            protocolValues.setupBacking()
-            protocolValues.backing!.storage.transportOptions = newValue
+            self.protocolValues._storage.transportOptions = newValue
         }
     }
     var internetOptions: ProtocolStack.InternetProtocol? {
-        get { protocolValues.backing?.storage.internetOptions }
+        get { self.protocolValues._storage.internetOptions }
         set {
-            protocolValues.setupBacking()
-            protocolValues.backing!.storage.internetOptions = newValue
+            self.protocolValues._storage.internetOptions = newValue
         }
     }
 

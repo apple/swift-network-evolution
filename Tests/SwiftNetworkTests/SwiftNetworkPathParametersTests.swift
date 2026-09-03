@@ -14,8 +14,17 @@
 
 import XCTest
 
+// `Deque` supplies the array-literal initializer the preference fields are written with, so the
+// module declaring it has to be imported here even though nothing below names `Deque`.
+#if canImport(BasicContainers)
+import BasicContainers
+internal import DequeModule
+#endif
+
 #if canImport(SwiftNetwork)
-@_spi(Essentials) @testable import SwiftNetwork
+@_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
+#elseif canImport(Network)
+@_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
 @available(Network 0.1.0, *)
@@ -61,8 +70,8 @@ final class SwiftNetworkPathParametersTests: NetTestCase {
         XCTAssertEqual(original.prohibitedInterfaceTypes, [.cellular], "original did not take the new value")
     }
 
-    // Reading must not allocate a backing. An absent backing and an allocated-but-empty one are not
-    // equal, so a read that allocates would make two untouched values compare unequal.
+    // Two freshly built values must read their defaults and compare equal; a write that landed on
+    // the shared default backing in place would break both for every value built after it.
     func testReadingAPreferenceDoesNotMakeValuesUnequal() {
         let read = PathParameters()
         let untouched = PathParameters()
@@ -71,5 +80,56 @@ final class SwiftNetworkPathParametersTests: NetTestCase {
         XCTAssertNil(read.requiredInterface)
 
         XCTAssertEqual(read.interfacePreferenceValues, untouched.interfacePreferenceValues)
+        XCTAssertEqual(read.protocolValues, untouched.protocolValues)
+    }
+
+    // A value set back to its defaults must equal one never written to, and hash the same; otherwise
+    // `NWParameters` breaks its `NSObject` hash contract, and it is reachable as an `NSDictionary` key.
+    func testPreferenceSetBackToDefaultEqualsUntouched() {
+        var reset = PathParameters()
+        reset.prohibitedInterfaceTypes = [.wifi]
+        reset.prohibitedInterfaceTypes = nil
+
+        let untouched = PathParameters()
+
+        XCTAssertEqual(reset.interfacePreferenceValues, untouched.interfacePreferenceValues)
+        XCTAssertEqual(
+            reset.interfacePreferenceValues.hashValue,
+            untouched.interfacePreferenceValues.hashValue,
+            "equal values must hash equally"
+        )
+    }
+
+    // The same for `ProtocolValues`, which is a separate class-backed store.
+    func testTransportOptionsSetBackToNilEqualsUntouched() {
+        var reset = PathParameters()
+        reset.transportOptions = .udp(
+            ProtocolOptions<UDPProtocol>(protocolIdentifier: UDPProtocol.identifier, perProtocolOptions: nil)
+        )
+        reset.transportOptions = nil
+
+        let untouched = PathParameters()
+
+        XCTAssertEqual(reset.protocolValues, untouched.protocolValues)
+        XCTAssertEqual(
+            reset.protocolValues.hashValue,
+            untouched.protocolValues.hashValue,
+            "equal values must hash equally"
+        )
+    }
+
+    // Protocol options are held by a second class-backed store, `ProtocolValues`, which needs the same
+    // copy-on-write; otherwise a copy clearing its transport options clears the original's too.
+    func testWritingTransportOptionsDoesNotAffectACopy() {
+        var original = PathParameters()
+        original.transportOptions = .udp(
+            ProtocolOptions<UDPProtocol>(protocolIdentifier: UDPProtocol.identifier, perProtocolOptions: nil)
+        )
+
+        var copy = original
+        copy.transportOptions = nil
+
+        XCTAssertNotNil(original.transportOptions, "original was cleared through the copy")
+        XCTAssertNil(copy.transportOptions, "copy did not take the new value")
     }
 }
