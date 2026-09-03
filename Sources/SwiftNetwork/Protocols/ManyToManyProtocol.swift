@@ -233,7 +233,8 @@ extension MultiplexingPathIdentifier {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 @frozen public enum MultiplexingPathEvent: CustomStringConvertible {
-    case available
+    // During bringup of the path it is possible that the endpoints may have changed
+    case available(local: Endpoint?, remote: Endpoint?, path: PathProperties?, parameters: Parameters?)
     case unavailable
     case established
 
@@ -365,7 +366,11 @@ extension ManyToManyProtocolHandler {
         try newPath.attachLowerProtocol(lowerProtocol, remote: remote, local: local, parameters: parameters, path: path)
         if multiplexingPaths.isEmpty { newPath.pathIsPrimary = true }
         multiplexingPaths[newPath.identifier] = newPath
-        handlePathChanged(path: newPath.identifier, event: .available, isPrimary: newPath.pathIsPrimary)
+        handlePathChanged(
+            path: newPath.identifier,
+            event: .available(local: local, remote: remote, path: path, parameters: parameters),
+            isPrimary: newPath.pathIsPrimary
+        )
     }
     #endif
 
@@ -984,7 +989,11 @@ extension ManyToManyDatapathProtocol where Path.ParentProtocol == Self, Path: In
         if path?.hasMigrationInfo == true { newPath.pathHasMigrationInfo = true }
         multiplexingPaths[newPath.identifier] = newPath
         if !isFirstPath {
-            handlePathChanged(path: newPath.identifier, event: .available, isPrimary: newPath.pathIsPrimary)
+            handlePathChanged(
+                path: newPath.identifier,
+                event: .available(local: local, remote: remote, path: path, parameters: parameters),
+                isPrimary: newPath.pathIsPrimary
+            )
         }
     }
 }
@@ -1395,7 +1404,10 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
         flow flowID: MultiplexedFlowIdentifier,
         streamData: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.flow(for: flowID) else {
+            streamData.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         return try flow.addToUpperReceiveQueue(streamData)
     }
 
@@ -1408,7 +1420,10 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
         flow flowID: MultiplexedFlowIdentifier,
         streamData: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.flow(for: flowID) else {
+            streamData.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         try deliverInboundStreamData(flow: &flow, streamData: streamData)
     }
 
@@ -1605,7 +1620,10 @@ extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagr
         flow flowID: MultiplexedFlowIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.flow(for: flowID) else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         return try flow.addToUpperReceiveQueue(datagrams)
     }
 
@@ -1619,7 +1637,10 @@ extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagr
         flow flowID: MultiplexedFlowIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.flow(for: flowID) else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         try flow.addToUpperReceiveQueue(datagrams)
         flow.serviceUpperReceiveQueue()
     }
@@ -1647,7 +1668,10 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
         flow flowID: MultiplexedFlowIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.secondaryFlow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.secondaryFlow(for: flowID) else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         return try flow.addToUpperReceiveQueue(datagrams)
     }
 
@@ -1661,7 +1685,10 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
         flow flowID: MultiplexedFlowIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.secondaryFlow(for: flowID) else { throw NetworkError.posix(EINVAL) }
+        guard var flow = self.secondaryFlow(for: flowID) else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         try deliverInboundDatagrams(flow: &flow, datagrams: datagrams)
     }
 
@@ -1818,7 +1845,7 @@ extension MultiplexingPath {
             }
             parentProtocol.handlePathChanged(
                 path: identifier,
-                event: isConnected ? .established : .available,
+                event: isConnected ? .established : .available(local: nil, remote: nil, path: nil, parameters: nil),
                 isPrimary: pathIsPrimary
             )
             return
@@ -2024,7 +2051,10 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         path pathID: MultiplexingPathIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var path = self.path(for: pathID) else { throw NetworkError.posix(EINVAL) }
+        guard var path = self.path(for: pathID) else {
+            datagrams.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(EINVAL)
+        }
         return try path.addToLowerSendQueue(datagrams)
     }
 

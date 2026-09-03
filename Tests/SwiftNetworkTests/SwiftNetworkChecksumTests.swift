@@ -103,4 +103,75 @@ final class SwiftNetworkChecksumTests: NetTestCase {
         let checksum = string.withUTF8 { $0.withUnsafeBytes { $0.checksum16() } }
         XCTAssertEqual(checksum, expectedValue, "Checksum didn't match (\(checksum) != \(expectedValue))")
     }
+
+    func testChecksum16EmptyBuffer() {
+        let buffer: [UInt8] = []
+        let expectedValue = UInt16(0)
+        let checksum = buffer.withUnsafeBytes { $0.checksum16() }
+        XCTAssertEqual(checksum, expectedValue, "Checksum didn't match (\(checksum) != \(expectedValue))")
+    }
+
+    func testChecksum16SingleByte() {
+        let buffer: [UInt8] = [0xAB]
+        let expectedValue = UInt16(0x00AB)
+        let checksum = buffer.withUnsafeBytes { $0.checksum16() }
+        XCTAssertEqual(checksum, expectedValue, "Checksum didn't match (\(checksum) != \(expectedValue))")
+    }
+
+    func testChecksum16SingleWord() {
+        let buffer: [UInt8] = [0x12, 0x34]
+        let expectedValue = UInt16(0x3412)
+        let checksum = buffer.withUnsafeBytes { $0.checksum16() }
+        XCTAssertEqual(checksum, expectedValue, "Checksum didn't match (\(checksum) != \(expectedValue))")
+    }
+
+    func testChecksum16OddLength() {
+        // This makes sure that the remainder calculates
+        let buffer: [UInt8] = [0x01, 0x02, 0x03]
+        let expectedValue = UInt16(0x0204)
+        let checksum = buffer.withUnsafeBytes { $0.checksum16() }
+        XCTAssertEqual(checksum, expectedValue, "Checksum didn't match (\(checksum) != \(expectedValue))")
+    }
+
+    func testChecksum16evenAllOnesFoldsToUInt16Max() {
+        let buffer: [UInt8] = Array(repeating: 0xFF, count: 8)
+        let expectedValue = UInt16(0xFFFF)
+        let checksum = buffer.withUnsafeBytes { $0.checksum16() }
+        XCTAssertEqual(checksum, expectedValue, "Checksum didn't match (\(checksum) != \(expectedValue))")
+        XCTAssertEqual(checksum, UInt16.max, "Checksum didn't match (\(checksum) != \(UInt16.max))")
+    }
+
+    func testChecksum16OddAllOnesRequiresDoubleFold() {
+        // The double fold lands on a 0x00FF
+        let buffer: [UInt8] = Array(repeating: 0xFF, count: 9)
+        let expectedValue = UInt16(0x00FF)
+        let checksum = buffer.withUnsafeBytes { $0.checksum16() }
+        XCTAssertEqual(checksum, expectedValue, "Checksum didn't match (\(checksum) != \(expectedValue))")
+    }
+
+    func testChecksum16AllZeros() {
+        let buffer: [UInt8] = Array(repeating: 0x00, count: 16)
+        let expectedValue = UInt16(0)
+        let checksum = buffer.withUnsafeBytes { $0.checksum16() }
+        XCTAssertEqual(checksum, expectedValue, "Checksum didn't match (\(checksum) != \(expectedValue))")
+    }
+
+    func testChecksum16MixedOddLength() {
+        let buffer: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF, 0x01]
+        let expectedValue = UInt16(0x9D9E)
+        let checksum = buffer.withUnsafeBytes { $0.checksum16() }
+        XCTAssertEqual(checksum, expectedValue, "Checksum didn't match (\(checksum) != \(expectedValue))")
+    }
+
+    func testChecksum16OrderIndependent() {
+        let buffer: [UInt8] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        let reordered: [UInt8] = [0x07, 0x08, 0x03, 0x04, 0x01, 0x02, 0x05, 0x06]
+        let checksum = buffer.withUnsafeBytes { $0.checksum16() }
+        let reorderedChecksum = reordered.withUnsafeBytes { $0.checksum16() }
+        XCTAssertEqual(
+            checksum,
+            reorderedChecksum,
+            "Checksum didn't match (\(checksum) != \(reorderedChecksum))"
+        )
+    }
 }

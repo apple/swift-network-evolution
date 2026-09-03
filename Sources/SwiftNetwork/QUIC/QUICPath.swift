@@ -141,6 +141,8 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
     private(set) var state: QUICPathState = QUICPathState()
     var priority: Int = 0  // Relative priority to other paths, used to gate migration decisions
     var interface: Interface?
+    var localEndpoint: Endpoint?
+    var remoteEndpoint: Endpoint?
 
     private(set) var dcid: QUICConnectionID?  // The DCID we assigned before probing
     private(set) var scid: QUICConnectionID?  // Contains the SCID we expect to see once we migrate.
@@ -571,6 +573,20 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
                     )
                 }
             }
+            if let localEndpoint, let remoteEndpoint,
+                case .address(let localAddress) = localEndpoint.type,
+                case .address(let remoteAddress) = remoteEndpoint.type
+            {
+                let pathInfo = QUICPathInfo(
+                    isValidated: self.isValidated,
+                    remote: remoteAddress,
+                    local: localAddress
+                )
+                parentProtocol.deliverNetworkProtocolEvent(
+                    flow: .allFlows,
+                    event: .init(quicEvent: .pathUnreachable(pathInfo))
+                )
+            }
             return
         }
 
@@ -619,6 +635,21 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         // Initialize RTT based on the PATH_RESPONSE duration so that we have a proper RTT estimate when we reset the timers.
         rtt.processNewSample(ackDuration: responseDuration, packetAckedTime: now, ackDelay: .zero)
         parentProtocol.migration.resetTimer(connection: parentProtocol)
+        // Notify the stack about the path becoming validated
+        if let localEndpoint, let remoteEndpoint,
+            case .address(let localAddress) = localEndpoint.type,
+            case .address(let remoteAddress) = remoteEndpoint.type
+        {
+            let pathInfo = QUICPathInfo(
+                isValidated: self.isValidated,
+                remote: remoteAddress,
+                local: localAddress
+            )
+            parentProtocol.deliverNetworkProtocolEvent(
+                flow: .allFlows,
+                event: .init(quicEvent: .pathValidated(pathInfo))
+            )
+        }
         if migrationPending {
             migrationPending = false
             parentProtocol.migration.migrate(to: self, connection: parentProtocol)

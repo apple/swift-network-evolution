@@ -168,6 +168,8 @@ struct Statistics: ~Copyable {
         }
     }
 
+    @inline(always)
+    @inlinable
     mutating func increment(_ key: QUICStatistic, by value: Int = 1) {
         statisticsArray[key.rawValue] &+= value
     }

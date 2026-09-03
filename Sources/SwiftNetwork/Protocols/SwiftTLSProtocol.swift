@@ -503,6 +503,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
 
             func sendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {
                 guard !lower.isDetached else {
+                    streamData.finalizeAllFramesAsFailed()
                     throw NetworkError.posix(EINVAL)
                 }
                 try lower.invokeSendStreamData(reference, streamData: streamData)
@@ -766,6 +767,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         }
 
         func sendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {
+            streamData.finalizeAllFramesAsFailed()
             throw NetworkError.posix(ENOTSUP)
         }
 

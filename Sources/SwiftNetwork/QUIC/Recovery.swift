@@ -978,7 +978,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
         // We may have lost a PMTUD probe, so check if we want to resend it
         connection.withCurrentPath { path in
-            var sentPackets = path.pmtudState.tryToSend(on: path)
+            var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
+            path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets)
             recordSentPackets(&sentPackets, connection: connection)
             return
         }
@@ -1026,7 +1027,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             // want to resend it.
             let path = path ?? connection.currentPath
             if let path {
-                var sentPackets = path.pmtudState.tryToSend(on: path)
+                var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
+                path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets)
                 recordSentPackets(&sentPackets, connection: connection)
             }
             connection.sendAllEnqueuedOutboundDatagrams()
@@ -1263,9 +1265,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             innerState.largerPacketCount > 0
         }
         if hasLargerPacketCount {
-            var sentPackets = path.pmtudState.ptoEvent(
+            var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
+            path.pmtudState.ptoEvent(
                 on: path,
-                ptoCount: path.recoveryState.PTOCount
+                ptoCount: path.recoveryState.PTOCount,
+                sentPackets: &sentPackets
             )
             recordSentPackets(&sentPackets, connection: connection)
         }

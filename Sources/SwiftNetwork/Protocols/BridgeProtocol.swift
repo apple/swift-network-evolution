@@ -300,6 +300,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
 
         public static func injectDatagram(_ datagram: consuming Frame, to remotePort: UInt16) {
             guard let remoteInstance = BridgeInstance.instances[remotePort] else {
+                datagram.finalize(success: false)
                 return
             }
             remoteInstance.incomingFrames.add(frames: .init(frame: datagram))

@@ -85,19 +85,18 @@ final class UDPLoopbackHarness: @unchecked Sendable {
     private let c1Cancelled = XCTestExpectation(description: "c1 cancelled")
     private let c2Cancelled = XCTestExpectation(description: "c2 cancelled")
 
-    /// Builds two peers: `c1` binds `basePort + 1` and targets `basePort`;
-    /// `c2` binds `basePort` and targets `basePort + 1`.
-    init(basePort: UInt16, ipv6: Bool = false) {
-        let portA = basePort
-        let portB = basePort + 1
+    /// Builds two cross-bound peers on kernel-assigned ports: `c1` binds one and targets the
+    /// other, `c2` the reverse.
+    init(ipv6: Bool = false) {
+        let ports = discoverFreeLoopbackPorts(2)
 
         c1 = NetworkConnection(
-            to: loopbackEndpoint(port: portA, ipv6: ipv6),
-            using: makeUDPParams(localPort: portB, ipv6: ipv6)
+            to: loopbackEndpoint(port: ports[0], ipv6: ipv6),
+            using: makeUDPParams(localPort: ports[1], ipv6: ipv6)
         )
         c2 = NetworkConnection(
-            to: loopbackEndpoint(port: portB, ipv6: ipv6),
-            using: makeUDPParams(localPort: portA, ipv6: ipv6)
+            to: loopbackEndpoint(port: ports[1], ipv6: ipv6),
+            using: makeUDPParams(localPort: ports[0], ipv6: ipv6)
         )
 
         c1.onStateUpdate { [c1Ready, c1Cancelled] _, state in
@@ -302,15 +301,19 @@ final class TCPClientHarness: @unchecked Sendable {
     private let ready = XCTestExpectation(description: "tcp ready")
     private let cancelled = XCTestExpectation(description: "tcp cancelled")
 
-    /// Creates the harness around `server` (default: a `TCPEchoServer` on `port`),
-    /// starts the server, and builds a client targeting `port`.
-    init(port: UInt16, ipv6: Bool = false, server: (any SocketTestServer)? = nil) {
-        let server = server ?? TCPEchoServer(port: port, ipv6: ipv6)
+    /// Creates the harness around `server` (default: a `TCPEchoServer`), starts the server, and
+    /// builds a client targeting whichever port the kernel gave it.
+    init(ipv6: Bool = false, server: (any SocketTestServer)? = nil) {
+        let server = server ?? TCPEchoServer(ipv6: ipv6)
         self.server = server
-        try? server.start()
+        do {
+            try server.start()
+        } catch {
+            XCTFail("test server failed to start: \(error)")
+        }
 
         conn = NetworkConnection(
-            to: loopbackEndpoint(port: port, ipv6: ipv6),
+            to: loopbackEndpoint(port: server.listeningPort, ipv6: ipv6),
             using: makeTCPParams(ipv6: ipv6)
         )
         conn.onStateUpdate { [ready, cancelled] _, state in
@@ -442,21 +445,93 @@ final class TCPClientHarness: @unchecked Sendable {
 protocol SocketTestServer: AnyObject, Sendable {
     func start() throws
     func stop()
+    /// The port the kernel assigned, valid once `start()` has returned.
+    ///
+    /// Assigned at bind rather than chosen up front, which is why the servers' dispatch queue
+    /// labels no longer carry it.
+    var listeningPort: UInt16 { get }
+}
+
+/// Discovers `count` distinct loopback port numbers that are free, by binding a socket to each and
+/// releasing them all once the kernel's choices have been read back.
+@available(Network 0.1.0, *)
+func discoverFreeLoopbackPorts(_ count: Int) -> [UInt16] {
+    var descriptors: [CInt] = []
+    defer { for descriptor in descriptors { close(descriptor) } }
+
+    for _ in 0..<count {
+        #if canImport(Glibc)
+        let descriptor = socket(AF_INET, CInt(SOCK_DGRAM.rawValue), 0)
+        #else
+        let descriptor = socket(AF_INET, SOCK_DGRAM, 0)
+        #endif
+        guard descriptor >= 0 else {
+            XCTFail("could not open a socket to find a free port: errno \(errno)")
+            return Array(repeating: 0, count: count)
+        }
+        descriptors.append(descriptor)
+
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr = in_addr(s_addr: UInt32(0x7f00_0001).bigEndian)
+        #if canImport(Darwin)
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                bind(descriptor, socketAddress, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0 else {
+            XCTFail("could not bind a socket to find a free port: errno \(errno)")
+            return Array(repeating: 0, count: count)
+        }
+    }
+    return descriptors.map { boundPortOfDescriptor($0) }
+}
+
+/// Discovers one free loopback port number. See `discoverFreeLoopbackPorts(_:)`.
+@available(Network 0.1.0, *)
+func discoverFreeLoopbackPort() -> UInt16 {
+    discoverFreeLoopbackPorts(1)[0]
+}
+
+/// Reads back the port `fd` is bound to.
+@available(Network 0.1.0, *)
+func boundPortOfDescriptor(_ fd: Int32) -> UInt16 {
+    var storage = sockaddr_storage()
+    var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+    let result = withUnsafeMutablePointer(to: &storage) { ptr in
+        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+            getsockname(fd, sa, &length)
+        }
+    }
+    guard result == 0 else {
+        XCTFail("could not read back the bound port: errno \(errno)")
+        return 0
+    }
+    if storage.ss_family == sa_family_t(AF_INET6) {
+        return withUnsafePointer(to: &storage) { ptr in
+            ptr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { UInt16(bigEndian: $0.pointee.sin6_port) }
+        }
+    }
+    return withUnsafePointer(to: &storage) { ptr in
+        ptr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt16(bigEndian: $0.pointee.sin_port) }
+    }
 }
 
 // Accepts one connection and echoes everything it receives back to the sender
 // until the peer half-closes (FIN).
 @available(Network 0.1.0, *)
 final class TCPEchoServer: SocketTestServer, @unchecked Sendable {
-    private let port: UInt16
+    private(set) var listeningPort: UInt16 = 0
     private let ipv6: Bool
     private let queue: DispatchQueue
     private var listenFd: Int32 = -1
 
-    init(port: UInt16, ipv6: Bool = false) {
-        self.port = port
+    init(ipv6: Bool = false) {
         self.ipv6 = ipv6
-        self.queue = DispatchQueue(label: "tcp-echo-server-\(port)", qos: .userInitiated)
+        self.queue = DispatchQueue(label: "tcp-echo-server", qos: .userInitiated)
     }
 
     func start() throws {
@@ -477,7 +552,7 @@ final class TCPEchoServer: SocketTestServer, @unchecked Sendable {
         if ipv6 {
             var addr = sockaddr_in6()
             addr.sin6_family = sa_family_t(AF_INET6)
-            addr.sin6_port = port.bigEndian
+            addr.sin6_port = 0
             addr.sin6_addr = in6addr_loopback
             #if canImport(Darwin)
             addr.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
@@ -490,7 +565,7 @@ final class TCPEchoServer: SocketTestServer, @unchecked Sendable {
         } else {
             var addr = sockaddr_in()
             addr.sin_family = sa_family_t(AF_INET)
-            addr.sin_port = port.bigEndian
+            addr.sin_port = 0
             addr.sin_addr = in_addr(s_addr: UInt32(0x7f00_0001).bigEndian)
             #if canImport(Darwin)
             addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -511,6 +586,7 @@ final class TCPEchoServer: SocketTestServer, @unchecked Sendable {
             throw NetworkError.posix(errno)
         }
 
+        self.listeningPort = boundPortOfDescriptor(fd)
         self.listenFd = fd
         queue.async { [weak self] in self?.acceptLoop() }
     }
@@ -556,19 +632,18 @@ final class TCPEchoServer: SocketTestServer, @unchecked Sendable {
 // to span more than one read event.
 @available(Network 0.1.0, *)
 final class SplitSendServer: SocketTestServer, @unchecked Sendable {
-    private let port: UInt16
+    private(set) var listeningPort: UInt16 = 0
     private let firstChunk: Int
     private let total: Int
     private let gap: TimeInterval
     private let queue: DispatchQueue
     private var listenFd: Int32 = -1
 
-    init(port: UInt16, firstChunk: Int, total: Int, gap: TimeInterval) {
-        self.port = port
+    init(firstChunk: Int, total: Int, gap: TimeInterval) {
         self.firstChunk = firstChunk
         self.total = total
         self.gap = gap
-        self.queue = DispatchQueue(label: "split-send-server-\(port)", qos: .userInitiated)
+        self.queue = DispatchQueue(label: "split-send-server", qos: .userInitiated)
     }
 
     func start() throws {
@@ -585,7 +660,7 @@ final class SplitSendServer: SocketTestServer, @unchecked Sendable {
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
+        addr.sin_port = 0
         addr.sin_addr = in_addr(s_addr: UInt32(0x7f00_0001).bigEndian)
         #if canImport(Darwin)
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -604,6 +679,7 @@ final class SplitSendServer: SocketTestServer, @unchecked Sendable {
             throw NetworkError.posix(errno)
         }
 
+        self.listeningPort = boundPortOfDescriptor(fd)
         self.listenFd = fd
         queue.async { [weak self] in self?.serve() }
     }
@@ -644,12 +720,26 @@ final class SplitSendServer: SocketTestServer, @unchecked Sendable {
 
         // First segment, then a gap so the client processes it (and, if buggy,
         // suspends its read source) before the remainder arrives.
+        //
+        // This sleep is load-bearing: the gap is the condition the test reproduces. Shrink it and
+        // the two writes may coalesce into one segment, the receive no longer spans a segment
+        // boundary, and the test passes without exercising the bug.
         sendAll(payload.prefix(firstChunk))
         Thread.sleep(forTimeInterval: gap)
         sendAll(payload.suffix(total - firstChunk))
 
-        // Hold the connection open long enough for the client to finish.
-        Thread.sleep(forTimeInterval: 1.0)
+        // Hold the connection open until the client is done, which is exactly its FIN: `read` on
+        // this blocking descriptor returns 0 then. 0 is that FIN and a negative result means the
+        // descriptor has already gone; either way there is nothing left to wait for. The client
+        // sends nothing, so a positive result is not expected but costs nothing to ignore.
+        var readBuffer = [UInt8](repeating: 0, count: 16)
+        while true {
+            let bytesRead = readBuffer.withUnsafeMutableBytes { buffer -> Int in
+                guard let base = buffer.baseAddress else { return -1 }
+                return read(connFd, base, buffer.count)
+            }
+            if bytesRead <= 0 { break }
+        }
     }
 }
 
@@ -657,15 +747,14 @@ final class SplitSendServer: SocketTestServer, @unchecked Sendable {
 // client observes EOF. Used to exercise the bottom's end-of-stream handling.
 @available(Network 0.1.0, *)
 final class ClosingServer: SocketTestServer, @unchecked Sendable {
-    private let port: UInt16
+    private(set) var listeningPort: UInt16 = 0
     private let payload: [UInt8]
     private let queue: DispatchQueue
     private var listenFd: Int32 = -1
 
-    init(port: UInt16, payload: [UInt8]) {
-        self.port = port
+    init(payload: [UInt8]) {
         self.payload = payload
-        self.queue = DispatchQueue(label: "closing-server-\(port)", qos: .userInitiated)
+        self.queue = DispatchQueue(label: "closing-server", qos: .userInitiated)
     }
 
     func start() throws {
@@ -682,7 +771,7 @@ final class ClosingServer: SocketTestServer, @unchecked Sendable {
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
+        addr.sin_port = 0
         addr.sin_addr = in_addr(s_addr: UInt32(0x7f00_0001).bigEndian)
         #if canImport(Darwin)
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -701,6 +790,7 @@ final class ClosingServer: SocketTestServer, @unchecked Sendable {
             throw NetworkError.posix(errno)
         }
 
+        self.listeningPort = boundPortOfDescriptor(fd)
         self.listenFd = fd
         queue.async { [weak self] in self?.serve() }
     }
