@@ -162,7 +162,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
             } else {
                 guard !timerSet else { return }
                 timerSet = true
-                self.scheduleWakeup(milliseconds: UInt64(linkDelay.milliseconds))
+                self.scheduleWakeup(after: linkDelay)
             }
         }
 
