@@ -3230,14 +3230,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         return outboundBatch
     }
 
-    private func sendOutboundFrames(_ outboundFrames: consuming FrameArray, on path: QUICPath) {
-        guard !outboundFrames.isEmpty else { return }
+    private func sendOutboundFrames(on path: QUICPath) {
         do throws(NetworkError) {
-            try self.enqueueOutboundDatagrams(
-                path: path.identifier,
-                datagrams: outboundFrames
-            )
-            try self.sendEnqueuedOutboundDatagrams(path: path.identifier)
+            try self.sendEnqueuedOutboundDatagrams(path: path)
         } catch {
             log.error("Failed to send outbound datagrams: \(error)")
         }
@@ -3277,7 +3272,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         availableCongestionWindow: inout UInt64,
         totalSendBytes: inout UInt64,
         datagramBatch: inout FrameArray,
-        outboundFrames: inout FrameArray,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         protector: inout Protector,
         stats: inout Statistics,
@@ -3298,7 +3292,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     totalSendBytes: &totalSendBytes,
                     retransmission: retransmission,
                     datagramBatch: &datagramBatch,
-                    outboundFrames: &outboundFrames,
                     protector: &protector,
                     stats: &stats,
                     ecn: &ecn
@@ -3386,7 +3379,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        var outboundFrameArray = FrameArray(capacity: datagramBatch.count)
         // keyState can only be .phase0 or .phase1 here: initial keys are discarded and the
         // handshake is confirmed, so .earlyData is no longer possible.
         let packetKeyState: PacketKeyState = self.keyState == .phase1 ? .phase1 : .phase0
@@ -3400,16 +3392,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             availableCongestionWindow: &availableCongestionWindow,
             totalSendBytes: &totalSendBytes,
             datagramBatch: &datagramBatch,
-            outboundFrames: &outboundFrameArray,
             sentPackets: &sentPackets,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
             applicationPendingItems: &applicationPendingItems
         )
-        if !outboundFrameArray.isEmpty {
-            sendOutboundFrames(outboundFrameArray, on: path)
-        }
+        sendOutboundFrames(on: path)
         return true
     }
 
@@ -3458,7 +3447,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     applicationPendingItems: &applicationPendingItems
                 )
             }
-            var outboundFrameArray = FrameArray()
             let success = buildSinglePacketForKeyState(
                 self.keyState,
                 pendingItems: &pendingItems,
@@ -3469,14 +3457,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 totalSendBytes: &totalSendBytes,
                 retransmission: retransmission,
                 datagramBatch: &datagramBatch,
-                outboundFrames: &outboundFrameArray,
                 protector: &protector,
                 stats: &stats,
                 ecn: &ecn
             )
-            if !outboundFrameArray.isEmpty {
-                sendOutboundFrames(outboundFrameArray, on: path)
-            }
+            sendOutboundFrames(on: path)
             return success
         }
 
@@ -3502,7 +3487,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        var outboundFrameArray = FrameArray(capacity: datagramBatch.count)
         if !initialKeysDiscarded {
             while initialPendingItems.hasPendingItems {
                 if initialKeysDiscarded {
@@ -3521,7 +3505,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         totalSendBytes: &totalSendBytes,
                         retransmission: retransmission,
                         datagramBatch: &datagramBatch,
-                        outboundFrames: &outboundFrameArray,
                         protector: &protector,
                         stats: &stats,
                         ecn: &ecn
@@ -3559,7 +3542,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     totalSendBytes: &totalSendBytes,
                     retransmission: retransmission,
                     datagramBatch: &datagramBatch,
-                    outboundFrames: &outboundFrameArray,
                     protector: &protector,
                     stats: &stats,
                     ecn: &ecn
@@ -3590,16 +3572,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             availableCongestionWindow: &availableCongestionWindow,
             totalSendBytes: &totalSendBytes,
             datagramBatch: &datagramBatch,
-            outboundFrames: &outboundFrameArray,
             sentPackets: &sentPackets,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
             applicationPendingItems: &applicationPendingItems
         )
-        if !outboundFrameArray.isEmpty {
-            sendOutboundFrames(outboundFrameArray, on: path)
-        }
+        sendOutboundFrames(on: path)
         return true
     }
 
@@ -3613,7 +3592,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         totalSendBytes: inout UInt64,
         retransmission: Bool,
         datagramBatch: inout FrameArray,
-        outboundFrames: inout FrameArray,
         protector: inout Protector,
         stats: inout Statistics,
         ecn: inout ECN
@@ -3922,7 +3900,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         QUICSignpost.outbound(id: signpostID, length: totalBytesWrittenInFrame)
 
-        outboundFrames.add(frame: outFrame)
+        try? enqueueOutboundFrame(frame: outFrame, path: path)
         return true
     }
 

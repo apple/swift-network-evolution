@@ -57,12 +57,16 @@ extension AutomaticLowerDatagramProcessing where Self: ~Copyable {
         lowerSendQueue.add(frames: datagrams)
     }
 
+    public mutating func addToLowerSendQueue(_ datagram: consuming Frame) throws(NetworkError) {
+        lowerSendQueue.add(frame: datagram)
+    }
+
     /// Indicates to the lower protocol that datagrams have been added to the send queue.
     ///
     /// Drains `lowerSendQueue` to the lower protocol.
     public mutating func serviceLowerSendQueue() {
         guard !lowerSendQueue.isEmpty else { return }
-        try? lower.invokeSendDatagrams(reference, datagrams: lowerSendQueue.drainArray())
+        try? lower.invokeSendDatagrams(reference, datagrams: lowerSendQueue.drainArrayKeepingCapacity())
     }
 
     /// Indicates that datagrams should be read from the lower protocol.
