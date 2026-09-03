@@ -57,7 +57,7 @@ extension AutomaticLowerDatagramProcessing where Self: ~Copyable {
         lowerSendQueue.add(frames: datagrams)
     }
 
-    public mutating func addToLowerSendQueue(_ datagram: consuming Frame) throws(NetworkError) {
+    public mutating func addToLowerSendQueue(_ datagram: consuming Frame) {
         lowerSendQueue.add(frame: datagram)
     }
 

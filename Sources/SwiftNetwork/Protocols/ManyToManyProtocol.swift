@@ -2059,9 +2059,9 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
     }
 
     @inline(always)
-    public func enqueueOutboundFrame(frame: consuming Frame, path: Path) throws(NetworkError) {
+    public func enqueueOutboundFrame(frame: consuming Frame, path: Path) {
         var addPath = path
-        return try addPath.addToLowerSendQueue(frame)
+        return addPath.addToLowerSendQueue(frame)
     }
 
     @inline(always)

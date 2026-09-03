@@ -3900,7 +3900,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         QUICSignpost.outbound(id: signpostID, length: totalBytesWrittenInFrame)
 
-        try? enqueueOutboundFrame(frame: outFrame, path: path)
+        enqueueOutboundFrame(frame: outFrame, path: path)
         return true
     }
 
