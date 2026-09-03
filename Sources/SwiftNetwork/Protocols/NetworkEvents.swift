@@ -265,9 +265,9 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
         case .newOutboundConnectionID(let connectionID, _):
             return
                 "QUIC: New outbound connection ID: \(connectionID)"
-        case .retiredOutboundConnectionID(let connectionID, let statelessResetToken):
+        case .retiredOutboundConnectionID(let connectionID, _):
             return
-                "QUIC: Retired outbound connection ID: \(connectionID), with stateless reset token: \(statelessResetToken)"
+                "QUIC: Retired outbound connection ID: \(connectionID)"
         #endif
         case .remoteBidirectionalStreamsBlocked(let maximumStreams):
             return "QUIC: Remote bidirectional streams blocked: \(maximumStreams)"
