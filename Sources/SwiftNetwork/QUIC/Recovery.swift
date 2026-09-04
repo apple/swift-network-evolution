@@ -664,8 +664,9 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 return false
             }
 
+            let now = connection.now
             while let packet = packets.popFirst() {
-                sentPacket(packet, time: connection.now, connection: connection)
+                sentPacket(packet, time: now, connection: connection)
             }
 
             return true
@@ -748,7 +749,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         inBatch = false
         if shouldResetTimer {
             shouldResetTimer = false
-            resetTimer(connection: connection)
+            resetTimer(now: connection.now, connection: connection)
         }
     }
 
@@ -757,13 +758,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         _ sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         connection: QUICConnection
     ) {
+        let now = connection.now
         while let packet = sentPackets.popFirst() {
-            sentPacket(packet, time: connection.now, connection: connection)
+            sentPacket(packet, time: now, connection: connection)
         }
         if inBatch {
             shouldResetTimer = true
         } else {
-            resetTimer(connection: connection)
+            resetTimer(now: now, connection: connection)
         }
     }
 
@@ -1104,14 +1106,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         return (earliestTime, pnSpace)
     }
 
-    func setTimer(delay: NetworkDuration, connection: QUICConnection) {
+    func setTimer(delay: NetworkDuration, now: NetworkClock.Instant, connection: QUICConnection) {
         guard let timerID = timerID else {
             return
         }
         connection.timer.reschedule(
             identifier: timerID,
             fromNow: delay,
-            timerNow: connection.now
+            timerNow: now
         )
         log.datapath("Reset loss recovery timer [T\(timerID)] to \(delay)")
     }
@@ -1272,7 +1274,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
     }
 
-    mutating func timerFired(timeNow: NetworkClock.Instant) {
+    mutating func timerFired(at timeNow: NetworkClock.Instant) {
         guard let connection = connection else {
             return
         }
@@ -1289,7 +1291,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 sendPTO(connection: connection, path: path)
             }
         }
-        resetTimer(connection: connection)
+        resetTimer(now: timeNow, connection: connection)
     }
 
     static func PTOPeriod(
@@ -1333,11 +1335,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         return (largestTime >= smallestTime + pto * Constants.persistentCongestionThreshold)
     }
 
-    mutating func resetTimer(connection: QUICConnection) {
+    mutating func resetTimer(now: NetworkClock.Instant, connection: QUICConnection) {
         // if there are ack eliciting packets on any of the innerStates, the L4S error should not be emitted
         if totalAckElicitingPacketsInFlight == 0 && peerCompletedValidation(connection: connection) {
             log.datapath("No ack eliciting packets in flight, cancelling timer")
-            setTimer(delay: .zero, connection: connection)
+            setTimer(delay: .zero, now: now, connection: connection)
             connection.withCurrentPath { path in
                 guard path.isValidated else { return }
                 var bytesInFlight: UInt64 = 0
@@ -1356,7 +1358,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             return
         }
         var timeout: NetworkDuration = .zero
-        let now = connection.now
         let (lossTime, _) = getEarliestTime(earliestTimeType: .lossTime, connection: connection)
         if lossTime != .zero {
             // Time threshold loss detection.
@@ -1366,7 +1367,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 // lossTime has already passed
                 timeout = .microseconds(1000)
             }
-            setTimer(delay: timeout, connection: connection)
+            setTimer(delay: timeout, now: now, connection: connection)
         } else {
             // Arm PTO
             let (sentTime, pnSpace) = getEarliestTime(
@@ -1377,7 +1378,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             connection.withCurrentPath { path in
                 if pnSpace == .applicationData && !connection.isHandshakeConfirmed {
                     log.datapath("Handshake not confirmed, cancelling timer")
-                    setTimer(delay: .zero, connection: connection)
+                    setTimer(delay: .zero, now: now, connection: connection)
                     path.recoveryState.PTOPeriod = .zero
                     return
                 }
@@ -1391,7 +1392,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     computedTimeout = timeout
                 }
                 log.datapath("Resetting recovery timer to \(computedTimeout)")
-                setTimer(delay: computedTimeout, connection: connection)
+                setTimer(delay: computedTimeout, now: now, connection: connection)
             }
         }
     }
@@ -1486,7 +1487,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                         }
                         sentPath.rtt.processNewSample(
                             ackDuration: largestAckedEntry.sentTime.duration(to: timeNow),
-                            packetAckedTime: connection.now,
+                            packetAckedTime: timeNow,
                             ackDelay: .microseconds(ack.delay)
                         )
                         #if QlogOutput
@@ -1496,7 +1497,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                                 smoothedRTT: sentPath.rtt.smoothedRTT,
                                 latestRTT: sentPath.rtt.latestRTT,
                                 rttVariance: sentPath.rtt.RTTVariance,
-                                timestamp: connection.now
+                                timestamp: timeNow
                             )
                         }
                         #endif
@@ -1582,7 +1583,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         if inBatch {
             shouldResetTimer = true
         } else {
-            resetTimer(connection: connection)
+            resetTimer(now: timeNow, connection: connection)
         }
 
         // Now that we have deal with all the ACK'ed packets,

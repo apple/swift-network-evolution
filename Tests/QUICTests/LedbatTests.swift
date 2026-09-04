@@ -353,82 +353,54 @@ final class LedbatTests: XCTestCase {
     }
 
     func testLedbatCongestionLimited() {
-        /* SRTT = 100ms, base RTT = 100ms network RTT = 120ms */
+        // `sentTime` is when the packets went out, `detectedAt` when their loss was noticed.
+        // RFC 9002 Section 7.3.2 allows one reduction per recovery period, so three rounds of
+        // sending give three reductions.
+        //
+        // LEDBAT starts *on* its own floor — `initialCongestionWindow` is `min(2 * mss, 2944)`
+        // and `minCongestionWindow` is `2 * mss`, both 2400 here — so the window has to be grown
+        // first, or every reduction clamps back and the assertion holds whatever the controller
+        // does.
+        /* SRTT = 100ms, base RTT = 100ms, network RTT = 120ms */
         rtt.adjustedRTT = .milliseconds(120)
         rtt.smoothedRTT = .milliseconds(100)
-        var time = NetworkClock.Instant.testBase
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.ackBegin()
-        ledbat.packetsAcked(bytesAcked: 1000, sentTime: time)
-        ledbat.packetsAcked(bytesAcked: 1000, sentTime: time)
-        ledbat.packetsAcked(bytesAcked: 1000, sentTime: time)
-        ledbat.packetsAcked(bytesAcked: 1000, sentTime: time)
-        ledbat.packetsAcked(bytesAcked: 1000, sentTime: time)
-        ledbat.packetLost(
-            bytesLost: 1000,
-            largestLostSentTime: time,
-            mss: mss,
-            smoothedRTT: .microseconds(0),
-            now: time
-        )
-        XCTAssertEqual(ledbat.availableCongestionWindow, 2400)
-        time = NetworkClock.Instant.testBase.advanced(by: .microseconds(1000))
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetLost(
-            bytesLost: 1000,
-            largestLostSentTime: time,
-            mss: mss,
-            smoothedRTT: .microseconds(0),
-            now: time
-        )
-        ledbat.packetLost(
-            bytesLost: 1000,
-            largestLostSentTime: time,
-            mss: mss,
-            smoothedRTT: .microseconds(0),
-            now: time
-        )
-        ledbat.packetLost(
-            bytesLost: 1000,
-            largestLostSentTime: time,
-            mss: mss,
-            smoothedRTT: .microseconds(0),
-            now: time
-        )
-        ledbat.packetLost(
-            bytesLost: 1000,
-            largestLostSentTime: time,
-            mss: mss,
-            smoothedRTT: .microseconds(0),
-            now: time
-        )
-        time = NetworkClock.Instant.testBase.advanced(by: .microseconds(2000))
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetSent(bytesSent: 1000)
-        ledbat.packetLost(
-            bytesLost: 1000,
-            largestLostSentTime: time,
-            mss: mss,
-            smoothedRTT: .microseconds(0),
-            now: time
-        )
-        ledbat.packetLost(
-            bytesLost: 1000,
-            largestLostSentTime: time,
-            mss: mss,
-            smoothedRTT: .microseconds(0),
-            now: time
-        )
-        XCTAssertEqual(ledbat.availableCongestionWindow, 2400)
-        XCTAssertFalse(ledbat.canSend(packetLength: 3000))
+
+        // Slow start, since the queuing delay of 20ms is under three quarters of the 60ms target.
+        // Each round adds `gain(baseRTT) * min(bytesAcked, 10 * mss)`, and `gain` is 0.5 at this
+        // base RTT, so 12000 bytes acked lift the window by 6000: 2400 -> 26400 over four rounds.
+        // The rounds fit inside one smoothed RTT, so congestion window validation never takes a
+        // pipeack sample and `lossFlightSize` stays equal to the window.
+        var sentTime = NetworkClock.Instant.testBase
+        for _ in 0..<4 {
+            ledbat.packetSent(bytesSent: 12000)
+            ledbat.ackBegin()
+            ledbat.packetsAcked(bytesAcked: 12000, sentTime: sentTime)
+            ledbat.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: sentTime)
+            sentTime = sentTime.advanced(by: .milliseconds(1))
+        }
+        XCTAssertEqual(ledbat.availableCongestionWindow, 26400)
+
+        // Three rounds, four losses each, halving the window once per round.
+        for expectedWindow in [UInt64(13200), 6600, 3300] {
+            let detectedAt = sentTime.advanced(by: .microseconds(100))
+            for _ in 0..<4 {
+                ledbat.packetSent(bytesSent: 1000)
+            }
+            for lossIndex in 0..<4 {
+                let openedRecovery = ledbat.packetLost(
+                    bytesLost: 1000,
+                    largestLostSentTime: sentTime,
+                    mss: mss,
+                    smoothedRTT: .microseconds(0),
+                    now: detectedAt
+                )
+                // Only the first loss opens a period; the rest were sent before it started.
+                XCTAssertEqual(openedRecovery, lossIndex == 0)
+            }
+            XCTAssertEqual(ledbat.availableCongestionWindow, expectedWindow)
+            sentTime = sentTime.advanced(by: .milliseconds(1))
+        }
+        XCTAssertFalse(ledbat.canSend(packetLength: 4000))
     }
 
     func testLedbatPacketDiscard() {

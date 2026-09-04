@@ -601,7 +601,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         }
         challengesSent += 1
 
-        parentProtocol.migration.resetTimer(connection: parentProtocol)
+        parentProtocol.migration.resetTimer(now: now, connection: parentProtocol)
     }
 
     func addPendingItems(_ pendingItems: inout PendingItems, now: NetworkClock.Instant, ) {
@@ -634,7 +634,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         changeState(to: .validated)
         // Initialize RTT based on the PATH_RESPONSE duration so that we have a proper RTT estimate when we reset the timers.
         rtt.processNewSample(ackDuration: responseDuration, packetAckedTime: now, ackDelay: .zero)
-        parentProtocol.migration.resetTimer(connection: parentProtocol)
+        parentProtocol.migration.resetTimer(now: now, connection: parentProtocol)
         // Notify the stack about the path becoming validated
         if let localEndpoint, let remoteEndpoint,
             case .address(let localAddress) = localEndpoint.type,

@@ -268,11 +268,9 @@ final class PragueTests: XCTestCase {
     }
 
     func testPragueCongestionLimited() {
-        // See `CubicTests.testCubicCongestionLimited`: `sentTime` is when the packets went
-        // out, `detectedAt` when their loss was noticed. The old test pushed the send times
-        // ahead of the system clock, so every loss re-entered recovery. RFC 9002
-        // Section 7.3.2 allows one reduction per recovery period; three rounds of sending
-        // give three reductions.
+        // `sentTime` is when the packets went out, `detectedAt` when their loss was noticed.
+        // RFC 9002 Section 7.3.2 allows one reduction per recovery period, so three rounds of
+        // sending give three reductions.
         var sentTime = NetworkClock.Instant.testBase
         var detectedAt = sentTime.advanced(by: .microseconds(100))
         prague.packetSent(bytesSent: 1000)

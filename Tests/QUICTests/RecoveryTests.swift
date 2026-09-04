@@ -588,12 +588,15 @@ final class RecoveryTests: XCTestCase {
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
         }
         XCTAssertEqual(path.recoveryState.PTOCount, 0)
-        XCTAssertGreaterThan(connection.recovery.computedTimeout, .milliseconds(900))
+        // `PTOPeriod` is the backed-off period; `computedTimeout` is what remains of it once the
+        // fired instant is taken into account, and this test advances its own clock by whole
+        // seconds between fires, so only the former doubles.
+        XCTAssertGreaterThan(path.recoveryState.PTOPeriod, .milliseconds(900))
 
         var expectation = XCTestExpectation()
         self.connection.context.async {
             timeNow = timeNow.advanced(by: .seconds(1))
-            self.connection.recovery.timerFired(timeNow: timeNow)
+            self.connection.recovery.timerFired(at: timeNow)
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -609,12 +612,12 @@ final class RecoveryTests: XCTestCase {
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
         }
         XCTAssertEqual(path.recoveryState.PTOCount, 1)
-        XCTAssertGreaterThan(connection.recovery.computedTimeout, .milliseconds(1900))
+        XCTAssertGreaterThan(path.recoveryState.PTOPeriod, .milliseconds(1900))
 
         expectation = XCTestExpectation()
         self.connection.context.async {
             timeNow = timeNow.advanced(by: .seconds(2))
-            self.connection.recovery.timerFired(timeNow: timeNow)
+            self.connection.recovery.timerFired(at: timeNow)
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -630,12 +633,12 @@ final class RecoveryTests: XCTestCase {
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
         }
         XCTAssertEqual(path.recoveryState.PTOCount, 2)
-        XCTAssertGreaterThan(connection.recovery.computedTimeout, .milliseconds(3900))
+        XCTAssertGreaterThan(path.recoveryState.PTOPeriod, .milliseconds(3900))
 
         expectation = XCTestExpectation()
         self.connection.context.async {
             timeNow = timeNow.advanced(by: .seconds(4))
-            self.connection.recovery.timerFired(timeNow: timeNow)
+            self.connection.recovery.timerFired(at: timeNow)
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -651,7 +654,7 @@ final class RecoveryTests: XCTestCase {
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
         }
         XCTAssertEqual(path.recoveryState.PTOCount, 3)
-        XCTAssertGreaterThan(connection.recovery.computedTimeout, .milliseconds(7900))
+        XCTAssertGreaterThan(path.recoveryState.PTOPeriod, .milliseconds(7900))
     }
 
     // A PTO with ack-eliciting data in flight must emit a probe, even when the only outstanding

@@ -448,12 +448,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         self.timer = Timer(reference: self.reference, timerReference: timerReference, logPrefixer: logPrefixer)
         let ackTimerID = timer.insert(description: "ACK", timerNow: self.now) { firedAt in
-            self.ack.timerFired(timeNow: firedAt)
+            self.ack.timerFired(at: firedAt)
         }
         self.ack = Ack(connection: self, timerID: ackTimerID, logPrefixer: logPrefixer)
 
         let recoveryTimerID = timer.insert(description: "Recovery", timerNow: self.now) { firedAt in
-            self.recovery.timerFired(timeNow: firedAt)
+            self.recovery.timerFired(at: firedAt)
         }
         self.recovery = Recovery(
             connection: self,
@@ -461,8 +461,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             logPrefixer: logPrefixer
         )
 
-        migration.timerID = timer.insert(description: "Migration", timerNow: self.now) { _ in
-            self.migration.timerFired(connection: self)
+        migration.timerID = timer.insert(description: "Migration", timerNow: self.now) { firedAt in
+            self.migration.timerFired(at: firedAt, connection: self)
         }
 
         if let remote, case .address(let remoteAddress) = remote.type,
@@ -1369,8 +1369,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             description: "Idle timeout",
             fromNow: idleTimeout,
             timerNow: self.now
-        ) { _ in
-            self.idleTimeoutFired()
+        ) { firedAt in
+            self.idleTimeoutFired(firedAt: firedAt)
         }
 
         guard let idleTimerID else {
@@ -1406,13 +1406,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    func idleTimeoutFired() {
+    func idleTimeoutFired(firedAt now: NetworkClock.Instant) {
         // Assumption: Timer will not be active unless:
         //   - server: initial packet received
         //   - client: initial packet sent
 
         // Check when the last activity was recorded
-        let now = self.now
         guard now >= lastPacketReceivedTimestamp else {
             log.fault("Now should not be less than lastPacketReceivedTimestamp")
             return
@@ -1429,7 +1428,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     timer.reschedule(
                         identifier: idleTimerID,
                         fromNow: sleepDuration,
-                        timerNow: self.now
+                        timerNow: now
                     )
                 }
                 return
@@ -2795,7 +2794,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         writeQLog()
     }
 
-    func keepaliveSendPingFrame(timeSinceLastReceived: NetworkDuration) {
+    func keepaliveSendPingFrame(timeSinceLastReceived: NetworkDuration, now: NetworkClock.Instant) {
         // N.B.: allow 1ms of leeway.
         if timeSinceLastReceived + .milliseconds(1) >= keepaliveDuration {
             if maxKeepaliveCount > 0 && unackedKeepaliveCount >= maxKeepaliveCount {
@@ -2824,7 +2823,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 timer.reschedule(
                     identifier: keepaliveTimerID,
                     fromNow: keepaliveDuration,
-                    timerNow: self.now
+                    timerNow: now
                 )
             }
             // Keepalive packets ignore the congestion window.
@@ -2833,11 +2832,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    func keepaliveHandler() {
+    func keepaliveHandler(firedAt now: NetworkClock.Instant) {
         // We try to delay the keep-alive by some delta amount
         // depending on when we last received a valid packet
         // from the remote side.
-        let now = self.now
         if _slowPath(now < lastPacketReceivedTimestamp) {
             log.fault("Bogus lastPacketReceivedTimestamp")
             return
@@ -2848,7 +2846,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             "Keepalive: now: \(now), last packet: \(self.lastPacketReceivedTimestamp) timeSinceLastReceived: \(timeSinceLastReceived), interval: \(self.keepaliveDuration)"
         )
 
-        keepaliveSendPingFrame(timeSinceLastReceived: timeSinceLastReceived)
+        keepaliveSendPingFrame(timeSinceLastReceived: timeSinceLastReceived, now: now)
     }
 
     func keepaliveConfigure(duration: NetworkDuration) {
@@ -2877,8 +2875,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             minIdleTime = .milliseconds(min(idleTimeoutLocal, idleTimeoutRemote))
         }
         if keepaliveTimerID == nil {
-            keepaliveTimerID = timer.insert(description: "keepalive", timerNow: self.now) { _ in
-                self.keepaliveHandler()
+            keepaliveTimerID = timer.insert(description: "keepalive", timerNow: self.now) { firedAt in
+                self.keepaliveHandler(firedAt: firedAt)
             }
         }
         // If connection has a non-zero timeout, keep-alive has to be less
@@ -3343,6 +3341,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 shouldEndBurst = true
             } else if packetBurst >= Constants.packetBurstCount {
                 // The packet burst count has been reached, check the time
+                //
+                // Deliberately the live clock rather than `self.now`: under a batch `self.now` is
+                // pinned, and `startSendingTimestamp` came from it, so comparing the two would
+                // always give zero and the cap could never be reached.
                 if startSendingTimestamp.duration(to: .now) >= Constants.maxPacketBurstDuration {
                     // The maximum burst time has been reached
                     shouldEndBurst = true
@@ -4304,7 +4306,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     public func wakeup() {
-        self.timer.timerFired(timeNow: self.now)
+        // Outside a batch neither timestamp cache is set, so `self.now` falls through to a clock
+        // read.
+        self.timer.timerFired(at: self.now)
     }
 
     func setupStreamID(isUnidirectional: Bool, isServer: Bool) -> QUICStreamID? {

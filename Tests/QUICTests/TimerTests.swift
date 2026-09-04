@@ -38,7 +38,7 @@ final class TimerTests: XCTestCase {
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
-        timer.timerFired(timeNow: .init(milliseconds: 1000))
+        timer.timerFired(at: .init(milliseconds: 1000))
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(1)),
             DispatchTimeoutResult.success
@@ -55,7 +55,7 @@ final class TimerTests: XCTestCase {
         XCTAssertEqual(timer.nextDeadline, .zero)
         timer.reschedule(identifier: oneId, fromNow: .milliseconds(1000), timerNow: .zero)
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
-        timer.timerFired(timeNow: .init(milliseconds: 1000))
+        timer.timerFired(at: .init(milliseconds: 1000))
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(1)),
             DispatchTimeoutResult.success
@@ -73,7 +73,7 @@ final class TimerTests: XCTestCase {
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
-        timer.timerFired(timeNow: .init(milliseconds: 1000))
+        timer.timerFired(at: .init(milliseconds: 1000))
         XCTAssertNotEqual(oneId, twoId)
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(2)),
@@ -98,9 +98,9 @@ final class TimerTests: XCTestCase {
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
-        timer.timerFired(timeNow: .init(milliseconds: 1000))
+        timer.timerFired(at: .init(milliseconds: 1000))
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 2000))
-        timer.timerFired(timeNow: .init(milliseconds: 2000))
+        timer.timerFired(at: .init(milliseconds: 2000))
         XCTAssertNotEqual(oneId, twoId)
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(2)),
@@ -126,9 +126,9 @@ final class TimerTests: XCTestCase {
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1500))
-        timer.timerFired(timeNow: .init(milliseconds: 1500))
+        timer.timerFired(at: .init(milliseconds: 1500))
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 2500))
-        timer.timerFired(timeNow: .init(milliseconds: 2500))
+        timer.timerFired(at: .init(milliseconds: 2500))
         XCTAssertNotEqual(oneId, twoId)
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(2)),
@@ -162,7 +162,7 @@ final class TimerTests: XCTestCase {
 
         // Timer should stay the same
         XCTAssertEqual(timer.nextDeadline, .init(microseconds: 1_000_000))
-        timer.timerFired(timeNow: .init(microseconds: 1_000_000))
+        timer.timerFired(at: .init(microseconds: 1_000_000))
         XCTAssertNotEqual(oneId, twoId)
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(2)),
@@ -209,13 +209,13 @@ final class TimerTests: XCTestCase {
         // Simulate a wakeup which is 0.5ms early. With the 1ms leeway,
         // post-leeway 'now' = 2s + 500us, which is still before B's
         // deadline (2s + 999us), so B doesn't fire and the spurious path runs.
-        timer.timerFired(timeNow: .init(.seconds(2) - .microseconds(500)))
+        timer.timerFired(at: .init(.seconds(2) - .microseconds(500)))
 
         // timerFired needs to rearm the wakeup.
         XCTAssertEqual(timer.nextDeadline, .init(.seconds(2) + .microseconds(999)))
 
         // Make sure B fires.
-        timer.timerFired(timeNow: .init(.seconds(2) + .microseconds(999)))
+        timer.timerFired(at: .init(.seconds(2) + .microseconds(999)))
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(1)),
             DispatchTimeoutResult.success
@@ -246,7 +246,7 @@ final class TimerTests: XCTestCase {
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(.seconds(2) + .microseconds(500)))
-        timer.timerFired(timeNow: .init(.seconds(2) + .microseconds(500)))
+        timer.timerFired(at: .init(.seconds(2) + .microseconds(500)))
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(1)),
             DispatchTimeoutResult.success

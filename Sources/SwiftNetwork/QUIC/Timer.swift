@@ -32,13 +32,13 @@ internal import os
 @available(Network 0.1.0, *)
 protocol TimerUser {
     var timerID: Timer.TimerID? { get set }
-    func timerFired(timeNow: NetworkClock.Instant)
+    func timerFired(at timeNow: NetworkClock.Instant)
 }
 
 @available(Network 0.1.0, *)
 protocol NonCopyableTimerUser: ~Copyable {
     var timerID: Timer.TimerID? { get set }
-    mutating func timerFired(timeNow: NetworkClock.Instant)
+    mutating func timerFired(at timeNow: NetworkClock.Instant)
 }
 
 @available(Network 0.1.0, *)
@@ -60,6 +60,8 @@ private struct TimerEntry: ~Copyable {
         deadline = .zero
     }
     mutating func schedule(fromNow: NetworkDuration, timerNow: NetworkClock.Instant) {
+        // `.zero` is the disabled sentinel that `isEnabled` reads, so it cannot also mean a
+        // deadline.
         precondition(fromNow != .zero)
         self.deadline = timerNow.advanced(by: fromNow)
     }
@@ -255,7 +257,7 @@ final class Timer: PrefixedLoggable {
         }
     }
 
-    public func timerFired(timeNow: NetworkClock.Instant) {
+    public func timerFired(at timeNow: NetworkClock.Instant) {
         // Timer fired means the kernel woke us up.
         wakeup = .idle
 

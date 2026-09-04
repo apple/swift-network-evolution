@@ -109,6 +109,45 @@ final class MigrationTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 5.0)
     }
+
+    // `Timer` fires an entry up to `Timer.timerThreshold` before its deadline and disables it
+    // first, so the migration handler can be woken with an instant that precedes the challenge it
+    // woke for. It must re-arm anyway; otherwise probing stalls on an otherwise idle path until an
+    // unrelated event happens to arm the timer again.
+    func testMigrationTimerRearmsWhenFiredInsideTimerLeeway() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
+            self.connection.currentPath = path
+            self.connection.multiplexingPaths[path.identifier] = path
+            path.changeState(to: .probing)
+
+            // Send the first challenge, which sets the next challenge deadline and arms the timer.
+            let base = NetworkClock.Instant.testBase
+            var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+            path.addPathChallenge(to: &pendingItems, now: base)
+            guard let nextChallengeTime = path.nextChallengeTime else {
+                XCTFail("First challenge did not schedule a follow-up")
+                expectation.fulfill()
+                return
+            }
+            XCTAssertEqual(self.connection.timer.nextDeadline, nextChallengeTime)
+
+            // Wake one microsecond early, which is inside the leeway window `Timer` allows. Go
+            // through `Timer.timerFired`, since that is what disables the entry before handing the
+            // instant to the handler.
+            self.connection.timer.timerFired(at: nextChallengeTime.advanced(by: .microseconds(-1)))
+
+            XCTAssertEqual(
+                self.connection.timer.nextDeadline,
+                nextChallengeTime,
+                "Migration timer left disarmed after an early fire"
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
 }
 
 #endif

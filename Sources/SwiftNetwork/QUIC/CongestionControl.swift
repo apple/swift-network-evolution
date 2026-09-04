@@ -339,6 +339,7 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     )
     mutating func spuriousRetransmit(qlog: QLog?)
     mutating func idleTimeout(mss: Int, qlog: QLog?)
+    /// Opens a recovery period at `now`, the time the loss was detected.
     mutating func enterRecovery(mss: Int, now: NetworkClock.Instant, qlog: QLog?)
     mutating func processECN(
         path: QUICPath?,
@@ -478,6 +479,7 @@ extension CongestionControlProtocol {
         sentTime <= recoveryStartTime
     }
 
+    /// `sentTime` is when the packet went out, `now` when its loss was detected.
     @discardableResult
     mutating func congestionEvent(
         sentTime: NetworkClock.Instant,
