@@ -41,7 +41,7 @@ final class SwiftNetworkContextTests: NetTestCase {
 
         context.resetTimer(
             for: timerReference,
-            to: .milliseconds(2000) {
+            to: .after(.milliseconds(2000)) {
                 expectation.fulfill()
             }
         )
@@ -81,6 +81,43 @@ final class SwiftNetworkContextTests: NetTestCase {
 
         wait(for: [expectation], timeout: 5.0)
         context.unscheduleTimer(timerReference1)
+    }
+
+    /// A delay under a millisecond must reach the scheduler intact; otherwise it arrives as no
+    /// delay at all and the wakeup cannot reach the deadline it was armed for.
+    func testContextTimerKeepsASubMillisecondDelay() {
+        let scheduler = RecordingScheduler()
+        let context = NetworkContext(identifier: "test", externalScheduler: scheduler)
+
+        let timerReference = context.scheduleTimer(duration: .microseconds(625)) {
+            XCTFail("The recording scheduler arms nothing, so the task must not run")
+        }
+
+        XCTAssertEqual(scheduler.scheduledDelays, [.microseconds(625)])
+
+        context.unscheduleTimer(timerReference)
+        XCTAssertEqual(scheduler.unscheduledReferences, [timerReference])
+    }
+
+    /// Records what it was asked to schedule instead of arming anything, so a test can assert on
+    /// the delay a caller asked for rather than on time passing.
+    private final class RecordingScheduler: NetworkContext.Scheduler {
+        var scheduledDelays: [NetworkDuration] = []
+        var unscheduledReferences: [TimerReference] = []
+
+        func runImmediate(_ task: @escaping (() -> Void)) {
+            task()
+        }
+
+        func schedule(_ task: @escaping (() -> Void), after delay: NetworkDuration, reference: TimerReference) {
+            scheduledDelays.append(delay)
+        }
+
+        func unschedule(reference: TimerReference) {
+            unscheduledReferences.append(reference)
+        }
+
+        var runningInScheduler: Bool { true }
     }
 
     func testContextTimerReferences() {

@@ -162,7 +162,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
             } else {
                 guard !timerSet else { return }
                 timerSet = true
-                self.scheduleWakeup(milliseconds: UInt64(linkDelay.milliseconds))
+                self.scheduleWakeup(after: linkDelay)
             }
         }
 
@@ -300,6 +300,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
 
         public static func injectDatagram(_ datagram: consuming Frame, to remotePort: UInt16) {
             guard let remoteInstance = BridgeInstance.instances[remotePort] else {
+                datagram.finalize(success: false)
                 return
             }
             remoteInstance.incomingFrames.add(frames: .init(frame: datagram))

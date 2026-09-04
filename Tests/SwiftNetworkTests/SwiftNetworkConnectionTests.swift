@@ -657,6 +657,85 @@ final class SwiftNetworkConnectionTests: NetTestCase {
         )
     }
 
+    func testNoTransportSpanDataPath() {
+        let group = DispatchGroup()
+        group.enter()
+        let c1 = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 7778),
+            using: .parameters {
+                NoTransport {
+                    StreamBridge()
+                }
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
+        )
+        .onStateUpdate { _, state in
+            print("c1 \(state)")
+            switch state {
+            case .cancelled:
+                group.leave()
+            default:
+                break
+            }
+        }
+        XCTAssertNotNil(c1)
+
+        group.enter()
+        let c2 = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 7777),
+            using: .parameters {
+                NoTransport {
+                    StreamBridge()
+                }
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7778))
+        )
+        .onStateUpdate { _, state in
+            print("c2 \(state)")
+            switch state {
+            case .cancelled:
+                group.leave()
+            default:
+                break
+            }
+        }
+        XCTAssertNotNil(c2)
+
+        c1.start()
+        c2.start()
+
+        c1.send(.message(content: [1, 2, 3])) { result in
+            switch result {
+            case .success:
+                break
+            case .failure(let error):
+                XCTFail("send failed with error \(error)")
+            }
+        }
+
+        c2.receive(atLeast: 1, atMost: Int.max, maximumChunks: 4) { result in
+            switch result {
+            case .success(let message):
+                let span = message.content
+                if let span {
+                    XCTAssertEqual(span.byteCount, 3)
+                    for i in 0..<3 {
+                        XCTAssertEqual(span[i], UInt8(exactly: i + 1))
+                    }
+                } else {
+                    XCTFail("No span received")
+                }
+                c1.cancel()
+                c2.cancel()
+            case .failure(let error):
+                XCTFail("receive failed with error \(error)")
+            }
+        }
+
+        XCTAssertEqual(
+            group.wait(timeout: DispatchTime.now() + .seconds(5)),
+            DispatchTimeoutResult.success
+        )
+    }
+
     #if HAS_SWIFTTLS_RECORD
     func testTLSNoTransportDataPath() {
         let group = DispatchGroup()

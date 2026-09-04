@@ -17,12 +17,8 @@ import XCTest
 
 #if canImport(Glibc)
 import Glibc
-internal import Logging
 #elseif canImport(Musl)
 import Musl
-internal import Logging
-#elseif canImport(os)
-internal import os
 #endif
 
 @available(Network 0.1.0, *)
@@ -64,38 +60,66 @@ final class SwiftNetworkInterfaceTests: NetTestCase {
     }
 
     func testCreateInterfaceWithTooManySockets() throws {
-        // Create enough sockets to hit the fd limit so that we can't make the ioctl socket in the interface
-        var sockets: [Int32] = []
-        let fdLimit = System.getFDLimit()
-        let systemFDLimit = try XCTUnwrap(fdLimit)
-        var socketsExhausted = false
-        for _ in 0..<systemFDLimit {
-            #if !os(Linux)
-            let wastedSockFd = socket(AF_INET, SOCK_DGRAM, 0)
-            #else  //os(Linux)
-            let wastedSockFd = socket(AF_INET, Int32(SOCK_DGRAM.rawValue), 0)
-            #endif
-            if wastedSockFd < 0 {
-                Logger.proto.info("Successfully opened too many sockets")
-                socketsExhausted = true
-                break
-            }
-            sockets.append(wastedSockFd)
-        }
-        XCTAssertTrue(socketsExhausted, "Sockets were not exhausted")
-        #if !os(Linux)
-        let name = "lo0"
-        #else  //os(Linux)
-        let name = "lo"
+        // `Interface.init` needs a socket to run its ioctls against, and must report a failure to
+        // get one rather than trapping. Provoke that by lowering this process's descriptor limit to
+        // below what it is already using, so the very next `socket()` fails. The window in which
+        // this process cannot open a descriptor is microseconds, and nothing outside it is affected.
+        #if canImport(Glibc)
+        let descriptorLimit = __rlimit_resource_t(RLIMIT_NOFILE.rawValue)
+        #else
+        let descriptorLimit = RLIMIT_NOFILE
         #endif
-        // This should throw here if the file descriptor limit is reached
-        // Note that in the internal build path this will just return nil for someone tring to create an Interface.
-        // This is similar to how it previously used to work, but input or an issue, return nil
-        XCTAssertThrowsError(try Interface(index: 1, name: name))
-        // Clean up the sockets
-        for sockFd in sockets {
-            close(sockFd)
+
+        // Both of these have to stop the test rather than record and continue. A failed `getrlimit`
+        // leaves `original` zeroed, and lowering from that clamps the *hard* limit to zero, which an
+        // unprivileged process can never raise again -- every later test would fail to open a
+        // descriptor.
+        var original = rlimit()
+        guard getrlimit(descriptorLimit, &original) == 0 else {
+            XCTFail("could not read the descriptor limit: errno \(errno)")
+            return
         }
+
+        var restricted = original
+        restricted.rlim_cur = 0
+        guard setrlimit(descriptorLimit, &restricted) == 0 else {
+            XCTFail("could not lower the descriptor limit: errno \(errno)")
+            return
+        }
+
+        // Check the premise: if the limit did not take effect, `Interface` would fail or succeed for
+        // some other reason and the assertion below would prove nothing.
+        #if os(Linux)
+        let probeType = CInt(SOCK_DGRAM.rawValue)
+        #else
+        let probeType = SOCK_DGRAM
+        #endif
+        XCTAssertLessThan(socket(AF_INET, probeType, 0), 0, "the descriptor limit did not take effect")
+
+        // Restore before asserting rather than from a `defer`: XCTest opens files to report a
+        // failure, so its reporting must not run while this process cannot open a descriptor.
+        let interfaceResult: Result<Interface, any Error>
+        do {
+            interfaceResult = .success(try Interface(index: 1, name: Self.loopbackInterfaceName))
+        } catch {
+            interfaceResult = .failure(error)
+        }
+        XCTAssertEqual(setrlimit(descriptorLimit, &original), 0, "could not restore the descriptor limit")
+
+        switch interfaceResult {
+        case .success:
+            XCTFail("Interface was created despite the process being unable to open a socket")
+        case .failure(let error):
+            XCTAssertEqual(error as? NetworkError, NetworkError.posix(EINVAL))
+        }
+    }
+
+    private static var loopbackInterfaceName: String {
+        #if os(Linux)
+        "lo"
+        #else
+        "lo0"
+        #endif
     }
 
     func testCompareTwoInterfaces() throws {

@@ -341,6 +341,7 @@ final class DatagramEndpointFlowProtocol: EndpointFlowProtocol<InboundDatagramLi
                     minimumDatagramSize: length
                 )
                 guard var frames = frames else {
+                    datagram.finalize(success: false)
                     log.error("Failed to get datagram to send")
                     return false
                 }
@@ -359,7 +360,21 @@ final class DatagramEndpointFlowProtocol: EndpointFlowProtocol<InboundDatagramLi
                 try lower.invokeSendDatagrams(reference, datagrams: frames)
                 return true
             } catch {
+                datagram.finalize(success: false)
                 return false
+            }
+        }
+    }
+
+    func readFrames(maximumFrames: Int) -> FrameArray? {
+        fromExternal {
+            do throws(NetworkError) {
+                return try lower.invokeReceiveDatagrams(
+                    reference,
+                    maximumDatagramCount: maximumFrames
+                )
+            } catch {
+                return nil
             }
         }
     }
@@ -525,6 +540,20 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<InboundStreamLinkag
             return true
         } catch {
             return false
+        }
+    }
+
+    func readFrames(minimumBytes: Int, maximumBytes: Int) -> FrameArray? {
+        fromExternal {
+            do throws(NetworkError) {
+                return try lower.invokeReceiveStreamData(
+                    reference,
+                    minimumBytes: minimumBytes,
+                    maximumBytes: maximumBytes
+                )
+            } catch {
+                return nil
+            }
         }
     }
 

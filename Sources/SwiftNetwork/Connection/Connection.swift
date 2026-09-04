@@ -2106,6 +2106,21 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
         public let isComplete: Bool
     }
 
+    public struct StreamSpanMessage: ~Escapable {
+        @_lifetime(borrow content)
+        init(content: RawSpan? = nil, offset: Int = 0, isComplete: Bool = false, lastChunkOfBatch: Bool = false) {
+            self.content = content
+            self.offset = offset
+            self.isComplete = isComplete
+            self.lastChunkOfBatch = lastChunkOfBatch
+        }
+
+        public let content: RawSpan?
+        public let offset: Int
+        public let isComplete: Bool
+        public let lastChunkOfBatch: Bool
+    }
+
     public func send(_ message: StreamMessage, completion: (@Sendable (Result<Void, NetworkError>) -> Void)? = nil) {
         let endpointFlow = self.endpointFlow
         endpointFlow.async {
@@ -2141,15 +2156,48 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
         atMost maxBytes: Int,
         completion: @escaping @Sendable (Result<StreamMessage, NetworkError>) -> Void
     ) {
-        let readRequest = ReadRequest(minimumBytes: minBytes, maximumBytes: maxBytes, maximumFrames: Int.max) {
-            (content, isComplete, isFinal, error) in
-            if let error = error {
-                completion(.failure(error))
-            } else {
-                completion(.success(.message(content: content, isComplete: isComplete)))
+        let endpointFlow = self.endpointFlow
+        endpointFlow.async {
+            let readRequest = ReadRequest(minimumBytes: minBytes, maximumBytes: maxBytes) {
+                (content, isComplete, isFinal, error) in
+                if let error = error {
+                    completion(.failure(error))
+                } else {
+                    completion(.success(.message(content: content, isComplete: isComplete)))
+                }
             }
+            self.endpointFlow.addReadRequestOnContext(readRequest)
         }
-        self.endpointFlow.addReadRequest(readRequest)
+    }
+
+    public func receive(
+        atLeast minBytes: Int,
+        atMost maxBytes: Int,
+        maximumChunks: Int,
+        completion: @escaping @Sendable (Result<StreamSpanMessage, NetworkError>) -> Void
+    ) {
+        let endpointFlow = self.endpointFlow
+        endpointFlow.async {
+            let readRequest = ReadRequest(minimumBytes: minBytes, maximumBytes: maxBytes, maximumFrames: maximumChunks)
+            {
+                (content, offset, isComplete, isFinal, lastChunkOfBatch, error) in
+                if let error = error {
+                    completion(.failure(error))
+                } else {
+                    completion(
+                        .success(
+                            .init(
+                                content: content,
+                                offset: offset,
+                                isComplete: isComplete,
+                                lastChunkOfBatch: lastChunkOfBatch
+                            )
+                        )
+                    )
+                }
+            }
+            self.endpointFlow.addReadRequestOnContext(readRequest)
+        }
     }
 }
 
@@ -2191,14 +2239,17 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
     }
 
     public func receive(completion: @escaping @Sendable (Result<DatagramMessage, NetworkError>) -> Void) {
-        let readRequest = ReadRequest(minimumBytes: 1, maximumBytes: Int.max, maximumFrames: 1) {
-            (content, isComplete, isFinal, error) in
-            if let error = error {
-                completion(.failure(error))
-            } else {
-                completion(.success(.message(content: content)))
+        let endpointFlow = self.endpointFlow
+        endpointFlow.async {
+            let readRequest = ReadRequest(maximumFrames: 1) {
+                (content, isComplete, isFinal, error) in
+                if let error = error {
+                    completion(.failure(error))
+                } else {
+                    completion(.success(.message(content: content)))
+                }
             }
+            self.endpointFlow.addReadRequestOnContext(readRequest)
         }
-        self.endpointFlow.addReadRequest(readRequest)
     }
 }

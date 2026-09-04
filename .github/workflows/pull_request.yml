@@ -25,12 +25,8 @@ jobs:
       enable_embedded_wasm_sdk_build: false
       enable_linux_static_sdk_build: true
   tests-nightly-main:
+    # Keep this separate so that it can be disabled if the nightly compiler shows any issue.
     name: Test (nightly-main)
-    # Skipped: the nightly-main (6.5-dev) compiler cannot build this package.
-    # It crashes in the LoadableByAddress SIL pass ("Unimplemented user") on
-    # Frame.span, so every build and test configuration fails. Flip this back to
-    # true once the upstream fix lands.
-    if: false
     uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.11
     with:
       swift_nightly_flags: "--build-system native -Xswiftc -warnings-as-errors"  # workaround nightly-main issue

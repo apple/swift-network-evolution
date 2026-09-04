@@ -46,7 +46,7 @@ public struct Parameters: Hashable, CustomStringConvertible {
         }
     }
 
-    public enum MultipathServiceType: UInt8, Hashable, CustomStringConvertible {
+    public enum MultipathServiceType: UInt8, Hashable, CustomStringConvertible, Sendable {
         case disabled = 0
         case handover = 1
         case interactive = 2
@@ -66,7 +66,7 @@ public struct Parameters: Hashable, CustomStringConvertible {
         }
     }
 
-    public enum ExpiredDNSBehavior: Hashable, CustomStringConvertible {
+    public enum ExpiredDNSBehavior: Hashable, CustomStringConvertible, Sendable {
         /// Let the system determine whether or not to allow expired DNS answers
         case systemDefault
         /// Explicitly allow the use of expired DNS answers
@@ -87,7 +87,7 @@ public struct Parameters: Hashable, CustomStringConvertible {
         }
     }
 
-    public enum ServiceClass: UInt8, CustomStringConvertible {
+    public enum ServiceClass: UInt8, CustomStringConvertible, Sendable {
         /// Default priority traffic
         case bestEffort = 0
         /// Bulk traffic, or traffic that can be de-prioritized behind foreground traffic
