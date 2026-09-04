@@ -535,7 +535,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     @inline(always)
     public mutating func vle<T: FixedWidthInteger>(_ value: inout T) throws(DeserializationError) {
         guard let parsedValue = T(exactly: try decodeVariableLength().0) else {
-            throw .parsingFailed
+            try invalidate(.parsingFailed)
         }
         value = parsedValue
     }
@@ -544,7 +544,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     @inline(always)
     public mutating func vle<T: FixedWidthInteger>(_ value: inout T?) throws(DeserializationError) {
         guard let parsedValue = T(exactly: try decodeVariableLength().0) else {
-            throw .parsingFailed
+            try invalidate(.parsingFailed)
         }
         value = parsedValue
     }
@@ -583,7 +583,10 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         _ size: inout Int
     ) throws(DeserializationError) {
         let variable = try decodeVariableLength()
-        value = T(variable.0)
+        guard let parsedValue = T(exactly: variable.0) else {
+            try invalidate(.parsingFailed)
+        }
+        value = parsedValue
         size = variable.1
     }
 
@@ -615,6 +618,11 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         }
 
         guard hasRoom(byteCount) else {
+            // Fast fail if total available bytes across all spans is insufficient
+            guard availableByteCount - totalBytesParsed >= byteCount else {
+                try invalidate(.bufferTooShort)
+            }
+
             // Allocate scratch space and read across spans
             var scratch = [UInt8](repeating: 0, count: byteCount)
             var filled = 0
@@ -719,12 +727,12 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
             return
         }
 
-        // Fast fail if total available bytes across all spans is insufficient
-        guard availableByteCount - totalBytesParsed >= length else {
-            try invalidate(.bufferTooShort)
-        }
-
         guard hasRoom(length) else {
+            // Fast fail if total available bytes across all spans is insufficient
+            guard availableByteCount - totalBytesParsed >= length else {
+                try invalidate(.bufferTooShort)
+            }
+
             // Compare across span boundaries
             var matched = 0
             while matched < length {
