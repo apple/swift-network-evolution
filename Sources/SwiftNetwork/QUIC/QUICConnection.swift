@@ -3231,11 +3231,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     private func sendOutboundFrames(on path: QUICPath) {
-        do throws(NetworkError) {
-            try self.sendEnqueuedOutboundDatagrams(path: path)
-        } catch {
-            log.error("Failed to send outbound datagrams: \(error)")
-        }
+        var sendPath = path
+        sendPath.serviceLowerSendQueue()
     }
 
     // Shared by sendApplicationFrames and sendFramesInternal to build the datagram batch.
@@ -3899,8 +3896,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         QUICSignpost.outbound(id: signpostID, length: totalBytesWrittenInFrame)
-
-        enqueueOutboundFrame(frame: outFrame, path: path)
+        var sendPath = path
+        sendPath.enqueueOutboundDatagram(outFrame)
         return true
     }
 
@@ -5334,16 +5331,9 @@ extension QUICConnection {
             return
         }
 
-        do throws(NetworkError) {
-            try self.enqueueOutboundDatagrams(
-                path: path.identifier,
-                datagrams: .init(frame: outFrame)
-            )
-            try self.sendEnqueuedOutboundDatagrams(path: path.identifier)
-        } catch {
-            log.error("Failed to send version negotiation frame with error: \(error)")
-            return
-        }
+        var sendPath = path
+        sendPath.enqueueOutboundDatagram(outFrame)
+        sendPath.serviceLowerSendQueue()
         log.info("Sent version negotiation packet")
     }
 
@@ -5408,16 +5398,9 @@ extension QUICConnection {
             outFrame.finalize(success: false)
             return
         }
-        do throws(NetworkError) {
-            try self.enqueueOutboundDatagrams(
-                path: path.identifier,
-                datagrams: .init(frame: outFrame)
-            )
-            try self.sendEnqueuedOutboundDatagrams(path: path.identifier)
-        } catch {
-            log.error("Failed to send retry frame with error: \(error)")
-            return
-        }
+        var sendPath = path
+        sendPath.enqueueOutboundDatagram(outFrame)
+        sendPath.serviceLowerSendQueue()
         log.info("Sent retry packet")
     }
 }
