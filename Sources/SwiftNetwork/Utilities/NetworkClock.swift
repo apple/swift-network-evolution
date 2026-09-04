@@ -25,6 +25,19 @@
 public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStringConvertible {
     public private(set) var nanoseconds: Int64
 
+    // These are computed properties wrapping literals, and deliberately not
+    // `static let`s. A `static let` becomes a lazily initialised global, so every
+    // read carries a one-time-init guard, whereas a computed property returning a
+    // literal constant-folds at each use site. Deriving them from
+    // `System.Time.NSEC_PER_USEC` and friends would not fold either, because those
+    // are themselves `static let`s.
+    private static var nanosecondsPerMicrosecond: Int64 { 1_000 }
+    private static var nanosecondsPerMillisecond: Int64 { 1_000_000 }
+    private static var nanosecondsPerSecond: Int64 { 1_000_000_000 }
+    private static var nanosecondsPerMinute: Int64 { 60 * nanosecondsPerSecond }
+    private static var nanosecondsPerHour: Int64 { 60 * nanosecondsPerMinute }
+    private static var nanosecondsPerDay: Int64 { 24 * nanosecondsPerHour }
+
     init(nanoseconds: Int64) {
         self.nanoseconds = nanoseconds
     }
@@ -58,7 +71,7 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
     }
 
     static func * (lhs: Double, rhs: NetworkDuration) -> NetworkDuration {
-        NetworkDuration(nanoseconds: rhs.nanoseconds * Int64(lhs))
+        NetworkDuration(nanoseconds: Int64(Double(rhs.nanoseconds) * lhs))
     }
 
     static func * (lhs: NetworkDuration, rhs: Double) -> NetworkDuration {
@@ -66,15 +79,15 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
     }
 
     static func >> (lhs: NetworkDuration, rhs: Int) -> NetworkDuration {
-        NetworkDuration(nanoseconds: Int64(lhs.nanoseconds >> rhs))
+        NetworkDuration(nanoseconds: lhs.nanoseconds >> rhs)
     }
 
     static func << (lhs: NetworkDuration, rhs: Int) -> NetworkDuration {
-        NetworkDuration(nanoseconds: Int64(lhs.nanoseconds << rhs))
+        NetworkDuration(nanoseconds: lhs.nanoseconds << rhs)
     }
 
     public static func / (lhs: NetworkDuration, rhs: NetworkDuration) -> Double {
-        Double(lhs.nanoseconds / rhs.nanoseconds)
+        Double(lhs.nanoseconds) / Double(rhs.nanoseconds)
     }
 
     public static func < (lhs: NetworkDuration, rhs: NetworkDuration) -> Bool {
@@ -102,98 +115,120 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
     }
 
     public static func microseconds<T>(_ microseconds: T) -> NetworkDuration where T: BinaryInteger {
-        NetworkDuration(nanoseconds: Int64(microseconds) * 1000)
+        NetworkDuration(nanoseconds: Int64(microseconds) * NetworkDuration.nanosecondsPerMicrosecond)
     }
 
     public static func microseconds(_ microseconds: Double) -> NetworkDuration {
-        NetworkDuration(nanoseconds: Int64(microseconds * 1000))
+        NetworkDuration(nanoseconds: Int64(microseconds * Double(NetworkDuration.nanosecondsPerMicrosecond)))
     }
 
     public static func milliseconds<T>(_ milliseconds: T) -> NetworkDuration where T: BinaryInteger {
-        NetworkDuration(nanoseconds: Int64(milliseconds) * 1_000_000)
+        NetworkDuration(nanoseconds: Int64(milliseconds) * NetworkDuration.nanosecondsPerMillisecond)
     }
 
     public static func milliseconds(_ milliseconds: Double) -> NetworkDuration {
-        NetworkDuration(nanoseconds: Int64(milliseconds * 1_000_000))
+        NetworkDuration(nanoseconds: Int64(milliseconds * Double(NetworkDuration.nanosecondsPerMillisecond)))
     }
 
     public static func seconds<T>(_ seconds: T) -> NetworkDuration where T: BinaryInteger {
-        NetworkDuration(nanoseconds: Int64(seconds) * 1_000_000_000)
+        NetworkDuration(nanoseconds: Int64(seconds) * NetworkDuration.nanosecondsPerSecond)
     }
 
     public static func minutes<T>(_ minutes: T) -> NetworkDuration where T: BinaryInteger {
-        NetworkDuration(nanoseconds: (Int64(minutes) * 60 * 1_000_000_000))
+        NetworkDuration(nanoseconds: Int64(minutes) * NetworkDuration.nanosecondsPerMinute)
+    }
+
+    public static func hours<T>(_ hours: T) -> NetworkDuration where T: BinaryInteger {
+        NetworkDuration(nanoseconds: Int64(hours) * NetworkDuration.nanosecondsPerHour)
+    }
+
+    public static func days<T>(_ days: T) -> NetworkDuration where T: BinaryInteger {
+        NetworkDuration(nanoseconds: Int64(days) * NetworkDuration.nanosecondsPerDay)
+    }
+
+    // Render a duration of a minute or more as a whole coarse unit plus, when
+    // non-zero, a whole sub-unit: "2 h", "1 h 30 min", "1 min 15 s".
+    private func coarseDescription() -> String? {
+        let units: [3 of (size: Int64, name: String, subSize: Int64, subName: String)] = [
+            (NetworkDuration.nanosecondsPerDay, "d", NetworkDuration.nanosecondsPerHour, "h"),
+            (NetworkDuration.nanosecondsPerHour, "h", NetworkDuration.nanosecondsPerMinute, "min"),
+            (NetworkDuration.nanosecondsPerMinute, "min", NetworkDuration.nanosecondsPerSecond, "s"),
+        ]
+        for index in units.indices {
+            let unit = units[index]
+            let value = nanoseconds / unit.size
+            guard value != 0 else { continue }
+            let sub = abs((nanoseconds % unit.size) / unit.subSize)
+            return sub == 0
+                ? "\(value) \(unit.name)"
+                : "\(value) \(unit.name) \(sub) \(unit.subName)"
+        }
+        return nil
     }
 
     public var description: String {
-        // Ideally we would use:
-        //     formatted(.units(allowed: [.seconds, .milliseconds, .microseconds, .nanoseconds]))
-        // However, that requires Foundation, so we implement our own description.
-        if self.nanoseconds >= 0 {
-            if self.seconds > 0 {
-                return NetworkDuration.fractionalDescription(
-                    unit: "s",
-                    value: self.seconds,
-                    thousandth: self.milliseconds
-                )
-            } else if self.milliseconds > 0 {
-                return NetworkDuration.fractionalDescription(
-                    unit: "ms",
-                    value: self.milliseconds,
-                    thousandth: self.microseconds
-                )
-            } else if self.microseconds > 0 {
-                return "\(self.microseconds) μs"
-            } else {
-                return "\(nanoseconds) ns"
-            }
+        coarseDescription() ?? fineDescription
+    }
+
+    // Description using no unit coarser than seconds.
+    fileprivate var fineDescription: String {
+        if self.seconds != 0 {
+            return NetworkDuration.fractionalDescription(
+                unit: "s",
+                value: self.seconds,
+                thousandth: self.milliseconds
+            )
+        } else if self.milliseconds != 0 {
+            return NetworkDuration.fractionalDescription(
+                unit: "ms",
+                value: self.milliseconds,
+                thousandth: self.microseconds
+            )
+        } else if self.microseconds != 0 {
+            return NetworkDuration.fractionalDescription(
+                unit: "μs",
+                value: self.microseconds,
+                thousandth: self.nanoseconds
+            )
         } else {
-            if self.seconds <= -1 {
-                return NetworkDuration.fractionalDescription(
-                    unit: "s",
-                    value: self.seconds,
-                    thousandth: self.milliseconds
-                )
-            } else if self.milliseconds <= -1 {
-                return NetworkDuration.fractionalDescription(
-                    unit: "ms",
-                    value: self.milliseconds,
-                    thousandth: self.microseconds
-                )
-            } else if self.microseconds <= -1 {
-                return "\(self.microseconds) μs"
-            } else {
-                return "\(nanoseconds) ns"
-            }
+            return "\(nanoseconds) ns"
         }
     }
 
     private static func fractionalDescription(unit: String, value: Int64, thousandth: Int64) -> String {
-        let fractional = ((value >= 0) ? 1 : -1) * (thousandth % 1000)
-        if fractional % 100 == 0 {
-            return "\(value).\(fractional / 100) \(unit)"
-        } else if fractional % 10 == 0 {
-            let twoDigits = fractional / 10
-            let padded = (twoDigits <= 9) ? "0\(twoDigits)" : "\(twoDigits)"
-            return "\(value).\(padded) \(unit)"
-        } else {
-            let hundreds = fractional / 100
-            let tens = (fractional / 10) % 10
-            let ones = fractional % 10
+        let fractional = abs(thousandth % 1000)
+        let hundreds = fractional / 100
+        let tens = (fractional / 10) % 10
+        let ones = fractional % 10
+        if ones != 0 {
             return "\(value).\(hundreds)\(tens)\(ones) \(unit)"
+        } else if tens != 0 {
+            return "\(value).\(hundreds)\(tens) \(unit)"
+        } else {
+            return "\(value).\(hundreds) \(unit)"
         }
     }
 
     public var seconds: Int64 {
-        nanoseconds / 1_000_000_000
+        nanoseconds / NetworkDuration.nanosecondsPerSecond
     }
 
     public var milliseconds: Int64 {
-        nanoseconds / 1_000_000
+        nanoseconds / NetworkDuration.nanosecondsPerMillisecond
+    }
+
+    // The number of whole milliseconds in this duration, rounded up.
+    // Zero and negative durations clamp to zero.
+    public var roundedUpMilliseconds: Int64 {
+        guard nanoseconds > 0 else {
+            return 0
+        }
+        return (nanoseconds + NetworkDuration.nanosecondsPerMillisecond - 1)
+            / NetworkDuration.nanosecondsPerMillisecond
     }
 
     public var microseconds: Int64 {
-        nanoseconds / 1000
+        nanoseconds / NetworkDuration.nanosecondsPerMicrosecond
     }
 
     // Returns the number of microseconds round to the nearest integer.
@@ -201,12 +236,8 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
         if nanoseconds == 0 {
             return self
         }
-        let nanosecondsPerMicrosecond: Int64 = 1000
-        let halfway = nanosecondsPerMicrosecond / 2
-        let roundedMicroseconds =
-            ((nanoseconds + halfway) / nanosecondsPerMicrosecond)
-
-        return .microseconds(roundedMicroseconds)
+        let halfway = (NetworkDuration.nanosecondsPerMicrosecond / 2) * self.nanoseconds.signum()
+        return .microseconds((self.nanoseconds + halfway) / NetworkDuration.nanosecondsPerMicrosecond)
     }
 }
 
@@ -294,8 +325,8 @@ public struct NetworkClock: Clock {
             NetworkClock.Instant(lhs.time - rhs)
         }
 
-        public static func - (lhs: Self, rhs: NetworkClock.Instant) -> Self {
-            NetworkClock.Instant(lhs.time - rhs.time)
+        public static func - (lhs: Self, rhs: NetworkClock.Instant) -> NetworkDuration {
+            lhs.time - rhs.time
         }
 
         init(milliseconds: Int64) {
@@ -343,7 +374,10 @@ public struct NetworkClock: Clock {
         }
 
         public var description: String {
-            time.description
+            // A NetworkClock.Instant is a time *since* an epoch rather
+            // than an elapsed span, so rendering it with
+            // coarse units makes it read like a duration.
+            time.fineDescription
         }
     }
 
