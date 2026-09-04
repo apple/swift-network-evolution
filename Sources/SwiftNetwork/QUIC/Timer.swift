@@ -32,13 +32,13 @@ internal import os
 @available(Network 0.1.0, *)
 protocol TimerUser {
     var timerID: Timer.TimerID? { get set }
-    func timerFired(timeNow: NetworkClock.Instant)
+    func timerFired(at timeNow: NetworkClock.Instant)
 }
 
 @available(Network 0.1.0, *)
 protocol NonCopyableTimerUser: ~Copyable {
     var timerID: Timer.TimerID? { get set }
-    mutating func timerFired(timeNow: NetworkClock.Instant)
+    mutating func timerFired(at timeNow: NetworkClock.Instant)
 }
 
 @available(Network 0.1.0, *)
@@ -46,9 +46,9 @@ private struct TimerEntry: ~Copyable {
     let identifier: Timer.TimerID
     var deadline: NetworkClock.Instant = .zero
     let description: String
-    let closure: () -> Void
+    let closure: (NetworkClock.Instant) -> Void
 
-    init(identifier: Timer.TimerID, description: String, closure: @escaping () -> Void) {
+    init(identifier: Timer.TimerID, description: String, closure: @escaping (NetworkClock.Instant) -> Void) {
         self.identifier = identifier
         self.description = description
         self.closure = closure
@@ -59,7 +59,9 @@ private struct TimerEntry: ~Copyable {
     mutating func disable() {
         deadline = .zero
     }
-    mutating func schedule(fromNow: NetworkDuration, timerNow: NetworkClock.Instant = .now) {
+    mutating func schedule(fromNow: NetworkDuration, timerNow: NetworkClock.Instant) {
+        // `.zero` is the disabled sentinel that `isEnabled` reads, so it cannot also mean a
+        // deadline.
         precondition(fromNow != .zero)
         self.deadline = timerNow.advanced(by: fromNow)
     }
@@ -122,8 +124,8 @@ final class Timer: PrefixedLoggable {
     func insert(
         description: String,
         fromNow: NetworkDuration = .zero,
-        timerNow: NetworkClock.Instant = .now,
-        closure: @escaping () -> Void
+        timerNow: NetworkClock.Instant,
+        closure: @escaping (NetworkClock.Instant) -> Void
     ) -> TimerID {
         let identifier = nextID
         var entry = TimerEntry(identifier: nextID, description: description, closure: closure)
@@ -247,7 +249,7 @@ final class Timer: PrefixedLoggable {
     func reschedule(
         identifier: TimerID,
         fromNow: NetworkDuration,
-        timerNow: NetworkClock.Instant = .now
+        timerNow: NetworkClock.Instant
     ) {
         guard let index = find(identifier) else {
             return
@@ -265,7 +267,7 @@ final class Timer: PrefixedLoggable {
         }
     }
 
-    public func timerFired(timeNow: NetworkClock.Instant = .now) {
+    public func timerFired(at timeNow: NetworkClock.Instant) {
         // Timer fired means the kernel woke us up.
         wakeup = .idle
 
@@ -299,7 +301,7 @@ final class Timer: PrefixedLoggable {
                     )
                 }
                 entries[index].disable()
-                entries[index].closure()
+                entries[index].closure(timeNow)
                 ranOne = true
             }
             index += 1

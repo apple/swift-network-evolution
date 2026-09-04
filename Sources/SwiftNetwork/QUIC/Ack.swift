@@ -232,7 +232,11 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
             delay = 0
         case .applicationData:
             if delay == 0 {
-                delay = UInt64(largestTimestamp.duration(to: now).microseconds) >> delayExponent
+                // ACK Delay is an unsigned varint (RFC 9000 Section 19.3), and `UInt64` traps on a
+                // negative `Int64`. Clamp rather than widen: a delay measured as negative has no
+                // representation on the wire other than zero.
+                let elapsed = max(.zero, largestTimestamp.duration(to: now))
+                delay = UInt64(elapsed.microseconds) >> delayExponent
             }
 
         }
@@ -513,13 +517,14 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
     }
 
-    mutating func timerFired(timeNow: NetworkClock.Instant) {
+    mutating func timerFired(at timeNow: NetworkClock.Instant) {
         log.datapath("delayed ACK timer fired")
         if let connection = connection {
             if sendPending(
                 isAckSet: connection.isAckSet,
                 setAckFrame: connection.scheduleAckFrame,
-                ecn: connection.ecn
+                ecn: connection.ecn,
+                now: timeNow
             ) {
                 connection.sendFrames(delayedACK: true)
 
@@ -551,7 +556,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     mutating func append(
         packetNumberSpace: PacketNumberSpace,
         packetNumber: PacketNumber,
-        now: NetworkClock.Instant = .now
+        now: NetworkClock.Instant
     ) {
         withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
             ackSpace.append(packetNumber, packetNumberSpace: packetNumberSpace, now: now)
@@ -590,7 +595,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         isAckSet: Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
         ecnCounter: ECNCounter?,
-        now: NetworkClock.Instant = .now
+        now: NetworkClock.Instant
     ) -> Bool {
         var shouldSend = false
         if isAckSet {
@@ -622,7 +627,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         delayExponent: Int,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
-        ecn: borrowing ECN
+        ecn: borrowing ECN,
+        now: NetworkClock.Instant
     ) -> Bool {
         var shouldSend = false
         for packetNumberSpace in PacketNumberSpace.allCases {
@@ -649,7 +655,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                             delayExponent: delayExponent,
                             setAckFrame: setAckFrame,
                             ecnCounter: ecnCounter,
-                            now: path.parentProtocol.now
+                            now: now
                         )
                         shouldSend = shouldSend || ackSize > 0
                         ackSpace.needsTransmission = false
@@ -673,17 +679,19 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         on path: QUICPath,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
-        ecn: borrowing ECN
+        ecn: borrowing ECN,
+        now: NetworkClock.Instant
     ) -> Bool {
         let shouldSend = assemble(
             for: path,
             delayExponent: localDelayExponent,
             isAckSet: isAckSet,
             setAckFrame: setAckFrame,
-            ecn: ecn
+            ecn: ecn,
+            now: now
         )
         if shouldSend {
-            sent(path.parentProtocol.now)
+            sent(now)
         }
         log.datapath("\(shouldSend)")
         return shouldSend
@@ -692,7 +700,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     mutating func sendPending(
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
-        ecn: borrowing ECN
+        ecn: borrowing ECN,
+        now: NetworkClock.Instant
     ) -> Bool {
         guard let connection else {
             return false
@@ -702,14 +711,15 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 on: path,
                 isAckSet: isAckSet,
                 setAckFrame: setAckFrame,
-                ecn: ecn
+                ecn: ecn,
+                now: now
             )
         }
         if timerScheduled, let timerID = timerID {
             connection.timer.reschedule(
                 identifier: timerID,
                 fromNow: .zero,
-                timerNow: connection.now
+                timerNow: now
             )
             timerScheduled = false
         }
@@ -802,7 +812,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 on: path,
                 isAckSet: isAckSet,
                 setAckFrame: setAckFrame,
-                ecn: ecn
+                ecn: ecn,
+                now: now
             )
         }
     }
@@ -1237,7 +1248,8 @@ extension Ack {
     mutating func buildForTesting(
         for packetNumberSpace: PacketNumberSpace,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
-        ecnCounter: ECNCounter? = nil
+        ecnCounter: ECNCounter? = nil,
+        now: NetworkClock.Instant
     ) -> Int {
         var size = 0
         let delayExponent = localDelayExponent
@@ -1249,7 +1261,7 @@ extension Ack {
                 delaySize: delaySize,
                 setAckFrame: setAckFrame,
                 ecnCounter: ecnCounter,
-                now: .now
+                now: now
             )
             return true
         }

@@ -87,19 +87,21 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
         smoothedRTT: NetworkDuration,
+        now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) -> Bool {
         decrementBytesInFlight(UInt64(bytesLost))
         let reducedCongestionWindow = congestionEvent(
             sentTime: largestLostSentTime,
             mss: mss,
+            now: now,
             qlog: qlog
         )
         return reducedCongestionWindow
     }
 
-    mutating func enterRecovery(mss: Int, qlog: QLog? = nil) {
-        recoveryStartTime = .now
+    mutating func enterRecovery(mss: Int, now: NetworkClock.Instant, qlog: QLog? = nil) {
+        recoveryStartTime = now
         prevCongestionWindow = congestionWindow
         congestionWindow = UInt64(Double(lossFlightSize) * Ledbat.beta)
         if _slowPath(congestionWindow < Ledbat.minCongestionWindow(mss)) {
@@ -117,6 +119,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         path: QUICPath? = nil,
         mss: Int,
         packetsLost: Bool,
+        now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
         guard packetsLost == false else {
@@ -129,7 +132,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
             return
         }
         let smoothedRTT = rtt.smoothedRTT
-        if !revalidateCongestionWindow(smoothedRTT: smoothedRTT) {
+        if !revalidateCongestionWindow(smoothedRTT: smoothedRTT, now: now) {
             bytesAcked = 0
             return
         }
@@ -140,7 +143,6 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
             return
         }
         let qDelay = currentRTT - baseRTT
-        let now = NetworkClock.Instant.now
         // Slowdown period - first slowdown
         // is 2RTT after we exit initial slow start.
         // Subsequent slowdowns are after 9 times the
@@ -238,6 +240,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         largestAckedSentTime: NetworkClock.Instant,
         mss: Int,
         smoothedRTT: NetworkDuration,
+        now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
         if _slowPath(ceCount < ecnCECounter) {
@@ -269,7 +272,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
             /* Haven't elapsed one RTT yet from last CWR */
             return
         }
-        congestionEvent(sentTime: largestAckedSentTime, mss: mss)
+        congestionEvent(sentTime: largestAckedSentTime, mss: mss, now: now)
 
         // Start new round for CWR
         self.largestSentPN = largestSentPN

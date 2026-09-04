@@ -131,10 +131,10 @@ struct PMTUDState: ~Copyable {
 
         if timerID == nil {
             let pathID = path.identifier
-            timerID = connection.timer.insert(description: "PMTUD") {
+            timerID = connection.timer.insert(description: "PMTUD", timerNow: connection.now) { firedAt in
                 let innerPath = connection.path(for: pathID)
                 guard let innerPath else { return }
-                innerPath.pmtudState.timerFired(timeNow: connection.now, path: innerPath)
+                innerPath.pmtudState.timerFired(at: firedAt, path: innerPath)
             }
         }
 
@@ -408,7 +408,7 @@ struct PMTUDState: ~Copyable {
         sendProbe(on: path, sentPackets: &sentPackets)
     }
 
-    mutating func timerFired(timeNow: NetworkClock.Instant, path: QUICPath) {
+    mutating func timerFired(at timeNow: NetworkClock.Instant, path: QUICPath) {
         path.log.debug("PMTUD timer fired")
         self.searchCompleted = false
         self.updateProbeSize(on: path)
