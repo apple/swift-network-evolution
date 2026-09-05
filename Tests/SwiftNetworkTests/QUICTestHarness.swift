@@ -2376,6 +2376,59 @@ class QUICTestHarness {
 
         stop()
     }
+
+    /// A probe, a send that ignores the congestion window (a PTO, a keepalive, a forced retransmit),
+    /// must send at most two packets even when much more is queued; otherwise each expiry puts a full
+    /// burst of bytes in flight that nothing will acknowledge.
+    ///
+    /// Returns the number of packets the probe sent, or `nil` if the test could not set up a probe.
+    func runProbeSendWithQueuedData(queuedByteCount: Int = 200_000, timeout: TimeInterval = 5.0) -> Int? {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return nil
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1"), let clientConnection = state?.clientInstance else {
+            XCTFail("Failed to create client stream")
+            return nil
+        }
+
+        var attempted = false
+        var probePacketCount: Int?
+
+        context.async {
+            clientStream.fromExternal { eventContext in
+                defer { attempted = true }
+
+                // Everything is queued and sent inside one event context, so the peer cannot acknowledge
+                // anything before the probe goes out.
+                let queued = clientStream.write(
+                    [UInt8](repeating: 0xAB, count: queuedByteCount),
+                    sendFIN: false,
+                    in: &eventContext
+                )
+                XCTAssertTrue(queued, "Failed to queue data on the client stream")
+
+                // Sending stops at the congestion window, so what remains queued is what a probe can burst.
+                XCTAssertTrue(
+                    clientConnection.applicationPendingItems.hasPendingItems,
+                    "The client has nothing left to send; the probe has nothing to burst"
+                )
+
+                let packetsBefore = clientConnection.stats.connectionStatistics[.txPackets] ?? 0
+                clientConnection.sendFrames(ignoreCongestionWindow: true, in: &eventContext)
+                let packetsAfter = clientConnection.stats.connectionStatistics[.txPackets] ?? 0
+                probePacketCount = packetsAfter - packetsBefore
+            }
+        }
+
+        wait(until: { attempted }, timeout: timeout, "the probe send")
+
+        stop()
+        return probePacketCount
+    }
     #endif
 
     func runQUICServerTestForPendingBidirectional(

@@ -3928,6 +3928,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) {
         var packetBurst = 0
         var packetBurstTotal = 0
+        // A send that ignores the congestion window is a probe and goes out when the window is already
+        // full; a burst beyond `maxProbeBurstCount` only adds in-flight bytes that nothing will acknowledge.
+        let burstLimit = ignoreCongestionWindow ? Constants.maxProbeBurstCount : Constants.maxPacketBurstCount
         while applicationPendingItems.hasPendingItems {
             guard
                 buildSinglePacketForKeyState(
@@ -3960,7 +3963,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             packetBurst += 1
             packetBurstTotal += 1
 
-            if packetBurstTotal >= Constants.maxPacketBurstCount {
+            if packetBurstTotal >= burstLimit {
                 // The maximum total packet count has been reached
                 shouldEndBurst = true
             } else if packetBurst >= Constants.packetBurstCount {
