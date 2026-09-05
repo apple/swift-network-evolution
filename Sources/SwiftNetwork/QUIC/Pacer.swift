@@ -60,8 +60,8 @@ struct Pacer: ~Copyable {
         guard let path else {
             return
         }
-        let continuousTime = NetworkClock.Instant.now
-        let absoluteTime: NetworkClock.Instant = .nowAbsolute
+        let continuousTime = path.parentProtocol.context.scheduler.now
+        let absoluteTime = path.parentProtocol.context.scheduler.nowAbsolute
 
         if packetSentTime == .zero {
             packetSentTime = absoluteTime

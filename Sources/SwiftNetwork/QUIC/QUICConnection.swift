@@ -263,7 +263,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } else if let currentSendTimestamp {
             return currentSendTimestamp
         } else {
-            return NetworkClock.Instant.now
+            return context.scheduler.now
         }
     }
 
@@ -592,7 +592,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         // Only setup qlog if the directory is set
         if let qlogConfiguration {
-            self.qLog = QLog(configuration: qlogConfiguration)
+            self.qLog = QLog(configuration: qlogConfiguration, scheduler: context.scheduler)
             log.info("qlog setup with configuration: \(qlogConfiguration)")
         }
         #endif
@@ -1563,7 +1563,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let inboundInterval = QUICSignpost.inboundStarting(id: signpostID)
 
         // Save a timestamp to avoid calculating `now` again during processing
-        currentInboundReceiveTimestamp = .now
+        currentInboundReceiveTimestamp = context.scheduler.now
 
         // Start anew with pendingItems for applicationPendingItems
         // Detect if any received packet contains a QUIC Frame that unblocks
@@ -2412,7 +2412,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let outboundInterval = QUICSignpost.outboundStarting(id: signpostID)
 
         // Save a timestamp to avoid calculating `now` again during processing
-        currentSendTimestamp = .now
+        currentSendTimestamp = context.scheduler.now
         defer {
             // Always reset
             QUICSignpost.outboundStopping(outboundInterval)
@@ -3327,7 +3327,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 // Deliberately the live clock rather than `self.now`: under a batch `self.now` is
                 // pinned, and `startSendingTimestamp` came from it, so comparing the two would
                 // always give zero and the cap could never be reached.
-                if startSendingTimestamp.duration(to: .now) >= Constants.maxPacketBurstDuration {
+                if startSendingTimestamp.duration(to: context.scheduler.now)
+                    >= Constants.maxPacketBurstDuration
+                {
                     // The maximum burst time has been reached
                     shouldEndBurst = true
                 } else {

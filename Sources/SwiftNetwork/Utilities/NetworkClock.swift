@@ -345,7 +345,12 @@ public struct NetworkClock: Clock {
             self.time = time
         }
 
-        public static var now: Instant {
+        /// The system continuous clock, which no test can control.
+        ///
+        /// Reach for the scheduler's `now` instead, or the instant a caller already holds. This is
+        /// the raw reader that a scheduler exposes, and `check-mockable-clock.sh` fails the build
+        /// on any use of it outside that allowlist.
+        package static var systemNow: Instant {
             #if NETWORK_INTERNAL_TESTS
             let manual = manualTime.continuous
             if _slowPath(manual != .zero) {
@@ -355,7 +360,8 @@ public struct NetworkClock: Clock {
             return Instant(microseconds: Int64(System.Time.now()))
         }
 
-        public static var nowAbsolute: Instant {
+        /// The system absolute clock. See `systemNow`.
+        package static var systemNowAbsolute: Instant {
             #if NETWORK_INTERNAL_TESTS
             let manual = manualTime.absolute
             if _slowPath(manual != .zero) {
@@ -382,7 +388,7 @@ public struct NetworkClock: Clock {
     }
 
     public var now: Instant {
-        Instant.now
+        Instant.systemNow
     }
 
     public var minimumResolution: NetworkDuration {

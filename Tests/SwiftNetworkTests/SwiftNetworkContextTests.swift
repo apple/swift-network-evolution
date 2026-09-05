@@ -118,6 +118,11 @@ final class SwiftNetworkContextTests: NetTestCase {
         }
 
         var runningInScheduler: Bool { true }
+
+        /// Fixed, because this scheduler never runs anything: a test asserting on the delay it was
+        /// handed does not depend on what time the scheduler thinks it is.
+        var now: NetworkClock.Instant { NetworkClock.Instant(milliseconds: 1000) }
+        var nowAbsolute: NetworkClock.Instant { now }
     }
 
     func testContextTimerReferences() {

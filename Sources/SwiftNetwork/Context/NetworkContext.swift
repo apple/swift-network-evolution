@@ -88,6 +88,17 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         func unschedule(reference: TimerReference)
         /// A Boolean value that indicates whether the current code is running in the scheduler.
         var runningInScheduler: Bool { get }
+        /// The scheduler's current notion of the continuous clock.
+        ///
+        /// The scheduler owns time because it owns the timers: one that holds scheduled tasks
+        /// instead of arming an OS timer has to report the time it fires them at, or a deadline it
+        /// just ran would still look like it is in the future.
+        var now: NetworkClock.Instant { get }
+        /// The scheduler's current notion of the absolute clock.
+        ///
+        /// Separate from `now` because the two clocks diverge across system sleep, and `Pacer`
+        /// reads the difference between them as a domain offset.
+        var nowAbsolute: NetworkClock.Instant { get }
     }
 
     /// Indicates the privacy level for the context.
@@ -388,6 +399,13 @@ extension NetworkContext {
         var runningInScheduler: Bool {
             // TODO: Not supported by DispatchQueue
             fatalError("Unsupported")
+        }
+        /// The real clock. This is the one scheduler allowed to read it.
+        var now: NetworkClock.Instant {
+            NetworkClock.Instant.systemNow
+        }
+        var nowAbsolute: NetworkClock.Instant {
+            NetworkClock.Instant.systemNowAbsolute
         }
     }
 }
