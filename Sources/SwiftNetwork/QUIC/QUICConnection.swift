@@ -3236,17 +3236,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         return outboundBatch
     }
 
-    private func sendOutboundFrames(_ outboundFrames: consuming FrameArray, on path: QUICPath) {
-        guard !outboundFrames.isEmpty else { return }
-        do throws(NetworkError) {
-            try self.enqueueOutboundDatagrams(
-                path: path.identifier,
-                datagrams: outboundFrames
-            )
-            try self.sendEnqueuedOutboundDatagrams(path: path.identifier)
-        } catch {
-            log.error("Failed to send outbound datagrams: \(error)")
-        }
+    private func sendOutboundFrames(on path: QUICPath) {
+        var sendPath = path
+        sendPath.serviceLowerSendQueue()
     }
 
     // Shared by sendApplicationFrames and sendFramesInternal to build the datagram batch.
@@ -3283,7 +3275,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         availableCongestionWindow: inout UInt64,
         totalSendBytes: inout UInt64,
         datagramBatch: inout FrameArray,
-        outboundFrames: inout FrameArray,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         protector: inout Protector,
         stats: inout Statistics,
@@ -3304,7 +3295,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     totalSendBytes: &totalSendBytes,
                     retransmission: retransmission,
                     datagramBatch: &datagramBatch,
-                    outboundFrames: &outboundFrames,
                     protector: &protector,
                     stats: &stats,
                     ecn: &ecn
@@ -3396,7 +3386,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        var outboundFrameArray = FrameArray(capacity: datagramBatch.count)
         // keyState can only be .phase0 or .phase1 here: initial keys are discarded and the
         // handshake is confirmed, so .earlyData is no longer possible.
         let packetKeyState: PacketKeyState = self.keyState == .phase1 ? .phase1 : .phase0
@@ -3410,16 +3399,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             availableCongestionWindow: &availableCongestionWindow,
             totalSendBytes: &totalSendBytes,
             datagramBatch: &datagramBatch,
-            outboundFrames: &outboundFrameArray,
             sentPackets: &sentPackets,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
             applicationPendingItems: &applicationPendingItems
         )
-        if !outboundFrameArray.isEmpty {
-            sendOutboundFrames(outboundFrameArray, on: path)
-        }
+        sendOutboundFrames(on: path)
         return true
     }
 
@@ -3468,7 +3454,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     applicationPendingItems: &applicationPendingItems
                 )
             }
-            var outboundFrameArray = FrameArray()
             let success = buildSinglePacketForKeyState(
                 self.keyState,
                 pendingItems: &pendingItems,
@@ -3479,14 +3464,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 totalSendBytes: &totalSendBytes,
                 retransmission: retransmission,
                 datagramBatch: &datagramBatch,
-                outboundFrames: &outboundFrameArray,
                 protector: &protector,
                 stats: &stats,
                 ecn: &ecn
             )
-            if !outboundFrameArray.isEmpty {
-                sendOutboundFrames(outboundFrameArray, on: path)
-            }
+            sendOutboundFrames(on: path)
             return success
         }
 
@@ -3512,7 +3494,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        var outboundFrameArray = FrameArray(capacity: datagramBatch.count)
         if !initialKeysDiscarded {
             while initialPendingItems.hasPendingItems {
                 if initialKeysDiscarded {
@@ -3531,7 +3512,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         totalSendBytes: &totalSendBytes,
                         retransmission: retransmission,
                         datagramBatch: &datagramBatch,
-                        outboundFrames: &outboundFrameArray,
                         protector: &protector,
                         stats: &stats,
                         ecn: &ecn
@@ -3569,7 +3549,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     totalSendBytes: &totalSendBytes,
                     retransmission: retransmission,
                     datagramBatch: &datagramBatch,
-                    outboundFrames: &outboundFrameArray,
                     protector: &protector,
                     stats: &stats,
                     ecn: &ecn
@@ -3600,16 +3579,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             availableCongestionWindow: &availableCongestionWindow,
             totalSendBytes: &totalSendBytes,
             datagramBatch: &datagramBatch,
-            outboundFrames: &outboundFrameArray,
             sentPackets: &sentPackets,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
             applicationPendingItems: &applicationPendingItems
         )
-        if !outboundFrameArray.isEmpty {
-            sendOutboundFrames(outboundFrameArray, on: path)
-        }
+        sendOutboundFrames(on: path)
         return true
     }
 
@@ -3623,7 +3599,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         totalSendBytes: inout UInt64,
         retransmission: Bool,
         datagramBatch: inout FrameArray,
-        outboundFrames: inout FrameArray,
         protector: inout Protector,
         stats: inout Statistics,
         ecn: inout ECN
@@ -3931,8 +3906,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         QUICSignpost.outbound(id: signpostID, length: totalBytesWrittenInFrame)
-
-        outboundFrames.add(frame: outFrame)
+        var sendPath = path
+        sendPath.enqueueOutboundDatagram(outFrame)
         return true
     }
 
@@ -5369,16 +5344,9 @@ extension QUICConnection {
             return
         }
 
-        do throws(NetworkError) {
-            try self.enqueueOutboundDatagrams(
-                path: path.identifier,
-                datagrams: .init(frame: outFrame)
-            )
-            try self.sendEnqueuedOutboundDatagrams(path: path.identifier)
-        } catch {
-            log.error("Failed to send version negotiation frame with error: \(error)")
-            return
-        }
+        var sendPath = path
+        sendPath.enqueueOutboundDatagram(outFrame)
+        sendPath.serviceLowerSendQueue()
         log.info("Sent version negotiation packet")
     }
 
@@ -5443,16 +5411,9 @@ extension QUICConnection {
             outFrame.finalize(success: false)
             return
         }
-        do throws(NetworkError) {
-            try self.enqueueOutboundDatagrams(
-                path: path.identifier,
-                datagrams: .init(frame: outFrame)
-            )
-            try self.sendEnqueuedOutboundDatagrams(path: path.identifier)
-        } catch {
-            log.error("Failed to send retry frame with error: \(error)")
-            return
-        }
+        var sendPath = path
+        sendPath.enqueueOutboundDatagram(outFrame)
+        sendPath.serviceLowerSendQueue()
         log.info("Sent retry packet")
     }
 }
