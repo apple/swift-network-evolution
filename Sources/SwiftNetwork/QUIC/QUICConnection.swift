@@ -254,6 +254,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     var currentInboundReceiveTimestamp: NetworkClock.Instant?
     var currentSendTimestamp: NetworkClock.Instant?
+    /// The absolute-clock reading taken alongside whichever timestamp above is set.
+    ///
+    /// `Pacer` converts between the two clock domains by subtracting one reading from the other, so
+    /// the pair must be sampled together; sampled a moment apart, the gap between the reads folds
+    /// into the offset. Stamping it here also keeps `getSendTime` from reading either clock.
+    var currentAbsoluteTimestamp: NetworkClock.Instant?
 
     @_optimize(speed)
     @inline(always)
@@ -265,6 +271,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } else {
             return context.scheduler.now
         }
+    }
+
+    @_optimize(speed)
+    @inline(always)
+    var nowAbsolute: NetworkClock.Instant {
+        currentAbsoluteTimestamp ?? context.scheduler.nowAbsolute
     }
 
     var lastPacketReceivedTimestamp: NetworkClock.Instant = .zero
@@ -1564,6 +1576,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         // Save a timestamp to avoid calculating `now` again during processing
         currentInboundReceiveTimestamp = context.scheduler.now
+        currentAbsoluteTimestamp = context.scheduler.nowAbsolute
 
         // Start anew with pendingItems for applicationPendingItems
         // Detect if any received packet contains a QUIC Frame that unblocks
@@ -1577,6 +1590,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         defer {
             recovery.endBatch(connection: self)
             currentInboundReceiveTimestamp = nil
+            currentAbsoluteTimestamp = nil
         }
 
         if !pendingReassemblyDequeue.isEmpty {
@@ -2413,10 +2427,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         // Save a timestamp to avoid calculating `now` again during processing
         currentSendTimestamp = context.scheduler.now
+        currentAbsoluteTimestamp = context.scheduler.nowAbsolute
         defer {
             // Always reset
             QUICSignpost.outboundStopping(outboundInterval)
             currentSendTimestamp = nil
+            currentAbsoluteTimestamp = nil
         }
 
         accessStreamDataToSend(flow: flowID) { streamData in
