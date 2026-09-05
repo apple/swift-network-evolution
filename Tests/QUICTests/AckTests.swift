@@ -405,7 +405,7 @@ final class AckTests: XCTestCase {
             delay: 0,
             ranges: [FrameAckRange(gap: 0, range: 0)]
         )
-        for block in Ack.blockSequence(frame: frame) {
+        Ack.forEachBlock(frame: frame) { block in
             XCTAssertEqual(block.start, 100)
             XCTAssertEqual(block.end, 100)
         }
@@ -419,7 +419,7 @@ final class AckTests: XCTestCase {
             ranges: [FrameAckRange(gap: 0, range: 10)]
         )
 
-        for block in Ack.blockSequence(frame: frame) {
+        Ack.forEachBlock(frame: frame) { block in
             XCTAssertEqual(block.start, 0)
             XCTAssertEqual(block.end, 10)
         }
@@ -434,7 +434,7 @@ final class AckTests: XCTestCase {
         )
         var blockNumber = 0
 
-        for block in Ack.blockSequence(frame: frame) {
+        Ack.forEachBlock(frame: frame) { block in
             if blockNumber == 0 {
                 XCTAssertEqual(block.start, 5)
                 XCTAssertEqual(block.end, 7)
@@ -976,10 +976,8 @@ final class AckTests: XCTestCase {
             ]
         )
 
-        let seq = Ack.blockSequence(frame: frame)
-
         var emittedBlocks = 0
-        for block in seq {
+        Ack.forEachBlock(frame: frame) { block in
             if emittedBlocks == 0 {
                 XCTAssertEqual(block.start, 6)
                 XCTAssertEqual(block.end, 10)
@@ -1004,10 +1002,8 @@ final class AckTests: XCTestCase {
             ]
         )
 
-        let seq = Ack.blockSequence(frame: frame)
-
         var emittedBlocks = 0
-        for _ in seq {
+        Ack.forEachBlock(frame: frame) { _ in
             emittedBlocks += 1
         }
         XCTAssertEqual(emittedBlocks, 0)

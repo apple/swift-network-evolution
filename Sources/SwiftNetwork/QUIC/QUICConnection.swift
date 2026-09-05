@@ -5130,7 +5130,7 @@ extension QUICConnection {
     }
 
     func processAckFrame(
-        _ frame: FrameAck,
+        _ frame: consuming FrameAck,
         packetNumberSpace: PacketNumberSpace,
         path: QUICPath
     ) -> Bool {
@@ -5932,12 +5932,12 @@ extension QUICConnection {
     }
 
     func acknowledgedAck(
-        frame: TransmittedItems.TransmittedAckFrame,
+        frame: borrowing TransmittedItems.TransmittedAckFrame,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
         sentPath: QUICPath
     ) {
-        for block in Ack.blockSequence(frame: frame) {
+        Ack.forEachBlock(frame: frame) { block in
             ack.acknowledged(
                 packetNumberSpace: packetNumberSpace,
                 between: block.start,

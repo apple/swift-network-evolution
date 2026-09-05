@@ -99,7 +99,7 @@ final class SendItemsTests: XCTestCase {
         XCTAssertFalse(isAckEliciting)
         XCTAssertFalse(isInFlightEligible)
 
-        XCTAssertNotNil(transmittedItems.ackFrame)
+        XCTAssertTrue(transmittedItems.ackFrame != nil)
         let largest = transmittedItems.ackFrame?.largest
         let delay = transmittedItems.ackFrame?.delay
         XCTAssertEqual(largest, 2000)

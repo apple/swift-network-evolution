@@ -225,7 +225,7 @@ struct ShorthandFrameAck: ShorthandLogEntry {
 
     init(outgoing: Bool, frame: borrowing FrameAck) {
         largest = frame.largest
-        ranges = frame.ranges
+        ranges = frame.ranges.toArray()
         ecnCounter = frame.ecnCounter
         self.outgoing = outgoing
         self.delay = frame.delay

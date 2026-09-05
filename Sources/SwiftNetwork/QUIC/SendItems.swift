@@ -252,11 +252,10 @@ extension FrameAck: SendableItem {
         _ transmittedItems: inout TransmittedItems,
         from pendingItems: inout PendingItems
     ) {
-        transmittedItems.ackFrame = .init(pendingItems.ackFrame)
+        transmittedItems.ackFrame = .init(pendingItems.ackFrame.take())
         // Do not copy over the ACK flag for transmitted items, since it is not retransmissable
         transmittedItems.ack = false
         pendingItems.ack = false
-        pendingItems.ackFrame = nil
     }
 
     static func addToPendingItems(
@@ -274,16 +273,17 @@ extension FrameAck: SendableItem {
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
-        guard let ackFrame = pendingItems.ackFrame else {
+        guard pendingItems.ackFrame != nil else {
             return
         }
-        try ackFrame.write(frame: &frame)
+        // Using explicit unwrap here is fine since nil was checked above
+        try pendingItems.ackFrame!.write(frame: &frame)
         shorthandFrames?.append(
             toShorthandLogEntry(
-                delay: ackFrame.delay,
-                largest: ackFrame.largest,
-                ranges: ackFrame.ranges,
-                ecnCounter: ackFrame.ecnCounter
+                delay: pendingItems.ackFrame!.delay,
+                largest: pendingItems.ackFrame!.largest,
+                ranges: pendingItems.ackFrame!.ranges.toArray(),
+                ecnCounter: pendingItems.ackFrame!.ecnCounter
             )
         )
     }
@@ -2537,7 +2537,14 @@ struct PendingItems: ~Copyable {
     }
     var isAckSet: Bool { self.ack || FrameAck.isPresent(in: self) }
     var isAckOnly: Bool { self.simpleSendableItems == SimpleSendableItemsFlags.ack }
-    var ackFrameLength: Int { ackFrame?.writeLength ?? 0 }
+    var ackFrameLength: Int {
+        switch ackFrame {
+        case .some(let frame):
+            return frame.writeLength
+        case .none:
+            return 0
+        }
+    }
 
     // Bookkeeping any Streams unblocked by reception of a new MAX_STREAM_DATA.
     // It should be filled when inboundStarting, and emptied upon inboundStopping.
@@ -3100,18 +3107,18 @@ struct TransmittedItems: ~Copyable {
     var maxStreamDataFlows = Deque<MultiplexedFlowIdentifier>()
     var streamDataBlockedFlows = Deque<MultiplexedFlowIdentifier>()
 
-    struct TransmittedAckFrame {
+    struct TransmittedAckFrame: ~Copyable {
         var largest = PacketNumber.none
         var delay: UInt64 = 0
-        var ranges: [FrameAckRange]
+        var ranges: NetworkSmallUniqueArray<FrameAckRange, 5>
         var pendingGap: PacketNumber?
 
-        init?(_ ackFrame: FrameAck?) {
+        init?(_ ackFrame: consuming FrameAck?) {
             guard let ackFrame else { return nil }
             largest = ackFrame.largest
             delay = ackFrame.delay
-            ranges = ackFrame.ranges
             pendingGap = ackFrame.pendingGap
+            ranges = ackFrame.ranges
         }
     }
     var ackFrame: TransmittedAckFrame?
@@ -3143,9 +3150,9 @@ struct TransmittedItems: ~Copyable {
         packetNumberSpace: PacketNumberSpace,
         sentPath: QUICPath
     ) {
-        if let ackFrame {
+        if ackFrame != nil {
             connection.acknowledgedAck(
-                frame: ackFrame,
+                frame: ackFrame!,
                 packetNumber: packetNumber,
                 packetNumberSpace: packetNumberSpace,
                 sentPath: sentPath
