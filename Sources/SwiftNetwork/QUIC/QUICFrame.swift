@@ -844,7 +844,7 @@ struct FrameAckRange {
 }
 
 @available(Network 0.1.0, *)
-struct FrameAck: QUICFrameProtocol {
+struct FrameAck: ~Copyable, QUICFrameProtocol {
     var type = FrameType.ack
 
     var packetNumberSpace: PacketNumberSpace
@@ -868,7 +868,7 @@ struct FrameAck: QUICFrameProtocol {
             _delay = newValue
         }
     }
-    var ranges: [FrameAckRange]
+    var ranges: NetworkSmallUniqueArray<FrameAckRange, 5> = .init()
     var pendingGap: PacketNumber?
     private var _ecnCounter: ECNCounter?
     var ecnCounter: ECNCounter? {
@@ -911,7 +911,7 @@ struct FrameAck: QUICFrameProtocol {
         ranges: [FrameAckRange]
     ) {
         self.init(packetNumberSpace: packetNumberSpace, largest: largest, delay: delay)
-        self.ranges = ranges
+        self.ranges = .init(ranges)
     }
 
     private mutating func validateAckType(_ rawType: UInt64) throws(QUICError) {
@@ -945,7 +945,7 @@ struct FrameAck: QUICFrameProtocol {
             )
         }
 
-        ranges = [FrameAckRange](
+        ranges = NetworkSmallUniqueArray<FrameAckRange, 5>(
             repeating: FrameAckRange(gap: 0, range: 0),
             count: Int(rangeCount + 1)
         )

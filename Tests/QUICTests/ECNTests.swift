@@ -462,30 +462,37 @@ final class ECNValidateTests: XCTestCase {
     }
 
     func runTestStepAck(_ step: consuming ECNTestStepAck) {
+        let description = step.description
+        let repeats = step.repeats
+        let expectedState = step.expectedState
+        let expectedCECount = step.expectedCECount
+        let previousLargestAcked = step.previousLargestAcked
+        let newlyAckedECNCount = step.newlyAckedECNCount
+        let frameType = step.frame.frameType
         let ack: FrameAck
-        switch step.frame {
+        switch consume step.frame {
         case .ack(let frame):
             ack = frame
         default:
-            XCTFail("Expected ACK frame, got \(step.frame.frameType)")
+            XCTFail("Expected ACK frame, got \(frameType)")
             return
         }
-        for i in 0..<step.repeats {
+        for i in 0..<repeats {
             let ceCount = ecnPath.validateAck(
                 ecn: ecn,
                 frame: ack,
-                previousLargestAcked: step.previousLargestAcked,
-                newlyAckedECNPackets: step.newlyAckedECNCount
+                previousLargestAcked: previousLargestAcked,
+                newlyAckedECNPackets: newlyAckedECNCount
             )
             XCTAssertEqual(
                 ceCount,
-                step.expectedCECount,
-                "\(step.description) at iteration \(i+1) has wrong ce count"
+                expectedCECount,
+                "\(description) at iteration \(i+1) has wrong ce count"
             )
             XCTAssertEqual(
                 ecnPath.state,
-                step.expectedState,
-                "\(step.description) at iteration \(i+1) has wrong ce count"
+                expectedState,
+                "\(description) at iteration \(i+1) has wrong ce count"
             )
 
         }

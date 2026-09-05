@@ -255,7 +255,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
             if let ecnCounter {
                 ack.ecnCounter = ecnCounter
             }
-            ackFrame = ack
+            ackFrame = consume ack
         }
         var blockCount = 0
         for index in blocks.indices.reversed() {
@@ -726,25 +726,61 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         return shouldSend
     }
 
-    static func blockSequence(
-        frame: FrameAck,
-        oldestPacketNumber: PacketNumber = .initial
-    ) -> AckBlockSequence {
-        AckBlockSequence(
+    /// Decodes ACK ranges directly using a `NetworkSmallUniqueArray<FrameAckRange, 5>.
+    /// Will avoid a heap allocation for a range collection under 5
+    @inline(always)
+    static func forEachBlock(
+        largest: PacketNumber,
+        ranges: borrowing NetworkSmallUniqueArray<FrameAckRange, 5>,
+        oldestPacketNumber: PacketNumber,
+        _ body: (AckBlock) -> Void
+    ) {
+        var largest = largest
+        let count = ranges.count
+        var index = 0
+        while index < count {
+            let range = ranges[index].range
+            guard range <= largest else { return }
+            let smallest = largest - range
+            let savedLargest = largest
+            // Only recompute `largest` if we are iterating again.
+            // Otherwise, we might end up with an integer underflow.
+            if index + 1 != count {
+                guard smallest >= 2 else { return }
+                let gap = ranges[index + 1].gap
+                guard gap <= smallest - 2 else { return }
+                largest = smallest - gap - 2
+            }
+            index += 1
+            if savedLargest >= oldestPacketNumber {
+                body((start: smallest, end: savedLargest))
+            }
+        }
+    }
+
+    static func forEachBlock(
+        frame: borrowing FrameAck,
+        oldestPacketNumber: PacketNumber = .initial,
+        _ body: (AckBlock) -> Void
+    ) {
+        forEachBlock(
             largest: frame.largest,
             ranges: frame.ranges,
-            oldestPacketNumber: oldestPacketNumber
+            oldestPacketNumber: oldestPacketNumber,
+            body
         )
     }
 
-    static func blockSequence(
-        frame: TransmittedItems.TransmittedAckFrame,
-        oldestPacketNumber: PacketNumber = .initial
-    ) -> AckBlockSequence {
-        AckBlockSequence(
+    static func forEachBlock(
+        frame: borrowing TransmittedItems.TransmittedAckFrame,
+        oldestPacketNumber: PacketNumber = .initial,
+        _ body: (AckBlock) -> Void
+    ) {
+        forEachBlock(
             largest: frame.largest,
             ranges: frame.ranges,
-            oldestPacketNumber: oldestPacketNumber
+            oldestPacketNumber: oldestPacketNumber,
+            body
         )
     }
 
@@ -996,13 +1032,13 @@ struct AckBitstring: ~Copyable {
 
     init() {}
 
-    init(frame: FrameAck, oldestPN: PacketNumber) {
+    init(frame: borrowing FrameAck, oldestPN: PacketNumber) {
         reinit(frame: frame, oldestPN: oldestPN)
     }
 
     // Same as init, but does not zero out bitstring[]
-    mutating func reinit(frame: FrameAck, oldestPN: PacketNumber) {
-        for block in Ack.blockSequence(frame: frame, oldestPacketNumber: oldestPN) {
+    mutating func reinit(frame: borrowing FrameAck, oldestPN: PacketNumber) {
+        Ack.forEachBlock(frame: frame, oldestPacketNumber: oldestPN) { block in
             let start = max(block.start, oldestPN)
             nset(start: start, stop: block.end)
         }
