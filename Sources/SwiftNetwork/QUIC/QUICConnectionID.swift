@@ -320,24 +320,23 @@ struct QUICConnectionIDList: Sequence, IteratorProtocol {
     }
 
     @discardableResult
-    mutating func retire(connectionID: QUICConnectionID) -> UInt64? {
-        var sequenceNumber: UInt64?
+    mutating func retire(connectionID: QUICConnectionID) -> ManagedConnectionID? {
+        var cid: ManagedConnectionID?
         managedConnectionIDs.removeAll {
             if $0.connectionID == connectionID {
-                sequenceNumber = $0.sequenceNumber
+                cid = $0
                 return true
             }
             return false
         }
-        return sequenceNumber
+        return cid
     }
 
-    mutating func retire(priorTo: UInt64) -> [(UInt64, QUICConnectionID)] {
-        var retiredSequenceNumbers = [(UInt64, QUICConnectionID)]()
+    mutating func retire(priorTo: UInt64) -> [ManagedConnectionID] {
+        var retiredSequenceNumbers = [ManagedConnectionID]()
         managedConnectionIDs.removeAll {
-            let sequenceNumber = $0.sequenceNumber
-            if sequenceNumber < priorTo {
-                retiredSequenceNumbers.append((sequenceNumber, $0.connectionID))
+            if $0.sequenceNumber < priorTo {
+                retiredSequenceNumbers.append($0)
                 return true
             }
             return false

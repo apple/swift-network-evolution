@@ -252,12 +252,12 @@ extension QUICConnection {
     // Retires a path's outbound CID and queues a RETIRE_CONNECTION_ID frame for it.
     func retireOutboundCID(forPathGoingAway path: QUICPath) {
         guard path.isOpenForSending, !path.hasPreAssignedCIDs, let dcid = path.dcid,
-            let sequence = remoteCIDs.retire(connectionID: dcid)
+            let retiredCID = remoteCIDs.retire(connectionID: dcid)
         else {
             return
         }
         withPendingItems(for: .applicationData) {
-            $0.addRetireConnectionID(FrameRetireConnectionID(sequence: sequence))
+            $0.addRetireConnectionID(FrameRetireConnectionID(sequence: retiredCID.sequenceNumber))
         }
     }
 

@@ -6313,23 +6313,28 @@ extension QUICConnection {
         // transport parameter"
         let retiredCIDs = remoteCIDs.retire(priorTo: frame.retirePriorToSequence)
         for retiredCID in retiredCIDs {
-            migration.retireDCID(retiredCID.1)
+            migration.retireDCID(retiredCID.connectionID)
 
             // Send a protocol notification up the stack
             deliverNetworkProtocolEvent(
                 flow: .allFlows,
-                event: .init(quicEvent: .retiredOutboundConnectionID(retiredCID.1))
+                event: .init(
+                    quicEvent: .retiredOutboundConnectionID(
+                        retiredCID.connectionID,
+                        statelessResetToken: retiredCID.token
+                    )
+                )
             )
 
             // Send a frame to retire the connection ID
             withPendingItemsForKeyState {
                 $0.addRetireConnectionID(
-                    FrameRetireConnectionID(sequence: retiredCID.0)
+                    FrameRetireConnectionID(sequence: retiredCID.sequenceNumber)
                 )
             }
 
             let success = withCurrentPath { path in
-                if path.dcid == retiredCID.1 {
+                if path.dcid == retiredCID.connectionID {
                     guard assignNewDCID(to: path) else {
                         log.error("Asked to retire current DCID but could not allocate a new DCID")
                         close(
@@ -6377,7 +6382,12 @@ extension QUICConnection {
                 )
                 deliverNetworkProtocolEvent(
                     flow: .allFlows,
-                    event: .init(quicEvent: .newOutboundConnectionID(frame.connectionID))
+                    event: .init(
+                        quicEvent: .newOutboundConnectionID(
+                            frame.connectionID,
+                            statelessResetToken: frame.statelessResetToken
+                        )
+                    )
                 )
                 migration.newDCID(frame.connectionID)
             } catch {
@@ -6423,19 +6433,21 @@ extension QUICConnection {
 
     // For outbound (remote) CIDs
     func sendRetireConnectionIDFrame(_ cid: QUICConnectionID) {
-        guard let sequenceNumber = remoteCIDs.retire(connectionID: cid) else {
+        guard let retiredCID = remoteCIDs.retire(connectionID: cid) else {
             return
         }
 
         // Send a protocol notification up the stack
         deliverNetworkProtocolEvent(
             flow: .allFlows,
-            event: .init(quicEvent: .retiredOutboundConnectionID(cid))
+            event: .init(
+                quicEvent: .retiredOutboundConnectionID(retiredCID.connectionID, statelessResetToken: retiredCID.token)
+            )
         )
 
         withPendingItemsForKeyState {
             $0.addRetireConnectionID(
-                FrameRetireConnectionID(sequence: sequenceNumber)
+                FrameRetireConnectionID(sequence: retiredCID.sequenceNumber)
             )
         }
         sendFrames()
