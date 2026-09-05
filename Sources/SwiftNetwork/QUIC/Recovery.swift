@@ -100,21 +100,58 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             outstandingPackets.append(PacketContainerEntry(packet, sentTime: sentTime))
         }
 
+        /// Finds the index of `packetNumber` in `outstandingPackets`, or `nil`.
+        ///
+        /// Entries are sorted by packet number but sparse — acknowledged and
+        /// retransmitted packets are removed from the middle — so index and packet
+        /// number drift apart. The strict ordering still means packet numbers rise
+        /// by at least one per slot, which lets the first and last entries bound
+        /// the search window arithmetically before probing anything else:
+        ///
+        /// - from the front: `index <= frontIndex + (target - frontNumber)`
+        /// - from the back:  `index >= backIndex - (backNumber - target)`
+        ///
+        /// When no packets have been dropped between the two ends, those bounds
+        /// meet on the answer and no binary search runs at all. That covers the
+        /// dominant case of acknowledgements arriving in ascending order. Any gaps
+        /// only widen the window, so the binary search below stays a fallback
+        /// rather than the common path.
         @_optimize(speed)
         func indexOfPacketNumber(_ packetNumber: PacketNumber) -> Int? {
-            guard !outstandingPackets.isEmpty else { return nil }
-            var left = 0
-            var right = outstandingPackets.count - 1
+            let entryCount = outstandingPackets.count
+            guard entryCount > 0 else { return nil }
+
+            let target = packetNumber.value
+
+            // Front entry: the overwhelmingly common lookup, since packets are
+            // acknowledged oldest-first.
+            let frontNumber = outstandingPackets[0].packet.number.value
+            if frontNumber == target { return 0 }
+            if frontNumber > target { return nil }
+
+            var right = entryCount - 1
+            let backNumber = outstandingPackets[right].packet.number.value
+            if backNumber == target { return right }
+            if backNumber < target { return nil }
+
+            // Both ends are strictly inside the range now, so narrow the window
+            // using the density bounds described above.
+            var left = 1
+            let fromFront = target - frontNumber
+            if fromFront < Int64(right) {
+                right = Int(fromFront)
+            }
+            let fromBack = backNumber - target
+            if fromBack < Int64(entryCount - 1 - left) {
+                left = entryCount - 1 - Int(fromBack)
+            }
+
             while left <= right {
                 let middle = left + (right - left) / 2
-                let middlePacketNumber = outstandingPackets[middle].packet.number
-                if outstandingPackets[left].packet.number == packetNumber {
-                    return left
-                } else if outstandingPackets[right].packet.number == packetNumber {
-                    return right
-                } else if middlePacketNumber == packetNumber {
+                let middleNumber = outstandingPackets[middle].packet.number.value
+                if middleNumber == target {
                     return middle
-                } else if middlePacketNumber < packetNumber {
+                } else if middleNumber < target {
                     left = middle + 1
                 } else {
                     right = middle - 1
@@ -126,7 +163,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         @_optimize(speed)
         mutating func removeSentPacket(_ packetNumber: PacketNumber) -> PacketContainerEntry? {
             if let index = indexOfPacketNumber(packetNumber) {
-                let removedEntry = outstandingPackets.remove(at: index)
+                // `remove(at:)` is O(count) and runs the full gap-closing analysis
+                // even when there is nothing to shift. Acknowledgements arrive
+                // oldest-first, so the front case dominates; `removeFirst()` is
+                // documented O(1) and just advances the head slot.
+                let removedEntry =
+                    index == 0
+                    ? outstandingPackets.removeFirst()
+                    : outstandingPackets.remove(at: index)
                 if removedEntry.packet.largerPacket, largerPacketCount > 0 {
                     largerPacketCount -= 1
                 }
@@ -1051,7 +1095,12 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     let lostDuration = lostTime.duration(to: now)
                     if lostDuration > ackedPath.rtt.smoothedRTT {
                         // Remove packet and don't increment index (so the next loop looks at the new value in this index)
-                        innerState.outstandingPackets.remove(at: index)
+                        if index == 0 {
+                            // O(1), unlike the general remove(at:).
+                            innerState.outstandingPackets.removeFirst()
+                        } else {
+                            innerState.outstandingPackets.remove(at: index)
+                        }
                         continue
                     }
                 }
