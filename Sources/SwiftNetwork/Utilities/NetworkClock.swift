@@ -256,55 +256,6 @@ public struct NetworkClock: Clock {
     public struct Instant: InstantProtocol, CustomStringConvertible {
         var time: NetworkDuration
 
-        #if NETWORK_INTERNAL_TESTS
-        // Backing storage for the manual clock used by tests.
-        //
-        // This is a `static let` box rather than a `static var` on purpose.
-        // Reading a mutable static emits a `swift_beginAccess` call for the
-        // dynamic exclusivity check. A `let` does not.
-        private final class ManualTime: @unchecked Sendable {
-            var continuous: Instant = .zero
-            var absolute: Instant = .zero
-        }
-        private static let manualTime = ManualTime()
-        #endif
-
-        internal static func useSystemTime() {
-            #if NETWORK_INTERNAL_TESTS
-            manualTime.continuous = .zero
-            manualTime.absolute = .zero
-            #endif
-        }
-
-        internal static func useManualTime(
-            _ continuous: Instant,
-            absolute: Instant? = nil
-        ) {
-            #if NETWORK_INTERNAL_TESTS
-            let absolute = absolute ?? continuous
-            precondition(continuous > .zero, "manual time must be greater than zero")
-            precondition(absolute > .zero, "manual time must be greater than zero")
-            manualTime.continuous = continuous
-            manualTime.absolute = absolute
-            #else
-            fatalError("The manual clock requires building with -DNETWORK_INTERNAL_TESTS")
-            #endif
-        }
-
-        internal static func advanceManualTime(by duration: NetworkDuration) {
-            #if NETWORK_INTERNAL_TESTS
-            precondition(duration >= .zero, "manual time must not go backwards")
-            precondition(
-                manualTime.continuous > .zero,
-                "advanceManualTime(by:) requires useManualTime() first"
-            )
-            manualTime.continuous = manualTime.continuous.advanced(by: duration)
-            manualTime.absolute = manualTime.absolute.advanced(by: duration)
-            #else
-            fatalError("The manual clock requires building with -DNETWORK_INTERNAL_TESTS")
-            #endif
-        }
-
         public func advanced(by duration: NetworkDuration) -> Self {
             NetworkClock.Instant(self.time + duration)
         }
@@ -351,23 +302,11 @@ public struct NetworkClock: Clock {
         /// the raw reader that a scheduler exposes, and `check-mockable-clock.sh` fails the build
         /// on any use of it outside that allowlist.
         package static var systemNow: Instant {
-            #if NETWORK_INTERNAL_TESTS
-            let manual = manualTime.continuous
-            if _slowPath(manual != .zero) {
-                return manual
-            }
-            #endif
             return Instant(microseconds: Int64(System.Time.now()))
         }
 
         /// The system absolute clock. See `systemNow`.
         package static var systemNowAbsolute: Instant {
-            #if NETWORK_INTERNAL_TESTS
-            let manual = manualTime.absolute
-            if _slowPath(manual != .zero) {
-                return manual
-            }
-            #endif
             return Instant(nanoseconds: Int64(System.Time.nowAbsoluteNanoseconds()))
         }
 
