@@ -395,6 +395,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // The error code and reason sent/received in an APPLICATION_CLOSE frame.
     public var applicationCloseError: QUICApplicationError?
     var receivedApplicationClose = false
+    #if NETWORK_PRIVATE
+    var privateStorage = QUICConnectionPrivateStorage()
+    #endif
 
     // The error to be reported to app when draining or
     // closing the connection.
@@ -436,6 +439,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         parameters: Parameters?,
         path: PathProperties?
     ) throws(NetworkError) {
+        #if NETWORK_PRIVATE
+        self.privateStorage.setupFlowRegistration(path)
+        #endif
         self.isServer = parameters?.isServer ?? false
         self.logPrefixer.log.logPrefix = self.log.logPrefix
         self.initialInterface = path?.directInterface ?? nil
@@ -2385,7 +2391,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 stream.close(errorCode: nil)
             }
         }
-
+        synchronizeStats()
         sendFrames()
     }
 
@@ -2797,6 +2803,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         logSummary()
 
         writeQLog()
+        synchronizeStats()
     }
 
     func keepaliveSendPingFrame(timeSinceLastReceived: NetworkDuration, now: NetworkClock.Instant) {
@@ -3366,6 +3373,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Handle the case of having additional paths at the very beginning of the connection.
         if path.mss == 0 {
             setInitialMSS(on: path)
+        }
+
+        defer {
+            synchronizeStats()
         }
 
         var drop = false
@@ -6487,6 +6498,13 @@ extension QUICConnection {
 
         return true
     }
+}
+
+// MARK: Stats Proccesing
+
+@available(Network 0.1.0, *)
+extension QUICConnection {
+    func synchronizeStats() {}
 }
 
 // MARK: Path Challenge processing
