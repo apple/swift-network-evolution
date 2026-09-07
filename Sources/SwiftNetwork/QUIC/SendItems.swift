@@ -3107,7 +3107,7 @@ struct TransmittedItems: ~Copyable {
     var maxStreamDataFlows = Deque<MultiplexedFlowIdentifier>()
     var streamDataBlockedFlows = Deque<MultiplexedFlowIdentifier>()
 
-    struct TransmittedAckFrame: ~Copyable {
+    struct TransmittedAckFrame {
         var largest = PacketNumber.none
         var delay: UInt64 = 0
         var ranges: [FrameAckRange]
@@ -3150,9 +3150,9 @@ struct TransmittedItems: ~Copyable {
         packetNumberSpace: PacketNumberSpace,
         sentPath: QUICPath
     ) {
-        if ackFrame != nil {
+        if let ackFrame {
             connection.acknowledgedAck(
-                frame: ackFrame!,
+                frame: ackFrame,
                 packetNumber: packetNumber,
                 packetNumberSpace: packetNumberSpace,
                 sentPath: sentPath
