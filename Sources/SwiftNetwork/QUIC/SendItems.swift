@@ -3110,15 +3110,15 @@ struct TransmittedItems: ~Copyable {
     struct TransmittedAckFrame: ~Copyable {
         var largest = PacketNumber.none
         var delay: UInt64 = 0
-        var ranges: NetworkSmallUniqueArray<FrameAckRange, 5>
+        var ranges: [FrameAckRange]
         var pendingGap: PacketNumber?
 
         init?(_ ackFrame: consuming FrameAck?) {
             guard let ackFrame else { return nil }
             largest = ackFrame.largest
             delay = ackFrame.delay
-            pendingGap = ackFrame.pendingGap
-            ranges = ackFrame.ranges
+            pendingGap = ackFrame.pendingGap == .none ? nil : ackFrame.pendingGap
+            ranges = ackFrame.ranges.toArray()
         }
     }
     var ackFrame: TransmittedAckFrame?

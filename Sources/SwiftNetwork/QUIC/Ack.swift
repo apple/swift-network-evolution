@@ -416,6 +416,19 @@ struct AckBlockSequence: Sequence {
     }
 }
 
+/// Storage for `_forEachBlock` to decode ACK ranges from `NetworkSmallUniqueArray` or a `Array`.
+@available(Network 0.1.0, *)
+private protocol AckRangeStorage: ~Copyable {
+    var count: Int { get }
+    subscript(_ index: Int) -> FrameAckRange { get }
+}
+
+@available(Network 0.1.0, *)
+extension NetworkSmallUniqueArray: AckRangeStorage where Element == FrameAckRange {}
+
+@available(Network 0.1.0, *)
+extension Array: AckRangeStorage where Element == FrameAckRange {}
+
 @available(Network 0.1.0, *)
 struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     var log: LogPrefixer
@@ -716,12 +729,10 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         return shouldSend
     }
 
-    /// Decodes ACK ranges directly using a `NetworkSmallUniqueArray<FrameAckRange, 5>.
-    /// Will avoid a heap allocation for a range collection under 5
     @inline(always)
-    static func forEachBlock(
+    private static func _forEachBlock<Ranges: AckRangeStorage & ~Copyable>(
         largest: PacketNumber,
-        ranges: borrowing NetworkSmallUniqueArray<FrameAckRange, 5>,
+        ranges: borrowing Ranges,
         oldestPacketNumber: PacketNumber,
         _ body: (AckBlock) -> Void
     ) {
@@ -748,6 +759,18 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
     }
 
+    /// Decodes ACK ranges directly using a `NetworkSmallUniqueArray<FrameAckRange, 3>.
+    /// Will avoid a heap allocation for ack range collection under 3
+    @inline(always)
+    static func forEachBlock(
+        largest: PacketNumber,
+        ranges: borrowing NetworkSmallUniqueArray<FrameAckRange, 3>,
+        oldestPacketNumber: PacketNumber,
+        _ body: (AckBlock) -> Void
+    ) {
+        _forEachBlock(largest: largest, ranges: ranges, oldestPacketNumber: oldestPacketNumber, body)
+    }
+
     static func forEachBlock(
         frame: borrowing FrameAck,
         oldestPacketNumber: PacketNumber = .initial,
@@ -759,6 +782,17 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             oldestPacketNumber: oldestPacketNumber,
             body
         )
+    }
+
+    /// Decodes ACK ranges from a  `[FrameAckRange]`.
+    @inline(always)
+    static func forEachBlock(
+        largest: PacketNumber,
+        ranges: [FrameAckRange],
+        oldestPacketNumber: PacketNumber,
+        _ body: (AckBlock) -> Void
+    ) {
+        _forEachBlock(largest: largest, ranges: ranges, oldestPacketNumber: oldestPacketNumber, body)
     }
 
     static func forEachBlock(

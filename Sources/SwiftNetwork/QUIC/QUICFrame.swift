@@ -830,43 +830,35 @@ struct FrameAckRange {
 
 @available(Network 0.1.0, *)
 struct FrameAck: ~Copyable, QUICFrameProtocol {
-    var type = FrameType.ack
 
-    var packetNumberSpace: PacketNumberSpace
-
+    var ranges: NetworkSmallUniqueArray<FrameAckRange, 3> = .init()
     var largest = PacketNumber.none
+    var pendingGap: PacketNumber = .none
+    private var _ecnCounter: ECNCounter = ECNCounter(ect0: 0, ect1: 0, ce: 0)
+    var packetNumberSpace: PacketNumberSpace
 
     // Cap ack delay value, which is in microseconds.
     // The cap avoids handling values of microseconds that
     // would cause overflows when turned into nanoseconds, etc.
     // Capping at UInt32.max microseconds makes this limited
     // to around 1.2 hours.
-    private var _delay: UInt64 = 0
-    static let maximumAllowedAckDelay = UInt64(UInt32.max)
+    private var _delay: UInt32 = 0
     var delay: UInt64 {
-        get { _delay }
+        get { UInt64(_delay) }
         set {
-            guard newValue <= FrameAck.maximumAllowedAckDelay else {
-                _delay = FrameAck.maximumAllowedAckDelay
+            guard newValue <= Constants.maximumAllowedAckDelay else {
+                _delay = Constants.maximumAllowedAckDelay
                 return
             }
-            _delay = newValue
+            _delay = UInt32(clamping: newValue)
         }
     }
-    var ranges: NetworkSmallUniqueArray<FrameAckRange, 5> = .init()
-    var pendingGap: PacketNumber?
-    private var _ecnCounter: ECNCounter?
+    // Derive the type from ECN counters being empty
+    @inline(always)
+    var type: FrameType { _ecnCounter.isEmpty ? .ack : .ackECN }
     var ecnCounter: ECNCounter? {
-        get { _ecnCounter }
-        set {
-            if let newValue, !newValue.isEmpty {
-                type = .ackECN
-                _ecnCounter = newValue
-            } else {
-                type = .ack
-                _ecnCounter = nil
-            }
-        }
+        get { _ecnCounter.isEmpty ? nil : _ecnCounter }
+        set { _ecnCounter = newValue ?? ECNCounter(ect0: 0, ect1: 0, ce: 0) }
     }
 
     static func parse(
@@ -884,7 +876,6 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
     init(packetNumberSpace: PacketNumberSpace, largest: PacketNumber, delay: UInt64) {
         self.packetNumberSpace = packetNumberSpace
         self.ranges = .init()
-        self.ranges.reserveCapacity(4)
         self.largest = largest
         self.delay = delay
     }
@@ -899,12 +890,8 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
         self.ranges = .init(ranges)
     }
 
-    private mutating func validateAckType(_ rawType: UInt64) throws(QUICError) {
-        if rawType == FrameType.ack.rawValue {
-            type = FrameType.ack
-        } else if rawType == FrameType.ackECN.rawValue {
-            type = FrameType.ackECN
-        } else {
+    private func validateAckType(_ rawType: UInt64) throws(QUICError) {
+        guard rawType == FrameType.ack.rawValue || rawType == FrameType.ackECN.rawValue else {
             throw QUICError.frameParse(FrameParseError.invalidType(rawType))
         }
     }
@@ -930,7 +917,7 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
             )
         }
 
-        ranges = NetworkSmallUniqueArray<FrameAckRange, 5>(
+        ranges = NetworkSmallUniqueArray<FrameAckRange, 3>(
             repeating: FrameAckRange(gap: 0, range: 0),
             count: Int(rangeCount + 1)
         )
@@ -946,7 +933,7 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
         }
         try validateDeserializationResult(rangeResult)
 
-        if type == .ackECN {
+        if rawType == FrameType.ackECNCode {
             // Parse ECN-specific fields
             var ecnCounter = ECNCounter(ect0: 0, ect1: 0, ce: 0)
             let ecnResult = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
@@ -1009,17 +996,13 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
     }
 
     mutating func addRange(gap: PacketNumber = .initial, range: PacketNumber) {
-        if let pendingGap = pendingGap {
+        if pendingGap != .none {
             ranges.append(FrameAckRange(gap: pendingGap, range: range))
-            self.pendingGap = nil
+            pendingGap = .none
         } else {
             ranges.append(FrameAckRange(gap: .initial, range: range))
         }
-        if gap != 0 {
-            pendingGap = gap
-        } else {
-            pendingGap = nil
-        }
+        pendingGap = gap != 0 ? gap : .none
     }
 
     mutating func setDelay(_ delay: UInt64) {
