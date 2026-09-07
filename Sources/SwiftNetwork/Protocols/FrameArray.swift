@@ -143,7 +143,6 @@ public struct FrameArray: ~Copyable {
         }
     }
 
-    // Make sure to keep the original capacity of the array to prevent reallocations
     public mutating func drainArrayKeepingCapacity() -> FrameArray {
         let count = self.count
         let returnArray = self
