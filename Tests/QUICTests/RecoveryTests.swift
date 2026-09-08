@@ -770,6 +770,149 @@ final class RecoveryTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - Packet index hints
+
+    /// Records a sparse ascending run of packets in the application data space.
+    private func recordSparsePackets(_ packetNumbers: [Int64]) {
+        for number in packetNumbers {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .applicationData, number: PacketNumber(number))
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 100
+            packet.sentPath = connection.currentPath?.identifier ?? .none
+            sentPacket(packet, connection: connection)
+        }
+    }
+
+    /// Removes an outstanding packet, asserting it was present. `removeSentPacket`
+    /// returns a non-copyable entry, so the result is reduced to a `Bool` here.
+    private func removeOutstanding(
+        _ innerState: inout Recovery.InnerState,
+        _ number: Int64,
+        _ message: String
+    ) {
+        let removed = innerState.removeSentPacket(PacketNumber(number)) != nil
+        XCTAssertTrue(removed, message)
+    }
+
+    /// Every recorded packet must be findable, and absent numbers must not be
+    /// reported as present, regardless of the hints accumulated along the way.
+    func testIndexOfPacketNumberFindsSparseEntries() {
+        let numbers: [Int64] = [4, 5, 9, 10, 11, 20, 21, 40, 41, 42, 100]
+        recordSparsePackets(numbers)
+
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) {
+            innerState in
+            for (expectedIndex, number) in numbers.enumerated() {
+                XCTAssertEqual(
+                    innerState.indexOfPacketNumber(PacketNumber(number)),
+                    expectedIndex,
+                    "Packet \(number) should be at index \(expectedIndex)"
+                )
+            }
+            // Numbers in the gaps, and outside the range entirely, are absent.
+            for absent: Int64 in [0, 3, 6, 8, 12, 19, 30, 43, 99, 101, 1000] {
+                XCTAssertNil(
+                    innerState.indexOfPacketNumber(PacketNumber(absent)),
+                    "Packet \(absent) was never recorded"
+                )
+            }
+        }
+    }
+
+    /// Removing from the front — the common in-order acknowledgement case — must
+    /// keep the remaining lookups correct as cached indices shift down.
+    func testIndexOfPacketNumberAfterFrontRemovals() {
+        var remaining: [Int64] = [4, 5, 9, 10, 11, 20, 21, 40, 41, 42, 100]
+        recordSparsePackets(remaining)
+
+        while !remaining.isEmpty {
+            let removed = remaining.removeFirst()
+            connection.recovery.withMutableInnerState(packetNumberSpace: .applicationData) {
+                innerState in
+                removeOutstanding(
+                    &innerState,
+                    removed,
+                    "Packet \(removed) should still be outstanding"
+                )
+                XCTAssertNil(
+                    innerState.indexOfPacketNumber(PacketNumber(removed)),
+                    "Packet \(removed) was just removed"
+                )
+                for (expectedIndex, number) in remaining.enumerated() {
+                    XCTAssertEqual(
+                        innerState.indexOfPacketNumber(PacketNumber(number)),
+                        expectedIndex,
+                        "After removing \(removed), packet \(number) should be at \(expectedIndex)"
+                    )
+                }
+            }
+        }
+    }
+
+    /// Removing from the middle exercises hint invalidation: pairs above the
+    /// removed index shift down, and the pair naming it must be dropped.
+    func testIndexOfPacketNumberAfterInteriorRemovals() {
+        var remaining: [Int64] = [1, 2, 3, 7, 8, 15, 16, 17, 30, 31, 60, 61, 62]
+        recordSparsePackets(remaining)
+
+        // Prime the hints with lookups spread across the deque, then remove from
+        // the middle so the cached indices must be adjusted.
+        for removed: Int64 in [15, 8, 31, 60, 2, 17] {
+            connection.recovery.withMutableInnerState(packetNumberSpace: .applicationData) {
+                innerState in
+                for number in remaining {
+                    _ = innerState.indexOfPacketNumber(PacketNumber(number))
+                }
+                removeOutstanding(
+                    &innerState,
+                    removed,
+                    "Packet \(removed) should still be outstanding"
+                )
+                remaining.removeAll { $0 == removed }
+                for (expectedIndex, number) in remaining.enumerated() {
+                    XCTAssertEqual(
+                        innerState.indexOfPacketNumber(PacketNumber(number)),
+                        expectedIndex,
+                        "After removing \(removed), packet \(number) should be at \(expectedIndex)"
+                    )
+                }
+                XCTAssertNil(innerState.indexOfPacketNumber(PacketNumber(removed)))
+            }
+        }
+    }
+
+    /// Appending after removals must not leave stale hints behind: the deque can
+    /// drain to empty and refill with much larger packet numbers.
+    func testIndexOfPacketNumberAcrossDrainAndRefill() {
+        recordSparsePackets([1, 2, 3])
+        connection.recovery.withMutableInnerState(packetNumberSpace: .applicationData) {
+            innerState in
+            for number: Int64 in [1, 2, 3] {
+                removeOutstanding(&innerState, number, "Packet \(number) should be outstanding")
+            }
+            XCTAssertTrue(innerState.outstandingPackets.isEmpty)
+        }
+
+        let refilled: [Int64] = [500, 501, 700]
+        recordSparsePackets(refilled)
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) {
+            innerState in
+            for (expectedIndex, number) in refilled.enumerated() {
+                XCTAssertEqual(
+                    innerState.indexOfPacketNumber(PacketNumber(number)),
+                    expectedIndex
+                )
+            }
+            // The drained packet numbers must not resolve to the refilled entries.
+            for absent: Int64 in [1, 2, 3] {
+                XCTAssertNil(innerState.indexOfPacketNumber(PacketNumber(absent)))
+            }
+        }
+    }
+
 }
 
 #endif
