@@ -828,6 +828,12 @@ struct FrameAckRange {
     var range: PacketNumber
 }
 
+/// `FrameAckRange` is 16 bytes (two `PacketNumber`, each a wrapped `Int64`).
+@available(Network 0.1.0, *)
+extension FrameAckRange: NetworkInlineStorable {
+    typealias InlineSlot = InlineArray<2, UInt64>
+}
+
 @available(Network 0.1.0, *)
 struct FrameAck: ~Copyable, QUICFrameProtocol {
 

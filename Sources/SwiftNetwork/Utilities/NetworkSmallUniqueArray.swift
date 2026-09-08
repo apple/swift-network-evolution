@@ -427,10 +427,4 @@ extension ProtocolEventManagerState.PendingEvent: NetworkInlineStorable {
     typealias InlineSlot = InlineArray<41, UInt64>
 }
 
-/// `FrameAckRange` is 16 bytes (two `PacketNumber`, each a wrapped `Int64`).
-@available(Network 0.1.0, *)
-extension FrameAckRange: NetworkInlineStorable {
-    typealias InlineSlot = InlineArray<2, UInt64>
-}
-
 #endif
