@@ -468,33 +468,28 @@ final class ECNValidateTests: XCTestCase {
         let expectedCECount = step.expectedCECount
         let previousLargestAcked = step.previousLargestAcked
         let newlyAckedECNCount = step.newlyAckedECNCount
-        let frameType = step.frame.frameType
-        let ack: FrameAck
-        switch consume step.frame {
-        case .ack(let frame):
-            ack = frame
+        switch step.frame {
+        case .ack(let ack):
+            for i in 0..<repeats {
+                let ceCount = ecnPath.validateAck(
+                    ecn: ecn,
+                    frame: ack,
+                    previousLargestAcked: previousLargestAcked,
+                    newlyAckedECNPackets: newlyAckedECNCount
+                )
+                XCTAssertEqual(
+                    ceCount,
+                    expectedCECount,
+                    "\(description) at iteration \(i+1) has wrong ce count"
+                )
+                XCTAssertEqual(
+                    ecnPath.state,
+                    expectedState,
+                    "\(description) at iteration \(i+1) has wrong ce count"
+                )
+            }
         default:
-            XCTFail("Expected ACK frame, got \(frameType)")
-            return
-        }
-        for i in 0..<repeats {
-            let ceCount = ecnPath.validateAck(
-                ecn: ecn,
-                frame: ack,
-                previousLargestAcked: previousLargestAcked,
-                newlyAckedECNPackets: newlyAckedECNCount
-            )
-            XCTAssertEqual(
-                ceCount,
-                expectedCECount,
-                "\(description) at iteration \(i+1) has wrong ce count"
-            )
-            XCTAssertEqual(
-                ecnPath.state,
-                expectedState,
-                "\(description) at iteration \(i+1) has wrong ce count"
-            )
-
+            XCTFail("Expected ACK frame")
         }
     }
 
