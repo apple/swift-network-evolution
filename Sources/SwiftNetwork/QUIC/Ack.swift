@@ -427,9 +427,6 @@ private protocol AckRangeStorage: ~Copyable {
 extension NetworkSmallUniqueArray: AckRangeStorage where Element == FrameAckRange {}
 
 @available(Network 0.1.0, *)
-extension Array: AckRangeStorage where Element == FrameAckRange {}
-
-@available(Network 0.1.0, *)
 struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     var log: LogPrefixer
 
@@ -792,7 +789,27 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         oldestPacketNumber: PacketNumber,
         _ body: (AckBlock) -> Void
     ) {
-        _forEachBlock(largest: largest, ranges: ranges, oldestPacketNumber: oldestPacketNumber, body)
+        var largest = largest
+        let count = ranges.count
+        var index = 0
+        while index < count {
+            let range = ranges[index].range
+            guard range <= largest else { return }
+            let smallest = largest - range
+            let savedLargest = largest
+            // Only recompute `largest` if we are iterating again.
+            // Otherwise, we might end up with an integer underflow.
+            if index + 1 != count {
+                guard smallest >= 2 else { return }
+                let gap = ranges[index + 1].gap
+                guard gap <= smallest - 2 else { return }
+                largest = smallest - gap - 2
+            }
+            index += 1
+            if savedLargest >= oldestPacketNumber {
+                body((start: smallest, end: savedLargest))
+            }
+        }
     }
 
     static func forEachBlock(

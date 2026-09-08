@@ -20,7 +20,6 @@ import BasicContainers
 ///
 /// Conformers must be bitwise-copyable and have no meaningful value of their
 /// own: ``NetworkSmallUniqueArray`` reinterprets them as element storage.
-@usableFromInline
 @available(Network 0.1.0, *)
 protocol NetworkInlineStorageSlot: BitwiseCopyable, Sendable {
     /// An all-zero instance, used to bring the raw storage into existence.
@@ -54,7 +53,6 @@ extension InlineArray: NetworkInlineStorageSlot where Element == UInt64 {
 /// the element type past its slot traps with a clear message instead of
 /// corrupting memory. A test asserting the element's `stride` will catch it even
 /// earlier.
-@usableFromInline
 @available(Network 0.1.0, *)
 protocol NetworkInlineStorable: ~Copyable {
     /// Raw storage at least `MemoryLayout<Self>.stride` bytes wide, and at least
@@ -108,7 +106,6 @@ protocol NetworkInlineStorable: ~Copyable {
 /// expect to be common: inline storage is part of the containing value, so a
 /// large capacity times a large `Element` makes every move of the enclosing type
 /// more expensive.
-@usableFromInline
 @available(Network 0.1.0, *)
 struct NetworkSmallUniqueArray<
     Element: NetworkInlineStorable & ~Copyable,
@@ -421,21 +418,18 @@ extension NetworkSmallUniqueArray where Element: Copyable {
 /// `Frame` is 136 bytes.
 @available(Network 0.1.0, *)
 extension Frame: NetworkInlineStorable {
-    @usableFromInline
     typealias InlineSlot = InlineArray<17, UInt64>
 }
 
 /// `ProtocolEventManagerState.PendingEvent` is 328 bytes (326 rounded to stride).
 @available(Network 0.1.0, *)
 extension ProtocolEventManagerState.PendingEvent: NetworkInlineStorable {
-    @usableFromInline
     typealias InlineSlot = InlineArray<41, UInt64>
 }
 
 /// `FrameAckRange` is 16 bytes (two `PacketNumber`, each a wrapped `Int64`).
 @available(Network 0.1.0, *)
 extension FrameAckRange: NetworkInlineStorable {
-    @usableFromInline
     typealias InlineSlot = InlineArray<2, UInt64>
 }
 
