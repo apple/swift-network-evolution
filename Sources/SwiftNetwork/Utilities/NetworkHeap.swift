@@ -172,7 +172,7 @@ extension NetworkHeap where Element: ~Copyable {
         unsafeAddress {
             storage.span.withUnsafeBufferPointer { $0.baseAddress! + position }
         }
-        @inline(__always)
+        @inline(always)
         unsafeMutableAddress {
             var span = storage.mutableSpan
             return span.withUnsafeMutableBufferPointer { $0.baseAddress! + position }

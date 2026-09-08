@@ -2015,7 +2015,7 @@ public struct IPProtocol: NetworkProtocol {
             IPInstance.drainReassemblyQueue(&instanceType)
         }
 
-        @inline(__always)
+        @inline(always)
         private static func drainReassemblyQueue(_ instanceType: inout IPInstanceType) {
             // Make sure that there are no left over frames stranded in the reassembly queue
             switch instanceType {
@@ -2095,7 +2095,7 @@ public struct IPProtocol: NetworkProtocol {
         ///   would charge a clock read to every inbound batch of a stack that never asks for
         ///   receive timestamps. Resolved once here, so the frames of a batch still share one
         ///   instant, and passed down as `nil` when nothing will stamp a frame.
-        @inline(__always)
+        @inline(always)
         private static func processInbound(
             _ instanceType: inout IPInstanceType,
             log: borrowing NetworkLoggerState,
@@ -2114,7 +2114,7 @@ public struct IPProtocol: NetworkProtocol {
             }
         }
 
-        @inline(__always)
+        @inline(always)
         private static func processOutbound(
             _ instanceType: inout IPInstanceType,
             lower: OutboundDatagramLinkage,

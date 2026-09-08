@@ -2033,7 +2033,6 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         path.resumeReadingInboundDatagrams()
     }
 
-    @inline(__always)
     public func getDatagramsToSend(
         path pathID: MultiplexingPathIdentifier,
         maximumDatagramCount: Int,
