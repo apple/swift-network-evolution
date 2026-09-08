@@ -117,13 +117,13 @@ public struct NetworkLoggerState: ~Copyable {
     }
 
     #if DisableDebugLogging
-    @inline(__always)
+    @inline(always)
     public func info(_ message: @autoclosure () -> String) {}
 
-    @inline(__always)
+    @inline(always)
     public func debug(_ message: @autoclosure () -> String) {}
 
-    @inline(__always)
+    @inline(always)
     public func datapath(_ message: @autoclosure () -> String) {}
     #else
     #if !NETWORK_EMBEDDED
@@ -154,7 +154,7 @@ public struct NetworkLoggerState: ~Copyable {
         Logger.proto.debug("\(callingFunction) \(logPrefix) \(message)")
     }
     #else
-    @inline(__always)
+    @inline(always)
     public func datapath(_ message: @autoclosure () -> String, callingFunction: StaticString = #function) {}
     #endif
     #endif
@@ -185,7 +185,7 @@ public struct NetworkLoggerState: ~Copyable {
         Logger.proto.debug("\(callingFunction) \(logPrefix) \(message)")
     }
     #else
-    @inline(__always)
+    @inline(always)
     public func datapath(_ message: @autoclosure () -> String, callingFunction: StaticString = #function) {}
     #endif
 
@@ -193,13 +193,13 @@ public struct NetworkLoggerState: ~Copyable {
     #endif
 
     #if DisableErrorLogging
-    @inline(__always)
+    @inline(always)
     public func notice(_ message: @autoclosure () -> String) {}
 
-    @inline(__always)
+    @inline(always)
     public func error(_ message: @autoclosure () -> String) {}
 
-    @inline(__always)
+    @inline(always)
     public func fault(_ message: @autoclosure () -> String) {}
     #else
     #if !NETWORK_EMBEDDED

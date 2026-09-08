@@ -60,7 +60,7 @@ extension UInt64 {
         return nil
     }
     @available(macOS 11, iOS 14, tvOS 14, watchOS 7, *)
-    @inline(__always)
+    @inline(always)
     var variableLengthSize: Int {
         guard let size = self.safeVariableLengthSize else {
             Logger.proto.error("Integer value too large to encode into a 8-byte VLE")

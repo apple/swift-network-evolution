@@ -501,7 +501,7 @@ extension OneToOneProtocolHandler where Self: ~Copyable {
 
 @available(Network 0.1.0, *)
 extension OneToOneProtocolHandler where Self: ~Copyable {
-    @inline(__always)
+    @usableFromInline
     var effectiveSelfReference: ProtocolInstanceReference {
         if passthroughEvents {
             return upper.reference
@@ -645,7 +645,7 @@ extension OneToOneProtocolHandler where Self: ~Copyable, LowerProtocol == Outbou
     public func invokeReceiveDatagrams(maximumDatagramCount: Int) throws(NetworkError) -> FrameArray? {
         try lower.invokeReceiveDatagrams(effectiveSelfReference, maximumDatagramCount: maximumDatagramCount)
     }
-    @inline(__always)
+    @inline(always)
     public func invokeGetDatagramsToSend(
         maximumDatagramCount: Int,
         minimumDatagramSize: Int

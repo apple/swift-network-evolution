@@ -224,7 +224,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     }
 
     /// Reads a fixed-size value across span boundaries, with optional network-to-host byte order conversion.
-    @inline(__always)
+    @inline(always)
     private mutating func readFragmented<T: BitwiseCopyable & FixedWidthInteger>(
         _ value: inout T,
         networkByteOrder: Bool
