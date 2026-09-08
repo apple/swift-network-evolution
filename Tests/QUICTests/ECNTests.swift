@@ -400,6 +400,7 @@ extension ECNTestStepAck {
 }
 
 // MARK: ECN Validation Tests
+#if swift(>=6.4)
 @available(Network 0.1.0, *)
 final class ECNValidateTests: XCTestCase {
     var ecn: ECN!
@@ -959,5 +960,5 @@ final class ECNValidateTests: XCTestCase {
         )
     }
 }
-
+#endif
 #endif
