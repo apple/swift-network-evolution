@@ -143,6 +143,13 @@ public struct FrameArray: ~Copyable {
         }
     }
 
+    public mutating func drainArrayKeepingCapacity() -> FrameArray {
+        let count = self.count
+        let returnArray = self
+        self = FrameArray(capacity: count)
+        return returnArray
+    }
+
     public mutating func drainArray(maximumFrameCount: Int? = nil) -> FrameArray {
         if let maximumFrameCount, self.count > maximumFrameCount {
             var returnArray = FrameArray()

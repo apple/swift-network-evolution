@@ -57,12 +57,26 @@ extension AutomaticLowerDatagramProcessing where Self: ~Copyable {
         lowerSendQueue.add(frames: datagrams)
     }
 
+    public mutating func addToLowerSendQueue(_ datagram: consuming Frame) {
+        lowerSendQueue.add(frame: datagram)
+    }
+
+    /// Enqueues a single outbound datagram to be sent to the lower protocol.
+    public mutating func enqueueOutboundDatagram(_ datagram: consuming Frame) {
+        addToLowerSendQueue(datagram)
+    }
+
+    /// Enqueues a batch of outbound datagrams to be sent to the lower protocol.
+    public mutating func enqueueOutboundDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
+        try addToLowerSendQueue(datagrams)
+    }
+
     /// Indicates to the lower protocol that datagrams have been added to the send queue.
     ///
     /// Drains `lowerSendQueue` to the lower protocol.
     public mutating func serviceLowerSendQueue() {
         guard !lowerSendQueue.isEmpty else { return }
-        try? lower.invokeSendDatagrams(reference, datagrams: lowerSendQueue.drainArray())
+        try? lower.invokeSendDatagrams(reference, datagrams: lowerSendQueue.drainArrayKeepingCapacity())
     }
 
     /// Indicates that datagrams should be read from the lower protocol.
@@ -114,6 +128,20 @@ extension AutomaticUpperDatagramProcessing where Self: ~Copyable {
     /// Appends frames to `upperReceiveQueue`.
     public mutating func addToUpperReceiveQueue(_ datagrams: consuming FrameArray) throws(NetworkError) {
         upperReceiveQueue.add(frames: datagrams)
+    }
+
+    public mutating func addToUpperReceiveQueue(_ datagram: consuming Frame) {
+        upperReceiveQueue.add(frame: datagram)
+    }
+
+    /// Enqueues a single inbound datagram to be delivered to the upper protocol.
+    public mutating func enqueueOutboundDatagram(_ datagram: consuming Frame) {
+        addToUpperReceiveQueue(datagram)
+    }
+
+    /// Enqueues a batch of inbound datagrams to be delivered to the upper protocol.
+    public mutating func enqueueOutboundDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
+        try addToUpperReceiveQueue(datagrams)
     }
 
     /// Indicates to the upper protocol that datagrams have been added to the receive queue.

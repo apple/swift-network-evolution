@@ -2116,7 +2116,7 @@ open class MultiplexingDatagramPath<ParentProtocol: ManyToManyOutboundDatagramPr
 
     public let identifier = MultiplexingPathIdentifier()
 
-    public var lowerSendQueue = FrameArray()
+    public var lowerSendQueue = FrameArray(capacity: 10)
     public var lowerReceiveQueue = FrameArray()
 
     public var pathIsPrimary: Bool = false
