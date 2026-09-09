@@ -363,8 +363,6 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
     @usableFromInline
     var currentSpan: MutableRawSpan
     @usableFromInline
-    var currentSpanByteCount = 0
-    @usableFromInline
     var availableByteCount: Int
     @usableFromInline
     var scratchSpace = [16 of UInt8](repeating: 0)
@@ -404,7 +402,6 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
         previousSpanAggregateByteCount &+= cursor
         currentSpan = span
         cursor = 0
-        currentSpanByteCount = currentSpan.byteCount
         return true
     }
     @usableFromInline
@@ -418,7 +415,7 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
         case .success:
             let totalRemaining: Int
             if availableByteCount >= totalBytesWritten {
-                totalRemaining = availableByteCount - totalBytesWritten
+                totalRemaining = availableByteCount &- totalBytesWritten
             } else {
                 totalRemaining = remaining
                 precondition(remaining >= 0)
@@ -430,9 +427,9 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
     @usableFromInline
     var remaining: Int {
         #if DEBUG
-        precondition(currentSpanByteCount >= cursor)
+        precondition(currentSpan.byteCount >= cursor)
         #endif
-        return currentSpanByteCount &- cursor
+        return currentSpan.byteCount &- cursor
     }
     @inlinable
     @inline(always)
@@ -486,7 +483,7 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
             let available = min(remaining, length - written)
             if available > 0 {
                 for i in 0..<available {
-                    currentSpan.storeBytes(of: scratchSpace[written + i], toByteOffset: cursor + i, as: UInt8.self)
+                    currentSpan.storeBytes(of: scratchSpace[written &+ i], toByteOffset: cursor &+ i, as: UInt8.self)
                 }
                 try moveCursor(available)
                 written += available
