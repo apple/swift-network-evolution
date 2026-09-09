@@ -892,7 +892,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
                 return nil
             }
         }
-        var frameArray = FrameArray()
+        var frameArray = FrameArray(capacity: reassemblyQueue.items.count)
         var writtenCount: Int = 0
         while let item = reassemblyQueue.dequeue() {
             if writtenCount + item.length > totalLength {
