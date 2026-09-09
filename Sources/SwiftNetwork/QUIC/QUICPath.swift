@@ -664,27 +664,27 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
 // Congestion Control access
 @available(Network 0.1.0, *)
 extension QUICPath {
-    @inline(__always)
+    @inline(always)
     var congestionControlWindow: UInt64 {
         congestionControl?.congestionWindow ?? 0
     }
 
-    @inline(__always)
+    @inline(always)
     var congestionControlAvailableCongestionWindow: UInt64 {
         congestionControl?.availableCongestionWindow ?? 0
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlCanSend(packetLength: Int) -> Bool {
         congestionControl?.canSend(packetLength: packetLength) ?? false
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlPersistentCongestion(mss: Int, qlog: QLog? = nil) {
         congestionControl?.persistentCongestion(mss: mss, qlog: qlog)
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlAckEnd(rtt: borrowing RTT, path: QUICPath?, mss: Int, packetsLost: Bool, qlog: QLog? = nil) {
         congestionControl?.ackEnd(
             rtt: rtt,
@@ -696,17 +696,17 @@ extension QUICPath {
         )
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlPacketsSent(bytesSent: Int, qlog: QLog? = nil) {
         congestionControl?.packetSent(bytesSent: bytesSent, qlog: qlog)
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlPacketsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant) {
         congestionControl?.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlPacketsLost(
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
@@ -722,42 +722,42 @@ extension QUICPath {
         ) ?? false
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlPacketDiscarded(bytesSent: Int, qlog: QLog? = nil) {
         congestionControl?.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlAckBegin() {
         congestionControl?.ackBegin()
     }
 
-    @inline(__always)
+    @inline(always)
     var congestionControlBytesInFlight: UInt64 {
         congestionControl?.bytesInFlight ?? 0
     }
 
-    @inline(__always)
+    @inline(always)
     var congestionControlName: String {
         congestionControl?.name ?? "none"
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlSpuriousRetransmit(qlog: QLog? = nil) {
         congestionControl?.spuriousRetransmit()
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlMSSChanged(mss: Int) {
         congestionControl?.mssChanged(mss: mss)
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlIdleTimeout(mss: Int) {
         congestionControl?.idleTimeout(mss: mss)
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlProcessECN(
         ceCount: Int,
         packetsAcked: Int,
@@ -811,7 +811,7 @@ extension QUICPath {
         }
     }
 
-    @inline(__always)
+    @inline(always)
     func congestionControlFilloutDataTransferSnapshot(snapshot: inout DataTransferSnapshot) {
         congestionControl?.filloutDataTransferSnapshot(dataTransferSnapshot: &snapshot)
     }

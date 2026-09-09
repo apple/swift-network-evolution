@@ -2525,7 +2525,7 @@ struct PendingItems: ~Copyable {
 
     // ACK frame, and potentially implicit PING frame. Note: Only one ACK frame!
     var ackFrame: FrameAck?
-    @inline(__always)
+    @inline(always)
     mutating func setAckFrame(_ ackFrame: consuming QUICFrame, ping: Bool) {
         guard case .ack(let ackFrameInner) = ackFrame else {
             fatalError("setting non-ACK frame as ackFrame!")

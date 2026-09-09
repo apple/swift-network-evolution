@@ -376,7 +376,7 @@ struct FlowControlStreamState: ~Copyable {
 extension QUICStreamInstance {
 
     // Offset in the stream from which to next send bytes
-    @inline(__always)
+    @inline(always)
     var sendOffset: UInt64 {
         flowControlState.totalOutboundBytesSent
     }

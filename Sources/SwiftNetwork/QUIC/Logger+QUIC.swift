@@ -39,13 +39,13 @@ final class LogPrefixer: @unchecked Sendable {
     }
 
     #if DisableDebugLogging
-    @inline(__always)
+    @inline(always)
     public func info(_ message: @autoclosure () -> String) {}
 
-    @inline(__always)
+    @inline(always)
     public func debug(_ message: @autoclosure () -> String) {}
 
-    @inline(__always)
+    @inline(always)
     public func datapath(_ message: @autoclosure () -> String) {}
     #else
     #if !NETWORK_EMBEDDED
@@ -81,13 +81,13 @@ final class LogPrefixer: @unchecked Sendable {
     #endif
 
     #if DisableErrorLogging
-    @inline(__always)
+    @inline(always)
     public func fault(_ message: @autoclosure () -> String) {}
 
-    @inline(__always)
+    @inline(always)
     public func error(_ message: @autoclosure () -> String) {}
 
-    @inline(__always)
+    @inline(always)
     public func notice(_ message: @autoclosure () -> String) {}
     #else
     #if !NETWORK_EMBEDDED

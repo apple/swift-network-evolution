@@ -1077,7 +1077,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
         sendBuffer.hasMoreSendDataToService(currentSendOffset: sendOffset)
     }
 
-    @inline(__always)
+    @inline(always)
     var remainingSendDataToService: UInt64 {
         sendBuffer.remainingDataLengthToService(currentSendOffset: sendOffset)
     }

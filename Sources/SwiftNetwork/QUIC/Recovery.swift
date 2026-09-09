@@ -515,7 +515,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             )
         }
 
-        @inline(__always)
+        @inline(always)
         mutating func findNewlyAckedPackets(
             ackFrame: FrameAck,
             path: QUICPath,
