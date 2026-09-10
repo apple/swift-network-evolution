@@ -816,7 +816,7 @@ final class SwiftNetworkConnectionTests: NetTestCase {
     func testNoTransportCustomLink() {
         let group = DispatchGroup()
         group.enter()
-        var injection: (([UInt8]) -> Void)?
+        var injection: ((Span<UInt8>) -> Void)?
         let c1 = NetworkConnection(
             to: Endpoint(address: IPv4Address.loopback, port: 7778),
             using: .parameters {
@@ -863,7 +863,9 @@ final class SwiftNetworkConnectionTests: NetTestCase {
         }
 
         if let injection {
-            injection([4, 5, 6])
+            NetworkContext.implicitContext.async {
+                injection([4, 5, 6].span)
+            }
         }
 
         group.enter()

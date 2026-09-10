@@ -35,7 +35,7 @@ public struct CustomLinkProtocol: NetworkProtocol {
 
     public struct CustomLinkOptions: PerProtocolOptions {
         public var tx: ((Span<UInt8>) -> Void)? = nil
-        public var rx: ((@escaping ([UInt8]) -> Void) -> Void)? = nil
+        public var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? = nil
         init() {}
 
         init?(from serializedBytes: [UInt8]) {
@@ -83,7 +83,7 @@ public struct CustomLinkProtocol: NetworkProtocol {
         public var eventManager = ProtocolEventManager()
         private var incomingFrames = FrameArray()
         public var tx: ((Span<UInt8>) -> Void)? = nil
-        public var rx: ((@escaping ([UInt8]) -> Void) -> Void)? = nil
+        public var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? = nil
 
         public func setup(
             remote: Endpoint?,
@@ -99,10 +99,9 @@ public struct CustomLinkProtocol: NetworkProtocol {
             }
             if let rx = self.rx {
                 rx { bytes in
-                    self.context.async {
-                        self.incomingFrames.add(frames: FrameArray(frame: Frame(copyBuffer: bytes)))
-                        self.deliverInboundDataAvailableEvent()
-                    }
+                    self.context.assert()
+                    self.incomingFrames.add(frames: FrameArray(frame: Frame(copyBuffer: bytes)))
+                    self.deliverInboundDataAvailableEvent()
                 }
             }
             #endif
@@ -176,7 +175,7 @@ extension ProtocolOptions<CustomLinkProtocol> {
         set { perProtocolOptions!.tx = newValue }
     }
 
-    public var rx: ((@escaping ([UInt8]) -> Void) -> Void)? {
+    public var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? {
         get { perProtocolOptions!.rx }
         set { perProtocolOptions!.rx = newValue }
     }
