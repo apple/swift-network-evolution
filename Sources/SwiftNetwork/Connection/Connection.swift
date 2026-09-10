@@ -1018,12 +1018,39 @@ public struct CustomLink: StreamProtocol {
     private var rx: ((@escaping ([UInt8]) -> Void) -> Void)? = nil
 
     public let belowProtocol: Void
+    /// Configure CustomLink for tx byte handling
+    ///
+    /// The handler will be called when outgoing bytes arrive at
+    /// the CustomLink protocol in the protocol stack.
+    ///
+    /// Note: handler will be called in the context of the protocol
+    /// stack, so handler must not block to ensure the networking layer
+    /// continues to process incoming and outgoing data.
+    ///
+    /// - Parameter handler: A closure that will be called with a
+    /// span of bytes to be written to the network.
     public func tx(_ handler: @escaping (Span<UInt8>) -> Void) -> Self {
         var mutableSelf = self
         mutableSelf.tx = handler
         return mutableSelf
     }
 
+    /// Configure CustomLink for rx byte handling
+    ///
+    /// The handler will be called when CustomLinkProtocol
+    /// initializes. It passes in an escaping closure that can
+    /// be called whenever bytes need to be injected into
+    /// CustomLinkProtocol.
+    ///
+    /// Note: handler will be called in the context of the protocol
+    /// stack, so handler must not block to ensure the networking layer
+    /// continues to process incoming and outgoing data. A typical
+    /// implementation will store the escaping closure for later use and
+    /// return.
+    ///
+    /// - Parameter handler: A closure that will be called with an
+    /// escaping closure that should be stored for later use when bytes
+    /// need to be injected into the protocol stack.
     public func rx(_ handler: @escaping ((@escaping ([UInt8]) -> Void) -> Void)) -> Self {
         var mutableSelf = self
         mutableSelf.rx = handler

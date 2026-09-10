@@ -33,7 +33,7 @@ public struct CustomLinkProtocol: NetworkProtocol {
     public typealias Metadata = CustomLinkMetadata
     public typealias Instance = CustomLinkInstance
 
-	public struct CustomLinkOptions: PerProtocolOptions {
+    public struct CustomLinkOptions: PerProtocolOptions {
         public var tx: ((Span<UInt8>) -> Void)? = nil
         public var rx: ((@escaping ([UInt8]) -> Void) -> Void)? = nil
         init() {}
@@ -52,11 +52,11 @@ public struct CustomLinkProtocol: NetworkProtocol {
             self
         }
         public func isEqual(to other: CustomLinkOptions, for: ProtocolCompareMode) -> Bool {
-			true
+            true
         }
-		public static func == (lhs: borrowing CustomLinkOptions, rhs: borrowing CustomLinkOptions) -> Bool {
-			true
-		}
+        public static func == (lhs: borrowing CustomLinkOptions, rhs: borrowing CustomLinkOptions) -> Bool {
+            true
+        }
 
         var isDefault: Bool {
             self == CustomLinkOptions()
