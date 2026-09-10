@@ -265,6 +265,11 @@ public struct FrameArray: ~Copyable {
         frames = .init()
     }
 
+    // NOTE: This function differs from finalizeAllFramesAsFailed because it assumes all frames are finalized already
+    public mutating func removeAll() {
+        frames.removeAll()
+    }
+
     public var unclaimedLength: Int {
         var length = 0
         iterateImmutableFrames { frame in
