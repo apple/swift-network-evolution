@@ -1008,6 +1008,43 @@ public struct StreamBridge: StreamProtocol {
 }
 #endif
 
+#if !NETWORK_EMBEDDED
+@_spi(Essentials)
+@available(Network 0.1.0, *)
+public struct CustomLink: StreamProtocol {
+    public typealias ContentType = Void
+
+    private var tx: ((Span<UInt8>) -> Void)? = nil
+    private var rx: ((@escaping ([UInt8]) -> Void) -> Void)? = nil
+
+    public let belowProtocol: Void
+    public func tx(_ handler: @escaping (Span<UInt8>) -> Void) -> Self {
+        var mutableSelf = self
+        mutableSelf.tx = handler
+        return mutableSelf
+    }
+
+    public func rx(_ handler: @escaping ((@escaping ([UInt8]) -> Void) -> Void)) -> Self {
+        var mutableSelf = self
+        mutableSelf.rx = handler
+        return mutableSelf
+    }
+
+    init() {
+    }
+
+    public func configure(parameters: Parameters) {
+        let options = ProtocolOptions<CustomLinkProtocol>(
+            protocolIdentifier: CustomLinkProtocol.identifier,
+            perProtocolOptions: CustomLinkProtocol.Options()
+        )
+        options.tx = tx
+        options.rx = rx
+        parameters.defaultStack.link = .custom(options)
+    }
+}
+#endif
+
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public struct NoTransport: StreamProtocol {
@@ -1015,6 +1052,7 @@ public struct NoTransport: StreamProtocol {
         case void
         #if !NETWORK_EMBEDDED
         case bridge(StreamBridge)
+        case customLink(CustomLink)
         #endif
     }
 
@@ -1028,6 +1066,10 @@ public struct NoTransport: StreamProtocol {
     public init(@ProtocolStackBuilder<StreamBridge> _ builder: () -> (StreamBridge)) {
         belowProtocol = .bridge(builder())
     }
+
+    public init(@ProtocolStackBuilder<CustomLink> _ builder: () -> (CustomLink)) {
+        belowProtocol = .customLink(builder())
+    }
     #endif
 
     public func configure(parameters: Parameters) {
@@ -1035,6 +1077,8 @@ public struct NoTransport: StreamProtocol {
         #if !NETWORK_EMBEDDED
         case .bridge(let bridge):
             bridge.configure(parameters: parameters)
+        case .customLink(let customLink):
+            customLink.configure(parameters: parameters)
         #endif
         case .void:
             break

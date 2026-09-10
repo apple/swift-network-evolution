@@ -812,4 +812,77 @@ final class SwiftNetworkConnectionTests: NetTestCase {
         )
     }
     #endif
+
+    func testNoTransportCustomLink() {
+        let group = DispatchGroup()
+        group.enter()
+        var injection: (([UInt8]) -> Void)?
+        let c1 = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 7778),
+            using: .parameters {
+                NoTransport {
+                    CustomLink()
+                        .tx { span in
+                            XCTAssertEqual(span.count, 3)
+                            XCTAssertEqual(span[0], 1)
+                            XCTAssertEqual(span[1], 2)
+                            XCTAssertEqual(span[2], 3)
+                        }
+                        .rx { handler in
+                            injection = handler
+                        }
+                }
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
+        )
+        .onStateUpdate { _, state in
+            print("c1 \(state)")
+            switch state {
+            case .ready:
+                group.leave()
+            default:
+                break
+            }
+        }
+        XCTAssertNotNil(c1)
+
+        c1.start()
+
+        XCTAssertEqual(
+            group.wait(timeout: DispatchTime.now() + .seconds(5)),
+            DispatchTimeoutResult.success
+        )
+
+        c1.send(.message(content: [1, 2, 3])) { result in
+            switch result {
+            case .success:
+                break
+            case .failure(let error):
+                XCTFail("send failed with error \(error)")
+            }
+
+        }
+
+        if let injection {
+            injection([4, 5, 6])
+        }
+
+        group.enter()
+
+        c1.receive(atLeast: 1, atMost: Int.max) { result in
+            switch result {
+            case .success(let message):
+                XCTAssertEqual(message.content, [4, 5, 6])
+                group.leave()
+            case .failure(let error):
+                XCTFail("receive failed with error \(error)")
+            }
+        }
+
+        XCTAssertEqual(
+            group.wait(timeout: DispatchTime.now() + .seconds(5)),
+            DispatchTimeoutResult.success
+        )
+
+        c1.cancel()
+    }
 }
