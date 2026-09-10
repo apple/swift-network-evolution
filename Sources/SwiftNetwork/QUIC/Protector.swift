@@ -792,7 +792,7 @@ struct Protector: ~Copyable, PrefixedLoggable {
     /// - Parameters:
     ///   - iv: The IV used to derive the nonce.
     ///   - packetNumber: The packet number XOR'd into the right side of the IV.
-    @inline(__always)
+    @inline(always)
     private static func prepareNonce(
         iv: ProtectorIV,
         packetNumber: PacketNumber
@@ -1262,7 +1262,7 @@ struct Protector: ~Copyable, PrefixedLoggable {
         trafficUpdate(previousKeyState: previousKeyState, isWrite: true)
     }
 
-    @inline(__always)
+    @inline(always)
     func getPacketNumber(
         for packetNumberSpace: PacketNumberSpace
     ) -> PacketNumber {
@@ -1276,7 +1276,7 @@ struct Protector: ~Copyable, PrefixedLoggable {
         sequenceNumber[packetNumberSpace]
     }
 
-    @inline(__always)
+    @inline(always)
     private func keyType(keys: borrowing SecFramerKeys) -> SecFramerKeys.KeyType {
         keys.type
     }
@@ -1289,28 +1289,28 @@ struct Protector: ~Copyable, PrefixedLoggable {
         writeFramer[keyState.rawValue] = SecFramerKeys.empty(type: writeType)
     }
 
-    @inline(__always)
+    @inline(always)
     func sealKeyReady(for keyState: PacketKeyState) -> Bool {
         !keysReadyInner(keys: writeFramer[keyState.rawValue])
     }
 
-    @inline(__always)
+    @inline(always)
     func openKeyReady(for keyState: PacketKeyState) -> Bool {
         !keysReadyInner(keys: readFramer[keyState.rawValue])
     }
 
-    @inline(__always)
+    @inline(always)
     private func keysReadyInner(keys: borrowing SecFramerKeys) -> Bool {
         keys.isEmpty
     }
 
-    @inline(__always)
+    @inline(always)
     func keysReady(for keyState: PacketKeyState) -> Bool {
         !keysReadyInner(keys: readFramer[keyState.rawValue])
             && !keysReadyInner(keys: writeFramer[keyState.rawValue])
     }
 
-    @inline(__always)
+    @inline(always)
     func getTagSize(for keyState: PacketKeyState?) -> UInt8 {
         16
     }

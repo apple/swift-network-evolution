@@ -354,7 +354,7 @@ struct AckBlockIterator: IteratorProtocol {
     let ranges: ArraySlice<FrameAckRange>
 
     @inlinable
-    @inline(__always)
+    @inline(always)
     init(_ sequence: AckBlockSequence) {
         self.ranges = sequence.ranges[...]
         self.largest = sequence.largest
@@ -362,7 +362,7 @@ struct AckBlockIterator: IteratorProtocol {
     }
 
     @inlinable
-    @inline(__always)
+    @inline(always)
     mutating func next() -> AckBlock? {
         while true {
             guard index < ranges.count else {
@@ -406,7 +406,7 @@ struct AckBlockSequence: Sequence {
     let ranges: [FrameAckRange]
 
     @inlinable
-    @inline(__always)
+    @inline(always)
     init(largest: PacketNumber, ranges: [FrameAckRange], oldestPacketNumber: PacketNumber) {
         self.largest = largest
         self.ranges = ranges
@@ -414,7 +414,7 @@ struct AckBlockSequence: Sequence {
     }
 
     @inlinable
-    @inline(__always)
+    @inline(always)
     func makeIterator() -> AckBlockIterator {
         AckBlockIterator(self)
     }
@@ -978,7 +978,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 }
 
 extension UInt64 {
-    @inline(__always)
+    @inline(always)
     // Just like ffs().
     var indexOfFirstSetBit: UInt64 {
         self != 0 ? (UInt64(self.trailingZeroBitCount) &+ 1) : 0
@@ -1162,7 +1162,7 @@ struct AckBitstringIterator: IteratorProtocol {
     var bitstringXored: ArraySlice<UInt64>
 
     @inlinable
-    @inline(__always)
+    @inline(always)
     init(_ sequence: AckBitstringSequence) {
         self.bitstringXored = sequence.bitstringXored[...]
         self.currentWord = 0
@@ -1172,7 +1172,7 @@ struct AckBitstringIterator: IteratorProtocol {
     }
 
     @inlinable
-    @inline(__always)
+    @inline(always)
     mutating func next() -> PacketNumber? {
         var index: UInt64 = 0
         while currentWord < size {
@@ -1212,7 +1212,7 @@ struct AckBitstringSequence: Sequence {
     )
 
     @inlinable
-    @inline(__always)
+    @inline(always)
     init(
         initialWord: UInt64,
         startingWord: UInt64,
@@ -1233,7 +1233,7 @@ struct AckBitstringSequence: Sequence {
     }
 
     @inlinable
-    @inline(__always)
+    @inline(always)
     func makeIterator() -> AckBitstringIterator {
         AckBitstringIterator(self)
     }

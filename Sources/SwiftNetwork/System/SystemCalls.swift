@@ -140,7 +140,7 @@ extension System {
         }
     }
 
-    @inline(__always)
+    @inline(always)
     @discardableResult
     static func syscallOptional<T>(
         where function: String = #function,

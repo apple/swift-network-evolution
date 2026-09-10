@@ -256,7 +256,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var currentSendTimestamp: NetworkClock.Instant?
 
     @_optimize(speed)
-    @inline(__always)
+    @inline(always)
     var now: NetworkClock.Instant {
         if let currentInboundReceiveTimestamp {
             return currentInboundReceiveTimestamp

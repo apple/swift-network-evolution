@@ -83,7 +83,7 @@ struct ReassemblyQueue: ~Copyable {
         #endif
     }
 
-    @inline(__always)
+    @inline(always)
     private func traceAppend(_ newTrace: @autoclosure () -> String) {
         #if QUIC_REASSQ_TRACE
         let newTraceMessage = newTrace()
