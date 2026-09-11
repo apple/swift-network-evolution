@@ -1008,6 +1008,70 @@ public struct StreamBridge: StreamProtocol {
 }
 #endif
 
+#if !NETWORK_EMBEDDED
+@_spi(Essentials)
+@available(Network 0.1.0, *)
+public struct CustomLink: StreamProtocol {
+    public typealias ContentType = Void
+
+    private var tx: ((Span<UInt8>) -> Void)? = nil
+    private var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? = nil
+
+    public let belowProtocol: Void
+    /// Configure CustomLink for tx byte handling
+    ///
+    /// The handler will be called when outgoing bytes arrive at
+    /// the CustomLink protocol in the protocol stack.
+    ///
+    /// Note: handler will be called in the context of the protocol
+    /// stack, so handler must not block to ensure the networking layer
+    /// continues to process incoming and outgoing data.
+    ///
+    /// - Parameter handler: A closure that will be called with a
+    /// span of bytes to be written to the network.
+    public func tx(_ handler: @escaping (Span<UInt8>) -> Void) -> Self {
+        var mutableSelf = self
+        mutableSelf.tx = handler
+        return mutableSelf
+    }
+
+    /// Configure CustomLink for rx byte handling
+    ///
+    /// The handler will be called when CustomLinkProtocol
+    /// initializes. It passes in an escaping closure that can
+    /// be called whenever bytes need to be injected into
+    /// CustomLinkProtocol.
+    ///
+    /// Note: handler will be called in the context of the protocol
+    /// stack, so handler must not block to ensure the networking layer
+    /// continues to process incoming and outgoing data. A typical
+    /// implementation will store the escaping closure for later use and
+    /// return.
+    ///
+    /// - Parameter handler: A closure that will be called with an
+    /// escaping closure that should be stored for later use when bytes
+    /// need to be injected into the protocol stack.
+    public func rx(_ handler: @escaping ((@escaping (Span<UInt8>) -> Void) -> Void)) -> Self {
+        var mutableSelf = self
+        mutableSelf.rx = handler
+        return mutableSelf
+    }
+
+    init() {
+    }
+
+    public func configure(parameters: Parameters) {
+        let options = ProtocolOptions<CustomLinkProtocol>(
+            protocolIdentifier: CustomLinkProtocol.identifier,
+            perProtocolOptions: CustomLinkProtocol.Options()
+        )
+        options.tx = tx
+        options.rx = rx
+        parameters.defaultStack.link = .custom(options)
+    }
+}
+#endif
+
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public struct NoTransport: StreamProtocol {
@@ -1015,6 +1079,7 @@ public struct NoTransport: StreamProtocol {
         case void
         #if !NETWORK_EMBEDDED
         case bridge(StreamBridge)
+        case customLink(CustomLink)
         #endif
     }
 
@@ -1028,6 +1093,10 @@ public struct NoTransport: StreamProtocol {
     public init(@ProtocolStackBuilder<StreamBridge> _ builder: () -> (StreamBridge)) {
         belowProtocol = .bridge(builder())
     }
+
+    public init(@ProtocolStackBuilder<CustomLink> _ builder: () -> (CustomLink)) {
+        belowProtocol = .customLink(builder())
+    }
     #endif
 
     public func configure(parameters: Parameters) {
@@ -1035,6 +1104,8 @@ public struct NoTransport: StreamProtocol {
         #if !NETWORK_EMBEDDED
         case .bridge(let bridge):
             bridge.configure(parameters: parameters)
+        case .customLink(let customLink):
+            customLink.configure(parameters: parameters)
         #endif
         case .void:
             break
