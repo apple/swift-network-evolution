@@ -1656,7 +1656,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         if isServerConnection,
             connectionState == .idle || connectionState == .versionSent || connectionState == .retrySent
         {
-            if state == .retrySent {
+            if connectionState == .retrySent {
                 // If the retry has been sent, preflight if this is an initial packet with a token.
                 // If so, allow it to proceed through the normal handshake / parsing process
                 guard packetParser.retryTokenPresent(&frame, token: initialToken) else {
