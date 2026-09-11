@@ -124,7 +124,11 @@ public struct FrameArray: ~Copyable {
                 count -= 1
             // Don't increment index
             case .replaceWithFramesAndContinue(var newFrames):
-                frames.remove(at: index)
+                if index == 0 {
+                    frames.removeFirst()
+                } else {
+                    frames.remove(at: index)
+                }
                 count -= 1
                 let insertCount = newFrames.count
                 var insertIndex = index
