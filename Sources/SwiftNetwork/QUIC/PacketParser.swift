@@ -231,8 +231,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                 return nil
             }
             let tagSize = connection.protector.getTagSize(for: packet.keyState)
-            let payloadAndTagSize = UInt16(originalLength) - packet.headerLength
-            guard payloadAndTagSize >= tagSize else {
+            let payloadAndTagSize = originalLength - Int(packet.headerLength)
+            guard payloadAndTagSize >= Int(tagSize) else {
                 return nil
             }
             packet.tagLength = tagSize
