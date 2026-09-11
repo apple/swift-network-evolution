@@ -1593,6 +1593,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 datagrams.finalizeAllFramesAsFailed()
                 return
             }
+            let inConnectedState = connectionState == .connected
             var receivedBytes: Int = 0
             let receivedPackets: Int = datagrams.count
             datagrams.iterateMutableFrames { frame in
@@ -1600,17 +1601,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 handleInbound(
                     frame: &frame,
                     from: path,
-                    connectionState: connectionState,
+                    inConnectedState: inConnectedState,
                     isServerConnection: isServerConnection
                 )
                 return .removeFrameAndContinue
             }
             stats.increment(.rxPackets, by: receivedPackets)
             stats.increment(.rxBytes, by: receivedBytes)
-            withCurrentPath { (path: borrowing QUICPath) -> Void in
-                path.pathStatistics.increment(.rxPackets)
-                path.pathStatistics.increment(.rxBytes, by: receivedBytes)
-            }
+            path.pathStatistics.increment(.rxPackets, by: receivedPackets)
+            path.pathStatistics.increment(.rxBytes, by: receivedBytes)
         }
 
         // Note: inboundStopping() triggers any sendFrames*() as necessary due
@@ -1623,7 +1622,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     func handleInbound(
         frame: inout Frame,
         from path: QUICPath,
-        connectionState: QUICConnectionState,
+        inConnectedState: Bool,
         isServerConnection: Bool,
     ) {
         deferClosing = true
@@ -1653,10 +1652,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         // If we haven't derived the INITIAL keys, try to do that now.
-        if isServerConnection,
-            connectionState == .idle || connectionState == .versionSent || connectionState == .retrySent
+        if isServerConnection, !inConnectedState,
+            state == .idle || state == .versionSent || state == .retrySent
         {
-            if connectionState == .retrySent {
+            if state == .retrySent {
                 // If the retry has been sent, preflight if this is an initial packet with a token.
                 // If so, allow it to proceed through the normal handshake / parsing process
                 guard packetParser.retryTokenPresent(&frame, token: initialToken) else {
@@ -1673,7 +1672,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 return
             }
 
-            if connectionState == .retrySent {
+            if state == .retrySent {
                 // The token was validated and is no longer needed.
                 self.initialToken = nil
             }
