@@ -568,6 +568,22 @@ public struct PathProperties: CustomStringConvertible {
     }
     #endif
 
+    // Largest packet the direct interface can accept for TCP segmentation
+    // offload, or 0 when the interface cannot segment (i.e. TSO unavailable).
+    var tsoMaxSegmentSizeIPv4: Int {
+        if networkIsSatisfied, let directInterface {
+            return directInterface.ipv4TSOMaxSegmentSize
+        }
+        return 0
+    }
+
+    var tsoMaxSegmentSizeIPv6: Int {
+        if networkIsSatisfied, let directInterface {
+            return directInterface.ipv6TSOMaxSegmentSize
+        }
+        return 0
+    }
+
     var hardwareChecksumFlags: UInt32 {
         if networkIsSatisfied, let directInterface {
             return UInt32(directInterface.hardwareChecksumFlags)
