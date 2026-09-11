@@ -395,12 +395,14 @@ final class RecoveryTests: XCTestCase {
     }
 
     func testPacketAckedNonAckEliciting() throws {
-        let ackFrame = FrameAck(
-            packetNumberSpace: .applicationData,
-            largest: 3,
-            delay: 0,
-            ranges: [FrameAckRange(gap: 0, range: 3)]
-        )
+        func makeAckFrame() -> FrameAck {
+            FrameAck(
+                packetNumberSpace: .applicationData,
+                largest: 3,
+                delay: 0,
+                ranges: [FrameAckRange(gap: 0, range: 3)]
+            )
+        }
         var packet = SentPacketRecord()
         packet.identifier = .init(space: .applicationData, number: 3)
         packet.isInFlightEligible = true
@@ -408,7 +410,7 @@ final class RecoveryTests: XCTestCase {
         packet.totalLength = 500 + 524
         packet.sentPath = connection.currentPath?.identifier ?? .none
         packet.transmittedItems = TransmittedItems()
-        packet.transmittedItems.ackFrame = .init(ackFrame)
+        packet.transmittedItems.ackFrame = .init(makeAckFrame())
         let space = packet.identifier.space
 
         sentPacket(packet, connection: connection)
@@ -428,7 +430,7 @@ final class RecoveryTests: XCTestCase {
 
         connection.recovery
             .receivedAck(
-                ack: ackFrame,
+                ack: makeAckFrame(),
                 ackedPath: connection.currentPath!,
                 connection: connection
             )

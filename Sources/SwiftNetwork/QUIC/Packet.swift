@@ -91,7 +91,6 @@ enum PacketKeyState: Int, CaseIterable, CustomStringConvertible, Comparable {
 struct SentPacketRecord: ~Copyable {
     var transmittedItems: TransmittedItems = TransmittedItems()
 
-    var identifier: PacketIdentifier = .init(space: .initial, number: 0)
     var number: PacketNumber {
         identifier.number
     }
@@ -103,10 +102,9 @@ struct SentPacketRecord: ~Copyable {
     var ectMarked: Bool {
         (ecn == .ect0 || ecn == .ect1)
     }
-
-    var sentPath: MultiplexingPathIdentifier = .none
-
     var totalLength = 0
+    var sentPath: MultiplexingPathIdentifier = .none
+    var identifier: PacketIdentifier = .init(space: .initial, number: 0)
 
     struct Flags: OptionSet {
         init(rawValue: Self.RawValue) {

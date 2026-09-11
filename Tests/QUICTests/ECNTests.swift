@@ -400,6 +400,7 @@ extension ECNTestStepAck {
 }
 
 // MARK: ECN Validation Tests
+#if swift(>=6.4)
 @available(Network 0.1.0, *)
 final class ECNValidateTests: XCTestCase {
     var ecn: ECN!
@@ -462,33 +463,36 @@ final class ECNValidateTests: XCTestCase {
     }
 
     func runTestStepAck(_ step: consuming ECNTestStepAck) {
-        let ack: FrameAck
+        let description = step.description
+        let repeats = step.repeats
+        let expectedState = step.expectedState
+        let expectedCECount = step.expectedCECount
+        let previousLargestAcked = step.previousLargestAcked
+        let newlyAckedECNCount = step.newlyAckedECNCount
         switch step.frame {
-        case .ack(let frame):
-            ack = frame
+        case .ack(let ack):
+            for i in 0..<repeats {
+                let ceCount = ecnPath.validateAck(
+                    ecn: ecn,
+                    frame: ack,
+                    previousLargestAcked: previousLargestAcked,
+                    newlyAckedECNPackets: newlyAckedECNCount
+                )
+                XCTAssertEqual(
+                    ceCount,
+                    expectedCECount,
+                    "\(description) at iteration \(i+1) has wrong ce count"
+                )
+                XCTAssertEqual(
+                    ecnPath.state,
+                    expectedState,
+                    "\(description) at iteration \(i+1) has wrong ce count"
+                )
+            }
         default:
-            XCTFail("Expected ACK frame, got \(step.frame.frameType)")
-            return
+            XCTFail("Expected ACK frame")
         }
-        for i in 0..<step.repeats {
-            let ceCount = ecnPath.validateAck(
-                ecn: ecn,
-                frame: ack,
-                previousLargestAcked: step.previousLargestAcked,
-                newlyAckedECNPackets: step.newlyAckedECNCount
-            )
-            XCTAssertEqual(
-                ceCount,
-                step.expectedCECount,
-                "\(step.description) at iteration \(i+1) has wrong ce count"
-            )
-            XCTAssertEqual(
-                ecnPath.state,
-                step.expectedState,
-                "\(step.description) at iteration \(i+1) has wrong ce count"
-            )
 
-        }
     }
 
     // probing (10th probe) -> validate (valid ACK_ECN for 5 probes) -> capable
@@ -957,5 +961,5 @@ final class ECNValidateTests: XCTestCase {
         )
     }
 }
-
+#endif
 #endif
