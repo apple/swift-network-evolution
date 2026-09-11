@@ -194,7 +194,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         path: QUICPath,
         ecn: IPProtocol.ECN
     ) -> Packet? {
-        if _slowPath(frame.unclaimedLength < Constants.minimumPacketSize) {
+        let originalLength = frame.unclaimedLength
+        if _slowPath(originalLength < Constants.minimumPacketSize) {
             connection.log.error("Dropping short packet, len=\(frame.unclaimedLength)")
             return nil
         }
@@ -229,8 +230,12 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             guard frame.unclaim(fromStart: Int(packet.headerLength), fromEnd: 0) else {
                 return nil
             }
-
-            packet.tagLength = connection.protector.getTagSize(for: packet.keyState)
+            let tagSize = connection.protector.getTagSize(for: packet.keyState)
+            let payloadAndTagSize = UInt16(originalLength) - packet.headerLength
+            guard payloadAndTagSize >= tagSize else {
+                return nil
+            }
+            packet.tagLength = tagSize
             guard openHeader(connection: connection, packet: &packet, frame: &frame) else {
                 return nil
             }
