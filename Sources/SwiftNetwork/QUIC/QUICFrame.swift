@@ -861,7 +861,7 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
     var delay: UInt64 {
         get { UInt64(_delay) }
         set {
-            guard newValue <= Constants.maximumAllowedAckDelay else {
+            guard newValue <= UInt64(Constants.maximumAllowedAckDelay) else {
                 _delay = Constants.maximumAllowedAckDelay
                 return
             }
