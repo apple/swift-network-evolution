@@ -2040,7 +2040,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private func handleInboundLongHeader(_ packet: borrowing Packet, isServerConnection: Bool) -> Bool {
         switch state {
         case .idle:
-            if !isServer {
+            if !isServerConnection {
                 let error = "invalid state for client: idle"
                 log.fault(error)
                 close(with: .internalError, error)
