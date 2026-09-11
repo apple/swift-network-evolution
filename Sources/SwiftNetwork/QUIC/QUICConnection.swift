@@ -1603,7 +1603,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     connectionState: connectionState,
                     isServerConnection: isServerConnection
                 )
-                return true
+                return .removeFrameAndContinue
             }
             stats.increment(.rxPackets, by: receivedPackets)
             stats.increment(.rxBytes, by: receivedBytes)
@@ -1611,7 +1611,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 path.pathStatistics.increment(.rxPackets)
                 path.pathStatistics.increment(.rxBytes, by: receivedBytes)
             }
-            datagrams.removeAll()
         }
 
         // Note: inboundStopping() triggers any sendFrames*() as necessary due

@@ -116,7 +116,11 @@ public struct FrameArray: ~Copyable {
             case .stopIterating:
                 return
             case .removeFrameAndContinue:
-                frames.remove(at: index)
+                if index == 0 {
+                    frames.removeFirst()
+                } else {
+                    frames.remove(at: index)
+                }
                 count -= 1
             // Don't increment index
             case .replaceWithFramesAndContinue(var newFrames):
@@ -263,11 +267,6 @@ public struct FrameArray: ~Copyable {
             frames[index].finalize(success: false)
         }
         frames = .init()
-    }
-
-    // NOTE: This function differs from finalizeAllFramesAsFailed because it assumes all frames are finalized already
-    public mutating func removeAll() {
-        frames.removeAll()
     }
 
     public var unclaimedLength: Int {
