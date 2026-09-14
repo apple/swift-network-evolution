@@ -302,12 +302,12 @@ public struct NetworkClock: Clock {
         /// the raw reader that a scheduler exposes, and `check-mockable-clock.sh` fails the build
         /// on any use of it outside that allowlist.
         package static var systemNow: Instant {
-            return Instant(microseconds: Int64(System.Time.now()))
+            Instant(microseconds: Int64(System.Time.now()))
         }
 
         /// The system absolute clock. See `systemNow`.
         package static var systemNowAbsolute: Instant {
-            return Instant(nanoseconds: Int64(System.Time.nowAbsoluteNanoseconds()))
+            Instant(nanoseconds: Int64(System.Time.nowAbsoluteNanoseconds()))
         }
 
         public static var zero: Instant {
