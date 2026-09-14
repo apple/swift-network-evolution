@@ -1584,9 +1584,32 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         accessReceivedDatagrams(path: pathID) { (datagrams, path) in
-            while let frame = datagrams.popFirst() {
-                handleInbound(frame: frame, from: path)
+            let connectionState = state
+            let isServerConnection: Bool = isServer
+            if connectionState.isTerminal {
+                log.debug(
+                    "Ignoring incoming packets for connection in terminal state"
+                )
+                datagrams.finalizeAllFramesAsFailed()
+                return
             }
+            let inConnectedState = connectionState == .connected
+            var receivedBytes: Int = 0
+            let receivedPackets: Int = datagrams.count
+            datagrams.iterateMutableFrames { frame in
+                receivedBytes &+= frame.unclaimedLength
+                handleInbound(
+                    frame: &frame,
+                    from: path,
+                    inConnectedState: inConnectedState,
+                    isServerConnection: isServerConnection
+                )
+                return .removeFrameAndContinue
+            }
+            stats.increment(.rxPackets, by: receivedPackets)
+            stats.increment(.rxBytes, by: receivedBytes)
+            path.pathStatistics.increment(.rxPackets, by: receivedPackets)
+            path.pathStatistics.increment(.rxBytes, by: receivedBytes)
         }
 
         // Note: inboundStopping() triggers any sendFrames*() as necessary due
@@ -1597,8 +1620,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     func handleInbound(
-        frame: consuming Frame,
-        from path: QUICPath
+        frame: inout Frame,
+        from path: QUICPath,
+        inConnectedState: Bool,
+        isServerConnection: Bool,
     ) {
         deferClosing = true
         defer {
@@ -1609,30 +1634,27 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let dataLength = frame.unclaimedLength
         QUICSignpost.inbound(id: signpostID, length: dataLength)
 
-        if state.isTerminal {
-            log.debug(
-                "Ignoring incoming packet (length: \(dataLength)) for connection in terminal state"
-            )
-            return
-        }
-
-        stats.increment(.rxBytes, by: dataLength)
         guard dataLength <= UInt16.max else {
             log.info("Refusing to parse packet with size \(dataLength)")
             return
         }
 
+        #if DatapathLogging
+        // Avoid accessing log as a instance property to avoid per-packet being / end access
         log.datapath("Handling inbound packet (length: \(dataLength))")
+        #endif
 
         var unvalidatedPath = false
         // Attempt path validation if this is the first packet that we have received on this path.
-        if isServer, path != currentPath, !path.isValidated {
+        if isServerConnection, !path.isValidated, path != currentPath {
             unvalidatedPath = true
             path.beginValidation()
         }
 
         // If we haven't derived the INITIAL keys, try to do that now.
-        if isServer, state == .idle || state == .versionSent || state == .retrySent {
+        if isServerConnection, !inConnectedState,
+            state == .idle || state == .versionSent || state == .retrySent
+        {
             if state == .retrySent {
                 // If the retry has been sent, preflight if this is an initial packet with a token.
                 // If so, allow it to proceed through the normal handshake / parsing process
@@ -1659,7 +1681,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             state.change(to: .initialReceived, logIDString: logPrefixer.logIDString)
             keyState = .handshake
             handshakeStartTime = self.now
+            #if SignpostOutput
             signpostConnectInterval = QUICSignpost.connectBegin(id: signpostID)
+            #endif
 
             guard serverStartIdleTimer() else {
                 let error = "Unable to start server idle timer"
@@ -1680,7 +1704,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 path: path,
                 ecnFlags: frame.ecnFlag,
                 unvalidatedPath: unvalidatedPath,
-                coalesced: coalesced
+                coalesced: coalesced,
+                isServerConnection: isServerConnection,
             )
             if !continueProcessing {
                 frame.finalize(success: true)
@@ -1702,7 +1727,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 coalesced = true
             }
         }
-        frame.finalize(success: true)
     }
 
     private func handleInboundPacket(
@@ -1710,7 +1734,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         path: QUICPath,
         ecnFlags: IPProtocol.ECN,
         unvalidatedPath: Bool,
-        coalesced: Bool
+        coalesced: Bool,
+        isServerConnection: Bool
     ) -> Bool {
         let packet = packetParser.parse(frame: &frame, connection: self, path: path, ecn: ecnFlags)
         guard var packet else {
@@ -1765,7 +1790,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         )
         let continueProcessing: Bool
         if packet.longHeader {
-            continueProcessing = handleInboundLongHeader(packet)
+            continueProcessing = handleInboundLongHeader(packet, isServerConnection: isServerConnection)
         } else {
             continueProcessing = handleInboundShortHeader(packet, path: path)
         }
@@ -1816,7 +1841,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             sendFrames(on: path)
         }
 
-        if isServer, isNonProbing, path != currentPath {
+        if isServerConnection, isNonProbing, path != currentPath {
             migration.migrate(to: path, connection: self)
         }
         if isAckEliciting {
@@ -2011,10 +2036,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         state.change(to: .initialSent, logIDString: logPrefixer.logIDString)
     }
 
-    private func handleInboundLongHeader(_ packet: borrowing Packet) -> Bool {
+    private func handleInboundLongHeader(_ packet: borrowing Packet, isServerConnection: Bool) -> Bool {
         switch state {
         case .idle:
-            if !isServer {
+            if !isServerConnection {
                 let error = "invalid state for client: idle"
                 log.fault(error)
                 close(with: .internalError, error)
@@ -2030,7 +2055,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // code PROTOCOL_VIOLATION in response to the first Initial
             // packet it receives from a client if the UDP datagram is
             // smaller than 1200 octets.
-            if isServer && packet.keyState == .initial && packet.totalLength < 1200 {
+            if isServerConnection && packet.keyState == .initial && packet.totalLength < 1200 {
                 let error = "first packet received from the client was smaller than 1200 octets"
                 log.error(error)
                 close(with: .protocolViolation, error)
@@ -2044,7 +2069,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             break
 
         case .initialReceived:
-            if !isServer {
+            if !isServerConnection {
                 let error = "invalid state for client: initialReceived"
                 log.fault(error)
                 close(with: .internalError, error)
@@ -2193,13 +2218,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             packetNumber: packet.identifier.number,
             now: self.now
         )
-        let packetLength = packet.totalLength
-        stats.increment(.rxPackets)
-        stats.increment(.rxBytes, by: packetLength)
-        withCurrentPath { (path: borrowing QUICPath) -> Void in
-            path.pathStatistics.increment(.rxPackets)
-            path.pathStatistics.increment(.rxBytes, by: Int(packetLength))
-        }
         return true
     }
 
@@ -2301,13 +2319,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             keyState = packetKeyState
         }
 
-        let packetLength = packet.totalLength
-        stats.increment(.rxPackets)
-        stats.increment(.rxBytes, by: packetLength)
-        withCurrentPath { (path: borrowing QUICPath) -> Void in
-            path.pathStatistics.increment(.rxPackets)
-            path.pathStatistics.increment(.rxBytes, by: Int(packetLength))
-        }
         self.ack.append(
             packetNumberSpace: packet.numberSpace,
             packetNumber: packet.number,
