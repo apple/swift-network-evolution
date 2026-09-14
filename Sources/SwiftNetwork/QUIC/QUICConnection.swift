@@ -5129,7 +5129,7 @@ extension QUICConnection {
     }
 
     func processAckFrame(
-        _ frame: FrameAck,
+        _ frame: consuming FrameAck,
         packetNumberSpace: PacketNumberSpace,
         path: QUICPath
     ) -> Bool {

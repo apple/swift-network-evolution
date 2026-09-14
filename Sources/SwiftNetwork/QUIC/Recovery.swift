@@ -483,7 +483,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
 
         private mutating func findNewlyAckedPackets(
-            ackFrame: FrameAck,
+            ackFrame: borrowing FrameAck,
             path: QUICPath
         ) -> AckBitstringSequence {
             var oldestSentPacketNumber: PacketNumber? = nil
@@ -517,7 +517,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
         @inline(always)
         mutating func findNewlyAckedPackets(
-            ackFrame: FrameAck,
+            ackFrame: borrowing FrameAck,
             path: QUICPath,
             now: NetworkClock.Instant,
             connection: QUICConnection

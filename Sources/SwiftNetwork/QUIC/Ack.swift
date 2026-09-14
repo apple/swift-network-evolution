@@ -255,7 +255,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
             if let ecnCounter {
                 ack.ecnCounter = ecnCounter
             }
-            ackFrame = ack
+            ackFrame = consume ack
         }
         var blockCount = 0
         for index in blocks.indices.reversed() {
@@ -727,7 +727,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     static func blockSequence(
-        frame: FrameAck,
+        frame: borrowing FrameAck,
         oldestPacketNumber: PacketNumber = .initial
     ) -> AckBlockSequence {
         AckBlockSequence(
@@ -996,12 +996,12 @@ struct AckBitstring: ~Copyable {
 
     init() {}
 
-    init(frame: FrameAck, oldestPN: PacketNumber) {
+    init(frame: borrowing FrameAck, oldestPN: PacketNumber) {
         reinit(frame: frame, oldestPN: oldestPN)
     }
 
     // Same as init, but does not zero out bitstring[]
-    mutating func reinit(frame: FrameAck, oldestPN: PacketNumber) {
+    mutating func reinit(frame: borrowing FrameAck, oldestPN: PacketNumber) {
         for block in Ack.blockSequence(frame: frame, oldestPacketNumber: oldestPN) {
             let start = max(block.start, oldestPN)
             nset(start: start, stop: block.end)
