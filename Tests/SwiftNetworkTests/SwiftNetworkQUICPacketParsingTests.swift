@@ -171,6 +171,70 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
         )
     }
 
+    func testMalformedShortHeaderInsufficientPacketNumberAndSampleBytes() throws {
+        let harness = QUICTestHarness()
+        harness.runQUICTest(
+            afterHandshake: { harness in
+                let injectExpectation = XCTestExpectation(
+                    description: "Malformed short-header datagram injected"
+                )
+
+                harness.context.async {
+                    guard let serverInstance = harness.state?.serverInstance else {
+                        XCTFail("Server instance missing after handshake")
+                        injectExpectation.fulfill()
+                        return
+                    }
+
+                    // The CID the peer uses to address the server. The
+                    // initial SCID (inserted first) is the one the client
+                    // keeps using absent migration.
+                    guard
+                        let serverCID = serverInstance.localCIDs.managedConnectionIDs.first?
+                            .connectionID.connectionID
+                    else {
+                        XCTFail("Server has no local connection IDs")
+                        injectExpectation.fulfill()
+                        return
+                    }
+                    XCTAssertEqual(
+                        serverCID.count,
+                        QUICConnectionID.defaultServerSCIDLength,
+                        "Server local CID should have the default length (8)"
+                    )
+                    // 25-byte short header: fixed bit set, headerLength ==
+                    // 1 + 8 == 9, leaving 16 bytes of payload+tag. It clears the
+                    // payloadAndTagSize check but falls short
+                    // of the 4 byte packet number plus 16-byte header
+                    // protection sample the parser needs before it can
+                    // safely remove header protection.
+                    var datagram: [UInt8] = [0x40]
+                    datagram.append(contentsOf: serverCID)
+                    datagram.append(contentsOf: [UInt8](repeating: 0x42, count: 16))
+                    XCTAssertEqual(datagram.count, 25)
+
+                    BridgeDatagramProtocol.Instance.injectDatagram(
+                        Frame(copyBuffer: datagram),
+                        to: harness.serverPort
+                    )
+                    injectExpectation.fulfill()
+                }
+                self.wait(for: [injectExpectation], timeout: 5.0)
+
+                let processedExpectation = XCTestExpectation(
+                    description: "Wait for server to process the injected datagram"
+                )
+                _ = XCTWaiter.wait(for: [processedExpectation], timeout: 1.0)
+
+                XCTAssertEqual(
+                    harness.state?.serverInstance.state,
+                    .connected,
+                    "Server connection must survive a short-header datagram with insufficient bytes for the packet number and sample"
+                )
+            }
+        )
+    }
+
     // MARK: - Helpers
 
     private struct IdleServer {
