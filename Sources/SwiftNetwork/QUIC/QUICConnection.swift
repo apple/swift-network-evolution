@@ -269,14 +269,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } else if let currentSendTimestamp {
             return currentSendTimestamp
         } else {
-            return context.scheduler.now
+            return context.now
         }
     }
 
     @_optimize(speed)
     @inline(always)
     var nowAbsolute: NetworkClock.Instant {
-        currentAbsoluteTimestamp ?? context.scheduler.nowAbsolute
+        currentAbsoluteTimestamp ?? context.nowAbsolute
     }
 
     var lastPacketReceivedTimestamp: NetworkClock.Instant = .zero
@@ -604,7 +604,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         // Only setup qlog if the directory is set
         if let qlogConfiguration {
-            self.qLog = QLog(configuration: qlogConfiguration, scheduler: context.scheduler)
+            self.qLog = QLog(configuration: qlogConfiguration, context: context)
             log.info("qlog setup with configuration: \(qlogConfiguration)")
         }
         #endif
@@ -1575,8 +1575,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let inboundInterval = QUICSignpost.inboundStarting(id: signpostID)
 
         // Save a timestamp to avoid calculating `now` again during processing
-        currentInboundReceiveTimestamp = context.scheduler.now
-        currentAbsoluteTimestamp = context.scheduler.nowAbsolute
+        currentInboundReceiveTimestamp = context.now
+        currentAbsoluteTimestamp = context.nowAbsolute
 
         // Start anew with pendingItems for applicationPendingItems
         // Detect if any received packet contains a QUIC Frame that unblocks
@@ -2426,8 +2426,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let outboundInterval = QUICSignpost.outboundStarting(id: signpostID)
 
         // Save a timestamp to avoid calculating `now` again during processing
-        currentSendTimestamp = context.scheduler.now
-        currentAbsoluteTimestamp = context.scheduler.nowAbsolute
+        currentSendTimestamp = context.now
+        currentAbsoluteTimestamp = context.nowAbsolute
         defer {
             // Always reset
             QUICSignpost.outboundStopping(outboundInterval)
@@ -3343,7 +3343,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 // Deliberately the live clock rather than `self.now`: under a batch `self.now` is
                 // pinned, and `startSendingTimestamp` came from it, so comparing the two would
                 // always give zero and the cap could never be reached.
-                if startSendingTimestamp.duration(to: context.scheduler.now)
+                if startSendingTimestamp.duration(to: context.now)
                     >= Constants.maxPacketBurstDuration
                 {
                     // The maximum burst time has been reached

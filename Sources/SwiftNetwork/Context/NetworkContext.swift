@@ -459,6 +459,19 @@ extension NetworkContext {
     }
 
     #if !NETWORK_PRIVATE || NETWORK_STANDALONE
+    /// The context's current notion of the continuous clock.
+    ///
+    /// Time comes from whatever runs the context's timers, so a scheduler that holds scheduled
+    /// tasks instead of arming an OS timer reports the time it fires them at.
+    var now: NetworkClock.Instant {
+        scheduler.now
+    }
+
+    /// The context's current notion of the absolute clock.
+    var nowAbsolute: NetworkClock.Instant {
+        scheduler.nowAbsolute
+    }
+
     func resetTimer(for reference: TimerReference, to time: FutureTime) {
         switch time {
         case .unschedule:

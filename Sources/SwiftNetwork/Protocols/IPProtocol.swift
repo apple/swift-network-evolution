@@ -2044,7 +2044,7 @@ public struct IPProtocol: NetworkProtocol {
                     &self.instanceType,
                     log: self.log,
                     frames: &inboundFrames,
-                    now: self.context.scheduler.now
+                    now: self.context.now
                 )
                 guard !inboundFrames.isEmpty else {
                     log.error("Dropped inbound packets, checking for more")
