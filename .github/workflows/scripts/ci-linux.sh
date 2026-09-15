@@ -35,8 +35,8 @@ ci_run 'Build (reductive traits on)' \
     swift build --build-tests --quiet \
     --traits DisableDebugLogging,DisableErrorLogging "$@"
 ci_run 'Test (debug)' \
-    swift test --quiet -Xswiftc -DNETWORK_INTERNAL_TESTS "$@"
+    swift test --quiet "$@"
 ci_run 'Test (release)' \
-    swift test --quiet -c release -Xswiftc -DNETWORK_INTERNAL_TESTS "$@"
+    swift test --quiet -c release "$@"
 
 ci_finish

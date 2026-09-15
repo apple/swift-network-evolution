@@ -99,6 +99,83 @@ final class SwiftNetworkContextTests: NetTestCase {
         XCTAssertEqual(scheduler.unscheduledReferences, [timerReference])
     }
 
+    /// The context must report the external scheduler's time, not the system's.
+    func testContextReportsTheExternalSchedulersTime() {
+        let scheduler = AdvancingScheduler()
+        let context = NetworkContext(identifier: "test", externalScheduler: scheduler)
+
+        XCTAssertEqual(context.now, scheduler.now)
+        XCTAssertEqual(context.nowAbsolute, scheduler.nowAbsolute)
+
+        let start = context.now
+        scheduler.advance(by: .milliseconds(250))
+
+        XCTAssertEqual(context.now, start.advanced(by: .milliseconds(250)))
+    }
+
+    func testLongAdvanceDurationIsHonored() {
+        let scheduler = AdvancingScheduler()
+        let context = NetworkContext(identifier: "test", externalScheduler: scheduler)
+
+        let start = context.now
+        scheduler.advance(by: .days(5))
+
+        XCTAssertEqual(start.duration(to: context.now), .days(5))
+    }
+
+    func testShortAdvanceIsExact() {
+        let scheduler = AdvancingScheduler()
+        let context = NetworkContext(identifier: "test", externalScheduler: scheduler)
+
+        let start = context.now
+        // `System.Time.now()` divides down to microseconds,
+        // so a 500 ns advance is a duration it cannot represent at all
+        scheduler.advance(by: .nanoseconds(500))
+
+        XCTAssertEqual(start.duration(to: context.now), .nanoseconds(500))
+    }
+
+    func testBothClocksAdvanceTogether() {
+        let scheduler = AdvancingScheduler()
+        let context = NetworkContext(identifier: "test", externalScheduler: scheduler)
+
+        let offsetBefore = context.now.duration(to: context.nowAbsolute)
+        scheduler.advance(by: .seconds(2))
+        let offsetAfter = context.now.duration(to: context.nowAbsolute)
+
+        XCTAssertEqual(
+            offsetAfter,
+            offsetBefore,
+            "the clocks drifted by \(offsetAfter.nanoseconds - offsetBefore.nanoseconds) ns"
+        )
+    }
+
+    /// A scheduler whose clock a test moves by hand.
+    /// **NOTE:** Arms nothing: the tests that use it assert on the time the context reports, not on anything firing.
+    private final class AdvancingScheduler: NetworkContext.Scheduler {
+        /// The two clocks start apart, so a context that reports one in place of the other fails
+        /// the equality check instead of matching by coincidence.
+        private(set) var now = NetworkClock.Instant(milliseconds: 1000)
+        private(set) var nowAbsolute = NetworkClock.Instant(milliseconds: 5000)
+
+        func advance(by duration: NetworkDuration) {
+            now = now.advanced(by: duration)
+            nowAbsolute = nowAbsolute.advanced(by: duration)
+        }
+
+        func runImmediate(_ task: @escaping (() -> Void)) {
+            task()
+        }
+
+        func schedule(_ task: @escaping (() -> Void), after delay: NetworkDuration, reference: TimerReference) {
+        }
+
+        func unschedule(reference: TimerReference) {
+        }
+
+        var runningInScheduler: Bool { true }
+    }
+
     /// Records what it was asked to schedule instead of arming anything, so a test can assert on
     /// the delay a caller asked for rather than on time passing.
     private final class RecordingScheduler: NetworkContext.Scheduler {
@@ -118,6 +195,11 @@ final class SwiftNetworkContextTests: NetTestCase {
         }
 
         var runningInScheduler: Bool { true }
+
+        /// A fixed instant. Nothing here fires on a deadline, so no assertion depends on the time
+        /// this scheduler reports.
+        var now: NetworkClock.Instant { NetworkClock.Instant(milliseconds: 1000) }
+        var nowAbsolute: NetworkClock.Instant { now }
     }
 
     func testContextTimerReferences() {

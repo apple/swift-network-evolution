@@ -573,7 +573,7 @@ final class RecoveryTests: XCTestCase {
         packet.transmittedItems.ping = true
         let sentPath = connection.currentPath?.identifier ?? .none
         packet.sentPath = sentPath
-        var timeNow = NetworkClock.Instant.now
+        var timeNow = NetworkClock.Instant.systemNow
         sentPacket(packet, connection: connection)
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(packetNumberSpace: .initial),

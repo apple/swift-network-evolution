@@ -588,11 +588,14 @@ final class QLog {
     private var eventsList: [Event]
     private var topLevelObject: [String: Any]
     private var disableTimestamps: Bool = false
-    private let startTime = NetworkClock.Instant.now
+    private let context: NetworkContext
+    private let startTime: NetworkClock.Instant
     var configuration: QLogConfiguration?
 
-    public init(configuration: QLogConfiguration? = nil) {
+    public init(configuration: QLogConfiguration? = nil, context: NetworkContext) {
         self.configuration = configuration
+        self.context = context
+        self.startTime = context.now
         self.eventsList = []
         self.topLevelObject = [:]
         self.topLevelObject["qlog_version"] = "draft-01"
@@ -734,8 +737,9 @@ final class QLog {
         bytesInFlight: UInt64 = UInt64.max,
         slowStartThresh: UInt64 = UInt64.max,
         packetsInFlight: UInt64 = UInt64.max,
-        timestamp: NetworkClock.Instant = .now
+        timestamp: NetworkClock.Instant? = nil
     ) {
+        let timestamp = timestamp ?? context.now
         metricsUpdated(
             minRTT: .zero,
             smoothedRTT: .zero,
@@ -800,8 +804,9 @@ final class QLog {
         oldState: QLogCongestionState?,
         newState: QLogCongestionState?,
         trigger: QLogCongestionTrigger?,
-        timestamp: NetworkClock.Instant = .now
+        timestamp: NetworkClock.Instant? = nil
     ) {
+        let timestamp = timestamp ?? context.now
         let congestionEvent = EventCongestionStateUpdated(
             oldCongestionState: oldState,
             newCongestionState: newState,
