@@ -170,15 +170,12 @@ struct ECN: ~Copyable, PrefixedLoggable {
 
     static func processIPCodpoint(
         ecn: borrowing ECN,
-        path: QUICPath?,
+        path: QUICPath,
         stats: inout Statistics,
         packetNumberSpace: PacketNumberSpace,
         flag: IPProtocol.ECN
     ) -> Bool {
-        guard let path else {
-            return false
-        }
-        return path.ecnState?.processIPCodepoint(
+        path.ecnState?.processIPCodepoint(
             ecn: ecn,
             stats: &stats,
             packetNumberSpace: packetNumberSpace,
@@ -186,18 +183,17 @@ struct ECN: ~Copyable, PrefixedLoggable {
         ) ?? false
     }
 
+    @inline(always)
     static func outgoingIPCodepoint(
         ecn: borrowing ECN,
-        path: QUICPath?,
+        path: QUICPath,
         stats: inout Statistics,
         packet: inout SentPacketRecord
     ) -> IPProtocol.ECN {
-        guard let path else {
-            return .nonECT
-        }
-        return path.ecnState?.outgoingIPCodepoint(ecn: ecn, stats: &stats, packet: &packet)
+        path.ecnState?.outgoingIPCodepoint(ecn: ecn, stats: &stats, packet: &packet)
             ?? .nonECT
     }
+
 }
 
 // Per path explicit congestion notification state
@@ -449,6 +445,7 @@ struct ECNPathState: ~Copyable, PrefixedLoggable {
 
     // Returns the IP ECN flag that should be set on the outgoing packet
     // based on the state machine
+    @inline(always)
     mutating func outgoingIPCodepoint(
         ecn: borrowing ECN,
         stats: inout Statistics,

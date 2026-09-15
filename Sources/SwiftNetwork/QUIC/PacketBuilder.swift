@@ -49,6 +49,7 @@ enum PacketBuilderError: Int, Error {
 
 @available(Network 0.1.0, *)
 extension Packet {
+    @inline(always)
     static func build(
         into outboundFrame: inout Frame,
         number: PacketNumber,

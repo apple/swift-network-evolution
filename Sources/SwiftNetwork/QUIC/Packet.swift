@@ -129,6 +129,7 @@ struct SentPacketRecord: ~Copyable {
             }
         }
     }
+    @inline(always)
     var isInFlightEligible: Bool {
         get { flags.contains(.isInFlightEligible) }
         set {

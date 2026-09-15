@@ -3095,7 +3095,7 @@ struct TransmittedItems: ~Copyable {
                 && isFinal == other.isFinal
         }
     }
-    var sentStreams = NetworkUniqueArray<SentStream>(minimumCapacity: 2)
+    var sentStreams = NetworkUniqueArray<SentStream>()
 
     var maxStreamDataFlows = Deque<MultiplexedFlowIdentifier>()
     var streamDataBlockedFlows = Deque<MultiplexedFlowIdentifier>()
