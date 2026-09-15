@@ -1008,7 +1008,6 @@ public struct StreamBridge: StreamProtocol {
 }
 #endif
 
-#if !NETWORK_EMBEDDED
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public struct CustomLink: StreamProtocol {
@@ -1067,19 +1066,18 @@ public struct CustomLink: StreamProtocol {
         )
         options.tx = tx
         options.rx = rx
-        parameters.defaultStack.link = .custom(options)
+        parameters.defaultStack.link = .customLink(options)
     }
 }
-#endif
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public struct NoTransport: StreamProtocol {
     public enum BelowProtocol {
         case void
+        case customLink(CustomLink)
         #if !NETWORK_EMBEDDED
         case bridge(StreamBridge)
-        case customLink(CustomLink)
         #endif
     }
 
@@ -1093,20 +1091,20 @@ public struct NoTransport: StreamProtocol {
     public init(@ProtocolStackBuilder<StreamBridge> _ builder: () -> (StreamBridge)) {
         belowProtocol = .bridge(builder())
     }
+    #endif
 
     public init(@ProtocolStackBuilder<CustomLink> _ builder: () -> (CustomLink)) {
         belowProtocol = .customLink(builder())
     }
-    #endif
 
     public func configure(parameters: Parameters) {
         switch belowProtocol {
         #if !NETWORK_EMBEDDED
         case .bridge(let bridge):
             bridge.configure(parameters: parameters)
+        #endif
         case .customLink(let customLink):
             customLink.configure(parameters: parameters)
-        #endif
         case .void:
             break
         }

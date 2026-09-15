@@ -24,6 +24,8 @@ public struct ProtocolInstanceReference: Hashable {
         case streamEndpointFlow(_ instance: StreamEndpointFlowProtocol)
         case datagramEndpointFlow(_ instance: DatagramEndpointFlowProtocol)
 
+        case customLink(_ instance: CustomLinkProtocol.Instance)
+
         case tlsEncryptionLevel(_ instance: SwiftTLSProtocol.SwiftTLSQUICOnlyInstance.EncryptionLevelHandler)
         #if !NETWORK_NO_SWIFT_QUIC
         case quic(_ instance: QUICProtocol.Instance)
@@ -145,6 +147,12 @@ public struct ProtocolInstanceReference: Hashable {
 
     init(datagramEndpointFlow instance: DatagramEndpointFlowProtocol) {
         self.reference = .datagramEndpointFlow(instance)
+        self.context = instance.context
+        self._protocolEventStateIndex = instance.eventManager.register(with: self.context)
+    }
+
+    init(customLinkProtocol instance: CustomLinkProtocol.Instance) {
+        self.reference = .customLink(instance)
         self.context = instance.context
         self._protocolEventStateIndex = instance.eventManager.register(with: self.context)
     }
