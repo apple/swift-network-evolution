@@ -241,15 +241,14 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
     }
 }
 
-/// A continuous clock with a compact representation that tests can advance manually.
+/// A continuous clock with a compact representation.
 ///
-/// Mimics `Swift.ContinuousClock`, with two differences:
-/// 1. It uses `NetworkDuration` internally so its size is 8 bytes.
-/// 2. Tests can replace the OS clock with one they advance by hand,
-///    which makes time-dependent behaviour deterministic.
+/// Mimics `Swift.ContinuousClock`, except that it uses `NetworkDuration` internally so its size is
+/// 8 bytes. A test makes time deterministic by supplying a scheduler that reports instants of its
+/// own, not by replacing this clock.
 #if !NETWORK_EMBEDDED
 @_spi(Essentials)
-// Availability due to `SwiftNetwork`'s `System.Time` (used by `Instant.now`)
+// Availability due to `SwiftNetwork`'s `System.Time` (used by `Instant.systemNow`)
 @available(Network 0.1.0, *)
 #endif
 public struct NetworkClock: Clock {
@@ -298,9 +297,9 @@ public struct NetworkClock: Clock {
 
         /// The system continuous clock, which no test can control.
         ///
-        /// Reach for the scheduler's `now` instead, or the instant a caller already holds. This is
-        /// the raw reader that a scheduler exposes, and `check-mockable-clock.sh` fails the build
-        /// on any use of it outside that allowlist.
+        /// Reach for the context's `now` instead, or an instant the caller already holds.
+        /// `NetworkContext.DefaultScheduler` is the one reader of this property in the library, so a
+        /// test that supplies an external scheduler reports a time of its own.
         package static var systemNow: Instant {
             Instant(microseconds: Int64(System.Time.now()))
         }

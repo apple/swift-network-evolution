@@ -1574,7 +1574,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public func serviceReceivedDatagrams(path pathID: MultiplexingPathIdentifier) {
         let inboundInterval = QUICSignpost.inboundStarting(id: signpostID)
 
-        // Save a timestamp to avoid calculating `now` again during processing
+        // Save the timestamps to avoid calculating `now` again during processing
         currentInboundReceiveTimestamp = context.now
         currentAbsoluteTimestamp = context.nowAbsolute
 
@@ -2425,7 +2425,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         let outboundInterval = QUICSignpost.outboundStarting(id: signpostID)
 
-        // Save a timestamp to avoid calculating `now` again during processing
+        // Save the timestamps to avoid calculating `now` again during processing
         currentSendTimestamp = context.now
         currentAbsoluteTimestamp = context.nowAbsolute
         defer {
@@ -3340,7 +3340,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             } else if packetBurst >= Constants.packetBurstCount {
                 // The packet burst count has been reached, check the time
                 //
-                // Deliberately the live clock rather than `self.now`: under a batch `self.now` is
+                // Deliberately the context's clock rather than `self.now`: under a batch `self.now` is
                 // pinned, and `startSendingTimestamp` came from it, so comparing the two would
                 // always give zero and the cap could never be reached.
                 if startSendingTimestamp.duration(to: context.now)
