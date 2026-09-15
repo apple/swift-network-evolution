@@ -1783,7 +1783,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // before packet is appended for ACK below.
         let ceMarked = ECN.processIPCodpoint(
             ecn: self.ecn,
-            path: currentPath,
+            path: path,
             stats: &stats,
             packetNumberSpace: packet.numberSpace,
             flag: ecnFlags
@@ -3297,7 +3297,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         protector: inout Protector,
         stats: inout Statistics,
         ecn: inout ECN,
-        applicationPendingItems: inout PendingItems
+        applicationPendingItems: inout PendingItems,
+        totalTxBytes: inout Int,
+        totalTxPackets: inout Int
     ) {
         var packetBurst = 0
         var packetBurstTotal = 0
@@ -3315,7 +3317,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     datagramBatch: &datagramBatch,
                     protector: &protector,
                     stats: &stats,
-                    ecn: &ecn
+                    ecn: &ecn,
+                    totalTxBytes: &totalTxBytes,
+                    totalTxPackets: &totalTxPackets
                 )
             else {
                 break
@@ -3393,6 +3397,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         let startSendingTimestamp = self.now
+        var totalTxBytes: Int = 0
+        var totalTxPackets: Int = 0
 
         var datagramBatch = prepareApplicationDatagramBatch(
             path: path,
@@ -3425,7 +3431,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
-            applicationPendingItems: &applicationPendingItems
+            applicationPendingItems: &applicationPendingItems,
+            totalTxBytes: &totalTxBytes,
+            totalTxPackets: &totalTxPackets
+        )
+        recordTxPackets(
+            totalTxBytes: totalTxBytes,
+            totalPackets: totalTxPackets,
+            path: path
         )
         sendOutboundFrames(on: path)
         return true
@@ -3453,6 +3466,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         var totalSendBytes: UInt64 = 0
+        var totalTxBytes: Int = 0
+        var totalTxPackets: Int = 0
         // Ignoring is equivalent to an infinite window
         var availableCongestionWindow = UInt64.max
         if !ignoreCongestionWindow {
@@ -3488,7 +3503,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 datagramBatch: &datagramBatch,
                 protector: &protector,
                 stats: &stats,
-                ecn: &ecn
+                ecn: &ecn,
+                totalTxBytes: &totalTxBytes,
+                totalTxPackets: &totalTxPackets,
+            )
+            recordTxPackets(
+                totalTxBytes: totalTxBytes,
+                totalPackets: totalTxPackets,
+                path: path
             )
             sendOutboundFrames(on: path)
             return success
@@ -3536,7 +3558,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         datagramBatch: &datagramBatch,
                         protector: &protector,
                         stats: &stats,
-                        ecn: &ecn
+                        ecn: &ecn,
+                        totalTxBytes: &totalTxBytes,
+                        totalTxPackets: &totalTxPackets,
                     )
                 else {
                     break
@@ -3573,7 +3597,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     datagramBatch: &datagramBatch,
                     protector: &protector,
                     stats: &stats,
-                    ecn: &ecn
+                    ecn: &ecn,
+                    totalTxBytes: &totalTxBytes,
+                    totalTxPackets: &totalTxPackets,
                 )
             else {
                 break
@@ -3605,7 +3631,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
-            applicationPendingItems: &applicationPendingItems
+            applicationPendingItems: &applicationPendingItems,
+            totalTxBytes: &totalTxBytes,
+            totalTxPackets: &totalTxPackets
+        )
+        recordTxPackets(
+            totalTxBytes: totalTxBytes,
+            totalPackets: totalTxPackets,
+            path: path
         )
         sendOutboundFrames(on: path)
         return true
@@ -3623,13 +3656,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         datagramBatch: inout FrameArray,
         protector: inout Protector,
         stats: inout Statistics,
-        ecn: inout ECN
+        ecn: inout ECN,
+        totalTxBytes: inout Int,
+        totalTxPackets: inout Int,
     ) -> Bool {
-
-        if path.isFlowControlled {
-            log.datapath("Path is flow controlled")
-            return false
-        }
 
         let packetNumberSpace = pendingItems.packetNumberSpace
         let isPacing = isPacing
@@ -3755,7 +3785,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         repeat {
             let newPacketNumber = protector.getPacketNumber(for: space)
 
-            var packet: Packet?
+            var packet: Packet
             var sentPacketRecord = SentPacketRecord()
 
             do throws(QUICError) {
@@ -3788,10 +3818,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 return false
             }
 
-            guard var packet else {
-                outFrame.finalize(success: false)
-                return false
-            }
             let isInFlightEligible = sentPacketRecord.isInFlightEligible
             outFrame.ecnFlag = ECN.outgoingIPCodepoint(
                 ecn: ecn,
@@ -3847,10 +3873,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     lastAckElicitingPacketSentTimestamp = sendTimeContinuous
                 }
             }
-            stats.increment(.txBytes, by: totalPacketLength)
-            stats.increment(.txPackets)
-            path.pathStatistics.increment(.txPackets)
-            path.pathStatistics.increment(.txBytes, by: Int(totalPacketLength))
+            totalTxBytes += Int(totalPacketLength)
+            totalTxPackets += 1
 
             // Seal packet, incidentally this also effectively takes the packet number!
             do throws(QUICError) {
@@ -3931,6 +3955,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var sendPath = path
         sendPath.enqueueOutboundDatagram(outFrame)
         return true
+    }
+
+    func recordTxPackets(totalTxBytes: Int, totalPackets: Int, path: QUICPath) {
+        stats.increment(.txBytes, by: totalTxBytes)
+        stats.increment(.txPackets, by: totalPackets)
+        path.pathStatistics.increment(.txPackets, by: totalPackets)
+        path.pathStatistics.increment(.txBytes, by: totalTxBytes)
     }
 
     func retransmitPacket(
