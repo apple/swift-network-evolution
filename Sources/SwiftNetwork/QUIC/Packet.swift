@@ -606,7 +606,7 @@ struct Packet: ~Copyable {
         let numberLength = truncatedPacketNumber.headerFieldSize
         let result = Serializer.serialize(&frame, claim: true) { write throws(SerializationError) in
             try write.uint8(preamble | spinBit | keyPhase | numberLength)
-            try write.span(dcid.connectionIDStorage.span.bytes.extracting(0..<dcid.length))
+            try write.span(dcid.connectionIDStorage.span.bytes.extracting(unchecked: 0..<dcid.length))
             try write.encodedPacketNumber(truncatedPacketNumber)
         }
 
