@@ -4333,7 +4333,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             else {
                 return
             }
-            context.async {
+            self.async {
                 var flowType: QLogFlowType = .client
                 var applicationType = "client"
                 if self.isServer {
@@ -5571,7 +5571,7 @@ extension QUICConnection {
         }
         asyncSendRunning = true
         log.datapath("async: scheduling restart after packet burst")
-        self.context.async {
+        self.async {
             self.resumeSendingAfterBurstLimit()
         }
     }
