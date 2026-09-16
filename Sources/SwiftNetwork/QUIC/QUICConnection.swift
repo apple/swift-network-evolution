@@ -526,6 +526,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             pmtudIgnoreCost = protocolOptions.quicConnectionOptions.pmtudIgnoreCost
             pmtudInterval = protocolOptions.quicConnectionOptions.pmtudUpdateInterval
 
+            // 14.1. Initial Datagram Size
+            // Datagrams containing Initial packets MAY exceed 1200 bytes if the sender
+            // believes that the network path and peer both support the size that it chooses
+            let requestedInitialPacketSize = Int(protocolOptions.quicConnectionOptions.initialPacketSize)
+            if requestedInitialPacketSize > Constants.initialMSS {
+                initialMSS = requestedInitialPacketSize
+            }
+
             pacingEnabled = protocolOptions.quicConnectionOptions.enablePacing
 
             testSendingShortPackets =
@@ -4540,6 +4548,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             log.debug(
                 "Remote max datagram size \(remoteMaxDatagramFrameSize)"
             )
+            // A flow opened before the peer's transport parameters sized itself
+            // against a limit of 0, so recompute now that the limit is known.
+            if let path = currentPath {
+                applyToAllSecondaryFlows { datagramFlow in
+                    datagramFlow.updateUsableDatagramFrameSize(connection: self, path: path)
+                }
+            }
         }
         guard let remoteTPMaxDatagramFrameSize else {
             self.remoteMaxDatagramFrameSize = 0
@@ -5213,6 +5228,7 @@ extension QUICConnection {
             self.applicationCloseError = QUICApplicationError(frame.errorCode, frame.reason)
             receivedApplicationClose = true
         }
+        log.info("received APPLICATION_CLOSE code: \(frame.errorCode), reason: '\(frame.reason)'")
         close()
         return true
     }
@@ -5222,6 +5238,7 @@ extension QUICConnection {
             self.closeError = QUICTransportError(frame.errorCode, frame.reason)
             receivedConnectionClose = true
         }
+        log.info("received CONNECTION_CLOSE code: \(frame.errorCode), reason: '\(frame.reason)'")
         close()
         return true
     }
@@ -5853,13 +5870,19 @@ extension QUICConnection {
                 logPrefixer: logPrefixer
             )
             multiplexedSecondaryFlows[newFlowIdentifier] = newFlow
-            deliverNewInboundSecondaryFlowEvent(newFlow.reference)
-
-            newFlow.log.debug("Created inbound datagram flow for \(newFlowIdentifier)")
 
             withCurrentPath { path in
                 newFlow.updateUsableDatagramFrameSize(connection: self, path: path)
             }
+            let datagramMetadata = QUICProtocol.metadata()
+            datagramMetadata.perProtocolMetadata?.datagramFlowID = newFlow.flowID
+            datagramMetadata.perProtocolMetadata?.isDatagramFlow = true
+            secondaryInboundFlowLinkage.deliverNewInboundFlowEvent(
+                reference,
+                flowReference: newFlow.reference,
+                flowMetadata: datagramMetadata
+            )
+            newFlow.log.debug("Created inbound datagram flow for \(newFlowIdentifier)")
 
             matchingFlowIdentifier = newFlowIdentifier
         }

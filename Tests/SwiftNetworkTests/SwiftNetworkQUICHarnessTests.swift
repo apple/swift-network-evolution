@@ -657,6 +657,17 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICTest(datagram: true, blockSize: 1000, blockCount: 10)
     }
 
+    func testQUICDatagramWithLargeInitialPacketSize() {
+        let clientOptions = QUICProtocol.options()
+        clientOptions.connectionOptions.initialPacketSize = 1400
+        QUICTestHarness().runQUICTest(
+            datagram: true,
+            blockSize: 1000,
+            blockCount: 10,
+            clientOptions: clientOptions
+        )
+    }
+
     func testQUICDatagramRemoteMaxDatagramFrameSize() {
         QUICTestHarness().runQUICTest(
             datagram: true,
