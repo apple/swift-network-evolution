@@ -526,7 +526,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             pmtudIgnoreCost = protocolOptions.quicConnectionOptions.pmtudIgnoreCost
             pmtudInterval = protocolOptions.quicConnectionOptions.pmtudUpdateInterval
 
-            // 14.1. Initial Datagram Size
+            // RFC 9000 - 14.1. Initial Datagram Size
             // Datagrams containing Initial packets MAY exceed 1200 bytes if the sender
             // believes that the network path and peer both support the size that it chooses
             let requestedInitialPacketSize = Int(protocolOptions.quicConnectionOptions.initialPacketSize)
@@ -5877,6 +5877,8 @@ extension QUICConnection {
             let datagramMetadata = QUICProtocol.metadata()
             datagramMetadata.perProtocolMetadata?.datagramFlowID = newFlow.flowID
             datagramMetadata.perProtocolMetadata?.isDatagramFlow = true
+            datagramMetadata.perProtocolMetadata?.usableDatagramFrameSize = UInt16(newFlow.usableDatagramSize)
+            datagramMetadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
             secondaryInboundFlowLinkage.deliverNewInboundFlowEvent(
                 reference,
                 flowReference: newFlow.reference,
