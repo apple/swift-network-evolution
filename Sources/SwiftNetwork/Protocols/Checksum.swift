@@ -207,3 +207,11 @@ extension UnsafeRawBufferPointer {
         return UInt16(sum)
     }
 }
+
+// Hardware assist flags from xnu.
+enum IfnetHardwareAssistFlags {
+    static let ifnetIPHeader: UInt32 = 0x0001  // IFNET_CSUM_IP
+    static let ifnetTCP: UInt32 = 0x0002  // IFNET_CSUM_TCP
+    static let ifnetTCPIPv6: UInt32 = 0x0020  // IFNET_CSUM_TCPIPV6
+    static let ifnetPartial: UInt32 = 0x1000  // IFNET_CSUM_PARTIAL
+}
