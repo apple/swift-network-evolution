@@ -403,7 +403,9 @@ extension QUICStreamInstance {
         if self.maximumStreamDataSize == 0 {
             updateOutboundFlowControlCredit(connection: connection)
             if self.maximumStreamDataSize > 0 {
-                upper.deliverOutboundRoomAvailableEvent(reference)
+                fromExternal {
+                    upper.deliverOutboundRoomAvailableEvent(reference)
+                }
             }
         }
     }
