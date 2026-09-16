@@ -4333,7 +4333,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             else {
                 return
             }
-            context.async {
+            self.async {
                 var flowType: QLogFlowType = .client
                 var applicationType = "client"
                 if self.isServer {
