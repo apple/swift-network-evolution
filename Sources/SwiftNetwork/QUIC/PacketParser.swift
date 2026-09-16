@@ -194,7 +194,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         path: QUICPath,
         ecn: IPProtocol.ECN
     ) -> Packet? {
-        if _slowPath(frame.unclaimedLength < Constants.minimumPacketSize) {
+        let originalLength = frame.unclaimedLength
+        if _slowPath(originalLength < Constants.minimumPacketSize) {
             connection.log.error("Dropping short packet, len=\(frame.unclaimedLength)")
             return nil
         }
@@ -229,8 +230,28 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             guard frame.unclaim(fromStart: Int(packet.headerLength), fromEnd: 0) else {
                 return nil
             }
-
-            packet.tagLength = connection.protector.getTagSize(for: packet.keyState)
+            let tagSize = connection.protector.getTagSize(for: packet.keyState)
+            let payloadAndTagSize = originalLength - Int(packet.headerLength)
+            guard payloadAndTagSize >= Int(tagSize) else {
+                return nil
+            }
+            // Header protection removal reads/writes up to 4 bytes (the
+            // maximum possible packet number length) starting at the packet
+            // number offset, plus a header-protection sample of `tagLength`
+            // bytes immediately after those 4 bytes. The true (possibly
+            // shorter) packet number length isn't known until *after*
+            // protection is removed, so this bound must be checked
+            // conservatively using the maximum length here, before any of
+            // that indexing happens, rather than relying on `Constants
+            // .minimumPacketSize`, which doesn't scale with the connection's
+            // configured local CID length.
+            guard payloadAndTagSize >= 4 + Int(tagSize) else {
+                connection.log.error(
+                    "Dropping packet: not enough bytes for packet number + sample (have \(payloadAndTagSize), need \(4 + Int(tagSize)))"
+                )
+                return nil
+            }
+            packet.tagLength = tagSize
             guard openHeader(connection: connection, packet: &packet, frame: &frame) else {
                 return nil
             }

@@ -7,7 +7,7 @@ on:
 jobs:
   tests:
     name: Test
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.14
+    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.15
     with:
       swift_flags: "-Xswiftc -warnings-as-errors"
       swift_nightly_flags: "--build-system native -Xswiftc -warnings-as-errors"  # workaround nightly-main issue
@@ -27,7 +27,7 @@ jobs:
   tests-nightly-main:
     # Keep this separate so that it can be disabled if the nightly compiler shows any issue.
     name: Test (nightly-main)
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.11
+    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.15
     with:
       swift_nightly_flags: "--build-system native -Xswiftc -warnings-as-errors"  # workaround nightly-main issue
       enable_linux_checks: true

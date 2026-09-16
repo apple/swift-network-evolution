@@ -407,6 +407,7 @@ public final class ProtocolStack: Hashable {
 
     public enum LinkProtocol: Hashable {
         case none
+        case customLink(_ options: ProtocolOptions<CustomLinkProtocol>)
         #if !NETWORK_EMBEDDED
         case custom(_ options: AbstractProtocolOptions)
         #endif
@@ -414,6 +415,7 @@ public final class ProtocolStack: Hashable {
         func deepCopy() -> LinkProtocol {
             switch self {
             case .none: return .none
+            case .customLink(let options): return .customLink(options.deepCopy())
             #if !NETWORK_EMBEDDED
             case .custom(let options): return .custom(options.deepCopy())
             #endif
@@ -422,6 +424,7 @@ public final class ProtocolStack: Hashable {
         public func hash(into hasher: inout Hasher) {
             switch self {
             case .none: hasher.combine(0)
+            case .customLink(let options): hasher.combine(options.identifier)
             #if !NETWORK_EMBEDDED
             case .custom(let options): hasher.combine(options.identifier)
             #endif
@@ -430,10 +433,12 @@ public final class ProtocolStack: Hashable {
         func isEqual(to: LinkProtocol, for compareMode: ProtocolCompareMode) -> Bool {
             switch (self, to) {
             case (.none, .none): return true
+            case (.customLink(let loptions), .customLink(let roptions)):
+                return loptions.isEqual(to: roptions, for: compareMode)
             #if !NETWORK_EMBEDDED
             case (.custom(let loptions), .custom(let roptions)): return loptions.isEqual(to: roptions, for: compareMode)
-            default: return false
             #endif
+            default: return false
             }
         }
         public static func == (lhs: ProtocolStack.LinkProtocol, rhs: ProtocolStack.LinkProtocol) -> Bool {
@@ -442,6 +447,7 @@ public final class ProtocolStack: Hashable {
         func matches<T>(definition: ProtocolDefinition<T>) -> Bool {
             switch self {
             case .none: return false
+            case .customLink(let options): return options.matches(definition: definition)
             #if !NETWORK_EMBEDDED
             case .custom(let options): return options.matches(definition: definition)
             #endif
@@ -450,6 +456,7 @@ public final class ProtocolStack: Hashable {
         func matches(identifier: ProtocolIdentifier) -> Bool {
             switch self {
             case .none: return false
+            case .customLink(let options): return options.matches(identifier: identifier)
             #if !NETWORK_EMBEDDED
             case .custom(let options): return options.matches(identifier: identifier)
             #endif
@@ -458,6 +465,7 @@ public final class ProtocolStack: Hashable {
         func matches(protocolInstance: ProtocolInstanceReference) -> Bool {
             switch self {
             case .none: return false
+            case .customLink(let options): return options.matches(protocolInstance: protocolInstance)
             #if !NETWORK_EMBEDDED
             case .custom(let options): return options.matches(protocolInstance: protocolInstance)
             #endif
@@ -467,12 +475,14 @@ public final class ProtocolStack: Hashable {
         func matches(protocolHandle handle: UnsafeRawPointer) -> Bool {
             switch self {
             case .none: return false
+            case .customLink(let options): return options.matches(protocolHandle: handle)
             case .custom(let options): return options.matches(protocolHandle: handle)
             }
         }
         var options: AbstractProtocolOptions? {
             switch self {
             case .none: return nil
+            case .customLink(let options): return options
             case .custom(let options): return options
             }
         }
@@ -480,6 +490,7 @@ public final class ProtocolStack: Hashable {
         var identifier: ProtocolIdentifier? {
             switch self {
             case .none: return nil
+            case .customLink(let options): return options.identifier
             #if !NETWORK_EMBEDDED
             case .custom(let options): return options.identifier
             #endif

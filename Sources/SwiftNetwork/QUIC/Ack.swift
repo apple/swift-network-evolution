@@ -577,6 +577,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
     }
 
+    @inline(always)
     func ackRequiresAssembly(
         packetNumberSpace: PacketNumberSpace
     ) -> Bool {

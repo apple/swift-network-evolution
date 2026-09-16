@@ -78,7 +78,7 @@ public struct CustomLinkProtocol: NetworkProtocol {
 
         public private(set) var context: NetworkContext
         init(context: NetworkContext) { self.context = context }
-        public var reference: ProtocolInstanceReference { ProtocolInstanceReference(custom: self) }
+        public var reference: ProtocolInstanceReference { ProtocolInstanceReference(customLinkProtocol: self) }
         var log = NetworkLoggerState()
         public var eventManager = ProtocolEventManager()
         private var incomingFrames = FrameArray()
