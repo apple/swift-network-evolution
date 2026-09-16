@@ -55,6 +55,21 @@ public struct IPProtocol: NetworkProtocol {
         // Destination Address: UInt128
     }
 
+    // Byte offset of the checksum field within the IPv4 header (after version/
+    // IHL, DiffServ/ECN, total length, identification, fragment offset, TTL, and
+    // next-protocol). Used to place the header checksum (software or offloaded).
+    static public var ipv4ChecksumFieldOffset: Int {
+        10
+    }
+
+    static public var ipv4MinimumMTU: Int {
+        576
+    }
+
+    static public var ipv6MinimumMTU: Int {
+        1280
+    }
+
     public enum Version: UInt8 {
         /// Allows any IP version.
         case any = 0
@@ -922,7 +937,7 @@ public struct IPProtocol: NetworkProtocol {
 
             func setChecksumValue(frame: inout Frame, value: UInt16) {
                 let checksumResult = Serializer.serialize(&frame, claim: false) { write throws(SerializationError) in
-                    try write.skip(10)
+                    try write.skip(IPProtocol.ipv4ChecksumFieldOffset)
                     try write.uint16(value)
                 }
                 if !checksumResult.isValid {
@@ -1123,7 +1138,8 @@ public struct IPProtocol: NetworkProtocol {
                             }
                         } else {
                             if self.flags.csumOffload {
-                                frame.checksumOffloadFlags = 0x04  // CSUM_IP
+                                // OR in CSUM_IP so we don't clobber a CSUM_PARTIAL flag.
+                                frame.checksumOffloadFlags |= 0x04  // CSUM_IP
                             } else {
                                 let checksumValue = try frame.ipChecksum(offset: 0, length: 20)
                                 self.setChecksumValue(frame: &frame, value: checksumValue)
@@ -1961,7 +1977,7 @@ public struct IPProtocol: NetworkProtocol {
             if let path {
                 maximumMessageSize = path.maximumPacketSize
                 mtu = path.mtu
-                flags.csumOffload = (path.hardwareChecksumFlags & 0x0000_0001) != 0
+                flags.csumOffload = (path.hardwareChecksumFlags & IfnetHardwareAssistFlags.ifnetIPHeader) != 0
                 if let interface = path.directInterface {
                     netmask = interface.ipv4Netmask?.addressValue ?? 0
                     broadcast = interface.ipv4Broadcast?.addressValue ?? 0
