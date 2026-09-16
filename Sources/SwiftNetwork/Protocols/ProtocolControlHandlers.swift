@@ -173,6 +173,7 @@ extension ProtocolInstanceReference {
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index): return container.accessLower(at: index) { $0.connect(from) }
             #endif
+            case .customLink(let instance): instance.connect(from)
             default: fatalError("Protocol cannot accept connect call")
             }
         }
@@ -201,6 +202,7 @@ extension ProtocolInstanceReference {
             case .custom(let container, let index):
                 return container.accessLower(at: index) { $0.disconnect(from, error: error) }
             #endif
+            case .customLink(let instance): instance.disconnect(from, error: error)
             default: fatalError("Protocol cannot accept disconnect call")
             }
         }
@@ -412,6 +414,14 @@ extension ProtocolInstanceReference {
                     )
                 }
             #endif
+            case .customLink(var instance):
+                return try instance.attachUpperStreamProtocol(
+                    from,
+                    remote: remote,
+                    local: local,
+                    parameters: parameters,
+                    path: path
+                )
             default: fatalError("Protocol cannot accept attachUpperStreamProtocol call")
             }
         }
@@ -893,6 +903,7 @@ extension ProtocolInstanceReference {
                     try instance.detach(from)
                 }
             #endif
+            case .customLink(var instance): try instance.detach(from)
             default: fatalError("Protocol cannot accept detach call")
             }
         }

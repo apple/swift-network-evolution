@@ -342,6 +342,8 @@ extension ProtocolInstanceReference {
                     try instance.receiveStreamData(from, minimumBytes: minimumBytes, maximumBytes: maximumBytes)
                 }
             #endif
+            case .customLink(var instance):
+                return try instance.receiveStreamData(from, minimumBytes: minimumBytes, maximumBytes: maximumBytes)
             default: fatalError("Protocol cannot accept receiveStreamData call")
             }
         }
@@ -367,6 +369,7 @@ extension ProtocolInstanceReference {
                     try instance.getOutboundStreamDataRoomAvailable(from)
                 }
             #endif
+            case .customLink(var instance): return try instance.getOutboundStreamDataRoomAvailable(from)
             default: fatalError("Protocol cannot accept getOutboundStreamDataRoomAvailable call")
             }
         }
@@ -400,6 +403,7 @@ extension ProtocolInstanceReference {
                     try instance.sendStreamData(from, streamData: streamData)
                 }
             #endif
+            case .customLink(var instance): try instance.sendStreamData(from, streamData: streamData)
             default: fatalError("Protocol cannot accept sendStreamData call")
             }
         }
