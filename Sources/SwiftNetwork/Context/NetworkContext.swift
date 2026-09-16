@@ -96,7 +96,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         var now: NetworkClock.Instant { get }
         /// The scheduler's current notion of the absolute clock.
         ///
-        /// Separate from `now` because the two clocks diverge across system sleep, and `Pacer`
+        /// Separate from `now` because the two clocks diverge across system sleep, and QUIC
         /// reads the difference between them as a domain offset.
         var nowAbsolute: NetworkClock.Instant { get }
     }
@@ -400,7 +400,10 @@ extension NetworkContext {
             // TODO: Not supported by DispatchQueue
             fatalError("Unsupported")
         }
-        /// The real clock. This is the one scheduler allowed to read it.
+        /// The system clock, read straight from the OS.
+        ///
+        /// `DefaultScheduler` is the only conformance that reads it. Every other scheduler
+        /// reports a time of its own, which is what lets a test decide what the library sees.
         var now: NetworkClock.Instant {
             NetworkClock.Instant.systemNow
         }

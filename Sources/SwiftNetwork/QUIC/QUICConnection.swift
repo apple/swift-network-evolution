@@ -281,7 +281,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     /// The outermost call takes the pin and releases it on the way out. One nested inside
     /// another keeps the outer call's readings, so `now` holds still for the whole batch.
     /// Code that needs real elapsed time within a batch reads `context.now` directly.
-    @inline(__always)
+    @inline(always)
     func withPinnedClock(_ body: () -> Void) {
         if pinnedClock != nil {
             body()
