@@ -623,7 +623,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             time: NetworkClock.Instant,
             connection: QUICConnection
         ) {
-            guard let sentPath = connection.path(for: sentPacket.sentPath) else {
+            let sentPath: QUICPath
+            if let currentPath = connection.currentPath,
+                sentPacket.sentPath == currentPath.identifier
+            {
+                sentPath = currentPath
+            } else if let lookedUpPath = connection.path(for: sentPacket.sentPath) {
+                sentPath = lookedUpPath
+            } else {
                 log.fault("Sent packet with no valid path")
                 return
             }
