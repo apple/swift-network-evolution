@@ -26,10 +26,10 @@ import XCTest
 let qlogTestsLogPrefixer = LogPrefixer("[QLogTests]")
 
 final class QLogTests: XCTestCase {
-    var qlog: QLog = QLog()
+    var qlog: QLog = QLog(context: NetworkContext(identifier: "QLogTests"))
 
     override func setUp() {
-        qlog = QLog()
+        qlog = QLog(context: NetworkContext(identifier: "QLogTests"))
     }
 
     func assertStringJSONContent(

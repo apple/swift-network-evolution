@@ -58,7 +58,7 @@ class QUICPathValidationMessageTests: XCTestCase {
     func testOutgoingPathChallenge() {
         XCTAssertEqual(path.state, .cidAssigned)
 
-        let startTime = NetworkClock.Instant.now
+        let startTime = NetworkClock.Instant.systemNow
         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
         path.addPendingItems(&pendingItems, now: startTime)  // should be empty
         XCTAssertTrue(pendingItems.pathChallenges.isEmpty)

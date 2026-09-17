@@ -34,6 +34,6 @@ xcodebuild_step 'watchOS build' 'generic/platform=watchos'
 xcodebuild_step 'tvOS build' 'generic/platform=tvos'
 xcodebuild_step 'visionOS build' 'generic/platform=visionos'
 
-ci_run 'swift test' xcrun swift test --quiet -Xswiftc -DNETWORK_INTERNAL_TESTS "$@"
+ci_run 'swift test' xcrun swift test --quiet "$@"
 
 ci_finish

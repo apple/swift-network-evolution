@@ -455,7 +455,7 @@ final class CubicTests: XCTestCase {
         XCTAssertEqual(path.pacer.burstSize, 10000)
 
         XCTAssertEqual(path.congestionControlWindow, 12000)
-        let time = NetworkClock.Instant.now
+        let time = NetworkClock.Instant.systemNow
         for _ in 0..<10 {
             path.congestionControlPacketsSent(bytesSent: 1000)
         }
@@ -475,7 +475,7 @@ final class CubicTests: XCTestCase {
             sendTimeAbsolute: &sendTimeAbsolute,
             sendTimeContinuous: &sendTimeContinuous
         )
-        let currentTime = NetworkClock.Instant.now
+        let currentTime = NetworkClock.Instant.systemNow
         // First packet should be sent out almost immediately
         XCTAssertTrue(
             sendTimeAbsolute
@@ -512,7 +512,7 @@ final class CubicTests: XCTestCase {
         // double-check that the rounding happens as expected
         XCTAssertEqual(rtt.smoothedRTT.microseconds, 0, "smoothedRTT is expected to round to zero microseconds")
 
-        let time = NetworkClock.Instant.now
+        let time = NetworkClock.Instant.systemNow
         path.congestionControlPacketsSent(bytesSent: 1000)
         path.congestionControlAckBegin()
         path.congestionControlPacketsAcked(bytesAcked: 1000, sentTime: time)

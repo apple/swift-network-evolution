@@ -66,7 +66,7 @@ final class QUICStreamLoad {
         print(
             "Running QUIC stream load of \(streamCount) streams (\(concurrentStreams) at a time), with \(uploadSize) upload bytes and \(downloadSize) download bytes"
         )
-        let startTime = NetworkClock.Instant.now
+        let startTime = NetworkClock.Instant.systemNow
 
         var handshakeDuration = NetworkDuration.zero
         var streamRoundTripDurations = [NetworkDuration]()
@@ -89,7 +89,7 @@ final class QUICStreamLoad {
         context.activate()
         context.async {
 
-            let handshakeStart = NetworkClock.Instant.now
+            let handshakeStart = NetworkClock.Instant.systemNow
 
             // Client
             let clientIP = IPProtocol.instance(context: clientParameters.context)
@@ -247,7 +247,7 @@ final class QUICStreamLoad {
                 return
             }
             serverInput.start { connected in
-                handshakeDuration = handshakeStart.duration(to: .now)
+                handshakeDuration = handshakeStart.duration(to: .systemNow)
                 group.leave()
             }
             clientInput.start()
@@ -270,7 +270,7 @@ final class QUICStreamLoad {
 
             index += 1
 
-            let streamStart = NetworkClock.Instant.now
+            let streamStart = NetworkClock.Instant.systemNow
 
             let myIndex = index
             let clientStream = StreamUpperHarness(
@@ -344,7 +344,7 @@ final class QUICStreamLoad {
                     if !clientPayloadReceived {
                         clientStream.waitForInboundDataAvailable(completion: clientReadCompletion!)
                     } else {
-                        streamRoundTripDurations.append(streamStart.duration(to: .now))
+                        streamRoundTripDurations.append(streamStart.duration(to: .systemNow))
 
                         clientReadCompletion = nil
                         group.leave()
@@ -409,7 +409,7 @@ final class QUICStreamLoad {
         let meanStreamRTT = streamRoundTripDurations.reduce(NetworkDuration.zero, +) / streamRoundTripDurations.count
         print("Stream round trip: min = \(minStreamRTT), max = \(maxStreamRTT), mean = \(meanStreamRTT)")
 
-        let totalTime = startTime.duration(to: .now)
+        let totalTime = startTime.duration(to: .systemNow)
 
         let rate = (Int64(streamCount) * 1_000_000_000) / totalTime.nanoseconds
         print("Rate: \(rate) streams/s")
