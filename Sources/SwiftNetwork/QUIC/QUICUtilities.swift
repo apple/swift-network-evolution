@@ -228,14 +228,14 @@ public struct QUICConnectionUtilities {
     /// - Parameters:
     ///     - destinationConnectionID: The cid to include on the packet scid
     ///     - sourceConnectionID: The cid to include on the packet dcid
-    ///     - supportedVersions: The support version to advertise
+    ///     - supportedVersions: The supported versions to advertise
     public static func createVersionNegotiationPacket(
         destinationConnectionID: QUICConnectionID,
         sourceConnectionID: QUICConnectionID,
         supportedVersions: [QUICVersion]
     ) -> [UInt8] {
-        guard destinationConnectionID.length > 0, sourceConnectionID.length > 0, supportedVersions.count > 0 else {
-            Logger.proto.error("Failed to provide valid input, dcid, scid, or supported versions are empty")
+        guard supportedVersions.count > 0 else {
+            Logger.proto.error("Failed to provide supported versions")
             return []
         }
         let versions: [QUICVersion] = supportedVersions + [.negotiationPattern]
