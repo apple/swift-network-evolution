@@ -427,6 +427,75 @@ final class PacketTests: XCTestCase {
         )
     }
 
+    func testQUICVersionNegotiationPacket() throws {
+
+        let destinationConnectionID = QUICConnectionID([0xAA, 0xBB, 0xCC, 0xDD])!
+        let sourceConnectionID = QUICConnectionID([
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        ])!
+
+        let vnPacket = QUICConnectionUtilities.createVersionNegotiationPacket(
+            destinationConnectionID: destinationConnectionID,
+            sourceConnectionID: sourceConnectionID,
+            supportedVersions: [.v1]
+        )
+
+        // firstByte(1) + version(4) + dcidLen(1) + dcid(8) + scidLen(1) + scid(4) + v1(4) + negotiationPattern(4)
+        XCTAssertEqual(vnPacket.count, 27, "Should have created a valid version negotiation packet")
+        XCTAssertTrue((vnPacket[0] & 0x80) != 0, "Packet is not marked as a long header packet")
+
+        let version = Array(vnPacket[1..<5])
+        XCTAssertEqual(version, [0x00, 0x00, 0x00, 0x00], "Version field must be zero")
+
+        // N.B.: the packet dcid/scid are swapped relative to the parameters passed in.
+        let packetDcidLength = vnPacket[5]
+        XCTAssertEqual(
+            packetDcidLength,
+            UInt8(sourceConnectionID.length),
+            "Packet DCID length should match the provided SCID length"
+        )
+        let packetDcid = Array(vnPacket[6..<(6 + Int(packetDcidLength))])
+        XCTAssertEqual(
+            packetDcid,
+            sourceConnectionID.connectionID,
+            "Packet DCID bytes should match the provided SCID bytes"
+        )
+
+        let scidLenOffset = 6 + Int(packetDcidLength)
+        let packetScidLength = vnPacket[scidLenOffset]
+        XCTAssertEqual(
+            packetScidLength,
+            UInt8(destinationConnectionID.length),
+            "Packet SCID length should match the provided DCID length"
+        )
+        let scidOffset = scidLenOffset + 1
+        let packetScid = Array(vnPacket[scidOffset..<(scidOffset + Int(packetScidLength))])
+        XCTAssertEqual(
+            packetScid,
+            destinationConnectionID.connectionID,
+            "Packet SCID bytes should match the provided DCID bytes"
+        )
+
+        let versionsOffset = scidOffset + Int(packetScidLength)
+        let advertisedVersions = Array(vnPacket[versionsOffset...])
+        XCTAssertEqual(
+            advertisedVersions,
+            [0x00, 0x00, 0x00, 0x01, 0x1a, 0x2a, 0x3a, 0x4a],
+            "Should advertise the requested version followed by the negotiation pattern"
+        )
+
+        let packetWithNoVersions = QUICConnectionUtilities.createVersionNegotiationPacket(
+            destinationConnectionID: destinationConnectionID,
+            sourceConnectionID: sourceConnectionID,
+            supportedVersions: []
+        )
+        XCTAssertEqual(
+            packetWithNoVersions,
+            [],
+            "Version negotiation packet bytes should be empty when no supported versions are provided"
+        )
+    }
+
     func testDeserializePacketNumber() throws {
         typealias Vector = (
             description: String,

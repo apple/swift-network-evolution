@@ -221,5 +221,44 @@ public struct QUICConnectionUtilities {
             return []
         }
     }
+
+    /// Creates a version negotiation packet from the given scid, dcid, and supported versions.
+    /// NOTE: Includes the negotiation pattern already.
+    ///
+    /// - Parameters:
+    ///     - destinationConnectionID: The cid to include on the packet scid
+    ///     - sourceConnectionID: The cid to include on the packet dcid
+    ///     - supportedVersions: The support version to advertise
+    public static func createVersionNegotiationPacket(
+        destinationConnectionID: QUICConnectionID,
+        sourceConnectionID: QUICConnectionID,
+        supportedVersions: [QUICVersion]
+    ) -> [UInt8] {
+        guard destinationConnectionID.length > 0, sourceConnectionID.length > 0, supportedVersions.count > 0 else {
+            Logger.proto.error("Failed to provide valid input, dcid, scid, or supported versions are empty")
+            return []
+        }
+        let versions: [QUICVersion] = supportedVersions + [.negotiationPattern]
+
+        // Version Negotiation packets are special, they are not a specific frame type and they do not sealed so they can be sent as a one-off.
+        // N.B.: The packet scid/dcid are swapped when constructing QUICVersionNegotiation
+        guard
+            let versionNegotiationPacket = try? QUICVersionNegotiation(
+                destinationConnectionID: sourceConnectionID,
+                sourceConnectionID: destinationConnectionID,
+                supportedVersions: versions
+            )
+        else {
+            Logger.proto.error("Failed to build a valid version negotiation packet")
+            return []
+        }
+        guard versionNegotiationPacket.header.count >= Constants.minimumPacketSize else {
+            Logger.proto.error(
+                "Failed to create QUICVersionNegotiation packet greater than the minimum packet size"
+            )
+            return []
+        }
+        return versionNegotiationPacket.header
+    }
 }
 #endif
