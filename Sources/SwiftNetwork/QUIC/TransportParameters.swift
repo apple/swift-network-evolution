@@ -396,7 +396,9 @@ enum TransportParameter: Equatable {
         }
         guard vleSize == buffer.count else {
             let bufferCount = buffer.count
+            #if !DisableErrorLogging
             Logger.proto.error("VLE size \(vleSize) doesn't match TP size \(bufferCount)")
+            #endif
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
         }
         return value
@@ -413,7 +415,9 @@ enum TransportParameter: Equatable {
         }
         guard vleSize == buffer.count else {
             let bufferCount = buffer.count
+            #if !DisableErrorLogging
             Logger.proto.error("VLE size \(vleSize) doesn't match TP size \(bufferCount)")
+            #endif
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
         }
         return value
@@ -426,7 +430,9 @@ enum TransportParameter: Equatable {
             let connectionID = QUICConnectionID(buffer)
         else {
             let bufferCount = buffer.count
+            #if !DisableErrorLogging
             Logger.proto.error("ConnectionID size \(bufferCount) is invalid")
+            #endif
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
         }
         return connectionID
@@ -439,7 +445,9 @@ enum TransportParameter: Equatable {
             let connectionID = QUICConnectionID(buffer)
         else {
             let bufferCount = buffer.count
+            #if !DisableErrorLogging
             Logger.proto.error("ConnectionID size \(bufferCount) is invalid")
+            #endif
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
         }
         return connectionID
@@ -450,7 +458,9 @@ enum TransportParameter: Equatable {
     ) throws(QUICError) -> QUICStatelessResetToken {
         guard let statelessResetToken = QUICStatelessResetToken(buffer) else {
             let bufferCount = buffer.count
+            #if !DisableErrorLogging
             Logger.proto.error("StatelessResetToken size \(bufferCount) is invalid")
+            #endif
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
         }
         return statelessResetToken
@@ -461,7 +471,9 @@ enum TransportParameter: Equatable {
     ) throws(QUICError) -> QUICStatelessResetToken {
         guard let statelessResetToken = QUICStatelessResetToken(buffer) else {
             let bufferCount = buffer.count
+            #if !DisableErrorLogging
             Logger.proto.error("StatelessResetToken size \(bufferCount) is invalid")
+            #endif
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
         }
         return statelessResetToken
@@ -474,7 +486,9 @@ enum TransportParameter: Equatable {
             || buffer.count > PreferredAddress.maximumSize
         {
             let bufferCount = buffer.count
+            #if !DisableErrorLogging
             Logger.proto.error("PreferredAddress size \(bufferCount) is invalid")
+            #endif
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
         }
         var ipv4Address: UInt32 = 0
@@ -517,7 +531,9 @@ enum TransportParameter: Equatable {
             || buffer.count > PreferredAddress.maximumSize
         {
             let bufferCount = buffer.count
+            #if !DisableErrorLogging
             Logger.proto.error("PreferredAddress size \(bufferCount) is invalid")
+            #endif
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
         }
         var ipv4Address: UInt32 = 0
