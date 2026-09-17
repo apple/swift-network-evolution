@@ -875,6 +875,53 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
         self.sendInboundFlowControlCreditIfNeeded(connection: connection)
     }
 
+    // Discards every inbound byte still buffered for this stream and returns the
+    // flow control credit those bytes consumed.
+    //
+    // Called when the stream is closed with data the application never read,
+    // either still sitting in the reassembly queue or already dequeued into the
+    // upper receive queue awaiting a read. Those bytes counted against the
+    // connection's receive window when they arrived; without this the credit is
+    // never given back and the usable window shrinks permanently.
+    func discardUnreadInboundBytes(connection: QUICConnection) {
+        // Bytes handed to the upper layer but not yet read by the application.
+        // Dequeuing already advanced the reassembly queue's `currentOffset` past
+        // these, but flow control only counts them once the application reads,
+        // so they are still missing from the in-order total.
+        let pendingDelivery = UInt64(upperReceiveQueue.unclaimedLength)
+        // Contiguous bytes reassembled but not yet dequeued.
+        let pendingDequeue = UInt64(max(reassemblyQueue.availableToDequeue, 0))
+
+        // Anything the reassembly queue holds beyond the contiguous run is not
+        // yet part of the in-order total, so it has no credit to return here;
+        // the RESET_STREAM and zombie final-size paths cover those gaps.
+        let discardedBytes = pendingDelivery + pendingDequeue
+        guard discardedBytes > 0 else { return }
+
+        log.datapath(
+            "Discarding \(discardedBytes) unread inbound bytes on close "
+                + "(\(pendingDelivery) awaiting read, \(pendingDequeue) awaiting dequeue)"
+        )
+
+        // Release the frames themselves before crediting, so the buffers are
+        // freed even if the connection is already tearing down.
+        upperReceiveQueue.finalizeAllFramesAsFailed()
+
+        // Advance the in-order total to cover everything the queue holds
+        // contiguously, which is what the application could have read. This adds
+        // the same delta to the connection-wide total.
+        let newInOrderTotal = UInt64(reassemblyQueue.currentOffset) + pendingDequeue
+        reassemblyQueue.dequeueAll()
+        updateFlowControlWithTotalInOrderInboundBytesRead(
+            newInOrderTotal,
+            connection: connection
+        )
+
+        // Both components are now part of the in-order total, so credit them as
+        // consumed to move the MAX_DATA anchor past them.
+        connection.creditDiscardedInboundBytes(discardedBytes)
+    }
+
     @_optimize(speed)
     func dequeueReassembledData(connection: QUICConnection) -> FrameArray? {
         let totalLength = reassemblyQueue.availableToDequeue

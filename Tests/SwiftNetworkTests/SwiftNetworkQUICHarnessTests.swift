@@ -385,6 +385,48 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         )
     }
 
+    // MARK: Flow control credit for unread inbound bytes
+
+    // Inbound bytes that the application never reads still consumed
+    // connection-level flow control credit. Dropping the stream must return that
+    // credit, or the connection-level receive window is permanently consumed and
+    // the peer eventually cannot send at all.
+    func testQUICDropUnreadInboundBytesReturnsFlowControlCredit() {
+        QUICTestHarness().runQUICDropUnreadInboundBytesLoop()
+    }
+
+    // Control for the test above: the same loop, but the application drains the
+    // bytes before aborting. Credit is returned through the normal read path, so
+    // this must not stall. If both tests fail, the cause is not credit accounting.
+    func testQUICReadInboundBytesBeforeAbortReturnsFlowControlCredit() {
+        QUICTestHarness().runQUICDropUnreadInboundBytesLoop(readBeforeAbort: true)
+    }
+
+    // A single large drop, bigger than the whole advertised window, must also be
+    // credited back rather than leaving the peer permanently blocked.
+    func testQUICDropLargeUnreadInboundBlockReturnsFlowControlCredit() {
+        QUICTestHarness().runQUICDropUnreadInboundBytesLoop(
+            rounds: 6,
+            chunkSize: 10_000,
+            initialMaxData: 20_000
+        )
+    }
+
+    // MARK: Closing a stream from inside ACK processing
+
+    // Closing a stream with `stop()` sends a RESET_STREAM. Processing the peer's
+    // ACK for it closes the stream, which flushes frames — re-entering
+    // `sendFrames()` while `recovery` is still borrowed for ACK processing.
+    func testQUICStopStreamWithUnreadBytesSurvivesResetAck() {
+        QUICTestHarness().runQUICStopStreamAfterPeerWrite()
+    }
+
+    // The same close path, with the inbound bytes drained first: the re-entry does
+    // not depend on there being unread data.
+    func testQUICStopStreamAfterReadingSurvivesResetAck() {
+        QUICTestHarness().runQUICStopStreamAfterPeerWrite(readBeforeStop: true)
+    }
+
     func testQUICEcho40KiB() {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 4)
     }
