@@ -1389,6 +1389,12 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
         body(&flow.upperSendQueue)
     }
 
+    // Access the upperSendQueue directly from the flow
+    public func accessStreamDataToSend(stream: Flow, _ body: (inout FrameArray) -> Void) {
+        var flow = stream
+        body(&flow.upperSendQueue)
+    }
+
     public func blockSending(flow flowID: MultiplexedFlowIdentifier) {
         guard var flow = self.flow(for: flowID) else { return }
         flow.blockUpperSendQueue = true
@@ -1605,6 +1611,12 @@ extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagr
         body(&flow.upperSendQueue)
     }
 
+    // Access the upperSendQueue directly from the flow
+    public func accessDatagramsToSend(flow: Flow, _ body: (inout FrameArray) -> Void) {
+        var flow = flow
+        body(&flow.upperSendQueue)
+    }
+
     public func blockSending(flow flowID: MultiplexedFlowIdentifier) {
         guard var flow = self.flow(for: flowID) else { return }
         flow.blockUpperSendQueue = true
@@ -1650,6 +1662,12 @@ extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagr
 extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticUpperDatagramProcessing {
     public func accessDatagramsToSend(flow flowID: MultiplexedFlowIdentifier, _ body: (inout FrameArray) -> Void) {
         guard var flow = self.secondaryFlow(for: flowID) else { return }
+        body(&flow.upperSendQueue)
+    }
+
+    // Access the upperSendQueue directly from the flow
+    public func accessDatagramsToSend(flow: SecondaryFlow, _ body: (inout FrameArray) -> Void) {
+        var flow = flow
         body(&flow.upperSendQueue)
     }
 

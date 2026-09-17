@@ -780,6 +780,7 @@ extension FrameStreamSendMetadata: SendableItem {
             // Already completely written, ignore
             guard !stream.sendState.dataHasAlreadyBeenSent else {
                 pendingItems.popServicedStream()
+                stream.listMembership.remove(.sendable)
                 continue
             }
 
@@ -793,6 +794,7 @@ extension FrameStreamSendMetadata: SendableItem {
             let shouldSend = remainingStreamLength > 0 || isFinal
             guard shouldSend else {
                 pendingItems.popServicedStream()
+                stream.listMembership.remove(.sendable)
                 continue
             }
 
@@ -800,6 +802,7 @@ extension FrameStreamSendMetadata: SendableItem {
                 // Has data to send, but cannot
                 // Remove the stream for now
                 pendingItems.popServicedStream()
+                stream.listMembership.remove(.sendable)
                 // And trigger sending blocked frames if necessary
                 stream.recordStreamDataSending(
                     writtenLength: 0,
@@ -870,6 +873,7 @@ extension FrameStreamSendMetadata: SendableItem {
 
                 // Complete write, remove this stream from the list to service
                 pendingItems.popServicedStream()
+                stream.listMembership.remove(.sendable)
             }
             sentStream = true
         }
@@ -1591,7 +1595,7 @@ extension FrameDatagram: SendableItem {
                 continue
             }
             var datagramsListIsEmpty = false
-            connection.accessDatagramsToSend(flow: firstFlowID) { datagrams in
+            connection.accessDatagramsToSend(flow: datagramFlow) { datagrams in
                 while var datagramFrame = datagrams.popFirst() {
                     let dataLength = datagramFrame.unclaimedLength
                     connection.log.datapath(
@@ -2579,10 +2583,13 @@ struct PendingItems: ~Copyable {
             // Nothing new to send
             return
         }
-        if !streamsToService.contains(newStream.identifier) {
-            streamsToService.append(newStream.identifier)
-            stream = true
+        guard !newStream.listMembership.contains(.sendable) else {
+            // Already queued to be serviced
+            return
         }
+        newStream.listMembership.insert(.sendable)
+        streamsToService.append(newStream.identifier)
+        stream = true
     }
 
     mutating func prependStreamToService(_ newStream: QUICStreamInstance) {
@@ -2590,10 +2597,13 @@ struct PendingItems: ~Copyable {
             // Nothing new to send
             return
         }
-        if !streamsToService.contains(newStream.identifier) {
-            streamsToService.prepend(newStream.identifier)
-            stream = true
+        guard !newStream.listMembership.contains(.sendable) else {
+            // Already queued to be serviced
+            return
         }
+        newStream.listMembership.insert(.sendable)
+        streamsToService.prepend(newStream.identifier)
+        stream = true
     }
 
     @discardableResult

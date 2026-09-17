@@ -2430,7 +2430,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             currentSendTimestamp = nil
         }
 
-        accessStreamDataToSend(flow: flowID) { streamData in
+        accessStreamDataToSend(stream: stream) { streamData in
             while var frame = streamData.popFirst() {
 
                 // If the connection is complete, it is always a FIN
@@ -2449,9 +2449,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         isFinal = isFinal || metadataComplete
                     }
                 }
+                #if DatapathLogging
                 log.datapath(
                     "Handle outbound stream data for [\(streamID)] (size \(dataLength) metadataComplete: \(metadataComplete), connectionComplete: \(connectionComplete), isFinal: \(isFinal))"
                 )
+                #endif
 
                 if dataLength > 0 {
                     processOutbound(frame: frame, flowID: flowID, stream: stream, isLast: isFinal)
@@ -6129,6 +6131,13 @@ extension QUICConnection {
     }
 
     func checkConnectionIdle(unackedPacketCount: Int) {
+        // If no flow has ever been marked idle, `connectionIsIdleForAllStreams`
+        // can only return false, and since `path.reportedIdleEvent` is only
+        // ever set inside this function, no path can have it set either.
+        // The traversal below would be a guaranteed no-op, so skip it entirely.
+        guard flowsHaveEverMarkedIdle else {
+            return
+        }
         let isIdle = connectionIsIdleForAllStreams(unackedPacketCount: unackedPacketCount)
         applyToAllPaths { path in
             let pathIsIdle = isIdle && !path.isProbing && !path.shouldSendPathResponses
