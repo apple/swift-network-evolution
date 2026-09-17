@@ -1712,7 +1712,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 break
             }
 
-            if closeError != nil {
+            if closeError != nil || state.isTerminal {
+                // Besides a locally-detected error (closeError), the peer may
+                // have gracefully closed the connection (CONNECTION_CLOSE
+                // with NO_ERROR, or an APPLICATION_CLOSE frame, neither of
+                // which set closeError) while processing this packet's
+                // frames. Either way, `close()` has already torn down crypto
+                // and other per-connection state (see closeTLSFlow()), so we
+                // must not hand any further coalesced packets in this
+                // datagram to that torn-down state.
                 frame.finalize(success: false)
                 close()
                 return
@@ -1809,6 +1817,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                             .protocolViolation,
                         "Client sent initial packet with invalid QUIC frames"
                     )
+                    QUICFrame.discard(quicFrame)
                     return false
                 }
             }
@@ -1831,8 +1840,20 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 log.error("Invalid frame type during the handshake: \(quicFrame.frameType)")
                 closeFrameType = quicFrame.frameType
                 close(with: .protocolViolation, "invalid frame type during the handshake")
+                QUICFrame.discard(quicFrame)
+                return false
             }
             if !processFrame(quicFrame, packetNumberSpace: packet.numberSpace, path: path) {
+                break
+            }
+            if state.isTerminal {
+                // Some frame handlers (e.g. CONNECTION_CLOSE, APPLICATION_CLOSE)
+                // call close() - which tears down crypto and other per-connection
+                // state - but still report success (return true) for the frame
+                // itself. Stop processing any further frames from this packet
+                // once that happens, rather than continuing to hand already
+                // torn-down state to later frames (e.g. a coalesced CRYPTO
+                // frame after a CONNECTION_CLOSE).
                 break
             }
         }
@@ -1932,10 +1953,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Resetting congestion control will reset the pacer too
         currentPath.resetCongestionControl()
         log.info("Retransmitting INITIAL with version \(version.rawValue)")
+        guard let tlsOptions else {
+            log.error("Failed to start TLS: missing TLS options")
+            return
+        }
         // Resetting crypto here will guarantee the initial is sent again
         crypto.stop()
         crypto = QUICCrypto(context: context)
-        guard let tlsOptions, crypto.start(with: self, tlsOptions: tlsOptions) else {
+        guard crypto.start(with: self, tlsOptions: tlsOptions) else {
             log.error("Failed to start TLS")
             return
         }
@@ -2026,10 +2051,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         protector.deriveInitialSecrets(destinationCID: scid)
 
         log.info("Retransmitting INITIAL with token len: \(packet.tokenLength)")
+        guard let tlsOptions else {
+            log.error("Failed to start TLS: missing TLS options")
+            return
+        }
         // Resetting crypto here will guarantee the initial is sent again
         crypto.stop()
         crypto = QUICCrypto(context: context)
-        guard let tlsOptions, crypto.start(with: self, tlsOptions: tlsOptions) else {
+        guard crypto.start(with: self, tlsOptions: tlsOptions) else {
             log.error("Failed to start TLS")
             return
         }
