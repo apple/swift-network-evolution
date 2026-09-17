@@ -660,12 +660,24 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     func testQUICDatagramWithLargeInitialPacketSize() {
         let clientOptions = QUICProtocol.options()
         clientOptions.connectionOptions.initialPacketSize = 1400
+
+        var observedInitialPacketSizes: [Int] = []
+        let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
+            // Verify initial packet
+            guard (firstByte & 0xF0) == 0xC0 else { return }
+            observedInitialPacketSizes.append(byteCount)
+        }
+
         QUICTestHarness().runQUICTest(
             datagram: true,
             blockSize: 1000,
             blockCount: 10,
-            clientOptions: clientOptions
+            clientOptions: clientOptions,
+            bridgeObserveFrameHandler: observeFrameHandler
         )
+
+        XCTAssertFalse(observedInitialPacketSizes.isEmpty, "Should have observed at least one Initial packet")
+        XCTAssertEqual(observedInitialPacketSizes.first, 1400)
     }
 
     func testQUICDatagramRemoteMaxDatagramFrameSize() {
