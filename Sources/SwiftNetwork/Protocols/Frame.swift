@@ -385,8 +385,9 @@ public struct Frame: ~Copyable {
         effectiveBufferLength -= unclaimedLength
 
         if self.isSingleIPAggregate {
-            aggregateBufferLength -= unclaimedLength
-            if aggregateBufferLength < 0 {
+            if aggregateBufferLength >= unclaimedLength {
+                aggregateBufferLength -= unclaimedLength
+            } else {
                 aggregateBufferLength = 0
             }
         }
@@ -616,7 +617,13 @@ public struct Frame: ~Copyable {
             }
             return flags.contains(.metadataComplete)
         }
-        set { if newValue { flags.insert(.metadataComplete) } else { flags.remove(.metadataComplete) } }
+        set {
+            if protocolMetadatas.count > 0 {
+                protocolMetadatas[0].metadataComplete = newValue
+            } else {
+                if newValue { flags.insert(.metadataComplete) } else { flags.remove(.metadataComplete) }
+            }
+        }
     }
 
     public var connectionComplete: Bool {
@@ -634,7 +641,7 @@ public struct Frame: ~Copyable {
         }
         set {
             guard isSingleIPAggregate else {
-                Logger.proto.fault("Attempt to get aggregate buffer length on a non-single IP aggregate")
+                Logger.proto.fault("Attempt to set aggregate buffer length on a non-single IP aggregate")
                 return
             }
             aggregateBufferLength = newValue
@@ -838,6 +845,7 @@ public struct Frame: ~Copyable {
 
     mutating func reduceAggregateBufferLength(by length: Int) {
         if isSingleIPAggregate {
+            guard length >= 0 else { return }
             guard length <= aggregateBufferLength else {
                 let existingLength = aggregateBufferLength
                 Logger.proto.fault("Aggregate buffer length \(existingLength) cannot remove \(length)")
