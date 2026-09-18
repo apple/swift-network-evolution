@@ -125,7 +125,11 @@ public struct Frame: ~Copyable {
         self.effectiveBufferLength = self.bufferLength
     }
 
-    init(bytes: consuming NetworkUniqueArray<UInt8>) {
+    /// Builds a frame that takes ownership of an existing buffer.
+    ///
+    /// This is the counterpart to `extractBytes()`, so a protocol outside the framework can take
+    /// bytes out of one frame and put them into another without copying.
+    public init(bytes: consuming UniqueArray<UInt8>) {
         self._bytes = bytes
         self.buffer = .bytes
         self.effectiveBufferLength = self.bufferLength
@@ -709,7 +713,11 @@ public struct Frame: ~Copyable {
         }
         return protocolMetadatas[0].metadata
     }
-    var metadataComplete: Bool {
+    /// Whether the metadata attached to this frame is complete.
+    ///
+    /// Protocols outside the framework set this to signal that a frame carries the last of its
+    /// data, so it is part of the public surface a protocol author writes against.
+    public var metadataComplete: Bool {
         get {
             if protocolMetadatas.count > 0 {
                 return protocolMetadatas[0].metadataComplete

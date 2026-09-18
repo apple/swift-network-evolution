@@ -119,7 +119,6 @@ public struct DemuxPattern: Sendable, Hashable {
 public struct DemuxProtocol: NetworkProtocol {
     public typealias Options = DemuxOptions
     public typealias Metadata = DemuxMetadata
-    public typealias Instance = DemuxInstance
 
     public struct DemuxOptions: PerProtocolOptions {
         var demuxPatterns = Deque<DemuxPattern>()
@@ -167,37 +166,41 @@ public struct DemuxProtocol: NetworkProtocol {
         }
     }
 
-    public final class DemuxInstance: OutboundDatagramHandler, InboundDatagramHandler, LoggableProtocol,
-        ProtocolInstanceContainer
-    {
-        var defaultUpper = InboundDatagramLinkage()
+    public final class DemuxInstance<
+        LinkageFamily: DatagramLinkageFamily
+    >: OutboundDatagramHandler, InboundDatagramHandler, LoggableProtocol {
+        public typealias UpperProtocol = LinkageFamily.Upper
+        public typealias LowerProtocol = LinkageFamily.Lower
+
+        var defaultUpper = UpperProtocol()
         var defaultInboundFrames = FrameArray()
 
         struct DemuxEntry: ~Copyable {
-            var upper: InboundDatagramLinkage
+            var upper: UpperProtocol
             var inboundFrames = FrameArray()
             var demuxPatterns = Deque<DemuxPattern>()
         }
         var demuxEntries = NetworkUniqueArray<DemuxEntry>()
 
-        var lower = OutboundDatagramLinkage()
-        var asUpper: LowerProtocol.PairedLinkage { .init(reference: reference) }
-        var asLower: UpperProtocol.PairedLinkage { .init(reference: reference) }
+        var lower = LowerProtocol()
 
         public private(set) var context: NetworkContext
-        init(context: NetworkContext) { self.context = context }
-        public var reference: ProtocolInstanceReference { ProtocolInstanceReference(custom: self) }
+        init(context: NetworkContext) {
+            self.context = context
+            self.identifier = InstanceIdentifier(context: context, eventManager: &self.eventManager)
+        }
+        public var identifier: InstanceIdentifier
         public var log = NetworkLoggerState()
         public var eventManager = ProtocolEventManager()
 
         internal func validate(
-            upper upperProtocol: ProtocolInstanceReference,
+            upper upperProtocol: InstanceIdentifier,
             _ label: String
         ) throws(ProtocolInstanceError) {
             #if DEBUG
-            if upperProtocol == defaultUpper.reference { return }
+            if upperProtocol == defaultUpper.identifier { return }
             for i in 0..<demuxEntries.count {
-                if demuxEntries[i].upper.reference == upperProtocol { return }
+                if demuxEntries[i].upper.identifier == upperProtocol { return }
             }
             Logger.proto.fault("Received \'\(label)\' from incorrect upper protocol")
             throw ProtocolInstanceError.invalidUpperProtocol
@@ -206,7 +209,7 @@ public struct DemuxProtocol: NetworkProtocol {
         }
 
         internal func validate(
-            lower lowerProtocol: ProtocolInstanceReference,
+            lower lowerProtocol: InstanceIdentifier,
             _ label: String
         ) throws(ProtocolInstanceError) {
             #if DEBUG
@@ -217,65 +220,32 @@ public struct DemuxProtocol: NetworkProtocol {
             #endif
         }
 
-        #if !NETWORK_EMBEDDED
-        public func attachUpperProtocol<Linkage>(
-            _ from: ProtocolInstanceReference,
-            remote: Endpoint?,
-            local: Endpoint?,
-            parameters: Parameters?,
-            path: PathProperties?
-        ) throws(NetworkError) -> Linkage where Linkage: LowerProtocolLinkage {
-            try attachUpperDatagramProtocol(from, remote: remote, local: local, parameters: parameters, path: path)
-                as! Linkage
-        }
-
-        public func attachLowerProtocol(
-            _ lowerProtocol: ProtocolInstanceReference,
+        public func attachUpperProtocol(
+            _ upperProtocol: UpperProtocol,
             remote: Endpoint?,
             local: Endpoint?,
             parameters: Parameters?,
             path: PathProperties?
         ) throws(NetworkError) {
-            guard lower.isDetached else {
-                throw NetworkError.posix(EALREADY)
-            }
-            self.lower = try lowerProtocol.attachUpperProtocol(
-                reference,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-        }
-
-        #endif
-
-        public func attachUpperDatagramProtocol(
-            _ from: ProtocolInstanceReference,
-            remote: Endpoint?,
-            local: Endpoint?,
-            parameters: Parameters?,
-            path: PathProperties?
-        ) throws(NetworkError) -> OutboundDatagramLinkage {
             if defaultUpper.isDetached {
                 // Set up default
-                defaultUpper = UpperProtocol(reference: from)
+                defaultUpper = upperProtocol
                 #if !NETWORK_EMBEDDED
                 if let parameters {
-                    if let options = parameters.protocolOptions(for: self.reference) {
+                    if let options = parameters.protocolOptions(for: self.identifier) {
                         self.log.logPrefix = options.logIDString ?? ""
                     }
                 }
                 #endif
-            } else if defaultUpper.reference != from {
+            } else if defaultUpper != upperProtocol {
                 #if !NETWORK_EMBEDDED
                 if let parameters {
                     if let demuxOptions: ProtocolOptions<DemuxProtocol> = parameters.protocolOptions(
-                        for: self.reference
+                        for: self.identifier
                     ) {
                         demuxEntries.append(
                             DemuxEntry(
-                                upper: UpperProtocol(reference: from),
+                                upper: upperProtocol,
                                 demuxPatterns: demuxOptions.perProtocolOptions!.demuxPatterns
                             )
                         )
@@ -283,27 +253,24 @@ public struct DemuxProtocol: NetworkProtocol {
                 }
                 #endif
             }
-
-            return asLower
         }
 
-        public func attachLowerDatagramProtocol(
-            _ lowerProtocol: ProtocolInstanceReference,
-            remote: Endpoint?,
-            local: Endpoint?,
-            parameters: Parameters?,
-            path: PathProperties?
-        ) throws(NetworkError) {
+        /// Whether every upper protocol has detached, so the instance's storage can be released.
+        ///
+        /// A demux instance is shared by its default upper and one upper per pattern set, each of
+        /// which detaches separately, so storage may only be released once the last one has gone.
+        public var isFullyDetached: Bool {
+            defaultUpper.isDetached && demuxEntries.isEmpty
+        }
+
+        public func attachLowerProtocol(
+            _ lowerProtocol: LowerProtocol,
+        ) throws(NetworkError) -> LowerProtocol.PairedUpperLinkage? {
             guard lower.isDetached else {
                 throw NetworkError.posix(EALREADY)
             }
-            self.lower = try lowerProtocol.attachUpperDatagramProtocol(
-                reference,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
+            lower = lowerProtocol
+            return nil
         }
 
         func addInboundDatagram(_ datagram: consuming Frame) -> Int? {
@@ -323,18 +290,18 @@ public struct DemuxProtocol: NetworkProtocol {
         }
 
         func serviceInboundFrames(
-            _ from: ProtocolInstanceReference,
             maximumDatagramCount: Int,
-            requestingIndex: inout Int?
+            requestingIndex: inout Int?,
+            for instance: InstanceIdentifier
         ) -> FrameArray? {
-            if from == defaultUpper.reference {
+            if instance == defaultUpper.identifier {
                 // Look for pending frames for default
                 if !defaultInboundFrames.isEmpty {
                     return defaultInboundFrames.drainArray(maximumFrameCount: maximumDatagramCount)
                 }
             } else {
                 for i in 0..<demuxEntries.count {
-                    if demuxEntries[i].upper.reference == from {
+                    if demuxEntries[i].upper.identifier == instance {
                         if !demuxEntries[i].inboundFrames.isEmpty {
                             return demuxEntries[i].inboundFrames.drainArray(maximumFrameCount: maximumDatagramCount)
                         }
@@ -347,16 +314,17 @@ public struct DemuxProtocol: NetworkProtocol {
         }
 
         public func receiveDatagrams(
-            _ from: ProtocolInstanceReference,
-            maximumDatagramCount: Int
+            maximumDatagramCount: Int,
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
         ) throws(NetworkError) -> FrameArray? {
-            do { try validate(upper: from, #function) } catch { throw NetworkError.posix(EINVAL) }
+            do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
             var requestingIndex: Int? = nil
 
             let returnArray = serviceInboundFrames(
-                from,
                 maximumDatagramCount: maximumDatagramCount,
-                requestingIndex: &requestingIndex
+                requestingIndex: &requestingIndex,
+                for: instance
             )
             if let returnArray {
                 return returnArray
@@ -364,14 +332,11 @@ public struct DemuxProtocol: NetworkProtocol {
 
             guard !demuxEntries.isEmpty else {
                 // No patterns, just go direct
-                return try lower.invokeReceiveDatagrams(self.reference, maximumDatagramCount: maximumDatagramCount)
+                return try lower.invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: self.identifier, in: &eventContext)
             }
 
             // Read datagrams out and categorize them based on patterns
-            let inboundDatagrams = try lower.invokeReceiveDatagrams(
-                self.reference,
-                maximumDatagramCount: maximumDatagramCount
-            )
+            let inboundDatagrams = try lower.invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: self.identifier, in: &eventContext)
             guard var inboundDatagrams, !inboundDatagrams.isEmpty else {
                 return nil
             }
@@ -393,176 +358,200 @@ public struct DemuxProtocol: NetworkProtocol {
             if signalInboundDataAvailableToPatterns {
                 for i in 0..<demuxEntries.count {
                     if !demuxEntries[i].inboundFrames.isEmpty {
-                        demuxEntries[i].upper.deliverInboundDataAvailableEvent(self.reference)
+                        demuxEntries[i].upper.deliverInboundDataAvailableEvent(from: self.identifier, in: &eventContext)
                     }
                 }
             }
 
             if signalInboundDataAvailableToDefault {
-                defaultUpper.deliverInboundDataAvailableEvent(self.reference)
+                defaultUpper.deliverInboundDataAvailableEvent(from: self.identifier, in: &eventContext)
             }
 
             // Return frames for the requesting index
             return serviceInboundFrames(
-                from,
                 maximumDatagramCount: maximumDatagramCount,
-                requestingIndex: &requestingIndex
+                requestingIndex: &requestingIndex,
+                for: instance
             )
         }
 
         public func getDatagramsToSend(
-            _ from: ProtocolInstanceReference,
             maximumDatagramCount: Int,
-            minimumDatagramSize: Int
+            minimumDatagramSize: Int,
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
         ) throws(NetworkError) -> FrameArray? {
-            do { try validate(upper: from, #function) } catch { throw NetworkError.posix(EINVAL) }
-            return try lower.invokeGetDatagramsToSend(
-                self.reference,
-                maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize
-            )
+            do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
+            return try lower.invokeGetDatagramsToSend(maximumDatagramCount: maximumDatagramCount, minimumDatagramSize: minimumDatagramSize, for: self.identifier, in: &eventContext)
         }
 
         public func sendDatagrams(
-            _ from: ProtocolInstanceReference,
-            datagrams: consuming FrameArray
+            _ datagrams: consuming FrameArray,
+            from instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
         ) throws(NetworkError) {
-            do { try validate(upper: from, #function) } catch {
+            do { try validate(upper: instance, #function) } catch {
                 datagrams.finalizeAllFramesAsFailed()
                 throw NetworkError.posix(EINVAL)
             }
-            try lower.invokeSendDatagrams(self.reference, datagrams: datagrams)
+            try lower.invokeSendDatagrams(datagrams, from: self.identifier, in: &eventContext)
         }
 
-        public func detach(_ from: ProtocolInstanceReference) throws(NetworkError) {
-            do { try validate(upper: from, #function) } catch { throw NetworkError.posix(EINVAL) }
-            var shouldTeardown: Bool
-            if from == defaultUpper.reference {
-                shouldTeardown = true
+        public func detach(
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) {
+            do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
+            if instance == defaultUpper.identifier {
+                defaultUpper = .init()
+                defaultInboundFrames.finalizeAllFramesAsFailed()
             } else {
                 for i in 0..<demuxEntries.count {
-                    if demuxEntries[i].upper.reference == from {
-                        demuxEntries[i].upper = .init(reference: .init())
+                    if demuxEntries[i].upper.identifier == instance {
+                        demuxEntries[i].upper = .init()
                         demuxEntries[i].inboundFrames.finalizeAllFramesAsFailed()
                         demuxEntries.remove(at: i)
                         break
                     }
                 }
-
-                shouldTeardown = (defaultUpper.isDetached && demuxEntries.isEmpty)
             }
 
-            guard shouldTeardown else { return }
+            // The remaining uppers still share this instance's lower protocol, so only detach it
+            // once every upper has gone.
+            guard isFullyDetached else { return }
 
-            defaultUpper = .init(reference: .init())
-            defaultInboundFrames.finalizeAllFramesAsFailed()
-            for i in 0..<demuxEntries.count {
-                demuxEntries[i].upper = .init(reference: .init())
-                demuxEntries[i].inboundFrames.finalizeAllFramesAsFailed()
-            }
-            try lower.invokeDetach(self.reference)
-            lower = .init(reference: .init())
+            try lower.invokeDetach(for: self.identifier, in: &eventContext)
+            lower = .init()
         }
 
-        public func connect(_ from: ProtocolInstanceReference) {
-            do { try validate(upper: from, #function) } catch { return }
-            if from == defaultUpper.reference {
+        public func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+            do { try validate(upper: instance, #function) } catch { return }
+            if instance == defaultUpper.identifier {
 
-                if lower.isConnected {
-                    if canCallConnect(requested: true) {
-                        defaultUpper.deliverConnectedEvent(self.reference)
+                if lower.protocolIsConnected(in: &eventContext) {
+                    if canCallConnect(requested: true, in: &eventContext) {
+                        defaultUpper.deliverConnectedEvent(from: self.identifier, in: &eventContext)
                     }
                 } else {
-                    connectRequested()
-                    lower.invokeConnect(self.reference)
+                    connectRequested(in: &eventContext)
+                    lower.invokeConnect(for: self.identifier, in: &eventContext)
                 }
             } else {
                 // Just reply connected to the non-default cases
-                from.deliverEventToUpperProtocol(event: .connected(self.reference, from))
+                instance.deliverEventToUpperProtocol(event: .connected(self.identifier, instance, { _, _ in
+
+                }), in: &eventContext)
             }
         }
 
-        public func disconnect(_ from: ProtocolInstanceReference, error: NetworkError?) {
-            do { try validate(upper: from, #function) } catch { return }
+        public func disconnect(
+            error: NetworkError?,
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) {
+            do { try validate(upper: instance, #function) } catch { return }
 
-            if from == defaultUpper.reference {
-                if canCallDisconnect {
-                    lower.invokeDisconnect(self.reference, error: error)
+            if instance == defaultUpper.identifier {
+                if canCallDisconnect(in: &eventContext) {
+                    lower.invokeDisconnect(error: error, for: self.identifier, in: &eventContext)
                 }
             } else {
                 // Just reply disconnected to the non-default cases
-                from.deliverEventToUpperProtocol(event: .disconnected(self.reference, from, error: error))
+                instance.deliverEventToUpperProtocol(event: .disconnected(self.identifier, instance, error: error, { _, _, _ in
+
+                }), in: &eventContext)
             }
         }
 
-        public func handleApplicationEvent(_ from: ProtocolInstanceReference, event: ApplicationEvent) {
+        public func handleApplicationEvent(
+            event: ApplicationEvent,
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) {
             // Don't validate upper, can pass through
-            lower.invokeApplicationEvent(from, event: event)
+            lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
         }
 
-        public func getMetadata<P>(_ from: ProtocolInstanceReference) -> ProtocolMetadata<P>? where P: NetworkProtocol {
-            do { try validate(upper: from, #function) } catch { return nil }
-            return lower.invokeGetMetadata(self.reference)
+        public func getMetadata<P>(
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) -> ProtocolMetadata<P>? where P: NetworkProtocol {
+            do { try validate(upper: instance, #function) } catch { return nil }
+            return lower.invokeGetMetadata(for: self.identifier, in: &eventContext)
         }
 
         public func getMetrics(
-            _ from: ProtocolInstanceReference,
-            requestedNetworkMetric: RequestedNetworkMetrics
+            requestedNetworkMetric: RequestedNetworkMetrics,
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
         ) -> NetworkMetrics? {
-            lower.invokeGetMetrics(
-                self.reference,
-                requestedNetworkMetric: requestedNetworkMetric
-            )
+            lower.invokeGetMetrics(requestedNetworkMetric: requestedNetworkMetric, for: self.identifier, in: &eventContext)
         }
 
         // Events from lower
 
-        public func handleConnectedEvent(_ from: ProtocolInstanceReference) {
-            do { try validate(lower: from, #function) } catch { return }
-            if canCallConnect(requested: false) {
-                defaultUpper.deliverConnectedEvent(self.reference)
+        public func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+            do { try validate(lower: instance, #function) } catch { return }
+            if canCallConnect(requested: false, in: &eventContext) {
+                defaultUpper.deliverConnectedEvent(from: self.identifier, in: &eventContext)
             }
         }
 
-        public func handleDisconnectedEvent(_ from: ProtocolInstanceReference, error: NetworkError?) {
-            do { try validate(lower: from, #function) } catch { return }
+        public func handleDisconnectedEvent(
+            error: NetworkError?,
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) {
+            do { try validate(lower: instance, #function) } catch { return }
             for i in 0..<demuxEntries.count {
-                demuxEntries[i].upper.deliverDisconnectedEvent(self.reference, error: error)
+                demuxEntries[i].upper.deliverDisconnectedEvent(error: error, from: self.identifier, in: &eventContext)
             }
 
             // Pass through disconnected up to the default protocol
-            defaultUpper.deliverDisconnectedEvent(self.reference, error: error)
+            defaultUpper.deliverDisconnectedEvent(error: error, from: self.identifier, in: &eventContext)
         }
 
-        public func handleInboundDataAvailableEvent(_ from: ProtocolInstanceReference) {
-            do { try validate(lower: from, #function) } catch { return }
+        public func handleInboundDataAvailableEvent(
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) {
+            do { try validate(lower: instance, #function) } catch { return }
 
-            defaultUpper.deliverInboundDataAvailableEvent(self.reference)
+            defaultUpper.deliverInboundDataAvailableEvent(from: self.identifier, in: &eventContext)
             for i in 0..<demuxEntries.count {
-                demuxEntries[i].upper.deliverInboundDataAvailableEvent(self.reference)
+                demuxEntries[i].upper.deliverInboundDataAvailableEvent(from: self.identifier, in: &eventContext)
             }
         }
 
-        public func handleOutboundRoomAvailableEvent(_ from: ProtocolInstanceReference) {
-            do { try validate(lower: from, #function) } catch { return }
-            defaultUpper.deliverOutboundRoomAvailableEvent(self.reference)
+        public func handleOutboundRoomAvailableEvent(
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) {
+            do { try validate(lower: instance, #function) } catch { return }
+            defaultUpper.deliverOutboundRoomAvailableEvent(from: self.identifier, in: &eventContext)
             for i in 0..<demuxEntries.count {
-                demuxEntries[i].upper.deliverOutboundRoomAvailableEvent(self.reference)
+                demuxEntries[i].upper.deliverOutboundRoomAvailableEvent(from: self.identifier, in: &eventContext)
             }
         }
 
-        public func handleNetworkProtocolEvent(_ from: ProtocolInstanceReference, event: NetworkProtocolEvent) {
+        public func handleNetworkProtocolEvent(
+            event: NetworkProtocolEvent,
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) {
             // Don't validate lower, can pass through
             defaultUpper.deliverNetworkProtocolEvent(
-                originalReference: from,
-                selfReference: self.reference,
-                event: event
+                originalInstance: instance,
+                selfInstance: self.identifier,
+                event: event,
+                in: &eventContext
             )
             for i in 0..<demuxEntries.count {
                 demuxEntries[i].upper.deliverNetworkProtocolEvent(
-                    originalReference: from,
-                    selfReference: self.reference,
-                    event: event
+                    originalInstance: instance,
+                    selfInstance: self.identifier,
+                    event: event,
+                    in: &eventContext
                 )
             }
         }
@@ -575,19 +564,12 @@ public struct DemuxProtocol: NetworkProtocol {
         DemuxOptions(from: serializedBytes)
     }
     public func newPerProtocolMetadata() -> DemuxMetadata? { DemuxMetadata() }
-    public func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? {
-        DemuxInstance(context: context).reference
-    }
 
     static let identifier = ProtocolIdentifier(name: "demux", level: .link, mapping: .oneToOne)
     static let definition = ProtocolDefinition<DemuxProtocol>(identifier: identifier)
 
     static public func options() -> ProtocolOptions<DemuxProtocol> {
         DemuxProtocol.definition.protocolOptions()
-    }
-
-    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
-        DemuxProtocol().newProtocolInstance(context: context)!
     }
 }
 

@@ -114,11 +114,11 @@ struct ECN: ~Copyable, PrefixedLoggable {
         self.log = LogPrefixer()
     }
 
-    init(
+    init<Families: LinkageFamilyGroup>(
         echoEnabled: Bool,
         markingEnabled: Bool,
         l4sEnabled: Bool?,
-        connection: QUICConnection,
+        connection: QUICConnection<Families>,
         logPrefixer: LogPrefixer
     ) {
         self.log = logPrefixer
@@ -146,7 +146,7 @@ struct ECN: ~Copyable, PrefixedLoggable {
         }
     }
 
-    func reset(path: QUICPath?) {
+    func reset<Families: LinkageFamilyGroup>(path: QUICPath<Families>?) {
         if let path {
             if path.ecnState?.ecnMarkingEnabled ?? false {
                 path.ecnState?.state = .probing
@@ -168,9 +168,9 @@ struct ECN: ~Copyable, PrefixedLoggable {
 
     // MARK: Convience Methods for processing ENCPath state
 
-    static func processIPCodpoint(
+    static func processIPCodpoint<Families: LinkageFamilyGroup>(
         ecn: borrowing ECN,
-        path: QUICPath,
+        path: QUICPath<Families>,
         stats: inout Statistics,
         packetNumberSpace: PacketNumberSpace,
         flag: IPProtocol.ECN
@@ -184,9 +184,9 @@ struct ECN: ~Copyable, PrefixedLoggable {
     }
 
     @inline(always)
-    static func outgoingIPCodepoint(
+    static func outgoingIPCodepoint<Families: LinkageFamilyGroup>(
         ecn: borrowing ECN,
-        path: QUICPath,
+        path: QUICPath<Families>,
         stats: inout Statistics,
         packet: inout SentPacketRecord
     ) -> IPProtocol.ECN {
@@ -242,7 +242,7 @@ struct ECNPathState: ~Copyable, PrefixedLoggable {
         }
     }
 
-    mutating func reset(ecn: inout ECN, path: QUICPath? = nil) {
+    mutating func reset<Families: LinkageFamilyGroup>(ecn: inout ECN, path: QUICPath<Families>?) {
         state = markingEnabled ? .probing : .disabled
         validationSentPacketCount = 0
         validationAckElicitingLostPacketCount = 0

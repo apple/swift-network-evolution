@@ -29,12 +29,14 @@ import Dispatch
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInstanceContainer {
+public final class SocketDatagramProtocol<LinkageFamily: DatagramLinkageFamily>: BottomDatagramProtocol {
+    public typealias UpperProtocol = LinkageFamily.Upper
+    public typealias LinkageType = LinkageFamily.Lower
 
     public private(set) var context: NetworkContext
-    public var reference: ProtocolInstanceReference { ProtocolInstanceReference(custom: self) }
+    public var identifier: InstanceIdentifier
     public var eventManager = ProtocolEventManager()
-    public var upper = InboundDatagramLinkage()
+    public var upper = LinkageFamily.Upper()
     var log = NetworkLoggerState()
 
     private var socket: SystemSocket? = nil
@@ -51,6 +53,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
 
     init(context: NetworkContext) {
         self.context = context
+        self.identifier = InstanceIdentifier(context: context, eventManager: &self.eventManager)
     }
 
     deinit {
@@ -103,12 +106,12 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
         pendingOutputFrames.finalizeAllFramesAsFailed()
     }
 
-    public func connect() {
+    public func connect(in eventContext: inout NetworkContext.EventContext) {
         guard let socket, let remoteEndpoint,
             case .address(let address) = remoteEndpoint.type
         else {
             log.error("Cannot connect: no socket or remote endpoint")
-            deliverDisconnectedEvent(error: .posix(ENOTCONN))
+            deliverDisconnectedEvent(error: .posix(ENOTCONN), in: &eventContext)
             return
         }
 
@@ -124,23 +127,26 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
             case .v6(let addr, _): ip = addr
             default:
                 log.error("Unsupported address family for connect")
-                deliverDisconnectedEvent(error: .posix(EAFNOSUPPORT))
+                deliverDisconnectedEvent(error: .posix(EAFNOSUPPORT), in: &eventContext)
                 return
             }
 
             _ = try socket.connectSocket(to: ip, port: remoteEndpoint.port)
         } catch {
             log.error("Failed to connect: \(error)")
-            deliverDisconnectedEvent(error: .posix(ECONNREFUSED))
+            deliverDisconnectedEvent(error: .posix(ECONNREFUSED), in: &eventContext)
             return
         }
 
-        deliverConnectedEvent()
+        deliverConnectedEvent(in: &eventContext)
     }
 
     // MARK: - BottomDatagramProtocol
 
-    public func receiveDatagrams(maximumDatagramCount: Int) throws(NetworkError) -> FrameArray? {
+    public func receiveDatagrams(
+        maximumDatagramCount: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
         let result = incomingFrames.drainArray(maximumFrameCount: maximumDatagramCount)
         inputUnacknowledged = false
         if inputSourceSuspended {
@@ -152,7 +158,8 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
 
     public func getDatagramsToSend(
         maximumDatagramCount: Int,
-        minimumDatagramSize: Int
+        minimumDatagramSize: Int,
+        in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
         // If prior writes are still pending, return nil to apply backpressure
         guard pendingOutputFrames.isEmpty else { return nil }
@@ -164,9 +171,12 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
         return frameArray
     }
 
-    public func sendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
+    public func sendDatagrams(
+        _ datagrams: consuming FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
         pendingOutputFrames.add(frames: datagrams)
-        serviceWrites()
+        serviceWrites(in: &eventContext)
     }
 
     #if !NETWORK_EMBEDDED
@@ -271,8 +281,8 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
 
             if receivedAny {
                 inputUnacknowledged = true
-                fromExternal {
-                    upper.deliverInboundDataAvailableEvent(reference)
+                fromExternal { eventContext in
+                    upper.deliverInboundDataAvailableEvent(from: identifier, in: &eventContext)
                 }
                 // If the upper protocol consumed data synchronously during the
                 // notification (via receiveDatagrams clearing inputUnacknowledged),
@@ -313,9 +323,13 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
 
     private func triggerOutboundRoomAvailable() {
         // Notify upper protocol that output room is available
-        fromExternal {
-            upper.deliverOutboundRoomAvailableEvent(reference)
+        fromExternal { eventContext in
+            triggerOutboundRoomAvailable(in: &eventContext)
         }
+    }
+
+    private func triggerOutboundRoomAvailable(in eventContext: inout NetworkContext.EventContext) {
+        upper.deliverOutboundRoomAvailableEvent(from: identifier, in: &eventContext)
     }
 
     private func cancelWriteSource() {
@@ -334,7 +348,15 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
     // Drains pendingOutputFrames synchronously. On EAGAIN/ENOBUFS,
     // stops draining, resumes the write source to retry when writable.
     // On fatal errors (EPIPE, etc.), delivers a disconnected event.
+    // Callers that already hold the event context must use `serviceWrites(state:)`. This variant is
+    // for the external entry points -- the write source -- which have no state yet.
     private func serviceWrites() {
+        fromExternal { eventContext in
+            serviceWrites(in: &eventContext)
+        }
+    }
+
+    private func serviceWrites(in eventContext: inout NetworkContext.EventContext) {
         var needsWriteSource = false
         var fatalError: NetworkError? = nil
 
@@ -378,7 +400,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
                 dispatchWriteSource?.suspend()
             }
             if let fatalError {
-                deliverDisconnectedEvent(error: fatalError)
+                deliverDisconnectedEvent(error: fatalError, in: &eventContext)
             }
         }
     }
@@ -399,30 +421,40 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol, ProtocolInsta
         return result
     }
 
-    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
-        SocketDatagramProtocol(context: context).reference
+    static public func instance(context: NetworkContext) -> InstanceIdentifier {
+        SocketDatagramProtocol(context: context).identifier
     }
 }
 
 // MARK: - SocketStreamProtocol
 
+@available(Network 0.1.0, *)
+fileprivate struct SocketStreamDefaults {
+#if canImport(Darwin)
+    // Socket option constants that the Swift Darwin overlay does not surface.
+    // Values match <netinet6/in6.h> and the Darwin xnu socket headers.
+    static let socketOptionIPv6UseMinMTU: CInt = 42  // IPV6_USE_MIN_MTU
+    static let socketOptionIPv6DontFrag: CInt = 62  // IPV6_DONTFRAG
+#endif
+
+    // Cap dynamic input sizing so a flood of pending bytes can't make us
+    // allocate an arbitrarily large temporary buffer.
+    static let maximumDynamicInputSize = 256 * 1024
+}
+
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceContainer {
+public final class SocketStreamProtocol<LinkageFamily: StreamLinkageFamily>: BottomStreamProtocol {
+    public typealias UpperProtocol = LinkageFamily.Upper
+    public typealias LinkageType = LinkageFamily.Lower
 
     public private(set) var context: NetworkContext
-    public var reference: ProtocolInstanceReference { ProtocolInstanceReference(custom: self) }
+    public var identifier: InstanceIdentifier
     public var eventManager = ProtocolEventManager()
-    public var upper = InboundStreamLinkage()
+    public var upper = LinkageFamily.Upper()
     var log = NetworkLoggerState()
 
     private var socket: SystemSocket? = nil
-    #if canImport(Darwin)
-    // Socket option constants that the Swift Darwin overlay does not surface.
-    // Values match <netinet6/in6.h> and the Darwin xnu socket headers.
-    private static let socketOptionIPV6UseMinMTU: CInt = 42  // IPV6_USE_MIN_MTU
-    private static let socketOptionIPV6DontFrag: CInt = 62  // IPV6_DONTFRAG
-    #endif
     private var dispatchReadSource: (any DispatchSourceRead)? = nil
     private var dispatchWriteSource: (any DispatchSourceWrite)? = nil
     private var waitingForWritable = false
@@ -439,10 +471,6 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
     private let maximumInputSize = 65536
     private let maximumOutputSize = 65536
 
-    // Cap dynamic input sizing so a flood of pending bytes can't make us
-    // allocate an arbitrarily large temporary buffer.
-    private static let maximumDynamicInputSize = 256 * 1024
-
     // TCPMetadata wired up so the upper layer can query and modify socket
     // state via the standard TCP option callbacks.
     private var protocolMetadata: ProtocolMetadata<TCPProtocol>? = nil
@@ -450,6 +478,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
 
     init(context: NetworkContext) {
         self.context = context
+        self.identifier = InstanceIdentifier(context: context, eventManager: &self.eventManager)
     }
 
     deinit {
@@ -504,12 +533,12 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
         pendingOutputFrames.finalizeAllFramesAsFailed()
     }
 
-    public func connect() {
+    public func connect(in eventContext: inout NetworkContext.EventContext) {
         guard let socket, let remoteEndpoint,
             case .address(let address) = remoteEndpoint.type
         else {
             log.error("Cannot connect: no socket or remote endpoint")
-            deliverDisconnectedEvent(error: .posix(ENOTCONN))
+            deliverDisconnectedEvent(error: .posix(ENOTCONN), in: &eventContext)
             return
         }
 
@@ -535,7 +564,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
             case .v6(let addr, _): ip = addr
             default:
                 log.error("Unsupported address family for connect")
-                deliverDisconnectedEvent(error: .posix(EAFNOSUPPORT))
+                deliverDisconnectedEvent(error: .posix(EAFNOSUPPORT), in: &eventContext)
                 return
             }
 
@@ -543,7 +572,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
             // Wait for the socket to become writable, then treat as connected.
             let connectedNow = try socket.connectSocket(to: ip, port: remoteEndpoint.port)
             if connectedNow {
-                deliverConnectedEvent()
+                deliverConnectedEvent(in: &eventContext)
                 startReadSource()
             } else {
                 isConnecting = true
@@ -554,23 +583,27 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
             }
         } catch let error {
             log.error("Failed to connect: \(error)")
-            deliverDisconnectedEvent(error: .posix(ECONNREFUSED))
+            deliverDisconnectedEvent(error: .posix(ECONNREFUSED), in: &eventContext)
         }
     }
 
-    public func disconnect() {
+    public func disconnect(in eventContext: inout NetworkContext.EventContext) {
         if pendingOutputFrames.isEmpty {
             shutdownWrites()
-            deliverDisconnectedEvent(error: nil)
+            deliverDisconnectedEvent(error: nil, in: &eventContext)
             return
         }
         pendingDisconnect = true
-        serviceWrites()
+        serviceWrites(in: &eventContext)
     }
 
     // MARK: - BottomStreamProtocol
 
-    public func receiveStreamData(minimumBytes: Int, maximumBytes: Int) throws(NetworkError) -> FrameArray? {
+    public func receiveStreamData(
+        minimumBytes: Int,
+        maximumBytes: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
         guard !incomingFrames.isEmpty,
             incomingFrames.unclaimedLength >= minimumBytes || incomingFrames.connectionComplete
         else {
@@ -592,15 +625,20 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
         return result
     }
 
-    public func getOutboundStreamDataRoomAvailable() throws(NetworkError) -> Int {
+    public func getOutboundStreamDataRoomAvailable(
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Int {
         let pending = pendingOutputFrames.unclaimedLength
         if pending >= maximumOutputSize { return 0 }
         return maximumOutputSize - pending
     }
 
-    public func sendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {
+    public func sendStreamData(
+        _ streamData: consuming FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
         pendingOutputFrames.add(frames: streamData)
-        serviceWrites()
+        serviceWrites(in: &eventContext)
     }
 
     #if !NETWORK_EMBEDDED
@@ -730,7 +768,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
         let pending = socket?.availableBytesToRead() ?? 0
         let readSize: Int
         if pending > 0 {
-            readSize = min(max(pending, maximumInputSize), Self.maximumDynamicInputSize)
+            readSize = min(max(pending, maximumInputSize), SocketStreamDefaults.maximumDynamicInputSize)
         } else {
             readSize = maximumInputSize
         }
@@ -790,8 +828,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
             }
 
             if receivedAny {
-                fromExternal {
-                    upper.deliverInboundDataAvailableEvent(reference)
+                fromExternal { eventContext in
+                    upper.deliverInboundDataAvailableEvent(from: identifier, in: &eventContext)
                 }
             }
             // Backpressure on buffered volume: suspend whenever we're over the
@@ -858,9 +896,13 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
     }
 
     private func triggerOutboundRoomAvailable() {
-        fromExternal {
-            upper.deliverOutboundRoomAvailableEvent(reference)
+        fromExternal { eventContext in
+            triggerOutboundRoomAvailable(in: &eventContext)
         }
+    }
+
+    private func triggerOutboundRoomAvailable(in eventContext: inout NetworkContext.EventContext) {
+        upper.deliverOutboundRoomAvailableEvent(from: identifier, in: &eventContext)
     }
 
     private func cancelWriteSource() {
@@ -879,7 +921,15 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
     // version). On EAGAIN, resumes the write source to retry when writable.
     // On fatal errors (EPIPE, ECONNRESET, etc.), delivers a disconnected event.
     // When a frame with connectionComplete is fully written, issues SHUT_WR.
+    // Callers that already hold the event context must use `serviceWrites(state:)`. This variant is
+    // for the external entry points -- the write source -- which have no state yet.
     private func serviceWrites() {
+        fromExternal { eventContext in
+            serviceWrites(in: &eventContext)
+        }
+    }
+
+    private func serviceWrites(in eventContext: inout NetworkContext.EventContext) {
         guard !isConnecting else { return }
 
         var shouldShutdownWrite = false
@@ -961,7 +1011,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
                 waitingForWritable = false
                 dispatchWriteSource?.suspend()
             }
-            deliverDisconnectedEvent(error: fatalError)
+            deliverDisconnectedEvent(error: fatalError, in: &eventContext)
             return
         }
 
@@ -983,7 +1033,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
         if pendingDisconnect {
             pendingDisconnect = false
             shutdownWrites()
-            deliverDisconnectedEvent(error: nil)
+            deliverDisconnectedEvent(error: nil, in: &eventContext)
         }
     }
 
@@ -1149,7 +1199,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
             do {
                 try socket.setSocketOption(
                     level: CInt(IPPROTO_IPV6),
-                    name: Self.socketOptionIPV6UseMinMTU,
+                    name: SocketStreamDefaults.socketOptionIPv6UseMinMTU,
                     value: CInt(1)
                 )
             } catch {
@@ -1163,7 +1213,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
                 if isIPv6 {
                     try socket.setSocketOption(
                         level: CInt(IPPROTO_IPV6),
-                        name: Self.socketOptionIPV6DontFrag,
+                        name: SocketStreamDefaults.socketOptionIPv6DontFrag,
                         value: dontFragment
                     )
                 } else {
@@ -1239,8 +1289,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol, ProtocolInstanceC
         }
     }
 
-    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
-        SocketStreamProtocol(context: context).reference
+    static public func instance(context: NetworkContext) -> InstanceIdentifier {
+        SocketStreamProtocol(context: context).identifier
     }
 }
 

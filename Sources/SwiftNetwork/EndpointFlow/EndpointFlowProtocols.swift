@@ -23,44 +23,27 @@ internal import os
 #endif
 
 @available(Network 0.1.0, *)
-protocol AbstractEndpointFlowProtocol: InboundDataHandler, LoggableProtocol {
-    func teardown()
-}
-
-@available(Network 0.1.0, *)
-class EndpointFlowProtocol<LinkageType: InboundDataLinkage>: ProtocolInstanceContainer, AbstractEndpointFlowProtocol {
-    typealias LowerProtocol = LinkageType.PairedLinkage
-
-    #if !NETWORK_EMBEDDED
-    func accessUpper<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any UpperProtocolHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any UpperProtocolHandler) = self
-        return try body(&selfAccess)
-    }
-    func accessInboundDataHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundDataHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any InboundDataHandler) = self
-        return try body(&selfAccess)
-    }
-    #endif
+class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtocol {
+    typealias LinkageType = LinkageFamily.Upper
+    typealias LowerProtocol = LinkageFamily.Lower
 
     // Completions: called once!
+    //
+    // These run inline while the delivering event holds the event context, so each one takes the
+    // state and must thread it into any call back into the stack. Calling a state-free entry
+    // point from inside one of these would re-derive the state and trip exclusivity.
     struct Completions {
-        public var connected: ((NetworkError?) -> Void)?
-        public var outputRoomAvailable: (() -> Void)?
+        public var connected: ((inout NetworkContext.EventContext, NetworkError?) -> Void)?
+        public var outputRoomAvailable: ((inout NetworkContext.EventContext) -> Void)?
 
         // true when inbound data is available, false when disconnected
-        public var inboundDataAvailable: ((Bool) -> Void)?
+        public var inboundDataAvailable: ((inout NetworkContext.EventContext, Bool) -> Void)?
 
         // invoked when error detected
-        public var error: ((NetworkError) -> Void)?
+        public var error: ((inout NetworkContext.EventContext, NetworkError) -> Void)?
 
         // invoked when remote peer disconnects
-        public var disconnected: ((NetworkError) -> Void)?
+        public var disconnected: ((inout NetworkContext.EventContext, NetworkError) -> Void)?
         public init() {}
     }
     var completions = Completions()
@@ -69,9 +52,8 @@ class EndpointFlowProtocol<LinkageType: InboundDataLinkage>: ProtocolInstanceCon
 
     fileprivate(set) var context: NetworkContext
 
-    var reference: ProtocolInstanceReference { ProtocolInstanceReference(custom: self) }
-    var lower = LowerProtocol(reference: .init())
-    var asUpper: LinkageType { .init(reference: reference) }
+    var identifier: InstanceIdentifier
+    var lower = LowerProtocol()
 
     var eventManager = ProtocolEventManager()
 
@@ -80,31 +62,13 @@ class EndpointFlowProtocol<LinkageType: InboundDataLinkage>: ProtocolInstanceCon
     var parameters: Parameters
     var path: PathProperties
 
-    fileprivate init(
-        identifier: String = "",
-        local: Endpoint?,
-        remote: Endpoint,
-        parameters: Parameters,
-        path: PathProperties,
-        context: NetworkContext
-    ) {
-        log.logPrefix = "[EndpointFlowProtocol:\(identifier)]"
-        self.context = context
-        self.local = local
-        self.remote = remote
-        self.parameters = parameters
-        self.path = path
-    }
-
-    #if !NETWORK_EMBEDDED
     init(
         identifier: String = "",
         local: Endpoint?,
         remote: Endpoint,
         parameters: Parameters,
         path: PathProperties,
-        context: NetworkContext,
-        lowerProtocol: LinkageType.PairedLinkage
+        context: NetworkContext
     ) throws(NetworkError) {
         log.logPrefix = "[EndpointFlowProtocol:\(identifier)]"
         self.context = context
@@ -112,58 +76,44 @@ class EndpointFlowProtocol<LinkageType: InboundDataLinkage>: ProtocolInstanceCon
         self.remote = remote
         self.parameters = parameters
         self.path = path
-        self.lower = try lowerProtocol.invokeAttachUpperProtocol(
-            reference,
-            remote: remote,
-            local: local,
-            parameters: parameters,
-            path: path
-        )
-    }
-    #endif
-
-    func attachLowerProtocol(
-        _ lowerProtocol: ProtocolInstanceReference,
-        remote: Endpoint?,
-        local: Endpoint?,
-        parameters: Parameters?,
-        path: PathProperties?
-    ) throws(NetworkError) {
-        throw NetworkError.posix(EINVAL)
+        self.identifier = .init(context: context, eventManager: &self.eventManager)
     }
 
-    func handleConnectedEvent(_ from: ProtocolInstanceReference) {
+    func handleConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
         log.debug("Received connected event")
         if let completion = completions.connected {
-            completion(nil)
             self.completions.connected = nil
+            completion(&eventContext, nil)
         }
     }
 
-    func handleDisconnectedEvent(_ from: ProtocolInstanceReference, error: NetworkError?) {
+    func handleDisconnectedEvent(
+        error: NetworkError?,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         log.debug("Received disconnected event")
         let disconnectError = error ?? .posix(ENOTCONN)
         if let completion = completions.connected {
-            completion(disconnectError)
             self.completions.connected = nil
+            completion(&eventContext, disconnectError)
         }
         if let error, let errorCompletion = self.completions.error {
-            errorCompletion(error)
             self.completions.error = nil
+            errorCompletion(&eventContext, error)
         }
 
         if let inboundDataAvailableCompletion = self.completions.inboundDataAvailable {
-            inboundDataAvailableCompletion(false)
             self.completions.inboundDataAvailable = nil
+            inboundDataAvailableCompletion(&eventContext, false)
         }
 
         if let disconnectedCompletion = self.completions.disconnected {
-            disconnectedCompletion(disconnectError)
             self.completions.disconnected = nil
+            disconnectedCompletion(&eventContext, disconnectError)
         }
     }
 
-    func handleInboundDataAvailableEvent(_ from: ProtocolInstanceReference) {
+    func handleInboundDataAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
         log.debug("Received inbound data available event")
         // Clear the slot before invoking: the completion may synchronously
         // re-arm the waiter (when receiveStreamData returns nil because the
@@ -171,372 +121,245 @@ class EndpointFlowProtocol<LinkageType: InboundDataLinkage>: ProtocolInstanceCon
         // would clobber that re-registration and drop later notifications.
         if let inboundDataAvailableCompletion = self.completions.inboundDataAvailable {
             self.completions.inboundDataAvailable = nil
-            inboundDataAvailableCompletion(true)
+            inboundDataAvailableCompletion(&eventContext, true)
         }
     }
 
-    public func handleOutboundRoomAvailableEvent(_ from: ProtocolInstanceReference) {
+    public func handleOutboundRoomAvailableEvent(
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         log.debug("Received outbound room available event")
         if let completion = self.completions.outputRoomAvailable {
-            completion()
             self.completions.outputRoomAvailable = nil
+            completion(&eventContext)
         }
-    }
-
-    public func handleNetworkProtocolEvent(_ from: ProtocolInstanceReference, event: NetworkProtocolEvent) {
-        log.debug("Received network protocol event: \(event)")
     }
 
     public func start() {
         log.debug("Starting flow")
-        fromExternal {
-            lower.invokeConnect(reference)
-        }
+        invokeConnect()
     }
 
-    public func invokeApplicationEvent(_ event: ApplicationEvent) {
-        fromExternal {
-            lower.invokeApplicationEvent(reference, event: event)
-        }
-    }
-
-    public func start(_ completion: @escaping (NetworkError?) -> Void) {
+    public func start(_ completion: @escaping (inout NetworkContext.EventContext, NetworkError?) -> Void) {
         self.completions.connected = completion
         start()
     }
 
     public func stop() {
         log.debug("Stopping flow")
-        fromExternal {
-            lower.invokeDisconnect(reference)
-        }
+        invokeDisconnect(error: nil)
     }
 
     public func teardown() {
         log.debug("Tearing down flow")
-        fromExternal {
-            do throws(NetworkError) {
-                try lower.invokeDetach(reference)
-                lower = .init(reference: .init())
-            } catch {
-                log.error("Failed to detach lower protocol: \(error)")
-            }
+        fromExternal { eventContext in
+            teardown(in: &eventContext)
         }
+    }
+
+    /// Tears down using an event context the caller already holds.
+    ///
+    /// Completions run inline while the delivering event holds the state, so they have to use
+    /// this rather than `teardown()`.
+    public func teardown(in eventContext: inout NetworkContext.EventContext) {
+        do throws(NetworkError) {
+            var mutatingSelf = self
+            try mutatingSelf.invokeDetach(in: &eventContext)
+        } catch {
+            log.error("Failed to detach lower protocol: \(error)")
+        }
+        // Nothing sits above a top protocol, so no lower linkage hands this instance's event
+        // state back. Release it here; the retirement is deferred to whichever call still holds
+        // the state, so this is safe even when reached from inside this instance's own call.
+        unregisterEventManager(in: &eventContext)
     }
 
     public func abort(error: NetworkError? = nil) {
         log.debug("Aborting flow")
-        fromExternal {
-            lower.invokeDisconnect(reference, error: error)
-        }
+        invokeDisconnect(error: error)
     }
 
-    public func waitForOutputRoomAvailable(_ completion: @escaping () -> Void) {
+    public func waitForOutputRoomAvailable(
+        _ completion: @escaping (inout NetworkContext.EventContext) -> Void
+    ) {
         completions.outputRoomAvailable = completion
     }
 
-    public func waitForInboundDataAvailable(completion: @escaping (Bool) -> Void) {
+    public func waitForInboundDataAvailable(
+        completion: @escaping (inout NetworkContext.EventContext, Bool) -> Void
+    ) {
         completions.inboundDataAvailable = completion
     }
 
-    public func waitForError(completion: @escaping (NetworkError?) -> Void) {
+    public func waitForError(
+        completion: @escaping (inout NetworkContext.EventContext, NetworkError) -> Void
+    ) {
         completions.error = completion
     }
 
-    public func waitForDisconnected(completion: @escaping (NetworkError) -> Void) {
+    public func waitForDisconnected(
+        completion: @escaping (inout NetworkContext.EventContext, NetworkError) -> Void
+    ) {
         completions.disconnected = completion
     }
 
-    final public func getMetadata<P: NetworkProtocol>() -> ProtocolMetadata<P>? {
-        fromExternal {
-            guard let metadata = lower.invokeGetMetadata(reference) as? ProtocolMetadata<P> else {
-                return nil
-            }
-            return metadata
-        }
-    }
-
-    public func setApplicationError(_ applicationError: UInt64, applicationErrorReason: String) {
-        if let metadata: ProtocolMetadata<QUICProtocol> = self.getMetadata() {
-            metadata.perProtocolMetadata?.quicConnectionMetadata?.applicationError = applicationError
-            metadata.perProtocolMetadata?.quicConnectionMetadata?.applicationErrorReason = applicationErrorReason
-        }
+    /// Registers a completion that does not need the event context.
+    public func waitForDisconnected(completion: @escaping (NetworkError) -> Void) {
+        completions.disconnected = { _, error in completion(error) }
     }
 }
 
 @available(Network 0.1.0, *)
-final class DatagramEndpointFlowProtocol: EndpointFlowProtocol<InboundDatagramLinkage>, InboundDatagramHandler {
-
-    override var reference: ProtocolInstanceReference { ProtocolInstanceReference(datagramEndpointFlow: self) }
-
-    convenience init(
-        identifier: String = "",
-        local: Endpoint?,
-        remote: Endpoint,
-        parameters: Parameters,
-        path: PathProperties,
-        context: NetworkContext,
-        lowerDatagramProtocol: OutboundDatagramLinkage
-    ) throws(NetworkError) {
-        self.init(
-            identifier: identifier,
-            local: local,
-            remote: remote,
-            parameters: parameters,
-            path: path,
-            context: context
-        )
-        self.lower = try lowerDatagramProtocol.invokeAttachUpperDatagramProtocol(
-            reference,
-            remote: remote,
-            local: local,
-            parameters: parameters,
-            path: path
-        )
-    }
-
-    func attachLowerDatagramProtocol(
-        _ lowerProtocol: ProtocolInstanceReference,
-        remote: Endpoint?,
-        local: Endpoint?,
-        parameters: Parameters?,
-        path: PathProperties?
-    ) throws(NetworkError) {
-        throw NetworkError.posix(EINVAL)
-    }
-
-    convenience init(
-        identifier: String = "",
-        local: Endpoint?,
-        remote: Endpoint,
-        parameters: Parameters,
-        path: PathProperties,
-        context: NetworkContext,
-        listenerProtocol: DatagramListenerLinkage
-    ) throws(NetworkError) {
-        self.init(
-            identifier: identifier,
-            local: local,
-            remote: remote,
-            parameters: parameters,
-            path: path,
-            context: context
-        )
-        self.lower = try listenerProtocol.invokeAttachUpperDatagramProtocolToNewFlow(
-            reference,
-            remote: remote,
-            local: local,
-            parameters: parameters,
-            path: path
-        )
-    }
+final class DatagramEndpointFlowProtocol<LinkageFamily: DatagramLinkageFamily>: EndpointFlowProtocol<LinkageFamily>, TopDatagramProtocol {
 
     func write(_ datagram: consuming Frame) -> Bool {
-        fromExternal {
-            do throws(NetworkError) {
-                let length = datagram.unclaimedLength
-                let frames = try lower.invokeGetDatagramsToSend(
-                    reference,
-                    maximumDatagramCount: 1,
-                    minimumDatagramSize: length
-                )
-                guard var frames = frames else {
-                    datagram.finalize(success: false)
-                    log.error("Failed to get datagram to send")
-                    return false
-                }
-                frames.iterateMutableFrames { frame in
-                    let copiedLength = datagram.copyInto(&frame, length: length)
-                    if copiedLength < length {
-                        log.error("Failed to copy \(length) bytes, only copied \(copiedLength)")
-                    }
-                    let frameLength = frame.unclaimedLength
-                    if frameLength > copiedLength {
-                        _ = frame.collapse(to: copiedLength)
-                    }
-                    datagram.finalize(success: true)
-                    return false
-                }
-                try lower.invokeSendDatagrams(reference, datagrams: frames)
-                return true
-            } catch {
+        fromExternal(datagram) { eventContext, datagram in
+            write(datagram, in: &eventContext)
+        }
+    }
+
+    /// Writes using an event context the caller already holds.
+    ///
+    /// Completions run inline while the delivering event holds the state, so they have to use
+    /// this rather than `write(_:)`.
+    func write(_ datagram: consuming Frame, in eventContext: inout NetworkContext.EventContext) -> Bool {
+        do throws(NetworkError) {
+            let length = datagram.unclaimedLength
+            let frames = try lower.invokeGetDatagramsToSend(
+                maximumDatagramCount: 1,
+                minimumDatagramSize: length,
+                for: identifier,
+                in: &eventContext
+            )
+            guard var frames = frames else {
                 datagram.finalize(success: false)
+                log.error("Failed to get datagram to send")
                 return false
             }
+            frames.iterateMutableFrames { frame in
+                let copiedLength = datagram.copyInto(&frame, length: length)
+                if copiedLength < length {
+                    log.error("Failed to copy \(length) bytes, only copied \(copiedLength)")
+                }
+                let frameLength = frame.unclaimedLength
+                if frameLength > copiedLength {
+                    _ = frame.collapse(to: copiedLength)
+                }
+                datagram.finalize(success: true)
+                return false
+            }
+            try lower.invokeSendDatagrams(frames, from: identifier, in: &eventContext)
+            return true
+        } catch {
+            datagram.finalize(success: false)
+            return false
         }
     }
 
     func readFrames(maximumFrames: Int) -> FrameArray? {
-        fromExternal {
-            do throws(NetworkError) {
-                return try lower.invokeReceiveDatagrams(
-                    reference,
-                    maximumDatagramCount: maximumFrames
-                )
-            } catch {
-                return nil
-            }
+        fromExternal { eventContext in
+            readFrames(maximumFrames: maximumFrames, in: &eventContext)
+        }
+    }
+
+    /// Reads frames using an event context the caller already holds.
+    func readFrames(maximumFrames: Int, in eventContext: inout NetworkContext.EventContext) -> FrameArray? {
+        do throws(NetworkError) {
+            return try lower.invokeReceiveDatagrams(
+                maximumDatagramCount: maximumFrames,
+                for: identifier,
+                in: &eventContext
+            )
+        } catch {
+            return nil
         }
     }
 
     func read() -> [UInt8]? {
-        fromExternal {
-            do throws(NetworkError) {
-                let frames = try lower.invokeReceiveDatagrams(reference, maximumDatagramCount: 1)
-                guard var frames = frames else {
-                    log.debug("Failed to receive datagrams")
-                    return nil
-                }
-                var returnBuffer: [UInt8]? = nil
-                frames.iterateMutableFrames { frame in
-                    var buffer = [UInt8]()
-                    let length = frame.unclaimedLength
-                    if length > 0 {
-                        _ = Deserializer.deserialize(&frame, claim: false) { read throws(DeserializationError) in
-                            try read.buffer(&buffer, length: length)
-                        }
-                    }
-                    returnBuffer = buffer
-                    frame.finalize(success: true)
-                    return true
-                }
-                return returnBuffer
-            } catch {
+        fromExternal { eventContext in
+            read(in: &eventContext)
+        }
+    }
+
+    /// Reads using an event context the caller already holds.
+    func read(in eventContext: inout NetworkContext.EventContext) -> [UInt8]? {
+        do throws(NetworkError) {
+            let frames = try lower.invokeReceiveDatagrams(
+                maximumDatagramCount: 1,
+                for: identifier,
+                in: &eventContext
+            )
+            guard var frames = frames else {
+                log.debug("Failed to receive datagrams")
                 return nil
             }
+            var returnBuffer: [UInt8]? = nil
+            frames.iterateMutableFrames { frame in
+                var buffer = [UInt8]()
+                let length = frame.unclaimedLength
+                if length > 0 {
+                    _ = Deserializer.deserialize(&frame, claim: false) { read throws(DeserializationError) in
+                        try read.buffer(&buffer, length: length)
+                    }
+                }
+                returnBuffer = buffer
+                frame.finalize(success: true)
+                return true
+            }
+            return returnBuffer
+        } catch {
+            return nil
         }
     }
 }
 
 @available(Network 0.1.0, *)
-final class StreamEndpointFlowProtocol: EndpointFlowProtocol<InboundStreamLinkage>, InboundStreamHandler {
-
-    override var reference: ProtocolInstanceReference { ProtocolInstanceReference(streamEndpointFlow: self) }
-
-    func handleInboundAbortedEvent(_ from: ProtocolInstanceReference, error: NetworkError?) {}
-    func handleOutboundAbortedEvent(_ from: ProtocolInstanceReference, error: NetworkError?) {}
-
-    convenience init(
-        identifier: String = "",
-        local: Endpoint?,
-        remote: Endpoint,
-        parameters: Parameters,
-        path: PathProperties,
-        context: NetworkContext,
-        lowerStreamProtocol: OutboundStreamLinkage
-    ) throws(NetworkError) {
-        self.init(
-            identifier: identifier,
-            local: local,
-            remote: remote,
-            parameters: parameters,
-            path: path,
-            context: context
-        )
-        self.lower = try lowerStreamProtocol.invokeAttachUpperStreamProtocol(
-            reference,
-            remote: remote,
-            local: local,
-            parameters: parameters,
-            path: path
-        )
-    }
+final class StreamEndpointFlowProtocol<LinkageFamily: StreamLinkageFamily>: EndpointFlowProtocol<LinkageFamily>, TopStreamProtocol {
 
     override public func abort(error: NetworkError? = nil) {
         log.debug("Aborting flow")
-        fromExternal {
-            do throws(NetworkError) {
-                try lower.invokeAbortOutbound(reference, error: error)
-                try lower.invokeAbortInbound(reference, error: error)
-            } catch {
-                log.error("Failed to abort stream: \(error)")
-            }
-            lower.invokeDisconnect(reference, error: error)
+        fromExternal { eventContext in
+            abort(error: error, in: &eventContext)
         }
     }
 
-    func attachLowerStreamProtocol(
-        _ lowerProtocol: ProtocolInstanceReference,
-        remote: Endpoint?,
-        local: Endpoint?,
-        parameters: Parameters?,
-        path: PathProperties?
-    ) throws(NetworkError) {
-        throw NetworkError.posix(EINVAL)
-    }
-
-    func attachLowerStreamProtocolToExistingFlow(
-        listener: StreamListenerLinkage,
-        flowReference: ProtocolInstanceReference
-    ) throws(NetworkError) {
-        throw NetworkError.posix(EINVAL)
-    }
-
-    convenience init(
-        identifier: String = "",
-        local: Endpoint?,
-        remote: Endpoint,
-        parameters: Parameters,
-        path: PathProperties,
-        context: NetworkContext,
-        listenerProtocol: StreamListenerLinkage
-    ) throws(NetworkError) {
-        self.init(
-            identifier: identifier,
-            local: local,
-            remote: remote,
-            parameters: parameters,
-            path: path,
-            context: context
-        )
-        self.lower = try listenerProtocol.invokeAttachUpperStreamProtocolToNewFlow(
-            reference,
-            remote: remote,
-            local: local,
-            parameters: parameters,
-            path: path
-        )
-    }
-
-    convenience init(
-        identifier: String = "",
-        local: Endpoint?,
-        remote: Endpoint,
-        parameters: Parameters,
-        path: PathProperties,
-        context: NetworkContext,
-        listenerProtocol: StreamListenerLinkage,
-        existingFlowReference: ProtocolInstanceReference
-    ) throws(NetworkError) {
-        self.init(
-            identifier: identifier,
-            local: local,
-            remote: remote,
-            parameters: parameters,
-            path: path,
-            context: context
-        )
-        self.lower = try listenerProtocol.invokeAttachUpperStreamProtocolToExistingFlow(
-            reference,
-            flowReference: existingFlowReference
-        )
-    }
-
-    private func invokeSendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {
-        try fromExternal(streamData) { streamData throws(NetworkError) in
-            try lower.invokeSendStreamData(self.reference, streamData: streamData)
+    /// Aborts using an event context the caller already holds.
+    func abort(error: NetworkError? = nil, in eventContext: inout NetworkContext.EventContext) {
+        do throws(NetworkError) {
+            try lower.invokeAbortOutbound(error: error, for: identifier, in: &eventContext)
+            try lower.invokeAbortInbound(error: error, for: identifier, in: &eventContext)
+        } catch {
+            log.error("Failed to abort stream: \(error)")
         }
+        lower.invokeDisconnect(error: error, for: identifier, in: &eventContext)
     }
 
     func getOutboundStreamDataRoomAvailable() throws(NetworkError) -> Int {
-        try fromExternal { () throws(NetworkError) in
-            try lower.invokeGetOutboundStreamDataRoomAvailable(self.reference)
+        try fromExternal { eventContext throws(NetworkError) in
+            try getOutboundStreamDataRoomAvailable(in: &eventContext)
         }
     }
 
+    /// Queries outbound room using an event context the caller already holds.
+    func getOutboundStreamDataRoomAvailable(
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Int {
+        try lower.invokeGetOutboundStreamDataRoomAvailable(for: self.identifier, in: &eventContext)
+    }
+
     func write(_ frame: consuming Frame) -> Bool {
+        fromExternal(frame) { eventContext, frame in
+            write(frame, in: &eventContext)
+        }
+    }
+
+    /// Writes using an event context the caller already holds.
+    ///
+    /// Completions run inline while the delivering event holds the state, so they have to use
+    /// this rather than `write(_:)`.
+    func write(_ frame: consuming Frame, in eventContext: inout NetworkContext.EventContext) -> Bool {
         do throws(NetworkError) {
-            try invokeSendStreamData(.init(frame: frame))
+            try lower.invokeSendStreamData(.init(frame: frame), from: self.identifier, in: &eventContext)
             return true
         } catch {
             return false
@@ -544,53 +367,73 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<InboundStreamLinkag
     }
 
     func readFrames(minimumBytes: Int, maximumBytes: Int) -> FrameArray? {
-        fromExternal {
-            do throws(NetworkError) {
-                return try lower.invokeReceiveStreamData(
-                    reference,
-                    minimumBytes: minimumBytes,
-                    maximumBytes: maximumBytes
-                )
-            } catch {
-                return nil
-            }
+        fromExternal { eventContext in
+            readFrames(minimumBytes: minimumBytes, maximumBytes: maximumBytes, in: &eventContext)
+        }
+    }
+
+    /// Reads frames using an event context the caller already holds.
+    func readFrames(
+        minimumBytes: Int,
+        maximumBytes: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> FrameArray? {
+        do throws(NetworkError) {
+            return try lower.invokeReceiveStreamData(
+                minimumBytes: minimumBytes,
+                maximumBytes: maximumBytes,
+                for: identifier,
+                in: &eventContext
+            )
+        } catch {
+            return nil
         }
     }
 
     func read(minimumBytes: Int, maximumBytes: Int) -> [UInt8]? {
-        fromExternal {
-            do throws(NetworkError) {
-                guard
-                    var frames = try lower.invokeReceiveStreamData(
-                        reference,
-                        minimumBytes: minimumBytes,
-                        maximumBytes: maximumBytes
-                    )
-                else {
-                    log.debug("No more stream data available")
-                    return nil
-                }
-                var returnBuffer: [UInt8]? = nil
-                frames.iterateMutableFrames { frame in
-                    var buffer = [UInt8]()
-                    let length = frame.unclaimedLength
-                    if length > 0 {
-                        _ = Deserializer.deserialize(&frame, claim: false) { read throws(DeserializationError) in
-                            try read.buffer(&buffer, length: length)
-                        }
-                    }
-                    if returnBuffer == nil {
-                        returnBuffer = buffer
-                    } else {
-                        returnBuffer?.append(contentsOf: buffer)
-                    }
-                    frame.finalize(success: true)
-                    return true
-                }
-                return returnBuffer
-            } catch {
+        fromExternal { eventContext in
+            read(minimumBytes: minimumBytes, maximumBytes: maximumBytes, in: &eventContext)
+        }
+    }
+
+    /// Reads using an event context the caller already holds.
+    func read(
+        minimumBytes: Int,
+        maximumBytes: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> [UInt8]? {
+        do throws(NetworkError) {
+            guard
+                var frames = try lower.invokeReceiveStreamData(
+                    minimumBytes: minimumBytes,
+                    maximumBytes: maximumBytes,
+                    for: identifier,
+                    in: &eventContext
+                )
+            else {
+                log.debug("No more stream data available")
                 return nil
             }
+            var returnBuffer: [UInt8]? = nil
+            frames.iterateMutableFrames { frame in
+                var buffer = [UInt8]()
+                let length = frame.unclaimedLength
+                if length > 0 {
+                    _ = Deserializer.deserialize(&frame, claim: false) { read throws(DeserializationError) in
+                        try read.buffer(&buffer, length: length)
+                    }
+                }
+                if returnBuffer == nil {
+                    returnBuffer = buffer
+                } else {
+                    returnBuffer?.append(contentsOf: buffer)
+                }
+                frame.finalize(success: true)
+                return true
+            }
+            return returnBuffer
+        } catch {
+            return nil
         }
     }
 }

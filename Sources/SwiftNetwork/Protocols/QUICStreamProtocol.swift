@@ -35,7 +35,6 @@ public typealias QUICProtocol = QUICStreamProtocol
 public struct QUICStreamProtocol: NetworkProtocol {
     public typealias Options = QUICStreamOptions
     public typealias Metadata = QUICStreamMetadata
-    public typealias Instance = QUICConnection
 
     #if !NETWORK_EMBEDDED
     public typealias QUICMetadataSetterHandler = (@convention(block) (UInt64) -> Void)
@@ -371,9 +370,6 @@ public struct QUICStreamProtocol: NetworkProtocol {
         QUICStreamOptions(from: serializedBytes)
     }
     public func newPerProtocolMetadata() -> QUICStreamMetadata? { QUICStreamMetadata() }
-    public func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? {
-        QUICConnection(context: context).reference
-    }
 
     static let identifier = ProtocolIdentifier(name: "quic", level: .transport, mapping: .manyToOne)
 
@@ -386,9 +382,6 @@ public struct QUICStreamProtocol: NetworkProtocol {
     }
     static public func metadata() -> ProtocolMetadata<QUICStreamProtocol> {
         QUICStreamProtocol.definition.protocolMetadata()
-    }
-    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
-        QUICStreamProtocol().newProtocolInstance(context: context)!
     }
 }
 

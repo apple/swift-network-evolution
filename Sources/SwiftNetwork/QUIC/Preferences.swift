@@ -96,7 +96,7 @@ struct QUICPreferences: ~Copyable, Sendable {
         )
         ackDefaultPacketThreshold = QUICPreferences.findSetting(
             "ack_default_packet_threshold",
-            defaultValue: Ack.defaultPacketThreshold
+            defaultValue: AckConstants.defaultPacketThreshold
         )
         migrationVersion = QUICPreferences.findSetting(
             "migration_version",

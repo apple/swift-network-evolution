@@ -22,43 +22,65 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+
 @available(Network 0.1.0, *)
 final class QUICConnectionTests: XCTestCase {
-    var connection: QUICConnection!
+    var connection: QUICConnection<TestLinkageFamilyGroup>!
     override func setUp() {
-        connection = QUICConnection(context: NetworkContext.implicitContext)
+        connection = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+    }
+
+    override func tearDown() {
+        // The connection was built directly rather than attached to a stack, so nothing else
+        // hands its event state back.
+        connection.context.onQueue { self.connection.destroyFromExternalTest() }
+        connection = nil
     }
 
     /// A call nested inside a pinned scope must leave the outer readings in place; otherwise the
     /// pin is gone when the nested call returns, `getSendTime` reads the two clocks separately,
     /// and `Pacer` derives the offset between the clock domains from a mismatched pair.
     func testANestedCallLeavesTheOuterReadingsInPlace() {
-        connection.withPinnedClock {
-            let readingsAtEntry = connection.pinnedClock
-            XCTAssertNotNil(readingsAtEntry)
+        connection.context.onQueue {
+            self.connection.withPinnedClock {
+                let readingsAtEntry = self.connection.pinnedClock
+                XCTAssertNotNil(readingsAtEntry)
 
-            connection.serviceReceivedDatagrams(path: 0)
+                self.connection.fromExternal { eventContext in
+                    self.connection.serviceReceivedDatagrams(path: 0, in: &eventContext)
+                }
 
-            XCTAssertEqual(connection.pinnedClock?.continuous, readingsAtEntry?.continuous)
-            XCTAssertEqual(connection.pinnedClock?.absolute, readingsAtEntry?.absolute)
+                XCTAssertEqual(self.connection.pinnedClock?.continuous, readingsAtEntry?.continuous)
+                XCTAssertEqual(self.connection.pinnedClock?.absolute, readingsAtEntry?.absolute)
+            }
+
+            XCTAssertNil(self.connection.pinnedClock)
         }
-
-        XCTAssertNil(connection.pinnedClock)
     }
 
     /// The outermost call releases the pin on the way out; otherwise the connection answers every
     /// later read with the same instant for the rest of its life.
     func testTheOutermostCallReleasesThePin() {
-        connection.serviceReceivedDatagrams(path: 0)
+        connection.context.onQueue {
+            self.connection.fromExternal { eventContext in
+                self.connection.serviceReceivedDatagrams(path: 0, in: &eventContext)
+            }
 
-        XCTAssertNil(connection.pinnedClock)
+            XCTAssertNil(self.connection.pinnedClock)
+        }
     }
 
     func testCreateInboundStreams() throws {
-        let zeroStreamID: QUICStreamID = QUICStreamID(0)
-        NetworkContext.implicitContext.async {
-            self.connection.fromExternal {
-                let _ = self.connection.createInboundStreams(streamID: zeroStreamID)
+        try self.connection.context.onQueue {
+            let zeroStreamID: QUICStreamID = QUICStreamID(0)
+            NetworkContext.implicitContext.async {
+                self.connection.fromExternal { eventContext in
+                    let _ = self.connection.createInboundStreams(
+                        streamID: zeroStreamID,
+                        in: &eventContext
+                    )
+                }
             }
         }
     }

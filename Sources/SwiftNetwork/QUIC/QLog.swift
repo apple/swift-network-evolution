@@ -777,8 +777,8 @@ final class QLog {
         )
     }
 
-    func streamStateUpdated(
-        stream: QUICStreamInstance,
+    func streamStateUpdated<Families: LinkageFamilyGroup>(
+        stream: QUICStreamInstance<Families>,
         oldStreamState: QLogStreamState,
         newStreamState: QLogStreamState,
         streamSide: QLogStreamSide?,

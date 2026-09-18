@@ -22,6 +22,8 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+
 #if IMPORT_SWIFTTLS
 #if EXPORT_SWIFTTLS
 @_spi(SwiftTLSOptions) @_spi(SwiftTLSProtocol) import SwiftTLS
@@ -151,7 +153,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
                         triggeringPacketLength: 35
                     )
                     XCTAssertTrue(statelessResetPacket.count < 35, "The stateless reset is too large")
-                    BridgeDatagramProtocol.Instance.injectDatagram(
+                    BridgeDatagramProtocol.BridgeInstance<TestDatagramLinkageFamily>.injectDatagram(
                         .init(copyBuffer: statelessResetPacket),
                         to: harness.clientPort
                     )
@@ -185,7 +187,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
                         triggeringPacketLength: 35
                     )
                     XCTAssertTrue(statelessResetPacket.count < 35, "The stateless reset is too large")
-                    BridgeDatagramProtocol.Instance.injectDatagram(
+                    BridgeDatagramProtocol.BridgeInstance<TestDatagramLinkageFamily>.injectDatagram(
                         .init(copyBuffer: statelessResetPacket),
                         to: harness.clientPort
                     )

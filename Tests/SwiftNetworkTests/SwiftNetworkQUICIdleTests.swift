@@ -22,6 +22,8 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+
 #if IMPORT_SWIFTTLS
 #if EXPORT_SWIFTTLS
 @_spi(SwiftTLSOptions) @_spi(SwiftTLSProtocol) import SwiftTLS
@@ -85,7 +87,9 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                         )
 
                         // Once the delayed ACK has been sent there are no obligations left.
-                        client.ack.timerFired(at: .systemNow)
+                        client.fromExternal { eventContext in
+                            client.ack.timerFired(at: .systemNow, in: &eventContext)
+                        }
                         XCTAssertEqual(
                             client.ack.unackedPacketCount,
                             0,

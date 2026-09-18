@@ -17,14 +17,29 @@ import BasicContainers
 internal import DequeModule
 #endif
 
+#if canImport(Synchronization)
+internal import Synchronization
+#endif
+
 // This index is used to refer to a location (as in NetworkGappyArray) without
-// exposing numeric properties
+// exposing numeric properties. It also contains a generation to detect invalid
+// reuse of indices.
+@available(Network 0.1.0, *)
 struct NetworkStateIndex: Hashable {
     fileprivate let index: Int
-    fileprivate init(index: Int) {
+    fileprivate let generation: UInt64
+    fileprivate init(index: Int, generation: UInt64) {
         self.index = index
+        self.generation = generation
+    }
+    fileprivate func indexWithGeneration(_ generation: UInt64) -> Self {
+        .init(index: index, generation: generation)
     }
     var rawValue: Int { index }
+
+    // The generation this index was issued for. Callers that persist a slot's identity beyond the
+    // element's lifetime must include this, so a reused slot is not mistaken for the original.
+    var rawGeneration: UInt64 { generation }
 }
 
 // A "gappy array" is an array of non-copyable elements where the index of
@@ -44,6 +59,9 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
     // Free indices in elements array
     fileprivate var gaps = NetworkPriorityQueue<GapRecord>()
 
+    // Increments once for every element that is added
+    private var generation: UInt64 = 0
+
     @inlinable
     subscript(position: NetworkStateIndex) -> Element {
         _modify {
@@ -52,6 +70,23 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
         mutating _read {
             yield elements[position.index]!
         }
+    }
+
+    // Moves an element out of the array, leaving its slot temporarily empty. Pair every
+    // `take` with a `restore` for the same index.
+    //
+    // This exists so a caller can hold the element and the enclosing storage as two
+    // independent borrows: reaching an element via `subscript` holds an exclusive access to
+    // the whole array, which would conflict with also passing that storage along.
+    @inlinable
+    mutating func take(index: NetworkStateIndex) -> Element {
+        elements[index.index].take()!
+    }
+
+    // Puts an element back into a slot previously emptied by `take`.
+    @inlinable
+    mutating func restore(index: NetworkStateIndex, _ element: consuming Element) {
+        elements[index.index] = consume element
     }
 
     var count: Int { elements.count - gaps.count }
@@ -73,14 +108,15 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
     }
 
     mutating func insert(_ element: consuming Element) -> NetworkStateIndex {
+        generation += 1
         if let gap = gaps.pop() {
-            let gapIndex = gap.index
+            let gapIndex = gap.index.indexWithGeneration(generation)
             elements[gapIndex.index] = consume element
             return gapIndex
         }
         let newIndex = elements.count
         elements.append(element)
-        return NetworkStateIndex(index: newIndex)
+        return NetworkStateIndex(index: newIndex, generation: generation)
     }
 
     internal mutating func cleanupGapsIfNecessary() {

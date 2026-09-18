@@ -122,22 +122,47 @@ struct BandwidthDelayProduct {
     var timestamp: NetworkClock.Instant = .zero
 }
 
-@_spi(ProtocolProvider)
+// Constants for path behavior. These live outside QUICPath because a generic type cannot
+// have static stored properties.
 @available(Network 0.1.0, *)
-public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable, PrefixedLoggable {
+enum QUICPathConstants {
     // Initial probe interval for resending PATH_CHALLENGE is 250 ms
     // Further probes will follow exponential backoff.
     static let initialProbeInterval: NetworkDuration = .milliseconds(250)
 
     static let slowInitialProbeInterval: NetworkDuration = .seconds(1)
 
-    @_optimize(speed)
-    override public var reference: ProtocolInstanceReference {
-        var reference = ProtocolInstanceReference(quicPath: self)
-        reference.parentReference = parentProtocol.reference
-        return reference
-    }
+    static let maximumPendingChallenges: Int = 6
+}
 
+// Path flags. Lifted out of QUICPath because a generic type cannot have static stored
+// properties, including those of its nested types.
+@available(Network 0.1.0, *)
+struct QUICPathFlags: OptionSet {
+    init(rawValue: Self.RawValue) {
+        self.rawValue = rawValue
+    }
+    var rawValue: UInt16
+    static let pacePackets = QUICPathFlags(rawValue: 1 << 0)
+    static let isInitialPath = QUICPathFlags(rawValue: 1 << 1)
+    static let isPrimaryPath = QUICPathFlags(rawValue: 1 << 2)
+    static let spinValue = QUICPathFlags(rawValue: 1 << 3)
+    static let useSlowProbeInterval = QUICPathFlags(rawValue: 1 << 4)
+    static let isPreferredAddress = QUICPathFlags(rawValue: 1 << 5)
+    static let migrationPending = QUICPathFlags(rawValue: 1 << 6)
+    static let isLossy = QUICPathFlags(rawValue: 1 << 7)
+    static let hasPreAssignedCIDs = QUICPathFlags(rawValue: 1 << 8)
+    static let isFlowControlled = QUICPathFlags(rawValue: 1 << 9)
+    static let l4sEnabled = QUICPathFlags(rawValue: 1 << 10)
+    static let reportedIdleEvent = QUICPathFlags(rawValue: 1 << 11)
+}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+public final class QUICPath<Families: LinkageFamilyGroup>: MultiplexingDatagramPath<
+    QUICConnection<Families>,
+    Families.DatagramFamily.Lower
+>, Equatable, PrefixedLoggable {
     private(set) var state: QUICPathState = QUICPathState()
     var priority: Int = 0  // Relative priority to other paths, used to gate migration decisions
     var interface: Interface?
@@ -150,7 +175,6 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
     var pendingInboundChallenges = [UInt64]()  // Received challenges requiring a response
 
     var pendingOutboundChallenges = [PendingChallenge]()  // Sent challenges waiting for a response
-    static let maximumPendingChallenges: Int = 6
     private(set) var challengesSent: Int = 0
     private(set) var lastChallengeSentTime: NetworkClock.Instant = .zero
     private(set) var nextChallengeDuration: NetworkDuration = .zero
@@ -164,7 +188,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
     var pacer: Pacer
 
     var pmtudState = PMTUDState()
-    var recoveryState = Recovery.PathState()
+    var recoveryState = RecoveryPathState()
     var ecnState: ECNPathState?
     var pathStatistics = Statistics()
 
@@ -173,25 +197,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
     var maximumMSS = 0
     var minimumMSS = 0
 
-    struct Flags: OptionSet {
-        init(rawValue: Self.RawValue) {
-            self.rawValue = rawValue
-        }
-        var rawValue: UInt16
-        static let pacePackets = Flags(rawValue: 1 << 0)
-        static let isInitialPath = Flags(rawValue: 1 << 1)
-        static let isPrimaryPath = Flags(rawValue: 1 << 2)
-        static let spinValue = Flags(rawValue: 1 << 3)
-        static let useSlowProbeInterval = Flags(rawValue: 1 << 4)
-        static let isPreferredAddress = Flags(rawValue: 1 << 5)
-        static let migrationPending = Flags(rawValue: 1 << 6)
-        static let isLossy = Flags(rawValue: 1 << 7)
-        static let hasPreAssignedCIDs = Flags(rawValue: 1 << 8)
-        static let isFlowControlled = Flags(rawValue: 1 << 9)
-        static let l4sEnabled = Flags(rawValue: 1 << 10)
-        static let reportedIdleEvent = Flags(rawValue: 1 << 11)
-    }
-    private var flags = Flags()
+    private var flags = QUICPathFlags()
 
     var pacePackets: Bool {
         get { flags.contains(.pacePackets) }
@@ -248,7 +254,11 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         parentProtocol.logPrefixer
     }
 
-    public static func == (lhs: QUICPath, rhs: QUICPath) -> Bool {
+    override public func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage {
+        Families.linkage(for: self)
+    }
+
+    public static func == (lhs: QUICPath<Families>, rhs: QUICPath<Families>) -> Bool {
         lhs.identifier == rhs.identifier
     }
 
@@ -304,10 +314,35 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         )
     }
 
-    required init(parent: QUICConnection) {
+    /// Creates a path from outside the protocol stack, for tests only.
+    ///
+    /// Path creation registers an event state, which needs the event context. Code already
+    /// running inside the stack should use `init(state:parent:)` and thread its own state in;
+    /// this convenience is for external entry points such as tests.
+    ///
+    /// A path built this way isn't in the parent's `multiplexingPaths`, so nothing tears it down.
+    /// Pair it with `destroyFromExternalTest()` before letting it go.
+    static func makeFromExternalTest(parent: QUICConnection<Families>) -> Self {
+        parent.fromExternal { eventContext in
+            Self(parent: parent, in: &eventContext)
+        }
+    }
+
+    /// Destroys a path built with `makeFromExternalTest(parent:)`, for tests only.
+    ///
+    /// This is an external entry point; code inside the stack calls `destroy(in:)` with the
+    /// state it already holds.
+    func destroyFromExternalTest() {
+        fromExternal { eventContext in
+            var selfVar = self
+            selfVar.destroy(in: &eventContext)
+        }
+    }
+
+    required init(parent: QUICConnection<Families>, in eventContext: inout NetworkContext.EventContext) {
         self.rtt = RTT(logPrefixer: parent.logPrefixer)
         self.pacer = Pacer()
-        super.init(parent: parent)
+        super.init(parent: parent, in: &eventContext)
     }
 
     private func setup() {
@@ -325,7 +360,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
                 if !foundMSS, interface == otherPath.interface, otherPath.mss > 0 {
                     self.mss = otherPath.mss
                     log.debug(
-                        "MSS \(otherPath.mss) copied from path \(otherPath.identifier.description), since they share the same interface \(interface)"
+                        "MSS \(otherPath.mss) copied from path \(otherPath.pathIdentifier.description), since they share the same interface \(interface)"
                     )
                     foundMSS = true
                 }
@@ -559,15 +594,16 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
 
     func addPathChallenge(
         to pendingItems: inout PendingItems,
-        now: NetworkClock.Instant
+        now: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         guard shouldSendPathChallenge(now: now) else { return }
 
-        guard challengesSent < QUICPath.maximumPendingChallenges else {
+        guard challengesSent < QUICPathConstants.maximumPendingChallenges else {
             // Exceeded limit, move to unreachable, and retire the CID
             changeState(to: .unreachable)
             if let dcid, !hasPreAssignedCIDs {
-                if let sequenceNumber = parentProtocol.retireConnectionID(dcid) {
+                if let sequenceNumber = parentProtocol.retireConnectionID(dcid, in: &eventContext) {
                     pendingItems.addRetireConnectionID(
                         FrameRetireConnectionID(sequence: sequenceNumber)
                     )
@@ -584,7 +620,8 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
                 )
                 parentProtocol.deliverNetworkProtocolEvent(
                     flow: .allFlows,
-                    event: .init(quicEvent: .pathUnreachable(pathInfo))
+                    event: .init(quicEvent: .pathUnreachable(pathInfo)),
+                    in: &eventContext
                 )
             }
             return
@@ -595,16 +632,20 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         pendingItems.addPathChallenge(FramePathChallenge(data: challenge.data))
         lastChallengeSentTime = now
         if useSlowProbeInterval {
-            nextChallengeDuration = QUICPath.slowInitialProbeInterval * (1 << challengesSent)
+            nextChallengeDuration = QUICPathConstants.slowInitialProbeInterval * (1 << challengesSent)
         } else {
-            nextChallengeDuration = QUICPath.initialProbeInterval * (1 << challengesSent)
+            nextChallengeDuration = QUICPathConstants.initialProbeInterval * (1 << challengesSent)
         }
         challengesSent += 1
 
-        parentProtocol.migration.resetTimer(now: now, connection: parentProtocol)
+        parentProtocol.migration.resetTimer(now: now, connection: parentProtocol, in: &eventContext)
     }
 
-    func addPendingItems(_ pendingItems: inout PendingItems, now: NetworkClock.Instant, ) {
+    func addPendingItems(
+        _ pendingItems: inout PendingItems,
+        now: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         // Respond to any pending inbound challenges
         for challenge in pendingInboundChallenges {
             pendingItems.addPathResponse(FramePathResponse(data: challenge))
@@ -612,10 +653,13 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         pendingInboundChallenges.removeAll()
 
         // Send path challenges as needed
-        addPathChallenge(to: &pendingItems, now: now)
+        addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
     }
 
-    func handlePathChallengeResponse(_ data: UInt64) {
+    func handlePathChallengeResponse(
+        _ data: UInt64,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         guard case .probing = state else { return }
         guard
             let pendingOutboundChallenge = pendingOutboundChallenges.first(where: {
@@ -634,7 +678,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         changeState(to: .validated)
         // Initialize RTT based on the PATH_RESPONSE duration so that we have a proper RTT estimate when we reset the timers.
         rtt.processNewSample(ackDuration: responseDuration, packetAckedTime: now, ackDelay: .zero)
-        parentProtocol.migration.resetTimer(now: now, connection: parentProtocol)
+        parentProtocol.migration.resetTimer(now: now, connection: parentProtocol, in: &eventContext)
         // Notify the stack about the path becoming validated
         if let localEndpoint, let remoteEndpoint,
             case .address(let localAddress) = localEndpoint.type,
@@ -647,18 +691,16 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
             )
             parentProtocol.deliverNetworkProtocolEvent(
                 flow: .allFlows,
-                event: .init(quicEvent: .pathValidated(pathInfo))
+                event: .init(quicEvent: .pathValidated(pathInfo)),
+                in: &eventContext
             )
         }
         if migrationPending {
             migrationPending = false
-            parentProtocol.migration.migrate(to: self, connection: parentProtocol)
+            parentProtocol.migration.migrate(to: self, connection: parentProtocol, in: &eventContext)
         }
     }
 
-    func tearDownLowerStack() {
-        try? lower.invokeDetach(self.reference)
-    }
 }
 
 // Congestion Control access
@@ -685,7 +727,13 @@ extension QUICPath {
     }
 
     @inline(always)
-    func congestionControlAckEnd(rtt: borrowing RTT, path: QUICPath?, mss: Int, packetsLost: Bool, qlog: QLog? = nil) {
+    func congestionControlAckEnd(
+        rtt: borrowing RTT,
+        path: QUICPath<Families>?,
+        mss: Int,
+        packetsLost: Bool,
+        qlog: QLog? = nil
+    ) {
         congestionControl?.ackEnd(
             rtt: rtt,
             path: self,
@@ -713,7 +761,10 @@ extension QUICPath {
         mss: Int,
         smoothedRTT: NetworkDuration
     ) -> Bool {
-        congestionControl?.packetsLost(
+        // Loss accounting doesn't repace this path, so there is no path to hand down.
+        let unpacedPath: QUICPath<Families>? = nil
+        return congestionControl?.packetsLost(
+            path: unpacedPath,
             bytesLost: bytesLost,
             largestLostSentTime: largestLostSentTime,
             mss: mss,
@@ -769,9 +820,12 @@ extension QUICPath {
         qlog: QLog? = nil
     ) {
         guard congestionControl != nil else { return }
+        // ECN accounting doesn't repace this path, so there is no path to hand down.
+        let unpacedPath: QUICPath<Families>? = nil
         switch congestionControl! {
         case .cubic(var cubic):
             cubic.processECN(
+                path: unpacedPath,
                 ceCount: ceCount,
                 packetsAcked: packetsAcked,
                 largestSentPN: largestSentPN,
@@ -785,6 +839,7 @@ extension QUICPath {
         #if !NETWORK_EMBEDDED
         case .ledbat(var ledbat):
             ledbat.processECN(
+                path: unpacedPath,
                 ceCount: ceCount,
                 packetsAcked: packetsAcked,
                 largestSentPN: largestSentPN,
@@ -797,6 +852,7 @@ extension QUICPath {
             )
         case .prague(var prague):
             prague.processECN(
+                path: unpacedPath,
                 ceCount: ceCount,
                 packetsAcked: packetsAcked,
                 largestSentPN: largestSentPN,

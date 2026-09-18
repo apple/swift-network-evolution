@@ -34,7 +34,7 @@ struct Pacer: ~Copyable {
     var currentSize: UInt32 = 0
     let enabled: Bool
 
-    private func getPacketInterval(path: QUICPath, burstLength: UInt32) -> NetworkDuration {
+    private func getPacketInterval<Families: LinkageFamilyGroup>(path: QUICPath<Families>, burstLength: UInt32) -> NetworkDuration {
         guard rate > 0 else {
             let startupRate = startupRate
             Logger.proto.fault(
@@ -50,8 +50,8 @@ struct Pacer: ~Copyable {
         return intervalConverted.time
     }
 
-    mutating func getSendTime(
-        path: QUICPath?,
+    mutating func getSendTime<Families: LinkageFamilyGroup>(
+        path: QUICPath<Families>?,
         packetLength: UInt16,
         sendTimeAbsolute: inout NetworkClock.Instant,
         sendTimeContinuous: inout NetworkClock.Instant

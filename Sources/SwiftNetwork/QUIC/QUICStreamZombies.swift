@@ -55,17 +55,18 @@ struct QUICStreamZombie {
         )
     }
 
-    func updateLastOffset(
-        connection: QUICConnection,
+    func updateLastOffset<Families: LinkageFamilyGroup>(
+        connection: QUICConnection<Families>,
         newLastOffset: UInt64,
         newFinalSize: UInt64,
         lastOffset: UInt64,
+        in eventContext: inout NetworkContext.EventContext
     ) -> UInt64? {
         // Like QUICStream.updateLastOffset() but on a zombie and:
         // - final is always true
         // - receiveState is assumed to be .receive
         // - previous finalSize is invalid
-        // - and any side effects to QUICStreamInstance are thrown away
+        // - and any side effects to QUICStreamInstance<Families> are thrown away
 
         // Case 1 is never true because final is true
 
@@ -78,7 +79,8 @@ struct QUICStreamZombie {
             connection.close(
                 with:
                     .finalSizeError,
-                "received final size lower than already received size"
+                "received final size lower than already received size",
+                in: &eventContext
             )
             return nil
         }
@@ -90,7 +92,10 @@ struct QUICStreamZombie {
             return nil
         }
         let lastOffsetDelta = newLastOffset - lastOffset
-        connection.updateLastReceivedOffsetForZombie(lastOffsetDelta: lastOffsetDelta)
+        connection.updateLastReceivedOffsetForZombie(
+            lastOffsetDelta: lastOffsetDelta,
+            in: &eventContext
+        )
         return lastOffsetDelta
     }
 }
@@ -134,11 +139,12 @@ struct QUICStreamZombieList {
      * the final size and account that in the connection level flow
      * control.
      */
-    mutating func finalSizeReceived(
+    mutating func finalSizeReceived<Families: LinkageFamilyGroup>(
         logIDString: String,
         streamID: QUICStreamID,
         finalSize: UInt64,
-        connection: QUICConnection
+        connection: QUICConnection<Families>,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         let zombie = find(streamID: streamID)
         zombies.removeAll(where: { $0.streamID == streamID })
@@ -171,7 +177,8 @@ struct QUICStreamZombieList {
                 connection: connection,
                 newLastOffset: newLastOffset,
                 newFinalSize: finalSize,
-                lastOffset: prevLastOffset
+                lastOffset: prevLastOffset,
+                in: &eventContext
             )
         else {
             connection.log.error(

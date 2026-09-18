@@ -29,80 +29,126 @@ internal import os
 /// Conform to `TopStreamProtocol` or `TopDatagramProtocol`.
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol TopProtocolHandler: ~Copyable, InboundDataHandler {
+public protocol TopProtocolHandler<LinkageType>: ~Copyable, InboundDataHandler {
+    /// The upper linkage type that represents this protocol to the protocol below it.
+    ///
+    /// A top protocol has nothing above it, so what matters is the linkage the lower protocol
+    /// holds in order to call back up. Naming that linkage directly, rather than a whole
+    /// linkage family, lets a protocol that is itself a linkage serve as its own.
+    associatedtype LinkageType: UpperProtocolLinkage
 
     /// The type of lower protocol (toward the network) that you can attach.
-    var lower: LowerProtocol { get set }
+    var lower: LinkageType.PairedLowerLinkage { get set }
 
     /// A function the framework calls when the lower protocol connects.
     ///
     /// Protocols can implement this function to customize behavior.
-    func handleConnectedEvent()
+    func handleConnectedEvent(in eventContext: inout NetworkContext.EventContext)
 
     /// A function the framework calls when the lower protocol disconnects.
     ///
     /// Protocols can implement this function to customize behavior.
-    func handleDisconnectedEvent(error: NetworkError?)
+    func handleDisconnectedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext)
 
     /// A function the framework calls when a lower protocol sends an event.
     ///
     /// Protocols can implement this function to customize behavior.
-    func handleNetworkProtocolEvent(_ event: NetworkProtocolEvent)
+    func handleNetworkProtocolEvent(_ event: NetworkProtocolEvent, in eventContext: inout NetworkContext.EventContext)
 }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol TopDatapathProtocol: ~Copyable, TopProtocolHandler where LowerProtocol: OutboundDataLinkage {
+public protocol TopDatapathProtocol: ~Copyable, TopProtocolHandler
+where LinkageType.PairedLowerLinkage == LowerProtocol {
 
     /// A function the framework calls when the lower protocol has inbound data available to read.
     ///
     /// Protocols can implement this function to customize behavior.
-    func handleInboundDataAvailableEvent()
+    func handleInboundDataAvailableEvent(in eventContext: inout NetworkContext.EventContext)
 
     /// A function the framework calls when the lower protocol has outbound room available to send.
     ///
     /// Protocols can implement this function to customize behavior.
-    func handleOutboundRoomAvailableEvent()
+    func handleOutboundRoomAvailableEvent(in eventContext: inout NetworkContext.EventContext)
 }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 extension TopProtocolHandler where Self: ~Copyable {
     /// Requests that the lower protocol start connecting.
+    ///
+    /// This is an external entry point: call it from code outside the protocol stack, such as an
+    /// app or a unit test. If you already hold the event context, call the `in:`-taking
+    /// variant instead so the state isn't re-derived from the context.
     public func invokeConnect() {
-        fromExternal {
-            lower.invokeConnect(self.reference)
+        fromExternal { eventContext in
+            invokeConnect(in: &eventContext)
         }
+    }
+
+    /// Requests that the lower protocol start connecting, using an already-acquired event context.
+    public func invokeConnect(in eventContext: inout NetworkContext.EventContext) {
+        lower.invokeConnect(for: self.identifier, in: &eventContext)
     }
 
     /// Requests that the lower protocol disconnect.
+    ///
+    /// This is an external entry point; see `invokeConnect()`.
     public func invokeDisconnect(error: NetworkError?) {
-        fromExternal {
-            lower.invokeDisconnect(self.reference, error: error)
+        fromExternal { eventContext in
+            invokeDisconnect(error: error, in: &eventContext)
         }
+    }
+
+    /// Requests that the lower protocol disconnect, using an already-acquired event context.
+    public func invokeDisconnect(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
+        lower.invokeDisconnect(error: error, for: self.identifier, in: &eventContext)
     }
 
     /// Detaches the lower protocol.
+    ///
+    /// This is an external entry point; see `invokeConnect()`.
     public mutating func invokeDetach() throws(NetworkError) {
-        try fromExternal { () throws(NetworkError) in
-            try lower.invokeDetach(self.reference)
+        try fromExternal { eventContext throws(NetworkError) in
+            try lower.invokeDetach(for: self.identifier, in: &eventContext)
         }
-        lower = .init(reference: .init())
+        lower = .init()
+    }
+
+    /// Detaches the lower protocol, using an already-acquired event context.
+    public mutating func invokeDetach(in eventContext: inout NetworkContext.EventContext) throws(NetworkError) {
+        try lower.invokeDetach(for: self.identifier, in: &eventContext)
+        lower = .init()
     }
 
     /// Signals an application-level event to lower protocols.
+    ///
+    /// This is an external entry point; see `invokeConnect()`.
     public func invokeApplicationEvent(_ event: ApplicationEvent) {
-        fromExternal {
-            lower.invokeApplicationEvent(self.reference, event: event)
+        fromExternal { eventContext in
+            invokeApplicationEvent(event, in: &eventContext)
         }
     }
 
-    /// Accesses protocol metadata from a lower protocol.
-    public func invokeGetMetadata<P: NetworkProtocol>() -> ProtocolMetadata<P>? {
-        fromExternal {
-            lower.invokeGetMetadata(self.reference)
-        }
+    /// Signals an application-level event to lower protocols, using an already-acquired event context.
+    public func invokeApplicationEvent(_ event: ApplicationEvent, in eventContext: inout NetworkContext.EventContext) {
+        lower.invokeApplicationEvent(event: event, for: self.identifier, in: &eventContext)
+    }
 
+    /// Accesses protocol metadata from a lower protocol.
+    ///
+    /// This is an external entry point; see `invokeConnect()`.
+    public func invokeGetMetadata<P: NetworkProtocol>() -> ProtocolMetadata<P>? {
+        fromExternal { eventContext in
+            invokeGetMetadata(in: &eventContext)
+        }
+    }
+
+    /// Accesses protocol metadata from a lower protocol, using an already-acquired event context.
+    public func invokeGetMetadata<P: NetworkProtocol>(
+        in eventContext: inout NetworkContext.EventContext
+    ) -> ProtocolMetadata<P>? {
+        lower.invokeGetMetadata(for: self.identifier, in: &eventContext)
     }
 }
 
@@ -110,47 +156,93 @@ extension TopProtocolHandler where Self: ~Copyable {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol TopStreamProtocol: ~Copyable, TopDatapathProtocol, InboundStreamHandler
-where LowerProtocol == OutboundStreamLinkage {
+where LinkageType: InboundStreamLinkage {
     /// A function the framework calls when the lower protocol reports that inbound stream data is aborted.
     ///
     /// Protocols can implement this function to customize behavior.
-    func handleInboundAbortedEvent(error: NetworkError?)
+    func handleInboundAbortedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext)
 
     /// A function the framework calls when the lower protocol reports that outbound stream data is aborted.
     ///
     /// Protocols can implement this function to customize behavior.
-    func handleOutboundAbortedEvent(error: NetworkError?)
+    func handleOutboundAbortedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext)
 }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 extension TopStreamProtocol where Self: ~Copyable {
     /// Receives stream data from the lower protocol.
+    ///
+    /// This is an external entry point; see `invokeConnect()`.
     public func invokeReceiveStreamData(minimumBytes: Int, maximumBytes: Int) throws(NetworkError) -> FrameArray? {
-        try fromExternal { () throws(NetworkError) in
-            try lower.invokeReceiveStreamData(self.reference, minimumBytes: minimumBytes, maximumBytes: maximumBytes)
+        try fromExternal { eventContext throws(NetworkError) in
+            try invokeReceiveStreamData(minimumBytes: minimumBytes, maximumBytes: maximumBytes, in: &eventContext)
         }
+    }
+
+    /// Receives stream data from the lower protocol, using an already-acquired event context.
+    public func invokeReceiveStreamData(
+        minimumBytes: Int,
+        maximumBytes: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
+        try lower.invokeReceiveStreamData(
+            minimumBytes: minimumBytes,
+            maximumBytes: maximumBytes,
+            for: self.identifier,
+            in: &eventContext
+        )
     }
 
     /// Returns the number of bytes of stream data you can send to the lower protocol.
+    ///
+    /// This is an external entry point; see `invokeConnect()`.
     public func invokeGetOutboundStreamDataRoomAvailable() throws(NetworkError) -> Int {
-        try fromExternal { () throws(NetworkError) in
-            try lower.invokeGetOutboundStreamDataRoomAvailable(self.reference)
+        try fromExternal { eventContext throws(NetworkError) in
+            try invokeGetOutboundStreamDataRoomAvailable(in: &eventContext)
         }
+    }
+
+    /// Returns the number of bytes of stream data you can send to the lower protocol, using an
+    /// already-acquired event context.
+    public func invokeGetOutboundStreamDataRoomAvailable(
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Int {
+        try lower.invokeGetOutboundStreamDataRoomAvailable(for: self.identifier, in: &eventContext)
     }
 
     /// Sends stream data to the lower protocol.
+    ///
+    /// This is an external entry point; see `invokeConnect()`.
     public func invokeSendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {
-        try fromExternal(streamData) { streamData throws(NetworkError) in
-            try lower.invokeSendStreamData(self.reference, streamData: streamData)
+        try fromExternal(streamData) { eventContext, streamData throws(NetworkError) in
+            try invokeSendStreamData(streamData, in: &eventContext)
         }
     }
 
+    /// Sends stream data to the lower protocol, using an already-acquired event context.
+    public func invokeSendStreamData(
+        _ streamData: consuming FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
+        try lower.invokeSendStreamData(streamData, from: self.identifier, in: &eventContext)
+    }
+
     /// Sends early stream data to the lower protocol.
+    ///
+    /// This is an external entry point; see `invokeConnect()`.
     public func invokeSendEarlyStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {
-        try fromExternal(streamData) { streamData throws(NetworkError) in
-            try lower.invokeSendEarlyStreamData(self.reference, streamData: streamData)
+        try fromExternal(streamData) { eventContext, streamData throws(NetworkError) in
+            try invokeSendEarlyStreamData(streamData, in: &eventContext)
         }
+    }
+
+    /// Sends early stream data to the lower protocol, using an already-acquired event context.
+    public func invokeSendEarlyStreamData(
+        _ streamData: consuming FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
+        try lower.invokeSendEarlyStreamData(streamData, from: self.identifier, in: &eventContext)
     }
 }
 
@@ -158,7 +250,7 @@ extension TopStreamProtocol where Self: ~Copyable {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol TopDatagramProtocol: ~Copyable, TopDatapathProtocol, InboundDatagramHandler
-where LowerProtocol == OutboundDatagramLinkage {
+where LinkageType: InboundDatagramLinkage {
 
 }
 
@@ -166,10 +258,20 @@ where LowerProtocol == OutboundDatagramLinkage {
 @available(Network 0.1.0, *)
 extension TopDatagramProtocol where Self: ~Copyable, Self: ~Copyable {
     /// Receives datagrams from the lower protocol.
+    ///
+    /// This is an external entry point; see `invokeConnect()`.
     public func invokeReceiveDatagrams(maximumDatagramCount: Int) throws(NetworkError) -> FrameArray? {
-        try fromExternal { () throws(NetworkError) in
-            try lower.invokeReceiveDatagrams(self.reference, maximumDatagramCount: maximumDatagramCount)
+        try fromExternal { eventContext throws(NetworkError) in
+            try invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount, in: &eventContext)
         }
+    }
+
+    /// Receives datagrams from the lower protocol, using an already-acquired event context.
+    public func invokeReceiveDatagrams(
+        maximumDatagramCount: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
+        try lower.invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: self.identifier, in: &eventContext)
     }
 
     /// Returns datagram memory you can write into, from the lower protocol.
@@ -177,22 +279,45 @@ extension TopDatagramProtocol where Self: ~Copyable, Self: ~Copyable {
         maximumDatagramCount: Int,
         minimumDatagramSize: Int
     ) throws(NetworkError) -> FrameArray? {
-        try fromExternal { () throws(NetworkError) in
-            try lower.invokeGetDatagramsToSend(
-                self.reference,
+        try fromExternal { eventContext throws(NetworkError) in
+            try invokeGetDatagramsToSend(
                 maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize
+                minimumDatagramSize: minimumDatagramSize,
+                in: &eventContext
             )
         }
+    }
+
+    /// Returns datagram memory you can write into, using an already-acquired event context.
+    public func invokeGetDatagramsToSend(
+        maximumDatagramCount: Int,
+        minimumDatagramSize: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
+        try lower.invokeGetDatagramsToSend(
+            maximumDatagramCount: maximumDatagramCount,
+            minimumDatagramSize: minimumDatagramSize,
+            for: self.identifier,
+            in: &eventContext
+        )
     }
 
     /// Sends previously retrieved datagrams to the lower protocol.
     ///
     /// Sends datagrams previously retrieved with `invokeGetDatagramsToSend`.
     public func invokeSendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
-        try fromExternal(datagrams) { datagrams throws(NetworkError) in
-            try lower.invokeSendDatagrams(self.reference, datagrams: datagrams)
+        try fromExternal(datagrams) { eventContext, datagrams throws(NetworkError) in
+            try invokeSendDatagrams(datagrams, in: &eventContext)
         }
+    }
+
+    /// Sends previously retrieved datagrams to the lower protocol, using an already-acquired
+    /// event context.
+    public func invokeSendDatagrams(
+        _ datagrams: consuming FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
+        try lower.invokeSendDatagrams(datagrams, from: self.identifier, in: &eventContext)
     }
 }
 
@@ -200,10 +325,8 @@ extension TopDatagramProtocol where Self: ~Copyable, Self: ~Copyable {
 
 @available(Network 0.1.0, *)
 extension TopProtocolHandler where Self: ~Copyable {
-    var asUpper: LowerProtocol.PairedLinkage { .init(reference: reference) }
-
     internal func validate(
-        lower lowerProtocol: ProtocolInstanceReference,
+        lower lowerProtocol: InstanceIdentifier,
         _ label: String
     ) throws(ProtocolInstanceError) {
         #if DEBUG
@@ -214,148 +337,102 @@ extension TopProtocolHandler where Self: ~Copyable {
         #endif
     }
 
-    #if !NETWORK_EMBEDDED
     public mutating func attachLowerProtocol(
-        _ lowerProtocol: ProtocolInstanceReference,
-        remote: Endpoint?,
-        local: Endpoint?,
-        parameters: Parameters?,
-        path: PathProperties?
-    ) throws(NetworkError) {
+        _ lowerProtocol: LinkageType.PairedLowerLinkage,
+    ) throws(NetworkError) -> LinkageType.PairedLowerLinkage.PairedUpperLinkage? {
         guard lower.isDetached else {
             throw NetworkError.posix(EALREADY)
         }
-        self.lower = try lowerProtocol.attachUpperProtocol(
-            reference,
-            remote: remote,
-            local: local,
-            parameters: parameters,
-            path: path
-        )
-    }
-    #endif
-
-    public func handleConnectedEvent(_ from: ProtocolInstanceReference) {
-        do { try validate(lower: from, #function) } catch { return }
-        self.handleConnectedEvent()
+        lower = lowerProtocol
+        return nil
     }
 
-    public func handleDisconnectedEvent(_ from: ProtocolInstanceReference, error: NetworkError?) {
-        do { try validate(lower: from, #function) } catch { return }
-        self.handleDisconnectedEvent(error: error)
+    public func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+        do { try validate(lower: instance, #function) } catch { return }
+        self.handleConnectedEvent(in: &eventContext)
     }
 
-    public func handleNetworkProtocolEvent(_ from: ProtocolInstanceReference, event: NetworkProtocolEvent) {
+    public func handleDisconnectedEvent(
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        do { try validate(lower: instance, #function) } catch { return }
+        self.handleDisconnectedEvent(error: error, in: &eventContext)
+    }
+
+    public func handleNetworkProtocolEvent(
+        event: NetworkProtocolEvent,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         // Don't validate lower, can pass through
-        self.handleNetworkProtocolEvent(event)
+        self.handleNetworkProtocolEvent(event, in: &eventContext)
     }
 }
 
 // Default implementations, to be overridden as necessary
 @available(Network 0.1.0, *)
 extension TopProtocolHandler where Self: ~Copyable {
-    public func handleConnectedEvent() {}
+    public func handleConnectedEvent(in eventContext: inout NetworkContext.EventContext) {}
 
-    public func handleDisconnectedEvent(error: NetworkError?) {}
+    public func handleDisconnectedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {}
 
-    public func handleNetworkProtocolEvent(_ event: NetworkProtocolEvent) {}
+    public func handleNetworkProtocolEvent(_ event: NetworkProtocolEvent, in eventContext: inout NetworkContext.EventContext) {}
 }
 
 @available(Network 0.1.0, *)
 extension TopDatapathProtocol where Self: ~Copyable {
-    public func handleInboundDataAvailableEvent(_ from: ProtocolInstanceReference) {
-        do { try validate(lower: from, #function) } catch { return }
-        self.handleInboundDataAvailableEvent()
+    public func handleInboundDataAvailableEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        do { try validate(lower: instance, #function) } catch { return }
+        self.handleInboundDataAvailableEvent(in: &eventContext)
     }
 
-    public func handleOutboundRoomAvailableEvent(_ from: ProtocolInstanceReference) {
-        do { try validate(lower: from, #function) } catch { return }
-        self.handleOutboundRoomAvailableEvent()
+    public func handleOutboundRoomAvailableEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        do { try validate(lower: instance, #function) } catch { return }
+        self.handleOutboundRoomAvailableEvent(in: &eventContext)
     }
 }
 
 @available(Network 0.1.0, *)
 extension TopDatapathProtocol where Self: ~Copyable {
     // Default implementations, to be overridden as necessary
-    public func handleInboundDataAvailableEvent() {}
+    public func handleInboundDataAvailableEvent(in eventContext: inout NetworkContext.EventContext) {}
 
-    public func handleOutboundRoomAvailableEvent() {}
-}
-
-@available(Network 0.1.0, *)
-extension TopProtocolHandler where Self: ~Copyable, LowerProtocol == OutboundDatagramLinkage {
-    public mutating func attachLowerDatagramProtocol(
-        _ lowerProtocol: ProtocolInstanceReference,
-        remote: Endpoint?,
-        local: Endpoint?,
-        parameters: Parameters?,
-        path: PathProperties?
-    ) throws(NetworkError) {
-        guard lower.isDetached else {
-            throw NetworkError.posix(EALREADY)
-        }
-        self.lower = try lowerProtocol.attachUpperDatagramProtocol(
-            reference,
-            remote: remote,
-            local: local,
-            parameters: parameters,
-            path: path
-        )
-    }
-}
-
-@available(Network 0.1.0, *)
-extension TopProtocolHandler where Self: ~Copyable, LowerProtocol == OutboundStreamLinkage {
-    public mutating func attachLowerStreamProtocol(
-        _ lowerProtocol: ProtocolInstanceReference,
-        remote: Endpoint?,
-        local: Endpoint?,
-        parameters: Parameters?,
-        path: PathProperties?
-    ) throws(NetworkError) {
-        guard lower.isDetached else {
-            throw NetworkError.posix(EALREADY)
-        }
-        self.lower = try lowerProtocol.attachUpperStreamProtocol(
-            reference,
-            remote: remote,
-            local: local,
-            parameters: parameters,
-            path: path
-        )
-    }
-
-    public mutating func attachLowerStreamProtocolToExistingFlow(
-        listener: StreamListenerLinkage,
-        flowReference: ProtocolInstanceReference
-    ) throws(NetworkError) {
-        guard lower.isDetached else {
-            throw NetworkError.posix(EALREADY)
-        }
-        self.lower = try listener.invokeAttachUpperStreamProtocolToExistingFlow(
-            reference,
-            flowReference: flowReference
-        )
-    }
+    public func handleOutboundRoomAvailableEvent(in eventContext: inout NetworkContext.EventContext) {}
 }
 
 @available(Network 0.1.0, *)
 extension TopStreamProtocol where Self: ~Copyable {
-    public func handleInboundAbortedEvent(_ from: ProtocolInstanceReference, error: NetworkError?) {
-        do { try validate(lower: from, #function) } catch { return }
-        self.handleInboundAbortedEvent(error: error)
+    public func handleInboundAbortedEvent(
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        do { try validate(lower: instance, #function) } catch { return }
+        self.handleInboundAbortedEvent(error: error, in: &eventContext)
     }
 
-    public func handleOutboundAbortedEvent(_ from: ProtocolInstanceReference, error: NetworkError?) {
-        do { try validate(lower: from, #function) } catch { return }
-        self.handleOutboundAbortedEvent(error: error)
+    public func handleOutboundAbortedEvent(
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        do { try validate(lower: instance, #function) } catch { return }
+        self.handleOutboundAbortedEvent(error: error, in: &eventContext)
     }
 }
 
 @available(Network 0.1.0, *)
 extension TopStreamProtocol where Self: ~Copyable {
     // Default implementations, to be overridden as necessary
-    public func handleInboundAbortedEvent(error: NetworkError?) {}
+    public func handleInboundAbortedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {}
 
-    public func handleOutboundAbortedEvent(error: NetworkError?) {}
+    public func handleOutboundAbortedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {}
 }

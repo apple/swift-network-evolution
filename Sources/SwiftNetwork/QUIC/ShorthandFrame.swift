@@ -252,7 +252,7 @@ struct ShorthandFrameAck: ShorthandLogEntry {
             return [[largest.value]]
         } else {
             var ranges: [[Int64]] = []
-            for block in Ack.blockSequence(shorthandFrame: self) {
+            for block in AckBlockSequence.blocks(shorthandFrame: self) {
                 var innerRange = [Int64]()
                 let start = block.start.value
                 let end = block.end.value

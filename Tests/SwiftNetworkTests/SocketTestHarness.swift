@@ -28,6 +28,8 @@ internal import Darwin
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+
 // MARK: - Parameter builders
 //
 // Shared by the harnesses and by the handful of bespoke lifecycle tests that

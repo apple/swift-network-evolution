@@ -22,6 +22,8 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+
 @available(Network 0.1.0, *)
 class QUICConnectionIDListTests: XCTestCase {
     var list = QUICConnectionIDList()

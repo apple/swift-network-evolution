@@ -38,13 +38,14 @@ public protocol AutomaticLowerDatagramProcessing: ~Copyable, InboundDatagramHand
     /// A function the framework calls when the lower protocol has added datagrams to
     /// `lowerReceiveQueue`.
     ///
-    /// Protocols should implement this function to customize behavior.
-    func serviceLowerReceiveQueue()
+    /// Protocols should implement this function to customize behavior. Thread `eventContext` into any
+    /// calls made to other protocols so that the state is never re-derived from the context.
+    mutating func serviceLowerReceiveQueue(in eventContext: inout NetworkContext.EventContext)
 
     /// A function the framework calls when outbound room becomes available.
     ///
     /// Protocols should implement this function to customize behavior.
-    func handleOutboundRoomAvailable()
+    mutating func handleOutboundRoomAvailable(in eventContext: inout NetworkContext.EventContext)
 }
 
 @_spi(ProtocolProvider)
@@ -74,14 +75,18 @@ extension AutomaticLowerDatagramProcessing where Self: ~Copyable {
     /// Indicates to the lower protocol that datagrams have been added to the send queue.
     ///
     /// Drains `lowerSendQueue` to the lower protocol.
-    public mutating func serviceLowerSendQueue() {
+    public mutating func serviceLowerSendQueue(in eventContext: inout NetworkContext.EventContext) {
         guard !lowerSendQueue.isEmpty else { return }
-        try? lower.invokeSendDatagrams(reference, datagrams: lowerSendQueue.drainArrayKeepingCapacity())
+        try? lower.invokeSendDatagrams(
+            lowerSendQueue.drainArrayKeepingCapacity(),
+            from: identifier,
+            in: &eventContext
+        )
     }
 
     /// Indicates that datagrams should be read from the lower protocol.
-    public mutating func resumeReadingInboundDatagrams() {
-        _readInboundDatagrams()
+    public mutating func resumeReadingInboundDatagrams(in eventContext: inout NetworkContext.EventContext) {
+        _readInboundDatagrams(in: &eventContext)
     }
 }
 
@@ -104,7 +109,7 @@ public protocol AutomaticUpperDatagramProcessing: ~Copyable, OutboundDatagramHan
     /// `upperSendQueue`.
     ///
     /// Protocols should implement this function to customize behavior.
-    func serviceUpperSendQueue()
+    mutating func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext)
 
     /// The maximum datagram size the upper protocol can send.
     var maximumUpperDatagramSize: Int { get set }
@@ -147,9 +152,9 @@ extension AutomaticUpperDatagramProcessing where Self: ~Copyable {
     /// Indicates to the upper protocol that datagrams have been added to the receive queue.
     ///
     /// Notifies the upper protocol that frames are available in `upperReceiveQueue`.
-    public func serviceUpperReceiveQueue() {
+    public func serviceUpperReceiveQueue(in eventContext: inout NetworkContext.EventContext) {
         guard !upperReceiveQueue.isEmpty else { return }
-        upper.deliverInboundDataAvailableEvent(reference)
+        upper.deliverInboundDataAvailableEvent(from: identifier, in: &eventContext)
     }
 }
 
@@ -157,49 +162,42 @@ extension AutomaticUpperDatagramProcessing where Self: ~Copyable {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol InboundDatagramHandler: ~Copyable, InboundDataHandler where LowerProtocol == OutboundDatagramLinkage {
-    mutating func attachLowerDatagramProtocol(
-        _ lowerProtocol: ProtocolInstanceReference,
-        remote: Endpoint?,
-        local: Endpoint?,
-        parameters: Parameters?,
-        path: PathProperties?
-    ) throws(NetworkError)
-}
+public protocol InboundDatagramHandler: ~Copyable, InboundDataHandler where LowerProtocol: OutboundDatagramLinkage { }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol OutboundDatagramHandler: ~Copyable, OutboundDataHandler where UpperProtocol == InboundDatagramLinkage {
-
-    mutating func attachUpperDatagramProtocol(
-        _ from: ProtocolInstanceReference,
-        remote: Endpoint?,
-        local: Endpoint?,
-        parameters: Parameters?,
-        path: PathProperties?
-    ) throws(NetworkError) -> OutboundDatagramLinkage
-
+public protocol OutboundDatagramHandler: ~Copyable, OutboundDataHandler where UpperProtocol: InboundDatagramLinkage {
     mutating func receiveDatagrams(
-        _ from: ProtocolInstanceReference,
-        maximumDatagramCount: Int
+        maximumDatagramCount: Int,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray?
     mutating func getDatagramsToSend(
-        _ from: ProtocolInstanceReference,
         maximumDatagramCount: Int,
-        minimumDatagramSize: Int
+        minimumDatagramSize: Int,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray?
-    mutating func sendDatagrams(_ from: ProtocolInstanceReference, datagrams: consuming FrameArray) throws(NetworkError)
+    mutating func sendDatagrams(
+        _ datagrams: consuming FrameArray,
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError)
 }
 
 // MARK: Implementation Details
 
 @available(Network 0.1.0, *)
 extension AutomaticLowerDatagramProcessing where Self: ~Copyable {
-    mutating func _readInboundDatagrams() {
+    mutating func _readInboundDatagrams(in eventContext: inout NetworkContext.EventContext) {
         var readCount = 0
         repeat {
             do throws(NetworkError) {
-                let datagrams = try lower.invokeReceiveDatagrams(reference, maximumDatagramCount: Int.max)
+                let datagrams = try lower.invokeReceiveDatagrams(
+                    maximumDatagramCount: Int.max,
+                    for: identifier,
+                    in: &eventContext
+                )
                 if let datagrams = consume datagrams {
                     readCount = datagrams.count
                     lowerReceiveQueue.add(frames: datagrams)
@@ -209,18 +207,18 @@ extension AutomaticLowerDatagramProcessing where Self: ~Copyable {
             } catch {
                 break
             }
-            serviceLowerReceiveQueue()
-            serviceLowerSendQueue()
+            serviceLowerReceiveQueue(in: &eventContext)
+            serviceLowerSendQueue(in: &eventContext)
         } while readCount != 0
     }
 
-    mutating func handleInboundDataAvailableEvent() {
-        _readInboundDatagrams()
+    mutating func handleInboundDataAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
+        _readInboundDatagrams(in: &eventContext)
     }
 
-    mutating func handleOutboundRoomAvailableEvent() {
-        serviceLowerSendQueue()
-        handleOutboundRoomAvailable()
+    mutating func handleOutboundRoomAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
+        serviceLowerSendQueue(in: &eventContext)
+        handleOutboundRoomAvailable(in: &eventContext)
     }
 }
 
@@ -230,14 +228,18 @@ extension AutomaticUpperDatagramProcessing where Self: ~Copyable {
         Frame(count: dataSize)
     }
 
-    public mutating func receiveDatagrams(maximumDatagramCount: Int) throws(NetworkError) -> FrameArray? {
+    public mutating func receiveDatagrams(
+        maximumDatagramCount: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
         guard !upperReceiveQueue.isEmpty else { return nil }
         return upperReceiveQueue.drainArray(maximumFrameCount: maximumDatagramCount)
     }
 
     public func getDatagramsToSend(
         maximumDatagramCount: Int,
-        minimumDatagramSize: Int
+        minimumDatagramSize: Int,
+        in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
         guard !blockUpperSendQueue else { return nil }
         let datagramSize: Int
@@ -253,129 +255,11 @@ extension AutomaticUpperDatagramProcessing where Self: ~Copyable {
         return returnArray
     }
 
-    public mutating func sendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
+    public mutating func sendDatagrams(
+        _ datagrams: consuming FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
         upperSendQueue.add(frames: datagrams)
-        serviceUpperSendQueue()
-    }
-}
-
-@available(Network 0.1.0, *)
-extension ProtocolInstanceReference {
-    func receiveDatagrams(
-        _ from: ProtocolInstanceReference,
-        maximumDatagramCount: Int
-    ) throws(NetworkError) -> FrameArray? {
-        guard !isNone else { return nil }
-        return try self.handleCallFromUpperProtocol { () throws(NetworkError) in
-            switch self.reference {
-            case .none: return nil
-            case .udp(let index):
-                return try context.udpInstances[index].receiveDatagrams(
-                    from,
-                    maximumDatagramCount: maximumDatagramCount
-                )
-            case .ip(let index):
-                return try context.ipInstances[index].receiveDatagrams(from, maximumDatagramCount: maximumDatagramCount)
-            #if !NETWORK_NO_SWIFT_QUIC
-            case .quicDatagram(var instance):
-                return try instance.receiveDatagrams(from, maximumDatagramCount: maximumDatagramCount)
-            #endif
-            #if !NETWORK_NO_TESTING_HARNESS
-            case .datagramLowerHarness(var instance):
-                return try instance.receiveDatagrams(from, maximumDatagramCount: maximumDatagramCount)
-            #endif
-            #if !NETWORK_EMBEDDED
-            case .custom(let container, let index):
-                return try container.accessOutboundDatagramHandler(at: index) { instance throws(NetworkError) in
-                    try instance.receiveDatagrams(from, maximumDatagramCount: maximumDatagramCount)
-                }
-            #endif
-            default: fatalError("Protocol cannot accept receiveDatagrams call")
-            }
-        }
-    }
-
-    func getDatagramsToSend(
-        _ from: ProtocolInstanceReference,
-        maximumDatagramCount: Int,
-        minimumDatagramSize: Int
-    ) throws(NetworkError) -> FrameArray? {
-        guard !isNone else { return nil }
-        return try self.handleCallFromUpperProtocol { () throws(NetworkError) in
-            switch self.reference {
-            case .none: return nil
-            case .udp(let index):
-                return try context.udpInstances[index].getDatagramsToSend(
-                    from,
-                    maximumDatagramCount: maximumDatagramCount,
-                    minimumDatagramSize: minimumDatagramSize
-                )
-            case .ip(let index):
-                return try context.ipInstances[index].getDatagramsToSend(
-                    from,
-                    maximumDatagramCount: maximumDatagramCount,
-                    minimumDatagramSize: minimumDatagramSize
-                )
-            #if !NETWORK_NO_SWIFT_QUIC
-            case .quicDatagram(let instance):
-                return try instance.getDatagramsToSend(
-                    from,
-                    maximumDatagramCount: maximumDatagramCount,
-                    minimumDatagramSize: minimumDatagramSize
-                )
-            #endif
-            #if !NETWORK_NO_TESTING_HARNESS
-            case .datagramLowerHarness(var instance):
-                return try instance.getDatagramsToSend(
-                    from,
-                    maximumDatagramCount: maximumDatagramCount,
-                    minimumDatagramSize: minimumDatagramSize
-                )
-            #endif
-            #if !NETWORK_EMBEDDED
-            case .custom(let container, let index):
-                return try container.accessOutboundDatagramHandler(at: index) { instance throws(NetworkError) in
-                    try instance.getDatagramsToSend(
-                        from,
-                        maximumDatagramCount: maximumDatagramCount,
-                        minimumDatagramSize: minimumDatagramSize
-                    )
-                }
-            #endif
-            default: fatalError("Protocol cannot accept getDatagramsToSend call")
-            }
-        }
-    }
-
-    func sendDatagrams(_ from: ProtocolInstanceReference, datagrams: consuming FrameArray) throws(NetworkError) {
-        guard !isNone else {
-            datagrams.finalizeAllFramesAsFailed()
-            return
-        }
-        try self.handleCallFromUpperProtocol(datagrams) { datagrams throws(NetworkError) in
-            switch self.reference {
-            case .none:
-                var datagrams = datagrams
-                datagrams.finalizeAllFramesAsFailed()
-                return
-            case .udp(let index): try context.udpInstances[index].sendDatagrams(from, datagrams: datagrams)
-            case .ip(let index): try context.ipInstances[index].sendDatagrams(from, datagrams: datagrams)
-            #if !NETWORK_NO_SWIFT_QUIC
-            case .quicDatagram(var instance): try instance.sendDatagrams(from, datagrams: datagrams)
-            #endif
-            #if !NETWORK_NO_TESTING_HARNESS
-            case .datagramLowerHarness(var instance): try instance.sendDatagrams(from, datagrams: datagrams)
-            #endif
-            #if !NETWORK_EMBEDDED
-            case .custom(let container, let index):
-                try container.accessOutboundDatagramHandler(at: index, datagrams) {
-                    instance,
-                    datagrams throws(NetworkError) in
-                    try instance.sendDatagrams(from, datagrams: datagrams)
-                }
-            #endif
-            default: fatalError("Protocol cannot accept sendDatagrams call")
-            }
-        }
+        serviceUpperSendQueue(in: &eventContext)
     }
 }

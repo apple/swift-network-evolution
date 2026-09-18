@@ -300,7 +300,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         congestionWindow += increase >> Prague.congestionWindowShift
     }
 
-    private func updatePacerState(path: QUICPath?, smoothedRTT: NetworkDuration) {
+    private func updatePacerState<Families: LinkageFamilyGroup>(path: QUICPath<Families>?, smoothedRTT: NetworkDuration) {
         guard let path, path.pacer.enabled else {
             return
         }
@@ -476,8 +476,8 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
     }
 
     @discardableResult
-    mutating func packetLost(
-        path: QUICPath? = nil,
+    mutating func packetLost<Families: LinkageFamilyGroup>(
+        path: QUICPath<Families>?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -496,9 +496,9 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         return reducedCongestionWindow
     }
 
-    mutating func ackEnd(
+    mutating func ackEnd<Families: LinkageFamilyGroup>(
         rtt: borrowing RTT,
-        path: QUICPath? = nil,
+        path: QUICPath<Families>?,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -539,8 +539,8 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         logUpdate(qlog: qlog)
     }
 
-    mutating func processECN(
-        path: QUICPath? = nil,
+    mutating func processECN<Families: LinkageFamilyGroup>(
+        path: QUICPath<Families>?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,
