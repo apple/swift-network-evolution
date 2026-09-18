@@ -1627,7 +1627,7 @@ extension FrameDatagram: SendableItem {
                     } catch {
                         // Requeue rather than finalize and pass up the error so a retry is possible
                         connection.log.datapath(
-                            "datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
+                            "Datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
                         )
                         datagrams.prepend(frame: datagramFrame)
                         writeError = error

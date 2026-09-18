@@ -267,14 +267,22 @@ final class SendItemsTests: XCTestCase {
         var wroteFrame = false
         var stillQueued = 0
         var flowsToService = 0
+        var datagramsWritten = 0
+        var bytesWritten = 0
+        var framedSize = 0
     }
 
     // Queues `queued` identical datagrams on a fresh flow, then writes into a packet sized
     // to hold exactly `roomFor` of them and fall one byte short of the next — what a
     // co-resident frame such as an ACK does to an otherwise exactly-sized datagram.
     // `usableDatagramSize` is a maximum payload and excludes the DATAGRAM frame header, so
-    // every queued payload is sendable as far as the flow is concerned.
-    func writeDatagrams(queued: Int, roomFor: Int) -> DatagramWriteOutcome {
+    // every queued payload is sendable as far as the flow is concerned, except the one at
+    // `oversizedAtIndex`, which is a byte beyond it.
+    func writeDatagrams(
+        queued: Int,
+        roomFor: Int,
+        oversizedAtIndex: Int? = nil
+    ) -> DatagramWriteOutcome {
         let connection = QUICConnection(context: NetworkContext(identifier: "SendItemsTests"))
         let flowID: UInt64 = 4
         let contextID: UInt64 = 0
@@ -284,8 +292,9 @@ final class SendItemsTests: XCTestCase {
 
         let payload = [UInt8](repeating: 0xAB, count: 256)
         flow.usableDatagramSize = payload.count
-        for _ in 0..<queued {
-            flow.upperSendQueue.add(frame: Frame(copyBuffer: payload))
+        for index in 0..<queued {
+            let count = index == oversizedAtIndex ? payload.count + 1 : payload.count
+            flow.upperSendQueue.add(frame: Frame(copyBuffer: [UInt8](repeating: 0xAB, count: count)))
         }
 
         // The length field already covers the flow and context IDs alongside the payload.
@@ -301,6 +310,7 @@ final class SendItemsTests: XCTestCase {
 
         var packet = Frame(count: (roomFor + 1) * framedSize - 1)
         defer { packet.finalize(success: true) }
+        let roomBeforeWriting = packet.unclaimedLength
 
         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
         pendingItems.prependDatagramFlowToService(flow.identifier)
@@ -325,6 +335,9 @@ final class SendItemsTests: XCTestCase {
 
         connection.accessDatagramsToSend(flow: flow.identifier) { outcome.stillQueued = $0.count }
         outcome.flowsToService = pendingItems.datagramFlowsToService.count
+        outcome.datagramsWritten = connection.stats[.txDatagramFrameWithLength]
+        outcome.bytesWritten = roomBeforeWriting - packet.unclaimedLength
+        outcome.framedSize = framedSize
         return outcome
     }
 
@@ -356,6 +369,26 @@ final class SendItemsTests: XCTestCase {
         XCTAssertNil(outcome.thrownError, "A datagram that fits must not report a full packet")
         XCTAssertTrue(outcome.wroteFrame, "The first datagram fits and must be reported as written")
         XCTAssertEqual(outcome.stillQueued, 1, "The datagram that did not fit must stay queued")
+    }
+
+    func testDatagram_oversizedDatagramIsDroppedWithoutBlockingLaterDatagrams() {
+        // Three queued with room for all three, the middle one a byte over the flow's
+        // maximum payload.
+        let outcome = writeDatagrams(queued: 3, roomFor: 3, oversizedAtIndex: 1)
+
+        // A datagram too large to ever fit is dropped rather than requeued, so it cannot
+        // head-of-line block the flow: the datagram queued behind it is still written, and
+        // the flow drains.
+        XCTAssertNil(outcome.thrownError, "Dropping an oversized datagram is not a full packet")
+        XCTAssertTrue(outcome.wroteFrame)
+        XCTAssertEqual(outcome.datagramsWritten, 2, "Only the two sendable datagrams are written")
+        XCTAssertEqual(
+            outcome.bytesWritten,
+            2 * outcome.framedSize,
+            "The oversized datagram must contribute no bytes to the packet"
+        )
+        XCTAssertEqual(outcome.stillQueued, 0, "Nothing may be left queued behind the drop")
+        XCTAssertEqual(outcome.flowsToService, 0, "The drained flow must be descheduled")
     }
 
 }
