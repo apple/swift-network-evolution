@@ -91,11 +91,9 @@ public struct CustomLinkProtocol: NetworkProtocol {
             parameters: Parameters?,
             path: PathProperties?
         ) throws(NetworkError) {
-            #if !NETWORK_EMBEDDED
-            if let parameters, let CustomLinkOptions: ProtocolOptions<CustomLinkProtocol> = getOptions(from: parameters)
-            {
-                self.tx = CustomLinkOptions.tx
-                self.rx = CustomLinkOptions.rx
+            if let parameters, let customLinkOptions = parameters.customLinkOptions(for: self.reference) {
+                self.tx = customLinkOptions.tx
+                self.rx = customLinkOptions.rx
             }
             if let rx = self.rx {
                 rx { bytes in
@@ -104,7 +102,6 @@ public struct CustomLinkProtocol: NetworkProtocol {
                     self.deliverInboundDataAvailableEvent()
                 }
             }
-            #endif
         }
 
         public func teardown() {

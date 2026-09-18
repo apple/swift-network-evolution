@@ -233,9 +233,9 @@ extension EndpointFlow {
                 if stack.applicationProtocols.count == 0 {
                     if let link = stack.link {
                         switch link {
-                        case .customLink(let options):
+                        case .customLink(let linkOptions):
                             let reference = CustomLinkProtocol.instance(context: context)
-                            options.setProtocolInstance(reference)
+                            linkOptions.setProtocolInstance(reference)
                             let linkage = OutboundStreamLinkage(reference: reference)
                             let flow = try StreamEndpointFlowProtocol(
                                 identifier: String(self.identifier),
@@ -300,9 +300,9 @@ extension EndpointFlow {
                         )
                         if let link = stack.link {
                             switch link {
-                            case .customLink(let options):
+                            case .customLink(let linkOptions):
                                 let customLinkReference = CustomLinkProtocol.instance(context: context)
-                                options.setProtocolInstance(reference)
+                                linkOptions.setProtocolInstance(customLinkReference)
                                 try reference.attachLowerStreamProtocol(
                                     customLinkReference,
                                     remote: effectiveRemoteEndpoint,

@@ -608,6 +608,7 @@ public struct TLS: StreamProtocol {
     private var applicationProtocols: [String]?
     private var earlyDataEnabled: Bool?
     private var ticketsEnabled: Bool?
+    private var customOptionsHandlers: [(ProtocolOptions<SwiftTLSProtocol>) -> Void] = []
 
     var options: ProtocolOptions<TLSProtocol> {
         var options = TLSProtocol.Options()
@@ -658,7 +659,11 @@ public struct TLS: StreamProtocol {
             break
         }
         let defaultProtocolStack = parameters.defaultStack
-        defaultProtocolStack.application.append(.swiftTLS(self.options))
+        let options = self.options
+        for handler in customOptionsHandlers {
+            handler(options)
+        }
+        defaultProtocolStack.application.append(.swiftTLS(options))
     }
 
     /// Set the certificates TLS uses during the handshake.
@@ -689,6 +694,22 @@ public struct TLS: StreamProtocol {
     public func applicationProtocols(_ protocols: [String]) -> Self {
         var mutableSelf = self
         mutableSelf.applicationProtocols = protocols
+        return mutableSelf
+    }
+
+    /// Configure TLS options that this builder does not surface directly.
+    ///
+    /// ```swift
+    /// TLS { NoTransport { CustomLink().tx(txHandler).rx(rxHandler) } }
+    ///     .customOptions { options in
+    ///         options.perProtocolOptions?.clientAuthRequired = true
+    ///         options.perProtocolOptions?.tlsOptions.privateKey = .opaqueReference(sepBackedKey)
+    ///     }
+    /// ```
+    @_spi(ProtocolProvider)
+    public func customOptions(_ handler: @escaping (ProtocolOptions<SwiftTLSProtocol>) -> Void) -> Self {
+        var mutableSelf = self
+        mutableSelf.customOptionsHandlers.append(handler)
         return mutableSelf
     }
 }
