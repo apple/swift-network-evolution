@@ -297,9 +297,9 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
             frame = .ack(frame: ackFrame)
         }
         if let frame {
-            setAckFrame(packetNumberSpace, frame, (blockCount > AckConstants.pingThreshold))
+            setAckFrame(packetNumberSpace, frame, (blockCount > Ack.pingThreshold))
         }
-        if blockCount > AckConstants.maxAckBlocks {
+        if blockCount > Ack.maxAckBlocks {
             blocks.removeFirst()
             generationCount += 1
         }
@@ -420,57 +420,10 @@ struct AckBlockSequence: Sequence {
     }
 }
 
-// Factories for iterating the blocks of an ACK frame. These don't depend on the
-// connection's linkage families, so they live here rather than on the generic Ack.
 @available(Network 0.1.0, *)
-extension AckBlockSequence {
-    static func blocks(
-        frame: borrowing FrameAck,
-        oldestPacketNumber: PacketNumber = .initial
-    ) -> AckBlockSequence {
-        AckBlockSequence(
-            largest: frame.largest,
-            ranges: frame.ranges,
-            oldestPacketNumber: oldestPacketNumber
-        )
-    }
-    static func blocks(
-        frame: TransmittedItems.TransmittedAckFrame,
-        oldestPacketNumber: PacketNumber = .initial
-    ) -> AckBlockSequence {
-        AckBlockSequence(
-            largest: frame.largest,
-            ranges: frame.ranges,
-            oldestPacketNumber: oldestPacketNumber
-        )
-    }
-    static func blocks(
-        shorthandFrame: ShorthandFrameAck,
-        oldestPacketNumber: PacketNumber = .initial
-    ) -> AckBlockSequence {
-        AckBlockSequence(
-            largest: shorthandFrame.largest,
-            ranges: shorthandFrame.ranges,
-            oldestPacketNumber: oldestPacketNumber
-        )
-    }
-}
+struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
+    var log: LogPrefixer
 
-// Flags for ACK state. Lifted out of Ack because a generic type cannot have static stored
-// properties, including those of its nested types.
-@available(Network 0.1.0, *)
-struct AckFlags: OptionSet {
-    init(rawValue: Self.RawValue) {
-        self.rawValue = rawValue
-    }
-    var rawValue: UInt8
-    static let timerScheduled = AckFlags(rawValue: 1 << 0)
-}
-
-// Constants for ACK behavior. These live outside Ack because a generic type cannot have
-// static stored properties, and because non-generic code reads them too.
-@available(Network 0.1.0, *)
-enum AckConstants {
     // When an outgoing ACK reports more than this many blocks (i.e. this many gaps
     // in the packet numbers we've received), we piggyback a PING frame. An ACK
     // frame is not ack-eliciting on its own, so the peer is not obliged to
@@ -501,26 +454,28 @@ enum AckConstants {
 
     static let maxDelayExponent = 20  // Values above 20 are invalid
     static let maxDelayMilliseconds = (1 << 14) * System.Time.USEC_PER_MSEC  // Values above 2^14ms are invalid
-}
-
-@available(Network 0.1.0, *)
-struct Ack<Families: LinkageFamilyGroup>: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
-    var log: LogPrefixer
 
     private var initialAckSpace: AckSpace
     private var handshakeAckSpace: AckSpace
     private var applicationAckSpace: AckSpace
 
-    var localDelayExponent = AckConstants.defaultDelayExponent
-    var remoteDelayExponent = AckConstants.defaultDelayExponent
+    var localDelayExponent = Ack.defaultDelayExponent
+    var remoteDelayExponent = Ack.defaultDelayExponent
 
     var unackedPacketCount = 0
     var lastSentTime: NetworkClock.Instant = .zero
     var timerID: Timer.TimerID? = nil
-    var connection: QUICConnection<Families>?
+    var connection: QUICConnection?
     var disableAckCompression: Bool = false
 
-    var flags: AckFlags = AckFlags()
+    struct Flags: OptionSet {
+        init(rawValue: Self.RawValue) {
+            self.rawValue = rawValue
+        }
+        var rawValue: UInt8
+        static let timerScheduled = Flags(rawValue: 1 << 0)
+    }
+    var flags: Flags = Flags()
     var timerScheduled: Bool {
         get { flags.contains(.timerScheduled) }
         set { if newValue { flags.insert(.timerScheduled) } else { flags.remove(.timerScheduled) } }
@@ -531,10 +486,10 @@ struct Ack<Families: LinkageFamilyGroup>: ~Copyable, PrefixedLoggable, NonCopyab
     var delaySize = 0
 
     var immediateAcks = 0
-    var packetThreshold = AckConstants.defaultPacketThreshold
+    var packetThreshold = Ack.defaultPacketThreshold
     var sentFrequencyThreshold = 0
     // Our max ACK delay. (microseconds)
-    var maxDelay = AckConstants.defaultMaxDelay
+    var maxDelay = Ack.defaultMaxDelay
     // Timestamp when last ACK_FREQUENCY frame was sent.
     var sentFrequencyTimestamp = UInt64(0)
     // Next ACK_FREQUENCY sequence number to send.
@@ -542,7 +497,7 @@ struct Ack<Families: LinkageFamilyGroup>: ~Copyable, PrefixedLoggable, NonCopyab
     // Sequence number of the last received ACK_FREQUENCY frame.
     var receivedFrequencySequence = 0
 
-    init(connection: QUICConnection<Families>? = nil, timerID: Timer.TimerID? = 0, logPrefixer: LogPrefixer) {
+    init(connection: QUICConnection? = nil, timerID: Timer.TimerID? = 0, logPrefixer: LogPrefixer) {
         self.connection = connection
         self.timerID = timerID
         self.log = logPrefixer
@@ -670,7 +625,7 @@ struct Ack<Families: LinkageFamilyGroup>: ~Copyable, PrefixedLoggable, NonCopyab
     }
 
     mutating func assemble(
-        for path: QUICPath<Families>,
+        for path: QUICPath,
         delayExponent: Int,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
@@ -723,7 +678,7 @@ struct Ack<Families: LinkageFamilyGroup>: ~Copyable, PrefixedLoggable, NonCopyab
     }
 
     private mutating func schedulePending(
-        on path: QUICPath<Families>,
+        on path: QUICPath,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
         ecn: borrowing ECN,
@@ -828,7 +783,7 @@ struct Ack<Families: LinkageFamilyGroup>: ~Copyable, PrefixedLoggable, NonCopyab
     }
 
     private mutating func processPending(
-        on path: QUICPath<Families>,
+        on path: QUICPath,
         connectionWindow: Int,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
@@ -905,7 +860,7 @@ struct Ack<Families: LinkageFamilyGroup>: ~Copyable, PrefixedLoggable, NonCopyab
     }
 
     mutating func ackAgressively() {
-        immediateAcks = AckConstants.immediateAcks
+        immediateAcks = Ack.immediateAcks
     }
 
     mutating func ackImmediately() {
@@ -1055,7 +1010,7 @@ struct AckBitstring: ~Copyable {
 
     // Same as init, but does not zero out bitstring[]
     mutating func reinit(frame: borrowing FrameAck, oldestPN: PacketNumber) {
-        for block in AckBlockSequence.blocks(frame: frame, oldestPacketNumber: oldestPN) {
+        for block in Ack.blockSequence(frame: frame, oldestPacketNumber: oldestPN) {
             let start = max(block.start, oldestPN)
             nset(start: start, stop: block.end)
         }

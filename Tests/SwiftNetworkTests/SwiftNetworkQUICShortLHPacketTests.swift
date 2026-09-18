@@ -160,7 +160,7 @@ final class SwiftNetworkQUICShortLHPacketTests: NetTestCase {
         let context = serverParameters.context
         let serverPath = PathProperties(parameters: serverParameters)
         let storage = TestNetworkProtocolStorage(context: context)
-        let (serverQUICStreamListener, _, serverQUICMultipath) = storage.createQUICInstance()
+        let (serverQUICStreamListener, _, serverQUICMultipath) = storage.createTestQUICInstance()
 
         let serverQUICOptions = self.createQUICTestOptions(server: true)
         serverQUICOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)

@@ -146,9 +146,9 @@ enum TransportParameter: Equatable {
         case .maxUDPPayloadSize:
             return TransportParameters.maxUDPPayloadSize
         case .ackDelayExponent:
-            return AckConstants.defaultDelayExponent
+            return Ack.defaultDelayExponent
         case .maxAckDelay:
-            return Int(AckConstants.defaultMaxDelay.milliseconds)
+            return Int(Ack.defaultMaxDelay.milliseconds)
         case .maxIdleTimeout,
             .initialMaxData,
             .initialMaxStreamDataBidirectionalLocal,
@@ -841,17 +841,17 @@ public struct TransportParameters: PrefixedLoggable {
                 )
             }
 
-            if case .ackDelayExponent(_, let value) = parameter, value > AckConstants.maxDelayExponent {
-                parameters.log.error("ack_delay_exponent is greater than \(AckConstants.maxDelayExponent)")
+            if case .ackDelayExponent(_, let value) = parameter, value > Ack.maxDelayExponent {
+                parameters.log.error("ack_delay_exponent is greater than \(Ack.maxDelayExponent)")
                 throw
                     QUICError
                     .transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
             }
 
             if case .maxAckDelay(_, let value) = parameter {
-                if value > AckConstants.maxDelayMilliseconds {
+                if value > Ack.maxDelayMilliseconds {
                     parameters.log.error(
-                        "max_ack_delay is greater than \(AckConstants.maxDelayMilliseconds)"
+                        "max_ack_delay is greater than \(Ack.maxDelayMilliseconds)"
                     )
                     throw
                         QUICError

@@ -27,11 +27,11 @@ import XCTest
 @available(Network 0.1.0, *)
 class QUICPathValidationMessageTests: XCTestCase {
     let logString = "PathValidationTests"
-    var connection: QUICConnection<TestLinkageFamilyGroup>!
+    var connection: QUICConnection!
     var path: QUICTestPath!  // NOTE: This path immediately transitions to cid assigned due to setup()
 
     override func setUp() {
-        connection = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+        connection = QUICConnection(context: NetworkContext.implicitContext)
         path = connection.context.onQueue {
             QUICTestPath.makeFromExternalTest(parent: self.connection)
         }

@@ -87,9 +87,9 @@ enum CongestionControl {
         }
     }
 
-    mutating func ackEnd<Families: LinkageFamilyGroup>(
+    mutating func ackEnd(
         rtt: borrowing RTT,
-        path: QUICPath<Families>?,
+        path: QUICPath?,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -142,8 +142,8 @@ enum CongestionControl {
         }
     }
 
-    mutating func packetsLost<Families: LinkageFamilyGroup>(
-        path: QUICPath<Families>?,
+    mutating func packetsLost(
+        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -333,9 +333,9 @@ protocol CongestionControlProtocol: PrefixedLoggable {
         qlog: QLog?
     )
     mutating func reset(mss: Int, qlog: QLog?)
-    mutating func ackEnd<Families: LinkageFamilyGroup>(
+    mutating func ackEnd(
         rtt: borrowing RTT,
-        path: QUICPath<Families>?,
+        path: QUICPath?,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -345,8 +345,8 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     mutating func idleTimeout(mss: Int, qlog: QLog?)
     /// Opens a recovery period at `now`, the time the loss was detected.
     mutating func enterRecovery(mss: Int, now: NetworkClock.Instant, qlog: QLog?)
-    mutating func processECN<Families: LinkageFamilyGroup>(
-        path: QUICPath<Families>?,
+    mutating func processECN(
+        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,
@@ -357,8 +357,8 @@ protocol CongestionControlProtocol: PrefixedLoggable {
         now: NetworkClock.Instant,
         qlog: QLog?
     )
-    mutating func packetLost<Families: LinkageFamilyGroup>(
-        path: QUICPath<Families>?,
+    mutating func packetLost(
+        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,

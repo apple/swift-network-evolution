@@ -183,11 +183,15 @@ public struct MultiplexedFlowIdentifier: Hashable, Sendable, CustomDebugStringCo
     // shares that parent, so allowing the parent index here would collapse them all onto one
     // identifier.
     fileprivate init(_ identifier: InstanceIdentifier) {
-        guard let index = identifier.protocolEventStateIndex(allowParent: false) else {
+        let index = identifier.protocolEventStateIndex(allowParent: false)
+        guard !index.isNone else {
             self = .allFlows
             return
         }
-        self.identifier = index.rawGeneration
+        // The whole state index, slot and generation together, so a reused slot never collides
+        // with the flow that previously held it. `.none` is all-zeros, which is why `.allFlows`
+        // can use zero as its own value.
+        self.identifier = index.rawValue
     }
 
     // Inbound and outbound flows are identified the same way; the spelling is kept so call sites

@@ -479,7 +479,7 @@ final class SwiftNetworkIPTests: NetTestCase {
 
             let path = PathProperties(parameters: parameters)
 
-            let (ipUpper, ipLower) = storage.createIPInstance()
+            let (ipUpper, ipLower) = storage.createTestIPInstance()
             let identifier = ipUpper.identifier
             let ipOptions = IPProtocol.options()
             ipOptions.dscpValue = dscpValue
@@ -932,7 +932,7 @@ final class SwiftNetworkIPTests: NetTestCase {
 
             let storage = TestNetworkProtocolStorage(context: context)
 
-            let (ipUpper, ipLower) = storage.createIPInstance()
+            let (ipUpper, ipLower) = storage.createTestIPInstance()
             let ipOptions = IPProtocol.options()
             // Enable fragmentation through IPOptions
             ipOptions.flags = IPProtocol.IPOptions.Flags(rawValue: ipOptions.flags.rawValue)
@@ -1052,7 +1052,7 @@ final class SwiftNetworkIPTests: NetTestCase {
 
             let storage = TestNetworkProtocolStorage(context: context)
 
-            let (ipUpper, ipLower) = storage.createIPInstance()
+            let (ipUpper, ipLower) = storage.createTestIPInstance()
             let ipOptions = IPProtocol.options()
             ipOptions.flags = IPProtocol.IPOptions.Flags(rawValue: ipOptions.flags.rawValue)
                 .union(.fragmentationEnabledOverridden)
@@ -1163,7 +1163,7 @@ final class SwiftNetworkIPTests: NetTestCase {
             let path = PathProperties(parameters: parameters)
             let storage = TestNetworkProtocolStorage(context: context)
 
-            let (ipUpper, ipLower) = storage.createIPInstance()
+            let (ipUpper, ipLower) = storage.createTestIPInstance()
             let ipOptions = IPProtocol.options()
             ipOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: logIDNumber)
             ipOptions.setProtocolInstance(ipUpper.identifier)
@@ -1227,7 +1227,7 @@ final class SwiftNetworkIPTests: NetTestCase {
             let storage = TestNetworkProtocolStorage(context: context)
             let clientPath = PathProperties(parameters: clientParameters)
 
-            let (clientIPUpper, clientIPLower) = storage.createIPInstance()
+            let (clientIPUpper, clientIPLower) = storage.createTestIPInstance()
             let clientOptions = IPProtocol.options()
             clientOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
             clientOptions.setProtocolInstance(clientIPLower.identifier)
@@ -1258,7 +1258,7 @@ final class SwiftNetworkIPTests: NetTestCase {
 
             let serverParameters = Parameters()
             let serverPath = PathProperties(parameters: serverParameters)
-            let (serverIPUpper, serverIPLower) = storage.createIPInstance()
+            let (serverIPUpper, serverIPLower) = storage.createTestIPInstance()
 
             let serverOptions = IPProtocol.options()
             serverOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)

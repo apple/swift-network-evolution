@@ -53,7 +53,7 @@ final class QUICHandshake {
                 // wire the stack together.
                 let storage = TestNetworkProtocolStorage(context: context)
 
-                let (clientStreamListener, _, clientMultipath) = storage.createQUICInstance()
+                let (clientStreamListener, _, clientMultipath) = storage.createTestQUICInstance()
                 let clientOptions = self.quicBenchmarkUtility.createQUICTestOptions(datagram: false)
                 clientOptions.setLogID(
                     prefix: "C",
@@ -62,7 +62,7 @@ final class QUICHandshake {
                 )
                 clientOptions.setProtocolInstance(clientStreamListener.identifier)
 
-                let (serverStreamListener, _, serverMultipath) = storage.createQUICInstance()
+                let (serverStreamListener, _, serverMultipath) = storage.createTestQUICInstance()
                 let serverOptions = self.quicBenchmarkUtility.createQUICTestOptions(server: true, datagram: false)
                 serverOptions.setLogID(
                     prefix: "L",

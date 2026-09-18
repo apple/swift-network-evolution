@@ -26,9 +26,9 @@ import XCTest
 
 @available(Network 0.1.0, *)
 final class QUICConnectionTests: XCTestCase {
-    var connection: QUICConnection<TestLinkageFamilyGroup>!
+    var connection: QUICConnection!
     override func setUp() {
-        connection = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+        connection = QUICConnection(context: NetworkContext.implicitContext)
     }
 
     override func tearDown() {

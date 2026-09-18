@@ -369,13 +369,10 @@ public struct TCPProtocol: NetworkProtocol {
         }
     }
 
-    final class TCPInstance<
-        UpperLinkageFamily: StreamLinkageFamily,
-        LowerLinkageFamily: DatagramLinkageFamily
-    >: OneToOneStreamToDatagramProtocol, TimerSchedulable {
+    final class TCPInstance: OneToOneStreamToDatagramProtocol, TimerSchedulable {
 
-        typealias UpperProtocol = UpperLinkageFamily.Upper
-        typealias LowerProtocol = LowerLinkageFamily.Lower
+        typealias UpperProtocol = BaseInboundStreamLinkage
+        typealias LowerProtocol = BaseOutboundDatagramLinkage
 
         var upper = UpperProtocol()
         var lower = LowerProtocol()

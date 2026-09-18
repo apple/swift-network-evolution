@@ -94,7 +94,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
 
         let injectExpectation = XCTestExpectation(description: "Malformed Initial injected")
         harness.context.async {
-            BridgeDatagramProtocol.BridgeInstance<TestDatagramLinkageFamily>.injectDatagram(
+            BridgeDatagramProtocol.BridgeInstance.injectDatagram(
                 Frame(copyBuffer: datagram),
                 to: harness.serverPort
             )
@@ -151,7 +151,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                     datagram.append(contentsOf: [UInt8](repeating: 0x42, count: 12))
                     XCTAssertEqual(datagram.count, Constants.minimumPacketSize)
 
-                    BridgeDatagramProtocol.BridgeInstance<TestDatagramLinkageFamily>.injectDatagram(
+                    BridgeDatagramProtocol.BridgeInstance.injectDatagram(
                         Frame(copyBuffer: datagram),
                         to: harness.serverPort
                     )
@@ -215,7 +215,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                     datagram.append(contentsOf: [UInt8](repeating: 0x42, count: 16))
                     XCTAssertEqual(datagram.count, 25)
 
-                    BridgeDatagramProtocol.BridgeInstance<TestDatagramLinkageFamily>.injectDatagram(
+                    BridgeDatagramProtocol.BridgeInstance.injectDatagram(
                         Frame(copyBuffer: datagram),
                         to: harness.serverPort
                     )
@@ -240,7 +240,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
     // MARK: - Helpers
 
     private struct IdleServer {
-        let instance: QUICConnection<TestLinkageFamilyGroup>
+        let instance: QUICConnection
         let harness: NewStreamFlowHarness<TestStreamLinkageFamily>
     }
 
@@ -253,7 +253,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
             serverParameters.context = harness.context
             serverParameters.isServer = true
 
-            var (serverQUICStreamListener, _, serverQUICMultipath) = harness.storage.createQUICInstance()
+            var (serverQUICStreamListener, _, serverQUICMultipath) = harness.storage.createTestQUICInstance()
             guard let serverInstance = harness.storage.quicInstance(for: serverQUICStreamListener.base) else {
                 XCTFail("Failed to create the server QUIC instance")
                 attachExpectation.fulfill()
@@ -270,7 +270,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
             serverOptions.setProtocolInstance(serverQUICStreamListener.identifier)
             serverParameters.defaultStack.transport = .quic(serverOptions)
 
-            let serverBridge = harness.storage.createBridgeDatagramInstance()
+            let serverBridge = harness.storage.createTestBridgeDatagramInstance()
             let serverBridgeOptions = BridgeDatagramProtocol.options()
             serverBridgeOptions.setProtocolInstance(serverBridge.identifier)
             serverParameters.defaultStack.link = .custom(serverBridgeOptions)

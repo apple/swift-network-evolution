@@ -45,16 +45,16 @@ protocol SendableItem: ~Copyable {
         from pendingItems: inout PendingItems
     )
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     )
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError)
@@ -67,10 +67,10 @@ extension SendableItem where Self: ~Copyable {
 
     static var isRepeatable: Bool { false }  // Default to false for most frames
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         availableCongestionWindow: inout UInt64,
         stats: inout Statistics,
         transmittedItems: inout TransmittedItems,
@@ -158,18 +158,18 @@ extension FramePadding: SendableItem {
         pendingItems.paddingApproach = .none
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         // Padding is not retransmitted
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -211,10 +211,10 @@ extension FramePing: SendableItem {
         pendingItems.isKeepalive = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.ping, transmittedItems.pmtudProbeMSS == nil {
             pendingItems.ping = true
@@ -222,10 +222,10 @@ extension FramePing: SendableItem {
         }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -258,18 +258,18 @@ extension FrameAck: SendableItem {
         pendingItems.ack = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         // ACKs are not retransmitted
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -314,19 +314,19 @@ extension FrameResetStream: SendableItem {
         pendingItems.resetStream = !pendingItems.streamResets.isEmpty
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         pendingItems.streamResets.append(contentsOf: transmittedItems.streamResets)
         pendingItems.resetStream = !pendingItems.streamResets.isEmpty
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -374,19 +374,19 @@ extension FrameStopSending: SendableItem {
         pendingItems.stopSendingFlag = !pendingItems.streamStopSendings.isEmpty
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         pendingItems.streamStopSendings.append(contentsOf: transmittedItems.streamStopSendings)
         pendingItems.stopSendingFlag = !pendingItems.streamStopSendings.isEmpty
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -425,10 +425,10 @@ extension FrameCrypto: SendableItem {
         pendingItems.transmittedCrypto.removeAll()
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         var index = 0
         while index < transmittedItems.sentCrypto.count {
@@ -454,10 +454,10 @@ extension FrameCrypto: SendableItem {
         pendingItems.sendCrypto = !pendingItems.retransmitCrypto.isEmpty
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -576,18 +576,18 @@ extension FrameNewToken: SendableItem {
         pendingItems.newToken = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.newToken { pendingItems.newToken = true }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -628,10 +628,10 @@ extension FrameStreamSendMetadata: SendableItem {
         }
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         var index = 0
         while index < transmittedItems.sentStreams.count {
@@ -660,10 +660,10 @@ extension FrameStreamSendMetadata: SendableItem {
         }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -890,18 +890,18 @@ extension FrameDataBlocked: SendableItem {
         pendingItems.dataBlocked = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.dataBlocked { pendingItems.dataBlocked = true }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -936,10 +936,10 @@ extension FrameStreamDataBlocked: SendableItem {
         pendingItems.streamDataBlocked = !pendingItems.streamDataBlockedFlows.isEmpty
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         for flowID in transmittedItems.streamDataBlockedFlows {
             if !pendingItems.streamDataBlockedFlows.contains(flowID) {
@@ -949,10 +949,10 @@ extension FrameStreamDataBlocked: SendableItem {
         }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -982,20 +982,20 @@ extension FrameStreamsBlockedBidirectional: SendableItem {
         pendingItems.streamsBlockedBidirectional = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.streamsBlockedBidirectional {
             pendingItems.streamsBlockedBidirectional = true
         }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1019,20 +1019,20 @@ extension FrameStreamsBlockedUnidirectional: SendableItem {
         pendingItems.streamsBlockedUnidirectional = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.streamsBlockedUnidirectional {
             pendingItems.streamsBlockedUnidirectional = true
         }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1054,18 +1054,18 @@ extension FrameMaxData: SendableItem {
         pendingItems.maxData = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.maxData { pendingItems.maxData = true }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1102,10 +1102,10 @@ extension FrameMaxStreamData: SendableItem {
         }
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         for flowID in transmittedItems.maxStreamDataFlows {
             if !pendingItems.maxStreamDataFlows.contains(flowID) {
@@ -1115,10 +1115,10 @@ extension FrameMaxStreamData: SendableItem {
         }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1148,18 +1148,18 @@ extension FrameMaxStreamsBidirectional: SendableItem {
         pendingItems.maxStreamsBidirectional = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.maxStreamsBidirectional { pendingItems.maxStreamsBidirectional = true }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1186,20 +1186,20 @@ extension FrameMaxStreamsUnidirectional: SendableItem {
         pendingItems.maxStreamsUnidirectional = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.maxStreamsUnidirectional {
             pendingItems.maxStreamsUnidirectional = true
         }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1239,19 +1239,19 @@ extension FrameNewConnectionID: SendableItem {
         }
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         pendingItems.newConnectionIDs.append(contentsOf: transmittedItems.newConnectionIDs)
         pendingItems.newConnectionID = !pendingItems.newConnectionIDs.isEmpty
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1294,19 +1294,19 @@ extension FrameRetireConnectionID: SendableItem {
         }
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         pendingItems.retireConnectionIDs.append(contentsOf: transmittedItems.retireConnectionIDs)
         pendingItems.retireConnectionID = !pendingItems.retireConnectionIDs.isEmpty
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1336,17 +1336,17 @@ extension FramePathChallenge: SendableItem {
         pendingItems.pathChallenge = !pendingItems.pathChallenges.isEmpty
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1377,17 +1377,17 @@ extension FramePathResponse: SendableItem {
         pendingItems.pathResponse = !pendingItems.pathResponses.isEmpty
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1413,18 +1413,18 @@ extension FrameConnectionClose: SendableItem {
         pendingItems.connectionClose = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.connectionClose { pendingItems.connectionClose = true }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1465,18 +1465,18 @@ extension FrameApplicationClose: SendableItem {
         pendingItems.applicationClose = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.applicationClose { pendingItems.applicationClose = true }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1523,18 +1523,18 @@ extension FrameHandshakeDone: SendableItem {
         pendingItems.handshakeDone = false
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         if transmittedItems.handshakeDone { pendingItems.handshakeDone = true }
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1565,18 +1565,18 @@ extension FrameDatagram: SendableItem {
         pendingItems.datagram = !pendingItems.datagramFlowsToService.isEmpty
     }
 
-    static func addToPendingItems<Families: LinkageFamilyGroup>(
+    static func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         // Datagrams are not retransmitted, ignore
     }
 
-    static func write<Families: LinkageFamilyGroup>(
+    static func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
@@ -1737,10 +1737,10 @@ enum PrioritizedSendableItems: CaseIterable {
         }
     }
 
-    func write<Families: LinkageFamilyGroup>(
+    func write(
         into frame: inout Frame,
         pendingItems: inout PendingItems,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         availableCongestionWindow: inout UInt64,
         stats: inout Statistics,
         transmittedItems: inout TransmittedItems,
@@ -1990,10 +1990,10 @@ enum PrioritizedSendableItems: CaseIterable {
         }
     }
 
-    func addToPendingItems<Families: LinkageFamilyGroup>(
+    func addToPendingItems(
         _ pendingItems: inout PendingItems,
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         switch self {
         case .datagram:
@@ -2562,7 +2562,7 @@ struct PendingItems: ~Copyable {
     // Temporary storage for written streams
     var transmittedStreams = NetworkUniqueDeque<TransmittedItems.SentStream>()
 
-    func canAddStreamToService<Families: LinkageFamilyGroup>(_ stream: QUICStreamInstance<Families>) -> Bool {
+    func canAddStreamToService(_ stream: QUICStreamInstance) -> Bool {
         !stream.sendState.dataHasAlreadyBeenSent
             && ((stream.hasMoreSendDataToService && stream.availableRemoteReceiveWindow > 0)
                 || stream.sendBuffer.hasLast)
@@ -2574,7 +2574,7 @@ struct PendingItems: ~Copyable {
         }
     }
 
-    mutating func appendStreamToService<Families: LinkageFamilyGroup>(_ newStream: QUICStreamInstance<Families>) {
+    mutating func appendStreamToService(_ newStream: QUICStreamInstance) {
         guard canAddStreamToService(newStream) else {
             // Nothing new to send
             return
@@ -2585,7 +2585,7 @@ struct PendingItems: ~Copyable {
         }
     }
 
-    mutating func prependStreamToService<Families: LinkageFamilyGroup>(_ newStream: QUICStreamInstance<Families>) {
+    mutating func prependStreamToService(_ newStream: QUICStreamInstance) {
         guard canAddStreamToService(newStream) else {
             // Nothing new to send
             return
@@ -2716,9 +2716,9 @@ struct PendingItems: ~Copyable {
         return false
     }
 
-    mutating func write<Families: LinkageFamilyGroup>(
+    mutating func write(
         into frame: inout Frame,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         stats: inout Statistics,
         keyState: PacketKeyState,
         transmittedItems: inout TransmittedItems,
@@ -2819,9 +2819,9 @@ struct PendingItems: ~Copyable {
         }
     }
 
-    mutating func copyForRetransmission<Families: LinkageFamilyGroup>(
+    mutating func copyForRetransmission(
         from transmittedItems: borrowing TransmittedItems,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) {
         for item in PrioritizedSendableItems.allCases {
             item.addToPendingItems(
@@ -3144,11 +3144,11 @@ struct TransmittedItems: ~Copyable {
         // ackFrame is never retransmitted
     }
 
-    func allAcknowledged<Families: LinkageFamilyGroup>(
-        connection: QUICConnection<Families>,
+    func allAcknowledged(
+        connection: QUICConnection,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
-        sentPath: QUICPath<Families>,
+        sentPath: QUICPath,
         in eventContext: inout NetworkContext.EventContext
     ) {
         if let ackFrame {

@@ -30,7 +30,7 @@ final class QUICStreamZombieListTests: XCTestCase {
 
     func testAppend() {
         NetworkContext.implicitContext.async {
-            let connection = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+            let connection = QUICConnection(context: NetworkContext.implicitContext)
             defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
             connection.fromExternal { eventContext in
                 let streamID: QUICStreamID = QUICStreamID(0)

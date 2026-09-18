@@ -166,11 +166,9 @@ public struct DemuxProtocol: NetworkProtocol {
         }
     }
 
-    public final class DemuxInstance<
-        LinkageFamily: DatagramLinkageFamily
-    >: OutboundDatagramHandler, InboundDatagramHandler, LoggableProtocol {
-        public typealias UpperProtocol = LinkageFamily.Upper
-        public typealias LowerProtocol = LinkageFamily.Lower
+    public final class DemuxInstance: OutboundDatagramHandler, InboundDatagramHandler, LoggableProtocol {
+        public typealias UpperProtocol = BaseInboundDatagramLinkage
+        public typealias LowerProtocol = BaseOutboundDatagramLinkage
 
         var defaultUpper = UpperProtocol()
         var defaultInboundFrames = FrameArray()

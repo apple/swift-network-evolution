@@ -55,8 +55,8 @@ struct QUICStreamZombie {
         )
     }
 
-    func updateLastOffset<Families: LinkageFamilyGroup>(
-        connection: QUICConnection<Families>,
+    func updateLastOffset(
+        connection: QUICConnection,
         newLastOffset: UInt64,
         newFinalSize: UInt64,
         lastOffset: UInt64,
@@ -66,7 +66,7 @@ struct QUICStreamZombie {
         // - final is always true
         // - receiveState is assumed to be .receive
         // - previous finalSize is invalid
-        // - and any side effects to QUICStreamInstance<Families> are thrown away
+        // - and any side effects to QUICStreamInstance are thrown away
 
         // Case 1 is never true because final is true
 
@@ -139,11 +139,11 @@ struct QUICStreamZombieList {
      * the final size and account that in the connection level flow
      * control.
      */
-    mutating func finalSizeReceived<Families: LinkageFamilyGroup>(
+    mutating func finalSizeReceived(
         logIDString: String,
         streamID: QUICStreamID,
         finalSize: UInt64,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
     ) {
         let zombie = find(streamID: streamID)

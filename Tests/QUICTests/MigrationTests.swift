@@ -29,7 +29,7 @@ let migrationTestsLogPrefixer: LogPrefixer = LogPrefixer("[MigrationTests]")
 
 @available(Network 0.1.0, *)
 final class MigrationTests: XCTestCase {
-    var connection = QUICConnection<TestLinkageFamilyGroup>(context: .implicitContext)
+    var connection = QUICConnection(context: .implicitContext)
     // The base linkages are storage-backed, so lower harnesses have to come from storage
     // rather than being wrapped in a bare linkage.
     let storage = TestNetworkProtocolStorage(context: .implicitContext)
@@ -80,7 +80,9 @@ final class MigrationTests: XCTestCase {
             path.changeState(to: .probing)
             path.changeState(to: .validated)
         }
-        _ = try? path.attachLowerProtocol(lowerLinkage)
+        // The path is a framework protocol, so it is bound through the base form of the
+        // harness's linkage.
+        _ = try? path.attachLowerProtocol(lowerLinkage.base)
         try? connection.remoteCIDs.insert(
             sequenceNumber: sequenceNumber,
             connectionID: dcid,

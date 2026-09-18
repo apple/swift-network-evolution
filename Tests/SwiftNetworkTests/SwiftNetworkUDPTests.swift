@@ -93,7 +93,7 @@ final class SwiftNetworkUDPTests: NetTestCase {
             let path = PathProperties(parameters: parameters)
             let storage = TestNetworkProtocolStorage(context: context)
 
-            let (udpUpper, udpLower) = storage.createUDPInstance()
+            let (udpUpper, udpLower) = storage.createTestUDPInstance()
             let udpOptions = UDPProtocol.options()
             udpOptions.noMetadata = true
             udpOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
@@ -226,7 +226,7 @@ final class SwiftNetworkUDPTests: NetTestCase {
             let path = PathProperties(parameters: parameters)
             let storage = TestNetworkProtocolStorage(context: context)
 
-            let (udpUpper, udpLower) = storage.createUDPInstance()
+            let (udpUpper, udpLower) = storage.createTestUDPInstance()
             let udpOptions = UDPProtocol.options()
             udpOptions.fullChecksumOffload = fullChecksumOffload
             udpOptions.preferNoChecksum = preferNoChecksum
@@ -367,7 +367,7 @@ final class SwiftNetworkUDPTests: NetTestCase {
             let storage = TestNetworkProtocolStorage(context: context)
 
             let clientPath = PathProperties(parameters: clientParameters)
-            let (clientUDPUpper, clientUDPLower) = storage.createUDPInstance()
+            let (clientUDPUpper, clientUDPLower) = storage.createTestUDPInstance()
             let clientOptions = UDPProtocol.options()
             clientOptions.noMetadata = true
             clientOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
@@ -399,7 +399,7 @@ final class SwiftNetworkUDPTests: NetTestCase {
 
             let serverParameters = Parameters()
             let serverPath = PathProperties(parameters: serverParameters)
-            let (serverUDPUpper, serverUDPLower) = storage.createUDPInstance()
+            let (serverUDPUpper, serverUDPLower) = storage.createTestUDPInstance()
             let serverOptions = UDPProtocol.options()
             serverOptions.noMetadata = true
             serverOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)

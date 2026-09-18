@@ -85,10 +85,10 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
     }
 
     @inline(never)
-    private mutating func parseFrames<Families: LinkageFamilyGroup>(
+    private mutating func parseFrames(
         frame: inout Frame,
         packet: inout Packet,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         isLastPacketInFrame: Bool,
         in eventContext: inout NetworkContext.EventContext
     ) throws(QUICError) {
@@ -131,11 +131,11 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
     }
 
     @inline(never)
-    private func decodePacketNumber<Families: LinkageFamilyGroup>(
+    private func decodePacketNumber(
         frame: inout Frame,
         packet: inout Packet,
         receivedLargestPacketNumber: PacketNumber,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) throws(QUICError) -> Int {
 
         var firstOctet: UInt8 = 0
@@ -190,10 +190,10 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         return reservedBits
     }
 
-    mutating func parse<Families: LinkageFamilyGroup>(
+    mutating func parse(
         frame: inout Frame,
-        connection: QUICConnection<Families>,
-        path: QUICPath<Families>,
+        connection: QUICConnection,
+        path: QUICPath,
         ecn: IPProtocol.ECN,
         in eventContext: inout NetworkContext.EventContext
     ) -> Packet? {
@@ -577,8 +577,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         )
     }
 
-    private func openHeader<Families: LinkageFamilyGroup>(
-        connection: QUICConnection<Families>,
+    private func openHeader(
+        connection: QUICConnection,
         packet: inout Packet,
         frame: inout Frame
     ) -> Bool {
@@ -610,10 +610,10 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         return true
     }
 
-    private func openPacket<Families: LinkageFamilyGroup>(
+    private func openPacket(
         packet: inout Packet,
         frame: inout Frame,
-        connection: QUICConnection<Families>
+        connection: QUICConnection
     ) throws(QUICError) {
         if _slowPath(
             (connection.keyState == .phase0 || connection.keyState == .phase1)

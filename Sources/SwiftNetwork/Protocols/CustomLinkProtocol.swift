@@ -72,14 +72,11 @@ public struct CustomLinkProtocol: NetworkProtocol {
         }
     }
 
-    public final class CustomLinkInstance<LinkageFamily: StreamLinkageFamily>: BottomStreamProtocol {
-        public typealias LinkageType = LinkageFamily.Lower
-        public typealias UpperProtocol = LinkageFamily.Upper
+    public final class CustomLinkInstance: BottomStreamProtocol {
+        public typealias LinkageType = BaseOutboundStreamLinkage
+        public typealias UpperProtocol = BaseInboundStreamLinkage
 
-        // Spelled through the family rather than the `UpperProtocol` typealias: going through the
-        // typealias sends the runtime around the `Lower.PairedUpper -> Upper.PairedLower` cycle
-        // when it resolves the conformance, which recurses until the stack runs out.
-        public var upper = LinkageFamily.Upper()
+        public var upper = UpperProtocol()
 
         public private(set) var context: NetworkContext
         init(context: NetworkContext) {

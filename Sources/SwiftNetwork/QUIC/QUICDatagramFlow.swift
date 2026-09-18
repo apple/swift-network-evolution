@@ -26,13 +26,13 @@ internal import os
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public final class QUICDatagramFlow<Families: LinkageFamilyGroup>: MultiplexedDatagramFlow<QUICConnection<Families>, Families.DatagramFamily.Upper> {
+public final class QUICDatagramFlow: MultiplexedDatagramFlow<QUICConnection, BaseInboundDatagramLinkage> {
     private(set) var flowID: UInt64?
     private(set) var contextID: UInt64?
     var applicationMarkedIdle: Bool = false
 
     override public func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {
-        Families.linkage(for: self)
+        BaseOutboundDatagramLinkage(quicDatagramFlow: self)
     }
 
     var usableDatagramSize: Int {
@@ -60,8 +60,8 @@ public final class QUICDatagramFlow<Families: LinkageFamilyGroup>: MultiplexedDa
     }
 
     func updateUsableDatagramFrameSize(
-        connection: QUICConnection<Families>,
-        path: QUICPath<Families>
+        connection: QUICConnection,
+        path: QUICPath
     ) {
         guard let dcid = path.dcid else { return }
         let shortHeaderUnusablePayloadSize =

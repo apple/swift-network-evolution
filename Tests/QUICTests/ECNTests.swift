@@ -30,14 +30,14 @@ final class ECNTests: XCTestCase {
     var ecn: ECN!
     var ecnPath: ECNPathState!
     var stats: Statistics!
-    var conn: QUICConnection<TestLinkageFamilyGroup>!
+    var conn: QUICConnection!
     let logPrefixer = LogPrefixer("[ECNTests]")
     // These tests reset ECN state without a path attached.
     let noPath: QUICTestPath? = nil
 
     override func setUp() {
         super.setUp()
-        conn = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+        conn = QUICConnection(context: NetworkContext.implicitContext)
         stats = Statistics()
     }
 
@@ -417,13 +417,13 @@ extension ECNTestStepAck {
 final class ECNValidateTests: XCTestCase {
     var ecn: ECN!
     var ecnPath: ECNPathState!
-    var conn: QUICConnection<TestLinkageFamilyGroup>!
+    var conn: QUICConnection!
     var stats: Statistics!
     let logPrefixer = LogPrefixer("[ECNValidateTests]")
 
     override func setUp() {
         super.setUp()
-        conn = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+        conn = QUICConnection(context: NetworkContext.implicitContext)
         stats = Statistics()
     }
 
@@ -862,7 +862,7 @@ final class ECNValidateTests: XCTestCase {
     }
 
     func testValidateAckReturnsCorrectCECount() async throws {
-        let connection = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+        let connection = QUICConnection(context: NetworkContext.implicitContext)
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let ecn = ECN(
             echoEnabled: true,
@@ -904,7 +904,7 @@ final class ECNValidateTests: XCTestCase {
         let context = NetworkContext(identifier: #function)
         context.activate()
 
-        let connection = QUICConnection<TestLinkageFamilyGroup>(context: context)
+        let connection = QUICConnection(context: context)
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let ecn = ECN(
             echoEnabled: true,

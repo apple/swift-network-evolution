@@ -49,26 +49,19 @@ internal import CryptoKit
 #endif
 #endif
 
-// Buffer limit for crypto reassembly. Lives outside QUICCrypto because a generic type
-// cannot have static stored properties.
 @available(Network 0.1.0, *)
-enum QUICCryptoConstants {
-    static let bufferLimit: Int = 4 * 1024
-}
-
-@available(Network 0.1.0, *)
-final class QUICCrypto<Families: LinkageFamilyGroup> {
+final class QUICCrypto {
     var eventManager = ProtocolEventManager()
 
     var identifier: InstanceIdentifier
 
-    var tlsInstance: SwiftTLSProtocol.SwiftTLSQUICOnlyInstance<Families>!
+    var tlsInstance: SwiftTLSProtocol.SwiftTLSQUICOnlyInstance!
 
     var outboundCryptoInitialOffset: Int = 0
     var outboundCrypto1RTTOffset: Int = 0
     var outboundCryptoHandshakeOffset: Int = 0
 
-    var parentConnection: QUICConnection<Families>?
+    var parentConnection: QUICConnection?
 
     var tlsLinkage: LowerProtocol?  // Linkage for control path on top of TLS
 
@@ -95,6 +88,8 @@ final class QUICCrypto<Families: LinkageFamilyGroup> {
 
     var enableEarlyData = false
 
+    static let bufferLimit: Int = 4 * 1024
+
     init() {
         identifier = .init()
         tlsInstance = nil
@@ -102,7 +97,7 @@ final class QUICCrypto<Families: LinkageFamilyGroup> {
 
     init(context: NetworkContext) {
         identifier = InstanceIdentifier(context: context, eventManager: &self.eventManager)
-        tlsInstance = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance<Families>(
+        tlsInstance = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance(
             context: context,
             quicCrypto: self
         )
@@ -117,7 +112,7 @@ final class QUICCrypto<Families: LinkageFamilyGroup> {
             context: context,
             in: &eventContext
         )
-        tlsInstance = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance<Families>(
+        tlsInstance = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance(
             context: context,
             quicCrypto: self,
             in: &eventContext
@@ -125,7 +120,7 @@ final class QUICCrypto<Families: LinkageFamilyGroup> {
     }
 
     func start(
-        with parentConnection: QUICConnection<Families>,
+        with parentConnection: QUICConnection,
         tlsOptions inputTLSOptions: SwiftTLSProtocol.Options,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
@@ -230,7 +225,7 @@ final class QUICCrypto<Families: LinkageFamilyGroup> {
     }
 
     // Notify pending items that there are crypto bytes to get!
-    private func markSendPending(_ level: PacketNumberSpace, on parentConnection: QUICConnection<Families>) {
+    private func markSendPending(_ level: PacketNumberSpace, on parentConnection: QUICConnection) {
         if level == .initial {
             parentConnection.initialPendingItems.sendCrypto = true
         } else if level == .handshake {
@@ -393,10 +388,10 @@ extension QUICCrypto {
 @available(Network 0.1.0, *)
 extension QUICCrypto: InboundStreamLinkage, OutboundStreamLinkage, ProtocolInstanceAsLinkage {
     // TLS Instance is our "lower protocol", only one overall.
-    typealias PairedLowerLinkage = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance<Families>
+    typealias PairedLowerLinkage = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance
 
     // TLS Encryption Handler is our "upper protocol", one per encryption level.
-    typealias PairedUpperLinkage = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance<Families>.EncryptionLevelHandler
+    typealias PairedUpperLinkage = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance.EncryptionLevelHandler
 
     // Binds both directions: set the TLS instance as our lower protocol, then call back into it
     // so it takes this crypto object as its upper protocol and runs setup.
@@ -429,7 +424,7 @@ extension QUICCrypto: InboundStreamLinkage, OutboundStreamLinkage, ProtocolInsta
 
 @available(Network 0.1.0, *)
 extension QUICCrypto: TopStreamProtocol {
-    typealias LinkageType = QUICCrypto<Families>
+    typealias LinkageType = QUICCrypto
     typealias LowerProtocol = PairedLowerLinkage
 
     var context: NetworkContext { parentConnection!.context }
@@ -493,7 +488,7 @@ extension QUICCrypto: TopStreamProtocol {
             return false
         }
         let bufferLimitForPNSpace =
-            packetNumberSpace == .handshake ? 2 * QUICCryptoConstants.bufferLimit : QUICCryptoConstants.bufferLimit
+            packetNumberSpace == .handshake ? 2 * QUICCrypto.bufferLimit : QUICCrypto.bufferLimit
         guard reassemblyQueue.size <= bufferLimitForPNSpace else {
             parentConnection?.log.error(
                 "Read crypto buffer size \(reassemblyQueue.size) is larger than limit \(bufferLimitForPNSpace)"

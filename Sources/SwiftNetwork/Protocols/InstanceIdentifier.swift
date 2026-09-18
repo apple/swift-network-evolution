@@ -19,16 +19,16 @@
 @available(Network 0.1.0, *)
 public struct InstanceIdentifier: Hashable {
 
-    let eventStateIndex: NetworkStateIndex?
+    let eventStateIndex: NetworkStateIndex
 
-    var parentEventStateIndex: NetworkStateIndex?
+    var parentEventStateIndex: NetworkStateIndex = .none
 
-    func protocolEventStateIndex(allowParent: Bool = true) -> NetworkStateIndex? {
-        if allowParent, let parentEventStateIndex { return parentEventStateIndex }
+    func protocolEventStateIndex(allowParent: Bool = true) -> NetworkStateIndex {
+        if allowParent, !parentEventStateIndex.isNone { return parentEventStateIndex }
         return eventStateIndex
     }
 
-    var protocolEventStateIndex: NetworkStateIndex? {
+    var protocolEventStateIndex: NetworkStateIndex {
         protocolEventStateIndex()
     }
 
@@ -37,7 +37,7 @@ public struct InstanceIdentifier: Hashable {
     }
 
     public init() {
-        eventStateIndex = nil
+        eventStateIndex = .none
     }
 
     public init(context: NetworkContext, eventManager: inout ProtocolEventManager) {
@@ -57,6 +57,6 @@ public struct InstanceIdentifier: Hashable {
     }
 
     public var isNone: Bool {
-        eventStateIndex == nil
+        eventStateIndex.isNone
     }
 }

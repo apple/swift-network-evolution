@@ -462,7 +462,7 @@ final class PragueTests: XCTestCase {
 
     func testPragueExercisingPacer() {
         // Path holds both Pacer and Prague, thats why its setup this way.
-        let connection = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+        let connection = QUICConnection(context: NetworkContext.implicitContext)
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let path = connection.context.onQueue {
             QUICTestPath.makeFromExternalTest(parent: connection)

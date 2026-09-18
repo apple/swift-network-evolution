@@ -29,14 +29,14 @@ import Dispatch
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public final class SocketDatagramProtocol<LinkageFamily: DatagramLinkageFamily>: BottomDatagramProtocol {
-    public typealias UpperProtocol = LinkageFamily.Upper
-    public typealias LinkageType = LinkageFamily.Lower
+public final class SocketDatagramProtocol: BottomDatagramProtocol {
+    public typealias UpperProtocol = BaseInboundDatagramLinkage
+    public typealias LinkageType = BaseOutboundDatagramLinkage
 
     public private(set) var context: NetworkContext
     public var identifier: InstanceIdentifier
     public var eventManager = ProtocolEventManager()
-    public var upper = LinkageFamily.Upper()
+    public var upper = UpperProtocol()
     var log = NetworkLoggerState()
 
     private var socket: SystemSocket? = nil
@@ -428,33 +428,25 @@ public final class SocketDatagramProtocol<LinkageFamily: DatagramLinkageFamily>:
 
 // MARK: - SocketStreamProtocol
 
-@available(Network 0.1.0, *)
-fileprivate struct SocketStreamDefaults {
-#if canImport(Darwin)
-    // Socket option constants that the Swift Darwin overlay does not surface.
-    // Values match <netinet6/in6.h> and the Darwin xnu socket headers.
-    static let socketOptionIPv6UseMinMTU: CInt = 42  // IPV6_USE_MIN_MTU
-    static let socketOptionIPv6DontFrag: CInt = 62  // IPV6_DONTFRAG
-#endif
-
-    // Cap dynamic input sizing so a flood of pending bytes can't make us
-    // allocate an arbitrarily large temporary buffer.
-    static let maximumDynamicInputSize = 256 * 1024
-}
-
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public final class SocketStreamProtocol<LinkageFamily: StreamLinkageFamily>: BottomStreamProtocol {
-    public typealias UpperProtocol = LinkageFamily.Upper
-    public typealias LinkageType = LinkageFamily.Lower
+public final class SocketStreamProtocol: BottomStreamProtocol {
+    public typealias UpperProtocol = BaseInboundStreamLinkage
+    public typealias LinkageType = BaseOutboundStreamLinkage
 
     public private(set) var context: NetworkContext
     public var identifier: InstanceIdentifier
     public var eventManager = ProtocolEventManager()
-    public var upper = LinkageFamily.Upper()
+    public var upper = UpperProtocol()
     var log = NetworkLoggerState()
 
     private var socket: SystemSocket? = nil
+    #if canImport(Darwin)
+    // Socket option constants that the Swift Darwin overlay does not surface.
+    // Values match <netinet6/in6.h> and the Darwin xnu socket headers.
+    private static let socketOptionIPV6UseMinMTU: CInt = 42  // IPV6_USE_MIN_MTU
+    private static let socketOptionIPV6DontFrag: CInt = 62  // IPV6_DONTFRAG
+    #endif
     private var dispatchReadSource: (any DispatchSourceRead)? = nil
     private var dispatchWriteSource: (any DispatchSourceWrite)? = nil
     private var waitingForWritable = false
@@ -470,6 +462,10 @@ public final class SocketStreamProtocol<LinkageFamily: StreamLinkageFamily>: Bot
 
     private let maximumInputSize = 65536
     private let maximumOutputSize = 65536
+
+    // Cap dynamic input sizing so a flood of pending bytes can't make us
+    // allocate an arbitrarily large temporary buffer.
+    private static let maximumDynamicInputSize = 256 * 1024
 
     // TCPMetadata wired up so the upper layer can query and modify socket
     // state via the standard TCP option callbacks.
@@ -768,7 +764,7 @@ public final class SocketStreamProtocol<LinkageFamily: StreamLinkageFamily>: Bot
         let pending = socket?.availableBytesToRead() ?? 0
         let readSize: Int
         if pending > 0 {
-            readSize = min(max(pending, maximumInputSize), SocketStreamDefaults.maximumDynamicInputSize)
+            readSize = min(max(pending, maximumInputSize), SocketStreamProtocol.maximumDynamicInputSize)
         } else {
             readSize = maximumInputSize
         }
@@ -1199,7 +1195,7 @@ public final class SocketStreamProtocol<LinkageFamily: StreamLinkageFamily>: Bot
             do {
                 try socket.setSocketOption(
                     level: CInt(IPPROTO_IPV6),
-                    name: SocketStreamDefaults.socketOptionIPv6UseMinMTU,
+                    name: SocketStreamProtocol.socketOptionIPV6UseMinMTU,
                     value: CInt(1)
                 )
             } catch {
@@ -1213,7 +1209,7 @@ public final class SocketStreamProtocol<LinkageFamily: StreamLinkageFamily>: Bot
                 if isIPv6 {
                     try socket.setSocketOption(
                         level: CInt(IPPROTO_IPV6),
-                        name: SocketStreamDefaults.socketOptionIPv6DontFrag,
+                        name: SocketStreamProtocol.socketOptionIPV6DontFrag,
                         value: dontFragment
                     )
                 } else {

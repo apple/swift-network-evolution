@@ -30,7 +30,7 @@ let quicStreamTestsLogPrefixer = LogPrefixer("[QUICStreamTests]")
 @available(Network 0.1.0, *)
 final class QUICStreamTests: XCTestCase {
     var stream: QUICTestStream!
-    var connection = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+    var connection = QUICConnection(context: NetworkContext.implicitContext)
 
     override func setUp() {
         stream = QUICTestStream(parent: connection, inbound: false)
@@ -81,7 +81,7 @@ final class QUICStreamTests: XCTestCase {
 @available(Network 0.1.0, *)
 final class QUICStreamIDStateTests: XCTestCase {
     var streamsState = QUICTestStreamIDState(.unidirectional)
-    var connection = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+    var connection = QUICConnection(context: NetworkContext.implicitContext)
     var stream: QUICTestStream!
     var logPrefix = LogPrefixer("[QUICStreamTests]")
 
@@ -124,7 +124,7 @@ final class QUICStreamIDStateTests: XCTestCase {
 
 @available(Network 0.1.0, *)
 final class QUICStreamListTests: XCTestCase {
-    var connection = QUICConnection<TestLinkageFamilyGroup>(context: NetworkContext.implicitContext)
+    var connection = QUICConnection(context: NetworkContext.implicitContext)
     var logPrefix = LogPrefixer("[QUICStreamListTests]")
 
     override func tearDown() {

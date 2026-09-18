@@ -81,8 +81,8 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
     }
 
     @discardableResult
-    mutating func packetLost<Families: LinkageFamilyGroup>(
-        path: QUICPath<Families>?,
+    mutating func packetLost(
+        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -114,9 +114,9 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         logState(qlog: qlog, state: .recovery, trigger: nil)
     }
 
-    mutating func ackEnd<Families: LinkageFamilyGroup>(
+    mutating func ackEnd(
         rtt: borrowing RTT,
-        path: QUICPath<Families>?,
+        path: QUICPath?,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -231,8 +231,8 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         logUpdate(qlog: qlog)
     }
 
-    mutating func processECN<Families: LinkageFamilyGroup>(
-        path: QUICPath<Families>?,
+    mutating func processECN(
+        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,

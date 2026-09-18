@@ -76,8 +76,8 @@ class QUICTestHarness {
         let clientInstanceIdentifier: InstanceIdentifier
         let serverInstanceIdentifier: InstanceIdentifier
 
-        let clientInstance: QUICConnection<TestLinkageFamilyGroup>
-        let serverInstance: QUICConnection<TestLinkageFamilyGroup>
+        let clientInstance: QUICConnection
+        let serverInstance: QUICConnection
 
         // The QUIC listener linkages, kept so later calls (new streams, new datagram flows) can
         // attach more upper protocols to the same connections.
@@ -95,8 +95,8 @@ class QUICTestHarness {
         self.context = context
         self.context.activate()
 
-        clientPort = BridgeDatagramProtocol.BridgeInstance<TestDatagramLinkageFamily>.nextGeneratedPort
-        serverPort = BridgeDatagramProtocol.BridgeInstance<TestDatagramLinkageFamily>.nextGeneratedPort
+        clientPort = BridgeDatagramProtocol.BridgeInstance.nextGeneratedPort
+        serverPort = BridgeDatagramProtocol.BridgeInstance.nextGeneratedPort
         clientEndpoint = Endpoint(address: IPv4Address(QUICTestHarness.clientIPv4Address)!, port: clientPort)
         serverEndpoint = Endpoint(address: IPv4Address(QUICTestHarness.serverIPv4Address)!, port: serverPort)
     }
@@ -169,7 +169,7 @@ class QUICTestHarness {
             // Build the QUIC connection through storage so its listener/multipath linkages are
             // storage-backed and can dispatch calls back into the instance.
             var (clientQUICStreamListener, clientQUICDatagramListener, clientQUICMultipath) =
-                self.storage.createQUICInstance()
+                self.storage.createTestQUICInstance()
             guard let clientInstance = self.storage.quicInstance(for: clientQUICStreamListener.base) else {
                 XCTFail("Failed to create client QUIC instance")
                 handshakeExpectation.fulfill()
@@ -185,7 +185,7 @@ class QUICTestHarness {
             clientOptions.setProtocolInstance(clientInstanceIdentifier)
             clientParameters.defaultStack.transport = .quic(clientOptions)
 
-            let clientBridge = self.storage.createBridgeDatagramInstance()
+            let clientBridge = self.storage.createTestBridgeDatagramInstance()
             let clientBridgeOptions = BridgeDatagramProtocol.options()
             clientBridgeOptions.observeFirstByteHandler = bridgeObserveFirstByteHandler
             clientBridgeOptions.setProtocolInstance(clientBridge.identifier)
@@ -202,7 +202,7 @@ class QUICTestHarness {
             serverParameters.isServer = true
 
             var (serverQUICStreamListener, serverQUICDatagramListener, serverQUICMultipath) =
-                self.storage.createQUICInstance()
+                self.storage.createTestQUICInstance()
             guard let serverInstance = self.storage.quicInstance(for: serverQUICStreamListener.base) else {
                 XCTFail("Failed to create server QUIC instance")
                 handshakeExpectation.fulfill()
@@ -218,7 +218,7 @@ class QUICTestHarness {
             serverOptions.setProtocolInstance(serverInstanceIdentifier)
             serverParameters.defaultStack.transport = .quic(serverOptions)
 
-            let serverBridge = self.storage.createBridgeDatagramInstance()
+            let serverBridge = self.storage.createTestBridgeDatagramInstance()
             let serverBridgeOptions = BridgeDatagramProtocol.options()
             serverBridgeOptions.observeFirstByteHandler = bridgeObserveFirstByteHandler
             serverBridgeOptions.setProtocolInstance(serverBridge.identifier)
@@ -434,7 +434,7 @@ class QUICTestHarness {
         quicOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverInitiated: Bool = false
     ) -> StreamUpperHarness<TestStreamLinkageFamily>? {
-        var handlerInstance: QUICConnection<TestLinkageFamilyGroup>?
+        var handlerInstance: QUICConnection?
         var handlerListener: TestStreamListenerLinkage?
         if serverInitiated {
             handlerInstance = state?.serverInstance

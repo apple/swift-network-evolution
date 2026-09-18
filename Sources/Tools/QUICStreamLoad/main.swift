@@ -94,20 +94,20 @@ final class QUICStreamLoad {
             let handshakeStart = NetworkClock.Instant.systemNow
 
             // Client
-            let (clientIPUpper, clientIPLower) = storage.createIPInstance()
+            let (clientIPUpper, clientIPLower) = storage.createTestIPInstance()
             let clientIPOptions = IPProtocol.options()
             clientIPOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 3)
             clientIPOptions.setProtocolInstance(clientIPLower.identifier)
             clientParameters.defaultStack.internet = .ip(clientIPOptions)
 
-            let (clientUDPUpper, clientUDPLower) = storage.createUDPInstance()
+            let (clientUDPUpper, clientUDPLower) = storage.createTestUDPInstance()
             let clientUDPOptions = UDPProtocol.options()
             clientUDPOptions.noMetadata = true
             clientUDPOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 2)
             clientUDPOptions.setProtocolInstance(clientUDPLower.identifier)
             clientParameters.defaultStack.transport = .udp(clientUDPOptions)
 
-            var (clientQUICStreamListener, _, clientQUICMultipath) = storage.createQUICInstance()
+            var (clientQUICStreamListener, _, clientQUICMultipath) = storage.createTestQUICInstance()
             var clientTLSOptions = SwiftTLSProtocol.Options()
             clientTLSOptions.applicationProtocols = ["network_test"]
             clientTLSOptions.serverName = "quic-test.local"
@@ -123,7 +123,7 @@ final class QUICStreamLoad {
 
             clientParameters.defaultStack.prepend(applicationProtocol: .quic(clientQUICOptions))
 
-            let clientOutput = storage.createBridgeDatagramInstance()
+            let clientOutput = storage.createTestBridgeDatagramInstance()
             let bridgeOptions = BridgeDatagramProtocol.options()
             bridgeOptions.linkDelay = linkDelay
             bridgeOptions.setProtocolInstance(clientOutput.identifier)
@@ -181,20 +181,20 @@ final class QUICStreamLoad {
                 return
             }
             // Server
-            let (serverIPUpper, serverIPLower) = storage.createIPInstance()
+            let (serverIPUpper, serverIPLower) = storage.createTestIPInstance()
             let serverIPOptions = IPProtocol.options()
             serverIPOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 3)
             serverIPOptions.setProtocolInstance(serverIPLower.identifier)
             serverParameters.defaultStack.internet = .ip(serverIPOptions)
 
-            let (serverUDPUpper, serverUDPLower) = storage.createUDPInstance()
+            let (serverUDPUpper, serverUDPLower) = storage.createTestUDPInstance()
             let serverUDPOptions = UDPProtocol.options()
             serverUDPOptions.noMetadata = true
             serverUDPOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 2)
             serverUDPOptions.setProtocolInstance(serverUDPLower.identifier)
             serverParameters.defaultStack.transport = .udp(serverUDPOptions)
 
-            var (serverQUICStreamListener, _, serverQUICMultipath) = storage.createQUICInstance()
+            var (serverQUICStreamListener, _, serverQUICMultipath) = storage.createTestQUICInstance()
             var serverTLSOptions = SwiftTLSProtocol.Options()
             serverTLSOptions.applicationProtocols = ["network_test"]
             serverTLSOptions.serverName = "quic-test.local"
@@ -208,7 +208,7 @@ final class QUICStreamLoad {
             serverQUICOptions.setProtocolInstance(serverQUICStreamListener.identifier)
             serverParameters.defaultStack.prepend(applicationProtocol: .quic(serverQUICOptions))
 
-            let serverOutput = storage.createBridgeDatagramInstance()
+            let serverOutput = storage.createTestBridgeDatagramInstance()
             let serverBridgeOptions = BridgeDatagramProtocol.options()
             serverBridgeOptions.linkDelay = linkDelay
             serverBridgeOptions.setProtocolInstance(serverOutput.identifier)

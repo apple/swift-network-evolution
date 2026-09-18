@@ -337,11 +337,9 @@ public struct SwiftTLSProtocol: NetworkProtocol {
     #endif
 
     /// A TLS instance that runs only the handshake, with QUIC carrying the records.
-    final class SwiftTLSQUICOnlyInstance<
-        Families: LinkageFamilyGroup
-    >: BottomStreamProtocol, OutboundStreamLinkage, ProtocolInstanceAsLinkage {
-        typealias PairedUpperLinkage = QUICCrypto<Families>
-        typealias LinkageType = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance<Families>
+    final class SwiftTLSQUICOnlyInstance: BottomStreamProtocol, OutboundStreamLinkage, ProtocolInstanceAsLinkage {
+        typealias PairedUpperLinkage = QUICCrypto
+        typealias LinkageType = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance
 
         var metadata: AbstractProtocolMetadata?
         var upper = LinkageType.PairedUpperLinkage()
@@ -373,7 +371,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         ///
         /// Held strongly, which forms a cycle with `QUICCrypto.tlsInstance`; `teardown()`
         /// breaks it by clearing this reference.
-        private var quicCrypto: QUICCrypto<Families>?
+        private var quicCrypto: QUICCrypto?
 
         init() {
             quicCrypto = nil
@@ -381,7 +379,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             identifier = .init()
         }
 
-        init(context: NetworkContext, quicCrypto: QUICCrypto<Families>?) {
+        init(context: NetworkContext, quicCrypto: QUICCrypto?) {
             self.quicCrypto = quicCrypto
             self.context = context
             self.identifier = InstanceIdentifier(context: context, eventManager: &self.eventManager)
@@ -391,7 +389,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         /// re-derived from the context.
         init(
             context: NetworkContext,
-            quicCrypto: QUICCrypto<Families>?,
+            quicCrypto: QUICCrypto?,
             in eventContext: inout NetworkContext.EventContext
         ) {
             self.quicCrypto = quicCrypto
@@ -421,9 +419,9 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         }
 
         final class EncryptionLevelHandler: TopStreamProtocol, InboundStreamLinkage, ProtocolInstanceAsLinkage {
-            typealias PairedLowerLinkage = QUICCrypto<Families>
+            typealias PairedLowerLinkage = QUICCrypto
 
-            typealias LinkageType = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance<Families>.EncryptionLevelHandler
+            typealias LinkageType = SwiftTLSProtocol.SwiftTLSQUICOnlyInstance.EncryptionLevelHandler
             typealias LowerProtocol = LinkageType.PairedLowerLinkage
 
             var lower = LowerProtocol()
@@ -458,7 +456,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             }
             convenience init() { self.init(level: .initial) }
 
-            func invokeAttachLowerProtocol(_ lowerProtocol: QUICCrypto<Families>, remote: Endpoint?, local: Endpoint?, parameters: Parameters?, path: PathProperties?) throws(NetworkError) { }
+            func invokeAttachLowerProtocol(_ lowerProtocol: QUICCrypto, remote: Endpoint?, local: Endpoint?, parameters: Parameters?, path: PathProperties?) throws(NetworkError) { }
 
             func destroy() {
                 // `context` comes from the parent, and `setParent` is also what registers the
@@ -863,7 +861,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         // The TLS instance is its own lower linkage, so this is the callback half of
         // `QUICCrypto.invokeAttachLowerProtocol`: bind the crypto object as the upper protocol
         // and run setup.
-        func invokeAttachUpperProtocol(_ upperProtocol: QUICCrypto<Families>, remote: Endpoint?, local: Endpoint?, parameters: Parameters?, path: PathProperties?) throws(NetworkError) {
+        func invokeAttachUpperProtocol(_ upperProtocol: QUICCrypto, remote: Endpoint?, local: Endpoint?, parameters: Parameters?, path: PathProperties?) throws(NetworkError) {
             var mutableSelf = self
             try mutableSelf.attachUpperProtocol(
                 upperProtocol,

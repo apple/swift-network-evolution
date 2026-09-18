@@ -122,47 +122,18 @@ struct BandwidthDelayProduct {
     var timestamp: NetworkClock.Instant = .zero
 }
 
-// Constants for path behavior. These live outside QUICPath because a generic type cannot
-// have static stored properties.
+@_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-enum QUICPathConstants {
+public final class QUICPath: MultiplexingDatagramPath<
+    QUICConnection,
+    BaseOutboundDatagramLinkage
+>, Equatable, PrefixedLoggable {
     // Initial probe interval for resending PATH_CHALLENGE is 250 ms
     // Further probes will follow exponential backoff.
     static let initialProbeInterval: NetworkDuration = .milliseconds(250)
 
     static let slowInitialProbeInterval: NetworkDuration = .seconds(1)
 
-    static let maximumPendingChallenges: Int = 6
-}
-
-// Path flags. Lifted out of QUICPath because a generic type cannot have static stored
-// properties, including those of its nested types.
-@available(Network 0.1.0, *)
-struct QUICPathFlags: OptionSet {
-    init(rawValue: Self.RawValue) {
-        self.rawValue = rawValue
-    }
-    var rawValue: UInt16
-    static let pacePackets = QUICPathFlags(rawValue: 1 << 0)
-    static let isInitialPath = QUICPathFlags(rawValue: 1 << 1)
-    static let isPrimaryPath = QUICPathFlags(rawValue: 1 << 2)
-    static let spinValue = QUICPathFlags(rawValue: 1 << 3)
-    static let useSlowProbeInterval = QUICPathFlags(rawValue: 1 << 4)
-    static let isPreferredAddress = QUICPathFlags(rawValue: 1 << 5)
-    static let migrationPending = QUICPathFlags(rawValue: 1 << 6)
-    static let isLossy = QUICPathFlags(rawValue: 1 << 7)
-    static let hasPreAssignedCIDs = QUICPathFlags(rawValue: 1 << 8)
-    static let isFlowControlled = QUICPathFlags(rawValue: 1 << 9)
-    static let l4sEnabled = QUICPathFlags(rawValue: 1 << 10)
-    static let reportedIdleEvent = QUICPathFlags(rawValue: 1 << 11)
-}
-
-@_spi(ProtocolProvider)
-@available(Network 0.1.0, *)
-public final class QUICPath<Families: LinkageFamilyGroup>: MultiplexingDatagramPath<
-    QUICConnection<Families>,
-    Families.DatagramFamily.Lower
->, Equatable, PrefixedLoggable {
     private(set) var state: QUICPathState = QUICPathState()
     var priority: Int = 0  // Relative priority to other paths, used to gate migration decisions
     var interface: Interface?
@@ -175,6 +146,7 @@ public final class QUICPath<Families: LinkageFamilyGroup>: MultiplexingDatagramP
     var pendingInboundChallenges = [UInt64]()  // Received challenges requiring a response
 
     var pendingOutboundChallenges = [PendingChallenge]()  // Sent challenges waiting for a response
+    static let maximumPendingChallenges: Int = 6
     private(set) var challengesSent: Int = 0
     private(set) var lastChallengeSentTime: NetworkClock.Instant = .zero
     private(set) var nextChallengeDuration: NetworkDuration = .zero
@@ -188,7 +160,7 @@ public final class QUICPath<Families: LinkageFamilyGroup>: MultiplexingDatagramP
     var pacer: Pacer
 
     var pmtudState = PMTUDState()
-    var recoveryState = RecoveryPathState()
+    var recoveryState = Recovery.PathState()
     var ecnState: ECNPathState?
     var pathStatistics = Statistics()
 
@@ -197,7 +169,25 @@ public final class QUICPath<Families: LinkageFamilyGroup>: MultiplexingDatagramP
     var maximumMSS = 0
     var minimumMSS = 0
 
-    private var flags = QUICPathFlags()
+    struct Flags: OptionSet {
+        init(rawValue: Self.RawValue) {
+            self.rawValue = rawValue
+        }
+        var rawValue: UInt16
+        static let pacePackets = Flags(rawValue: 1 << 0)
+        static let isInitialPath = Flags(rawValue: 1 << 1)
+        static let isPrimaryPath = Flags(rawValue: 1 << 2)
+        static let spinValue = Flags(rawValue: 1 << 3)
+        static let useSlowProbeInterval = Flags(rawValue: 1 << 4)
+        static let isPreferredAddress = Flags(rawValue: 1 << 5)
+        static let migrationPending = Flags(rawValue: 1 << 6)
+        static let isLossy = Flags(rawValue: 1 << 7)
+        static let hasPreAssignedCIDs = Flags(rawValue: 1 << 8)
+        static let isFlowControlled = Flags(rawValue: 1 << 9)
+        static let l4sEnabled = Flags(rawValue: 1 << 10)
+        static let reportedIdleEvent = Flags(rawValue: 1 << 11)
+    }
+    private var flags = Flags()
 
     var pacePackets: Bool {
         get { flags.contains(.pacePackets) }
@@ -255,10 +245,10 @@ public final class QUICPath<Families: LinkageFamilyGroup>: MultiplexingDatagramP
     }
 
     override public func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage {
-        Families.linkage(for: self)
+        BaseInboundDatagramLinkage(quicPath: self)
     }
 
-    public static func == (lhs: QUICPath<Families>, rhs: QUICPath<Families>) -> Bool {
+    public static func == (lhs: QUICPath, rhs: QUICPath) -> Bool {
         lhs.identifier == rhs.identifier
     }
 
@@ -322,7 +312,7 @@ public final class QUICPath<Families: LinkageFamilyGroup>: MultiplexingDatagramP
     ///
     /// A path built this way isn't in the parent's `multiplexingPaths`, so nothing tears it down.
     /// Pair it with `destroyFromExternalTest()` before letting it go.
-    static func makeFromExternalTest(parent: QUICConnection<Families>) -> Self {
+    static func makeFromExternalTest(parent: QUICConnection) -> Self {
         parent.fromExternal { eventContext in
             Self(parent: parent, in: &eventContext)
         }
@@ -339,7 +329,7 @@ public final class QUICPath<Families: LinkageFamilyGroup>: MultiplexingDatagramP
         }
     }
 
-    required init(parent: QUICConnection<Families>, in eventContext: inout NetworkContext.EventContext) {
+    required init(parent: QUICConnection, in eventContext: inout NetworkContext.EventContext) {
         self.rtt = RTT(logPrefixer: parent.logPrefixer)
         self.pacer = Pacer()
         super.init(parent: parent, in: &eventContext)
@@ -599,7 +589,7 @@ public final class QUICPath<Families: LinkageFamilyGroup>: MultiplexingDatagramP
     ) {
         guard shouldSendPathChallenge(now: now) else { return }
 
-        guard challengesSent < QUICPathConstants.maximumPendingChallenges else {
+        guard challengesSent < QUICPath.maximumPendingChallenges else {
             // Exceeded limit, move to unreachable, and retire the CID
             changeState(to: .unreachable)
             if let dcid, !hasPreAssignedCIDs {
@@ -632,9 +622,9 @@ public final class QUICPath<Families: LinkageFamilyGroup>: MultiplexingDatagramP
         pendingItems.addPathChallenge(FramePathChallenge(data: challenge.data))
         lastChallengeSentTime = now
         if useSlowProbeInterval {
-            nextChallengeDuration = QUICPathConstants.slowInitialProbeInterval * (1 << challengesSent)
+            nextChallengeDuration = QUICPath.slowInitialProbeInterval * (1 << challengesSent)
         } else {
-            nextChallengeDuration = QUICPathConstants.initialProbeInterval * (1 << challengesSent)
+            nextChallengeDuration = QUICPath.initialProbeInterval * (1 << challengesSent)
         }
         challengesSent += 1
 
@@ -729,7 +719,7 @@ extension QUICPath {
     @inline(always)
     func congestionControlAckEnd(
         rtt: borrowing RTT,
-        path: QUICPath<Families>?,
+        path: QUICPath?,
         mss: Int,
         packetsLost: Bool,
         qlog: QLog? = nil
@@ -762,7 +752,7 @@ extension QUICPath {
         smoothedRTT: NetworkDuration
     ) -> Bool {
         // Loss accounting doesn't repace this path, so there is no path to hand down.
-        let unpacedPath: QUICPath<Families>? = nil
+        let unpacedPath: QUICPath? = nil
         return congestionControl?.packetsLost(
             path: unpacedPath,
             bytesLost: bytesLost,
@@ -821,7 +811,7 @@ extension QUICPath {
     ) {
         guard congestionControl != nil else { return }
         // ECN accounting doesn't repace this path, so there is no path to hand down.
-        let unpacedPath: QUICPath<Families>? = nil
+        let unpacedPath: QUICPath? = nil
         switch congestionControl! {
         case .cubic(var cubic):
             cubic.processECN(

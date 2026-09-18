@@ -126,8 +126,8 @@ struct PMTUDState: ~Copyable {
     }
     private var flags = Flags()
 
-    mutating func start<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    mutating func start(
+        on path: QUICPath,
         in eventContext: inout NetworkContext.EventContext
     ) {
         let connection = path.parentProtocol
@@ -195,7 +195,7 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    mutating func canSendProbe<Families: LinkageFamilyGroup>(on path: QUICPath<Families>) -> Bool {
+    mutating func canSendProbe(on path: QUICPath) -> Bool {
         let connection = path.parentProtocol
         let hasPendingItems = connection.withPendingItemsForKeyState { pendingItems in
             pendingItems.hasPendingItems
@@ -203,8 +203,8 @@ struct PMTUDState: ~Copyable {
         return canSendProbe(on: path, hasPendingItems: hasPendingItems)
     }
 
-    mutating func canSendProbe<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    mutating func canSendProbe(
+        on path: QUICPath,
         hasPendingItems: Bool
     ) -> Bool {
         let connection = path.parentProtocol
@@ -251,8 +251,8 @@ struct PMTUDState: ~Copyable {
         return true
     }
 
-    mutating func packetTooBigReceived<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    mutating func packetTooBigReceived(
+        on path: QUICPath,
         nextMTU: Int,
         in eventContext: inout NetworkContext.EventContext
     ) {
@@ -281,8 +281,8 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    mutating func probeAcked<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    mutating func probeAcked(
+        on path: QUICPath,
         packetLen: Int,
         packetNumber: PacketNumber,
         in eventContext: inout NetworkContext.EventContext
@@ -323,8 +323,8 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    mutating func probeLost<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    mutating func probeLost(
+        on path: QUICPath,
         packetLen: Int,
         packetNumber: PacketNumber,
         in eventContext: inout NetworkContext.EventContext
@@ -352,8 +352,8 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    mutating func ptoEvent<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    mutating func ptoEvent(
+        on path: QUICPath,
         ptoCount: Int,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         in eventContext: inout NetworkContext.EventContext
@@ -365,8 +365,8 @@ struct PMTUDState: ~Copyable {
         enterBlackholeDetection(on: path, sentPackets: &sentPackets, in: &eventContext)
     }
 
-    mutating func sendProbe<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    mutating func sendProbe(
+        on path: QUICPath,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         in eventContext: inout NetworkContext.EventContext
     ) {
@@ -381,8 +381,8 @@ struct PMTUDState: ~Copyable {
         )
     }
 
-    mutating func sendProbe<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    mutating func sendProbe(
+        on path: QUICPath,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         initialPendingItems: inout PendingItems,
         handshakePendingItems: inout PendingItems,
@@ -434,7 +434,7 @@ struct PMTUDState: ~Copyable {
         probedMTU = nextProbeMTU
     }
 
-    mutating func stop<Families: LinkageFamilyGroup>(on path: QUICPath<Families>) {
+    mutating func stop(on path: QUICPath) {
         enabled = false
         if let timerID {
             path.parentProtocol.timer.remove(timerID)
@@ -442,8 +442,8 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    mutating func tryToSend<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    mutating func tryToSend(
+        on path: QUICPath,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         in eventContext: inout NetworkContext.EventContext
     ) {
@@ -451,9 +451,9 @@ struct PMTUDState: ~Copyable {
         sendProbe(on: path, sentPackets: &sentPackets, in: &eventContext)
     }
 
-    mutating func timerFired<Families: LinkageFamilyGroup>(
+    mutating func timerFired(
         at timeNow: NetworkClock.Instant,
-        path: QUICPath<Families>,
+        path: QUICPath,
         in eventContext: inout NetworkContext.EventContext
     ) {
         path.log.debug("PMTUD timer fired")
@@ -464,8 +464,8 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    private mutating func enterBlackholeDetection<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    private mutating func enterBlackholeDetection(
+        on path: QUICPath,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         in eventContext: inout NetworkContext.EventContext
     ) {
@@ -512,8 +512,8 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    private mutating func searchComplete<Families: LinkageFamilyGroup>(
-        on path: QUICPath<Families>,
+    private mutating func searchComplete(
+        on path: QUICPath,
         in eventContext: inout NetworkContext.EventContext
     ) {
         canProbe = false
@@ -523,7 +523,7 @@ struct PMTUDState: ~Copyable {
         path.log.info("PMTUD completed, current MTU \(currentPathMTU)")
     }
 
-    private mutating func shouldProbe<Families: LinkageFamilyGroup>(on path: QUICPath<Families>) -> Bool {
+    private mutating func shouldProbe(on path: QUICPath) -> Bool {
         let connection = path.parentProtocol
         if connection.pmtudIgnoreCost { return true }
 
@@ -547,9 +547,9 @@ struct PMTUDState: ~Copyable {
         return false
     }
 
-    private func timerReschedule<Families: LinkageFamilyGroup>(
+    private func timerReschedule(
         _ duration: NetworkDuration,
-        connection: QUICConnection<Families>,
+        connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
     ) {
         guard let timerID else { return }
@@ -561,7 +561,7 @@ struct PMTUDState: ~Copyable {
         )
     }
 
-    private mutating func updateProbeSize<Families: LinkageFamilyGroup>(on path: QUICPath<Families>) {
+    private mutating func updateProbeSize(on path: QUICPath) {
         if searchCompleted {
             Logger.proto.fault("Attempt to update probe size while search is completed")
             return

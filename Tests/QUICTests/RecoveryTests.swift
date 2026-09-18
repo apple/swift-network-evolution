@@ -34,7 +34,7 @@ let recoveryTestsLogPrefixer: LogPrefixer = LogPrefixer("[RecoveryTests]")
 
 @available(Network 0.1.0, *)
 final class RecoveryTests: XCTestCase {
-    var connection = QUICConnection<TestLinkageFamilyGroup>(context: .implicitContext)
+    var connection = QUICConnection(context: .implicitContext)
     var path: QUICTestPath! = nil
     // The base linkages are storage-backed, so lower harnesses have to come from storage
     // rather than being wrapped in a bare linkage.
@@ -60,8 +60,10 @@ final class RecoveryTests: XCTestCase {
             // Bind both directions: `attachLowerProtocol` only points the path at the harness,
             // so the harness also needs the path as its upper protocol or its `validate(upper:)`
             // rejects every call and `getDatagramsToSend` fails with EINVAL.
-            _ = try? newPath.attachLowerProtocol(lowerHarnessLinkage)
-            try? lowerHarnessLinkage.invokeAttachUpperProtocol(
+            // The path is a framework protocol, so it is bound through the base form of the
+            // harness's linkage -- which carries the box that reaches back to the harness.
+            _ = try? newPath.attachLowerProtocol(lowerHarnessLinkage.base)
+            try? lowerHarnessLinkage.base.invokeAttachUpperProtocol(
                 newPath.asUpperLinkage(),
                 remote: nil,
                 local: nil,
@@ -85,7 +87,7 @@ final class RecoveryTests: XCTestCase {
         self.path = nil
     }
 
-    func sentPacket(_ sentPacket: consuming SentPacketRecord, connection: QUICConnection<TestLinkageFamilyGroup>) {
+    func sentPacket(_ sentPacket: consuming SentPacketRecord, connection: QUICConnection) {
         var packets = NetworkUniqueDeque<SentPacketRecord>()
         packets.append(sentPacket)
         // Driven straight from the test body rather than from the context queue, so
@@ -850,7 +852,7 @@ final class RecoveryTests: XCTestCase {
     /// Removes an outstanding packet, asserting it was present. `removeSentPacket`
     /// returns a non-copyable entry, so the result is reduced to a `Bool` here.
     private func removeOutstanding(
-        _ innerState: inout RecoveryInnerState,
+        _ innerState: inout Recovery.InnerState,
         _ number: Int64,
         _ message: String
     ) {

@@ -129,7 +129,7 @@ final class SwiftNetworkDemuxTests: NetTestCase {
             let path = PathProperties(parameters: parameters)
             let storage = TestNetworkProtocolStorage(context: context)
 
-            let (udpUpper, udpLower) = storage.createUDPInstance()
+            let (udpUpper, udpLower) = storage.createTestUDPInstance()
             let udpOptions = UDPProtocol.options()
             udpOptions.noMetadata = true
             // Accept the checksum=0 packets we inject on inbound so we don't need to compute one.
@@ -138,7 +138,7 @@ final class SwiftNetworkDemuxTests: NetTestCase {
             udpOptions.setProtocolInstance(udpUpper.identifier)
             parameters.defaultStack.transport = .udp(udpOptions)
 
-            let (demuxUpper, demuxLower) = storage.createDemuxInstance()
+            let (demuxUpper, demuxLower) = storage.createTestDemuxInstance()
 
             // The default upper harness attaches first, so the demux treats it as the
             // catch-all for datagrams that match none of the patterns.

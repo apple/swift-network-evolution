@@ -99,10 +99,10 @@ public struct UDPProtocol: NetworkProtocol {
         static let gotPathAttributes = UDPInstanceFlags(rawValue: 1 << 10)
     }
 
-    struct UDPInstance<LinkageFamily: DatagramLinkageFamily>: ~Copyable, OneToOneDatagramProtocol {
+    struct UDPInstance: ~Copyable, OneToOneDatagramProtocol {
 
-        typealias UpperProtocol = LinkageFamily.Upper
-        typealias LowerProtocol = LinkageFamily.Lower
+        typealias UpperProtocol = BaseInboundDatagramLinkage
+        typealias LowerProtocol = BaseOutboundDatagramLinkage
 
         var upper = UpperProtocol()
         var lower = LowerProtocol()

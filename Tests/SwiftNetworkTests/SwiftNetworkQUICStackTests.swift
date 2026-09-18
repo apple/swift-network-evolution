@@ -133,7 +133,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             serverEndpoint: Endpoint,
             maximumDatagramSize: Int = 1500
         ) {
-            let (clientUDPUpper, clientUDPLower) = storage.createUDPInstance()
+            let (clientUDPUpper, clientUDPLower) = storage.createTestUDPInstance()
             clientTop = clientUDPLower
 
             let clientUDPOptions = UDPProtocol.options()
@@ -141,13 +141,13 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             clientUDPOptions.setLogID(prefix: "C", parent: identifier, protocolLogIDNumber: 2)
             clientUDPOptions.setProtocolInstance(clientUDPLower.identifier)
 
-            let (clientIPUpper, clientIPLower) = storage.createIPInstance()
+            let (clientIPUpper, clientIPLower) = storage.createTestIPInstance()
 
             let clientIPOptions = IPProtocol.options()
             clientIPOptions.setLogID(prefix: "C", parent: identifier, protocolLogIDNumber: 3)
             clientIPOptions.setProtocolInstance(clientIPLower.identifier)
 
-            let (serverUDPUpper, serverUDPLower) = storage.createUDPInstance()
+            let (serverUDPUpper, serverUDPLower) = storage.createTestUDPInstance()
 
             serverTop = serverUDPLower
             let serverUDPOptions = UDPProtocol.options()
@@ -155,7 +155,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             serverUDPOptions.setLogID(prefix: "L", parent: identifier, protocolLogIDNumber: 2)
             serverUDPOptions.setProtocolInstance(serverUDPLower.identifier)
 
-            let (serverIPUpper, serverIPLower) = storage.createIPInstance()
+            let (serverIPUpper, serverIPLower) = storage.createTestIPInstance()
 
             let serverIPOptions = IPProtocol.options()
             serverIPOptions.setLogID(prefix: "L", parent: identifier, protocolLogIDNumber: 3)
@@ -275,7 +275,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             pairedPathsArray.append(pairedPaths)
 
             let clientPath = PathProperties(parameters: clientParameters)
-            let (clientQUICStreamListener, _, clientQUICMultipath) = storage.createQUICInstance()
+            let (clientQUICStreamListener, _, clientQUICMultipath) = storage.createTestQUICInstance()
             clientQUICMultipathLinkage = clientQUICMultipath
 
             let clientQUICOptions: ProtocolOptions<QUICProtocol>
@@ -319,7 +319,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             var serverParameters = Parameters()
             serverParameters.isServer = true
             let serverPath = PathProperties(parameters: serverParameters)
-            let (serverQUICStreamListener, _, serverQUICMultipath) = storage.createQUICInstance()
+            let (serverQUICStreamListener, _, serverQUICMultipath) = storage.createTestQUICInstance()
             serverQUICMultipathLinkage = serverQUICMultipath
 
             let serverQUICOptions = self.createQUICTestOptions(
@@ -626,7 +626,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                 sourceConnectionIDLength: 8
             )
             clientQUICOptions.setLogID(prefix: "C", parent: "pathEvents", protocolLogIDNumber: 1)
-            let (clientQUICStreamListener, _, clientQUICMultipath) = storage.createQUICInstance()
+            let (clientQUICStreamListener, _, clientQUICMultipath) = storage.createTestQUICInstance()
             clientQUICMultipathLinkage = clientQUICMultipath
             clientQUICOptions.setProtocolInstance(clientQUICStreamListener.identifier)
 
@@ -672,7 +672,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             let serverPath = PathProperties(parameters: serverParameters)
             let serverQUICOptions = self.createQUICTestOptions(server: true)
             serverQUICOptions.setLogID(prefix: "L", parent: "pathEvents", protocolLogIDNumber: 1)
-            let (serverQUICStreamListener, _, serverQUICMultipath) = storage.createQUICInstance()
+            let (serverQUICStreamListener, _, serverQUICMultipath) = storage.createTestQUICInstance()
             serverQUICMultipathLinkage = serverQUICMultipath
             serverQUICOptions.setProtocolInstance(serverQUICStreamListener.identifier)
 

@@ -63,13 +63,13 @@ final class IPUDPTransfer {
             for _ in 0..<iterations {
                 // Client
                 let path = PathProperties(parameters: clientParameters)
-                let (clientIPUpper, clientIPLower) = storage.createIPInstance()
+                let (clientIPUpper, clientIPLower) = storage.createTestIPInstance()
                 let clientIPOptions = IPProtocol.options()
                 clientIPOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 2)
                 clientIPOptions.setProtocolInstance(clientIPUpper.identifier)
                 clientParameters.defaultStack.internet = .ip(clientIPOptions)
 
-                let (clientUDPUpper, clientUDPLower) = storage.createUDPInstance()
+                let (clientUDPUpper, clientUDPLower) = storage.createTestUDPInstance()
                 let clientUDPOptions = UDPProtocol.options()
                 clientUDPOptions.noMetadata = true
                 clientUDPOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
@@ -119,13 +119,13 @@ final class IPUDPTransfer {
                 var serverParameters = Parameters()
                 serverParameters.context = context
                 let serverPath = PathProperties(parameters: serverParameters)
-                let (serverIPUpper, serverIPLower) = storage.createIPInstance()
+                let (serverIPUpper, serverIPLower) = storage.createTestIPInstance()
                 let serverIPOptions = IPProtocol.options()
                 serverIPOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 2)
                 serverIPOptions.setProtocolInstance(serverIPUpper.identifier)
                 serverParameters.defaultStack.internet = .ip(serverIPOptions)
 
-                let (serverUDPUpper, serverUDPLower) = storage.createUDPInstance()
+                let (serverUDPUpper, serverUDPLower) = storage.createTestUDPInstance()
                 let serverUDPOptions = UDPProtocol.options()
                 serverUDPOptions.noMetadata = true
                 serverUDPOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
