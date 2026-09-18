@@ -39,7 +39,7 @@ public struct Frame: ~Copyable {
 
     @usableFromInline
     var _bytes: UniqueArray<UInt8> = .init()
-    var protocolMetadatas: NetworkUniqueDeque<FrameProtocolMetadata> = .init(minimumCapacity: 0)
+    var protocolMetadatas: NetworkUniqueArray<FrameProtocolMetadata> = .init(minimumCapacity: 0)
     var ipPacketValues: IPPacketValues? = nil
     public var buffer: Buffer
     var appMetadata: AppMetadata? = nil
@@ -48,8 +48,6 @@ public struct Frame: ~Copyable {
 
     var timestamp: FrameTimestamp? = nil
     var flags: Flags = Flags()
-    var _metadataComplete: Bool = false
-    public var connectionComplete: Bool = false
     private var _endOffset: UInt32 = 0
     private var _effectiveBufferLength: UInt32 = 0
     private var _aggregateBufferLength: UInt32 = 0
@@ -487,7 +485,7 @@ public struct Frame: ~Copyable {
         init(rawValue: Self.RawValue) {
             self.rawValue = rawValue
         }
-        var rawValue: UInt8
+        var rawValue: UInt16
         static let isSingleIPAggregate = Frame.Flags(rawValue: 1 << 0)
         static let isPacketChainMember = Frame.Flags(rawValue: 1 << 1)
         static let isWakePacket = Frame.Flags(rawValue: 1 << 2)
@@ -495,6 +493,8 @@ public struct Frame: ~Copyable {
         static let isRetransmit = Frame.Flags(rawValue: 1 << 4)
         static let isBackground = Frame.Flags(rawValue: 1 << 5)
         static let isRealtime = Frame.Flags(rawValue: 1 << 6)
+        static let metadataComplete = Frame.Flags(rawValue: 1 << 7)
+        static let connectionComplete = Frame.Flags(rawValue: 1 << 8)
     }
 
     struct IPPacketValues {
@@ -507,6 +507,12 @@ public struct Frame: ~Copyable {
             static let isChecksumIPChecked = Flags(rawValue: 1 << 1)
             static let isChecksumIPValid = Flags(rawValue: 1 << 2)
             static let fragmentationOverride = Flags(rawValue: 1 << 3)
+            // RX: the hardware validated the transport (TCP/UDP) checksum.
+            static let isChecksumDataValid = Flags(rawValue: 1 << 4)
+            // RX: the validated checksum value already folds in the pseudo-header.
+            static let isChecksumPseudoHeader = Flags(rawValue: 1 << 5)
+            // TX: the TSO segment size below describes an IPv6 super-packet.
+            static let isTSOIPv6 = Flags(rawValue: 1 << 6)
         }
         var flags: Flags = Flags()
         var serviceClass = Parameters.ServiceClass.bestEffort
@@ -514,6 +520,22 @@ public struct Frame: ~Copyable {
         var dscpValue: UInt8?
         var hopLimit: UInt8 = 0
         var checksumOffloadFlags: UInt8 = 0
+
+        // TX partial-checksum offload: byte offset (from the packet start / IP header)
+        // where the NIC begins the 1's-complement sum, and where it stores the result.
+        // Zero for the IP-header-only case, which the NIC locates itself.
+        var checksumStartOffset: UInt16 = 0
+        var checksumStoreOffset: UInt16 = 0
+
+        // TX segmentation offload (TSO): the per-segment TCP payload size the
+        // hardware should cut this frame into, or 0 for an ordinary single-segment
+        // frame. A non-zero value means the frame's payload deliberately exceeds
+        // the path MTU.
+        var tsoSegmentSize: UInt16 = 0
+
+        // RX: the final/partial transport checksum value the hardware reported.
+        var hardwareChecksumValue: UInt16 = 0
+
         var departureTime: UInt64 = 0  // departure time at which kernel should send the packet, used for kernel pacing
         var isLastPacket: Bool {
             get { flags.contains(.isLastPacket) }
@@ -526,6 +548,14 @@ public struct Frame: ~Copyable {
         var isChecksumIPValid: Bool {
             get { flags.contains(.isChecksumIPValid) }
             set { if newValue { flags.insert(.isChecksumIPValid) } else { flags.remove(.isChecksumIPValid) } }
+        }
+        var isChecksumDataValid: Bool {
+            get { flags.contains(.isChecksumDataValid) }
+            set { if newValue { flags.insert(.isChecksumDataValid) } else { flags.remove(.isChecksumDataValid) } }
+        }
+        var isChecksumPseudoHeader: Bool {
+            get { flags.contains(.isChecksumPseudoHeader) }
+            set { if newValue { flags.insert(.isChecksumPseudoHeader) } else { flags.remove(.isChecksumPseudoHeader) } }
         }
         var fragmentationOverride: Bool? {
             get { flags.contains(.fragmentationOverride) ? true : nil }
@@ -579,16 +609,31 @@ public struct Frame: ~Copyable {
         set { if newValue { flags.insert(.isRealtime) } else { flags.remove(.isRealtime) } }
     }
 
+    var metadataComplete: Bool {
+        get {
+            if protocolMetadatas.count > 0 {
+                return protocolMetadatas[0].metadataComplete
+            }
+            return flags.contains(.metadataComplete)
+        }
+        set { if newValue { flags.insert(.metadataComplete) } else { flags.remove(.metadataComplete) } }
+    }
+
+    public var connectionComplete: Bool {
+        get { flags.contains(.connectionComplete) }
+        set { if newValue { flags.insert(.connectionComplete) } else { flags.remove(.connectionComplete) } }
+    }
+
     var packetChainTotalLength: Int {
         get {
-            guard !isSingleIPAggregate else {
+            guard isSingleIPAggregate else {
                 Logger.proto.fault("Attempt to get aggregate buffer length on a non-single IP aggregate")
                 return 0
             }
             return aggregateBufferLength
         }
         set {
-            guard !isSingleIPAggregate else {
+            guard isSingleIPAggregate else {
                 Logger.proto.fault("Attempt to get aggregate buffer length on a non-single IP aggregate")
                 return
             }
@@ -697,6 +742,82 @@ public struct Frame: ~Copyable {
         }
     }
 
+    var isChecksumDataValid: Bool {
+        get { ipPacketValues?.isChecksumDataValid ?? false }
+        set {
+            if ipPacketValues == nil {
+                ipPacketValues = IPPacketValues()
+            }
+            ipPacketValues!.isChecksumDataValid = newValue
+        }
+    }
+
+    var isChecksumPseudoHeader: Bool {
+        get { ipPacketValues?.isChecksumPseudoHeader ?? false }
+        set {
+            if ipPacketValues == nil {
+                ipPacketValues = IPPacketValues()
+            }
+            ipPacketValues!.isChecksumPseudoHeader = newValue
+        }
+    }
+
+    var checksumStartOffset: UInt16 {
+        get { ipPacketValues?.checksumStartOffset ?? 0 }
+        set {
+            if ipPacketValues == nil {
+                ipPacketValues = IPPacketValues()
+            }
+            ipPacketValues!.checksumStartOffset = newValue
+        }
+    }
+
+    var checksumStoreOffset: UInt16 {
+        get { ipPacketValues?.checksumStoreOffset ?? 0 }
+        set {
+            if ipPacketValues == nil {
+                ipPacketValues = IPPacketValues()
+            }
+            ipPacketValues!.checksumStoreOffset = newValue
+        }
+    }
+
+    var hardwareChecksumValue: UInt16 {
+        get { ipPacketValues?.hardwareChecksumValue ?? 0 }
+        set {
+            if ipPacketValues == nil {
+                ipPacketValues = IPPacketValues()
+            }
+            ipPacketValues!.hardwareChecksumValue = newValue
+        }
+    }
+
+    // Per-segment TCP payload size for a TSO super-packet, 0 when this frame is an
+    // ordinary single-segment frame.
+    var tsoSegmentSize: UInt16 {
+        get { ipPacketValues?.tsoSegmentSize ?? 0 }
+        set {
+            if ipPacketValues == nil {
+                ipPacketValues = IPPacketValues()
+            }
+            ipPacketValues!.tsoSegmentSize = newValue
+        }
+    }
+
+    var isTSOIPv6: Bool {
+        get { ipPacketValues?.flags.contains(.isTSOIPv6) ?? false }
+        set {
+            if ipPacketValues == nil {
+                ipPacketValues = IPPacketValues()
+            }
+            if newValue {
+                ipPacketValues!.flags.insert(.isTSOIPv6)
+            } else {
+                ipPacketValues!.flags.remove(.isTSOIPv6)
+            }
+        }
+    }
+
     struct FrameProtocolMetadata: ~Copyable {
         var uuid: SystemUUID
         var metadata: AbstractProtocolMetadata
@@ -709,15 +830,6 @@ public struct Frame: ~Copyable {
         }
         return protocolMetadatas[0].metadata
     }
-    var metadataComplete: Bool {
-        get {
-            if protocolMetadatas.count > 0 {
-                return protocolMetadatas[0].metadataComplete
-            }
-            return _metadataComplete
-        }
-        set { _metadataComplete = newValue }
-    }
 
     enum FrameTimestamp {
         case receiveTime(_ timestamp: NetworkClock.Instant)
@@ -726,7 +838,7 @@ public struct Frame: ~Copyable {
 
     mutating func reduceAggregateBufferLength(by length: Int) {
         if isSingleIPAggregate {
-            guard aggregateBufferLength < length else {
+            guard length <= aggregateBufferLength else {
                 let existingLength = aggregateBufferLength
                 Logger.proto.fault("Aggregate buffer length \(existingLength) cannot remove \(length)")
                 aggregateBufferLength = 0
@@ -791,7 +903,7 @@ public struct Frame: ~Copyable {
         }
 
         if inheritComplete {
-            self._metadataComplete = from._metadataComplete
+            self.metadataComplete = from.metadataComplete
             self.connectionComplete = from.connectionComplete
         }
     }
