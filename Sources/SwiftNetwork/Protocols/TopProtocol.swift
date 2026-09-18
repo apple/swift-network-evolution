@@ -271,7 +271,11 @@ extension TopDatagramProtocol where Self: ~Copyable, Self: ~Copyable {
         maximumDatagramCount: Int,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
-        try lower.invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: self.identifier, in: &eventContext)
+        try lower.invokeReceiveDatagrams(
+            maximumDatagramCount: maximumDatagramCount,
+            for: self.identifier,
+            in: &eventContext
+        )
     }
 
     /// Returns datagram memory you can write into, from the lower protocol.
@@ -347,7 +351,10 @@ extension TopProtocolHandler where Self: ~Copyable {
         return nil
     }
 
-    public func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func handleConnectedEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         do { try validate(lower: instance, #function) } catch { return }
         self.handleConnectedEvent(in: &eventContext)
     }
@@ -378,7 +385,10 @@ extension TopProtocolHandler where Self: ~Copyable {
 
     public func handleDisconnectedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {}
 
-    public func handleNetworkProtocolEvent(_ event: NetworkProtocolEvent, in eventContext: inout NetworkContext.EventContext) {}
+    public func handleNetworkProtocolEvent(
+        _ event: NetworkProtocolEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) {}
 }
 
 @available(Network 0.1.0, *)

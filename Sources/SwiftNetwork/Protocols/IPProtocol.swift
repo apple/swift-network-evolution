@@ -2181,8 +2181,10 @@ public struct IPProtocol: NetworkProtocol {
 
     static public func options() -> ProtocolOptions<IPProtocol> { IPProtocol.definition.protocolOptions() }
 
-    static public func instance<UpperLinkage: InboundDatagramLinkage, LowerLinkage: OutboundDatagramLinkage>(context: NetworkContext) -> (UpperLinkage, LowerLinkage) {
-        return (UpperLinkage(), LowerLinkage())
+    static public func instance<UpperLinkage: InboundDatagramLinkage, LowerLinkage: OutboundDatagramLinkage>(
+        context: NetworkContext
+    ) -> (UpperLinkage, LowerLinkage) {
+        (UpperLinkage(), LowerLinkage())
     }
 
     #if !NETWORK_EMBEDDED

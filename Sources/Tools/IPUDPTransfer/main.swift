@@ -13,7 +13,9 @@
 //===----------------------------------------------------------------------===//
 
 @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetwork
+#if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkBenchmarks
 import Dispatch
 
@@ -82,11 +84,13 @@ final class IPUDPTransfer {
                     remote: ipv4Server,
                     parameters: clientParameters,
                     path: path,
-                    context: context)
+                    context: context
+                )
 
                 let (clientOutput, clientOutputLinkage) = storage.createDatagramLowerHarness(
                     identifier: "Client",
-                    context: clientParameters.context)
+                    context: clientParameters.context
+                )
 
                 do {
                     try clientInputLinkage.invokeAttachLowerProtocol(
@@ -138,11 +142,13 @@ final class IPUDPTransfer {
                     remote: ipv4Client,
                     parameters: serverParameters,
                     path: serverPath,
-                    context: context)
+                    context: context
+                )
 
                 let (serverOutput, serverOutputLinkage) = storage.createDatagramLowerHarness(
                     identifier: "Server",
-                    context: serverParameters.context)
+                    context: serverParameters.context
+                )
 
                 do {
                     try serverInputLinkage.invokeAttachLowerProtocol(

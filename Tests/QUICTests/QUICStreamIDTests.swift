@@ -22,7 +22,9 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 
 @available(Network 0.1.0, *)
 final class QUICStreamIDTests: XCTestCase {
@@ -382,7 +384,7 @@ final class QUICStreamIDTests: XCTestCase {
         let connection = QUICConnection(context: NetworkContext.implicitContext)
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let logPrefixer = LogPrefixer("[testQUICStreamIDPendingStreams]")
-        try connection.context.onQueue {
+        connection.context.onQueue {
 
             // Create 3 inbound pending streams
             let stream1 = QUICTestStream(parent: connection, inbound: true)

@@ -210,7 +210,9 @@ class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtoco
 }
 
 @available(Network 0.1.0, *)
-final class DatagramEndpointFlowProtocol<LinkageFamily: DatagramLinkageFamily>: EndpointFlowProtocol<LinkageFamily>, TopDatagramProtocol {
+final class DatagramEndpointFlowProtocol<LinkageFamily: DatagramLinkageFamily>: EndpointFlowProtocol<LinkageFamily>,
+    TopDatagramProtocol
+{
 
     func write(_ datagram: consuming Frame) -> Bool {
         fromExternal(datagram) { eventContext, datagram in
@@ -314,7 +316,9 @@ final class DatagramEndpointFlowProtocol<LinkageFamily: DatagramLinkageFamily>: 
 }
 
 @available(Network 0.1.0, *)
-final class StreamEndpointFlowProtocol<LinkageFamily: StreamLinkageFamily>: EndpointFlowProtocol<LinkageFamily>, TopStreamProtocol {
+final class StreamEndpointFlowProtocol<LinkageFamily: StreamLinkageFamily>: EndpointFlowProtocol<LinkageFamily>,
+    TopStreamProtocol
+{
 
     override public func abort(error: NetworkError? = nil) {
         log.debug("Aborting flow")

@@ -132,7 +132,10 @@ extension OneToOneProtocolHandler where Self: ~Copyable {
     }
 
     /// Passes an event to the upper protocol.
-    public func deliverNetworkProtocolEvent(_ event: NetworkProtocolEvent, in eventContext: inout NetworkContext.EventContext) {
+    public func deliverNetworkProtocolEvent(
+        _ event: NetworkProtocolEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         upper.deliverNetworkProtocolEvent(
             originalInstance: self.identifier,
             selfInstance: self.identifier,
@@ -844,8 +847,14 @@ extension OneToOneStreamProtocol where Self: ~Copyable {
     }
 
     // Default implementations
-    public mutating func handleInboundAbortedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {}
-    public mutating func handleOutboundAbortedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {}
+    public mutating func handleInboundAbortedEvent(
+        error: NetworkError?,
+        in eventContext: inout NetworkContext.EventContext
+    ) {}
+    public mutating func handleOutboundAbortedEvent(
+        error: NetworkError?,
+        in eventContext: inout NetworkContext.EventContext
+    ) {}
 }
 
 @available(Network 0.1.0, *)

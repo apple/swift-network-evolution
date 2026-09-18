@@ -20,7 +20,9 @@
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 
 // Shorthand spellings of the generic QUIC types bound to the base linkage families. These exist
 // only for the tests: production code names its linkage families explicitly.

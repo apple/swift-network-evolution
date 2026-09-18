@@ -962,7 +962,8 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
         return frameArray
     }
 
-    override public func upperReceiveQueueDrainedBytes(_ bytes: Int, in eventContext: inout NetworkContext.EventContext) {
+    override public func upperReceiveQueueDrainedBytes(_ bytes: Int, in eventContext: inout NetworkContext.EventContext)
+    {
 
         // Record with flow control that bytes have been delivered, and update flow credits.
         deliveredInboundBytes(consumedLength: bytes, connection: parentProtocol)

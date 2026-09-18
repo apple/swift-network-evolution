@@ -13,7 +13,9 @@
 //===----------------------------------------------------------------------===//
 
 @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetwork
+#if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkBenchmarks
 import Dispatch
 

@@ -28,7 +28,9 @@ internal import Darwin
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 
 // The setup / teardown boilerplate and the POSIX test servers live in
 // SocketTestHarness.swift. UDP datagram tests drive a `UDPLoopbackHarness`

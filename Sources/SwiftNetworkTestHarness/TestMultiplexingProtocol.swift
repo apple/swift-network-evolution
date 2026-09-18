@@ -32,7 +32,8 @@ internal import os
 
 @_spi(TestHarness)
 @available(Network 0.1.0, *)
-public final class TestDatagramFlow: MultiplexedDatagramFlow<TestMultiplexingProtocol, TestDatagramLinkageFamily.Upper> {
+public final class TestDatagramFlow: MultiplexedDatagramFlow<TestMultiplexingProtocol, TestDatagramLinkageFamily.Upper>
+{
     // Hands back a linkage that routes to this flow, so its upper protocol can reach it. The
     // default implementation returns an empty linkage.
     public override func asLowerLinkage() -> TestOutboundDatagramLinkage {
@@ -42,7 +43,8 @@ public final class TestDatagramFlow: MultiplexedDatagramFlow<TestMultiplexingPro
 
 @_spi(TestHarness)
 @available(Network 0.1.0, *)
-public final class TestDatagramPath: MultiplexingDatagramPath<TestMultiplexingProtocol, TestDatagramLinkageFamily.Lower> {
+public final class TestDatagramPath: MultiplexingDatagramPath<TestMultiplexingProtocol, TestDatagramLinkageFamily.Lower>
+{
     // Hands back a linkage that routes to this path, so its lower protocol can deliver events to
     // it. The default implementation returns an empty linkage.
     public override func asUpperLinkage() -> TestInboundDatagramLinkage {
@@ -54,7 +56,7 @@ public final class TestDatagramPath: MultiplexingDatagramPath<TestMultiplexingPr
 @available(Network 0.1.0, *)
 public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtocol, ManyToManyOutboundDatagramProtocol,
     DatagramListenerHandler, HomogeneousManyToManyProtocolHandler
-{    
+{
     public typealias UpperProtocol = TestDatagramLinkageFamily.InboundFlow
 
     public var inboundFlowLinkage = UpperProtocol()
@@ -88,7 +90,10 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
     public var multiplexedFlows = [MultiplexedFlowIdentifier: TestDatagramFlow]()
     public var multiplexingPaths = [MultiplexingPathIdentifier: TestDatagramPath]()
 
-    public func serviceDatagramsToSend(flow: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func serviceDatagramsToSend(
+        flow: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         log.debug("Multiplexing protocol asked to service datagrams to send from flow \(flow.debugDescription)")
         guard let path = somePathIdentifier else {
             return
@@ -101,7 +106,10 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
         }
     }
 
-    public func serviceReceivedDatagrams(path: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func serviceReceivedDatagrams(
+        path: MultiplexingPathIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         log.debug("Multiplexing protocol asked to service received datagrams on path \(path.description)")
         guard let flow = someFlowIdentifier else {
             return
@@ -115,11 +123,17 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
         }
     }
 
-    public func handleInboundDataAvailableEvent(path: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func handleInboundDataAvailableEvent(
+        path: MultiplexingPathIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         log.debug("Multiplexing protocol inbound data available for path \(path.description)")
     }
 
-    public func handleOutboundRoomAvailableEvent(path: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func handleOutboundRoomAvailableEvent(
+        path: MultiplexingPathIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         log.debug("Multiplexing protocol outbound room available for path \(path.description)")
     }
 

@@ -22,7 +22,9 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 
 @available(Network 0.1.0, *)
 class QUICPathValidationMessageTests: XCTestCase {
@@ -76,7 +78,9 @@ class QUICPathValidationMessageTests: XCTestCase {
 
             let startTime = NetworkClock.Instant.systemNow
             var pendingItems = PendingItems(packetNumberSpace: .applicationData)
-            connection.fromExternal { eventContext in path.addPendingItems(&pendingItems, now: startTime, in: &eventContext) }  // should be empty
+            connection.fromExternal { eventContext in
+                path.addPendingItems(&pendingItems, now: startTime, in: &eventContext)
+            }  // should be empty
             XCTAssertTrue(pendingItems.pathChallenges.isEmpty)
             XCTAssertTrue(pendingItems.pathResponses.isEmpty)
 
@@ -86,7 +90,9 @@ class QUICPathValidationMessageTests: XCTestCase {
             XCTAssertEqual(path.pendingOutboundChallenges.count, 0)
             path.handlePathChallenge(1)
             XCTAssertEqual(path.pendingInboundChallenges.count, 1)
-            connection.fromExternal { eventContext in path.addPendingItems(&pendingItems, now: startTime, in: &eventContext) }
+            connection.fromExternal { eventContext in
+                path.addPendingItems(&pendingItems, now: startTime, in: &eventContext)
+            }
 
             XCTAssertFalse(pendingItems.pathChallenges.isEmpty)
             XCTAssertFalse(pendingItems.pathResponses.isEmpty)
@@ -100,13 +106,17 @@ class QUICPathValidationMessageTests: XCTestCase {
             pendingItems = PendingItems(packetNumberSpace: .applicationData)  // clear items
             // simulate send on the path before the challenge retransmission time is met
             var interval = NetworkDuration.milliseconds(100)
-            connection.fromExternal { eventContext in path.addPendingItems(&pendingItems, now: startTime + interval, in: &eventContext) }
+            connection.fromExternal { eventContext in
+                path.addPendingItems(&pendingItems, now: startTime + interval, in: &eventContext)
+            }
             XCTAssertTrue(pendingItems.pathChallenges.isEmpty)
             XCTAssertTrue(pendingItems.pathResponses.isEmpty)
 
             // simulate a retransmission of the challenge
             interval = NetworkDuration.milliseconds(250)
-            connection.fromExternal { eventContext in path.addPendingItems(&pendingItems, now: startTime + interval, in: &eventContext) }
+            connection.fromExternal { eventContext in
+                path.addPendingItems(&pendingItems, now: startTime + interval, in: &eventContext)
+            }
             XCTAssertFalse(pendingItems.pathChallenges.isEmpty)
             XCTAssertTrue(pendingItems.pathResponses.isEmpty)
 

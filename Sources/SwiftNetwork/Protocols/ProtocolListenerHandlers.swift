@@ -47,12 +47,12 @@ public protocol ListenerHandler: ~Copyable, LowerProtocolHandler where UpperProt
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol DatagramListenerHandler: ~Copyable, ListenerHandler
-where UpperProtocol.DataLinkage: OutboundDatagramLinkage { }
+where UpperProtocol.DataLinkage: OutboundDatagramLinkage {}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol StreamListenerHandler: ~Copyable, ListenerHandler
-where UpperProtocol: InboundStreamFlowLinkage { }
+where UpperProtocol: InboundStreamFlowLinkage {}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)

@@ -22,7 +22,9 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 
 @available(Network 0.1.0, *)
 final class QUICConnectionTests: XCTestCase {
@@ -72,7 +74,7 @@ final class QUICConnectionTests: XCTestCase {
     }
 
     func testCreateInboundStreams() throws {
-        try self.connection.context.onQueue {
+        self.connection.context.onQueue {
             let zeroStreamID: QUICStreamID = QUICStreamID(0)
             NetworkContext.implicitContext.async {
                 self.connection.fromExternal { eventContext in

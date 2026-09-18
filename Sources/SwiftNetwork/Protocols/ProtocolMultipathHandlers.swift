@@ -29,4 +29,5 @@ public protocol MultipathProtocolHandler<MultipathLowerProtocol>: ~Copyable, Pro
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol DatagramMultipathProtocolHandler: ~Copyable, MultipathProtocolHandler where MultipathLowerProtocol: OutboundDatagramLinkage { }
+public protocol DatagramMultipathProtocolHandler: ~Copyable, MultipathProtocolHandler
+where MultipathLowerProtocol: OutboundDatagramLinkage {}

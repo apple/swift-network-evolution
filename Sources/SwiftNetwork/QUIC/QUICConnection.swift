@@ -2472,7 +2472,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             keyState = packetKeyState
         }
 
-
         self.ack.append(
             packetNumberSpace: packet.numberSpace,
             packetNumber: packet.number,
@@ -3429,7 +3428,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         recovery.recordSentPackets(&self.sentPackets, connection: self, in: &eventContext)
         self.shrinkSentPacketsIfNecessary(sentPackets: &self.sentPackets)
     }
-
 
     /// Streams whose outbound flow-control permit reopened while a packet was being built.
     ///
@@ -6459,7 +6457,10 @@ extension QUICConnection {
 @available(Network 0.1.0, *)
 extension QUICConnection {
 
-    fileprivate func handleConnectionIdleForFlow(_ flowID: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    fileprivate func handleConnectionIdleForFlow(
+        _ flowID: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         if let stream = flow(for: flowID) {
             stream.applicationMarkedIdle = true
             flowsHaveEverMarkedIdle = true
@@ -6470,7 +6471,10 @@ extension QUICConnection {
         checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount, in: &eventContext)
     }
 
-    fileprivate func handleConnectionReusedForFlow(_ flowID: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    fileprivate func handleConnectionReusedForFlow(
+        _ flowID: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         if let stream = flow(for: flowID) {
             stream.applicationMarkedIdle = false
         } else if let datagramFlow = secondaryFlow(for: flowID) {
@@ -6678,7 +6682,10 @@ extension QUICConnection {
         }
     }
 
-    func processNewConnectionIDFrame(_ frame: FrameNewConnectionID, in eventContext: inout NetworkContext.EventContext) -> Bool {
+    func processNewConnectionIDFrame(
+        _ frame: FrameNewConnectionID,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> Bool {
         let nonZeroLengthCIDs = withCurrentPath { path in
             guard let dcid = path.dcid else {
                 log.error("DCID not set, cannot process new connection ID")

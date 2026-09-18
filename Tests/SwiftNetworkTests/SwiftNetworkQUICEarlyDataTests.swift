@@ -22,7 +22,9 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 
 #if IMPORT_SWIFTTLS
 #if EXPORT_SWIFTTLS
@@ -180,12 +182,14 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
 
             let (clientLowerHarness, clientLowerHarnessLinkage) = storage.createDatagramLowerHarness(
                 identifier: "Client" + identifier,
-                context: context)
+                context: context
+            )
             client = clientLowerHarness
 
             let (serverLowerHarness, serverLowerHarnessLinkage) = storage.createDatagramLowerHarness(
                 identifier: "Server" + identifier,
-                context: context)
+                context: context
+            )
             server = serverLowerHarness
 
             client.maximumOutputSize = maximumDatagramSize
@@ -194,27 +198,35 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
             // Attach from the upper linkage so both directions are bound: the upper protocol's
             // `lower` is set, and `invokeAttachLowerProtocol` calls back into
             // `invokeAttachUpperProtocol` on the lower protocol.
-            try! clientUDPUpper.invokeAttachLowerProtocol(clientIPLower,
-                                                          remote: serverEndpoint,
-                                                          local: clientEndpoint,
-                                                          parameters: clientParameters,
-                                                          path: clientPath)
-            try! clientIPUpper.invokeAttachLowerProtocol(clientLowerHarnessLinkage,
-                                                         remote: serverEndpoint,
-                                                         local: clientEndpoint,
-                                                         parameters: clientParameters,
-                                                         path: clientPath)
+            try! clientUDPUpper.invokeAttachLowerProtocol(
+                clientIPLower,
+                remote: serverEndpoint,
+                local: clientEndpoint,
+                parameters: clientParameters,
+                path: clientPath
+            )
+            try! clientIPUpper.invokeAttachLowerProtocol(
+                clientLowerHarnessLinkage,
+                remote: serverEndpoint,
+                local: clientEndpoint,
+                parameters: clientParameters,
+                path: clientPath
+            )
 
-            try! serverUDPUpper.invokeAttachLowerProtocol(serverIPLower,
-                                                          remote: clientEndpoint,
-                                                          local: serverEndpoint,
-                                                          parameters: serverParameters,
-                                                          path: serverPath)
-            try! serverIPUpper.invokeAttachLowerProtocol(serverLowerHarnessLinkage,
-                                                         remote: clientEndpoint,
-                                                         local: serverEndpoint,
-                                                         parameters: serverParameters,
-                                                         path: serverPath)
+            try! serverUDPUpper.invokeAttachLowerProtocol(
+                serverIPLower,
+                remote: clientEndpoint,
+                local: serverEndpoint,
+                parameters: serverParameters,
+                path: serverPath
+            )
+            try! serverIPUpper.invokeAttachLowerProtocol(
+                serverLowerHarnessLinkage,
+                remote: clientEndpoint,
+                local: serverEndpoint,
+                parameters: serverParameters,
+                path: serverPath
+            )
         }
 
         private func transferPackets(

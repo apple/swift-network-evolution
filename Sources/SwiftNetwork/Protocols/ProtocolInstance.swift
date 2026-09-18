@@ -332,7 +332,6 @@ public struct NetworkLoggerState: ~Copyable {
     #endif
 }
 
-
 // MARK: Protocol Instance As Linkage
 
 @available(Network 0.1.0, *)
@@ -356,7 +355,7 @@ internal struct ProtocolInstanceBox<Instance: AnyObject>: Hashable {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol ProtocolInstanceAsLinkage: ProtocolInstance, AnyObject, ProtocolLinkage { }
+public protocol ProtocolInstanceAsLinkage: ProtocolInstance, AnyObject, ProtocolLinkage {}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)

@@ -401,7 +401,9 @@ public struct TCPProtocol: NetworkProtocol {
             maximumBytes: Int,
             in eventContext: inout NetworkContext.EventContext
         ) throws(NetworkError) -> FrameArray? { nil }
-        func getOutboundStreamDataRoomAvailable(in eventContext: inout NetworkContext.EventContext) throws(NetworkError) -> Int { 0 }
+        func getOutboundStreamDataRoomAvailable(
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> Int { 0 }
         func sendStreamData(
             _ streamData: consuming FrameArray,
             in eventContext: inout NetworkContext.EventContext

@@ -403,7 +403,10 @@ public struct ProtocolEventManager: ~Copyable {
         contextIndex = .none
         context = nil
     }
-    internal mutating func register(with context: NetworkContext, in eventContext: inout NetworkContext.EventContext) -> NetworkStateIndex {
+    internal mutating func register(
+        with context: NetworkContext,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> NetworkStateIndex {
         if !contextIndex.isNone {
             // Already registered
             return contextIndex
@@ -949,13 +952,19 @@ extension InstanceIdentifier {
     }
 
     @inline(always)
-    func handleCallFromUpperProtocol<R, E: Error>(in eventContext: inout NetworkContext.EventContext, _ body: (inout NetworkContext.EventContext) throws(E) -> R) throws(E) -> R {
+    func handleCallFromUpperProtocol<R, E: Error>(
+        in eventContext: inout NetworkContext.EventContext,
+        _ body: (inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R {
         let protocolEventStateIndex = requiredProtocolEventStateIndex
         return try eventContext.handleCallFromUpperProtocol(index: protocolEventStateIndex, body)
     }
 
     @inline(always)
-    func handleCallFromUpperProtocol<R: ~Copyable, E: Error>(in eventContext: inout NetworkContext.EventContext, _ body: (inout NetworkContext.EventContext) throws(E) -> R) throws(E) -> R {
+    func handleCallFromUpperProtocol<R: ~Copyable, E: Error>(
+        in eventContext: inout NetworkContext.EventContext,
+        _ body: (inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R {
         let protocolEventStateIndex = requiredProtocolEventStateIndex
         return try eventContext.handleCallFromUpperProtocol(index: protocolEventStateIndex, body)
     }
@@ -971,7 +980,10 @@ extension InstanceIdentifier {
     }
 
     @inline(always)
-    func deliverEventToUpperProtocol(event: consuming ProtocolEventManagerState.PendingEvent, in eventContext: inout NetworkContext.EventContext) {
+    func deliverEventToUpperProtocol(
+        event: consuming ProtocolEventManagerState.PendingEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         guard !eventStateIndex.isNone else { return }
         eventContext.deliverEventToUpperProtocol(
             index: eventStateIndex,
@@ -981,7 +993,10 @@ extension InstanceIdentifier {
     }
 
     @inline(always)
-    func enqueuePendingEventForUpperProtocol(event: consuming ProtocolEventManagerState.PendingEvent, in eventContext: inout NetworkContext.EventContext) {
+    func enqueuePendingEventForUpperProtocol(
+        event: consuming ProtocolEventManagerState.PendingEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         guard !eventStateIndex.isNone else { return }
         eventContext.enqueuePendingEventForUpperProtocol(
             index: eventStateIndex,
@@ -1021,7 +1036,10 @@ extension InstanceIdentifier {
     }
 
     @inline(always)
-    func addEventFromLowerProtocol(event: consuming ProtocolEventManagerState.PendingEvent, in eventContext: inout NetworkContext.EventContext) {
+    func addEventFromLowerProtocol(
+        event: consuming ProtocolEventManagerState.PendingEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         let protocolEventStateIndex = protocolEventStateIndex
         guard !protocolEventStateIndex.isNone else { return }
         eventContext.addEventFromLowerProtocol(index: protocolEventStateIndex, event: event)
@@ -1043,12 +1061,18 @@ extension InstanceIdentifier {
         return protocolEventStateIndex
     }
 
-    public func fromExternal<R, E: Error>(in eventContext: inout NetworkContext.EventContext, _ body: (inout NetworkContext.EventContext) throws(E) -> R) throws(E) -> R {
+    public func fromExternal<R, E: Error>(
+        in eventContext: inout NetworkContext.EventContext,
+        _ body: (inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R {
         let protocolEventStateIndex = requiredProtocolEventStateIndex
         return try eventContext.fromExternal(index: protocolEventStateIndex, body)
     }
 
-    public func fromExternal<R: ~Copyable, E: Error>(in eventContext: inout NetworkContext.EventContext, _ body: (inout NetworkContext.EventContext) throws(E) -> R) throws(E) -> R {
+    public func fromExternal<R: ~Copyable, E: Error>(
+        in eventContext: inout NetworkContext.EventContext,
+        _ body: (inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R {
         let protocolEventStateIndex = requiredProtocolEventStateIndex
         return try eventContext.fromExternal(index: protocolEventStateIndex, body)
     }

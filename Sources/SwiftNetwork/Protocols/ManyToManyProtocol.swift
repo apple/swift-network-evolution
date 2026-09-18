@@ -74,9 +74,17 @@ public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol whe
         path: PathProperties?
     ) throws(NetworkError)
     func connect(flow: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext)
-    func disconnect(flow: MultiplexedFlowIdentifier, error: NetworkError?, in eventContext: inout NetworkContext.EventContext)
+    func disconnect(
+        flow: MultiplexedFlowIdentifier,
+        error: NetworkError?,
+        in eventContext: inout NetworkContext.EventContext
+    )
     func teardown(flow: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext)
-    func handleApplicationEvent(flow: MultiplexedFlowIdentifier, event: ApplicationEvent, in eventContext: inout NetworkContext.EventContext) -> HandleNetworkEventResult
+    func handleApplicationEvent(
+        flow: MultiplexedFlowIdentifier,
+        event: ApplicationEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> HandleNetworkEventResult
     func getMetadata<P>(flow: MultiplexedFlowIdentifier) -> ProtocolMetadata<P>? where P: NetworkProtocol
     func updateDataTransferSnapshot(flow: MultiplexedFlowIdentifier, _ snapshot: inout DataTransferSnapshot)
     var protocolEstablishmentReport: ProtocolEstablishmentReport? { get }
@@ -131,7 +139,8 @@ public protocol HomogeneousManyToManyProtocolHandler: ManyToManyProtocolHandler 
 /// Allows a many-to-many protocol to support a secondary type of flow, for example, both stream flows and datagram flows.
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol HeterogeneousManyToManyProtocolHandler: HeterogeneousListenerHandler, ManyToManyProtocolHandler where SecondaryFlow: MultiplexedFlow {
+public protocol HeterogeneousManyToManyProtocolHandler: HeterogeneousListenerHandler, ManyToManyProtocolHandler
+where SecondaryFlow: MultiplexedFlow {
     var multiplexedSecondaryFlows: [MultiplexedFlowIdentifier: SecondaryFlow] { get set }
     var secondaryInboundFlowLinkage: SecondaryUpperProtocol { get set }
 }
@@ -140,8 +149,14 @@ public protocol HeterogeneousManyToManyProtocolHandler: HeterogeneousListenerHan
 @available(Network 0.1.0, *)
 public protocol ManyToManyDatapathProtocol: ManyToManyProtocolHandler
 where Flow.UpperProtocol: InboundDataLinkage, Path.LowerProtocol: OutboundDataLinkage {
-    func handleInboundDataAvailableEvent(path: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext)
-    func handleOutboundRoomAvailableEvent(path: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext)
+    func handleInboundDataAvailableEvent(
+        path: MultiplexingPathIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
+    func handleOutboundRoomAvailableEvent(
+        path: MultiplexingPathIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
 }
 
 @_spi(ProtocolProvider)
@@ -388,7 +403,10 @@ extension ManyToManyProtocolHandler {
         in eventContext: inout NetworkContext.EventContext
     ) {}
 
-    public func handleConnectedEvent(path: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext) {}
+    public func handleConnectedEvent(
+        path: MultiplexingPathIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {}
     public func handleDisconnectedEvent(
         path: MultiplexingPathIdentifier,
         error: NetworkError?,
@@ -746,7 +764,8 @@ extension HeterogeneousManyToManyProtocolHandler {
     ) throws(ProtocolInstanceError) {
         #if DEBUG
         guard
-            inboundProtocol == inboundFlowLinkage.identifier || inboundProtocol == secondaryInboundFlowLinkage.identifier
+            inboundProtocol == inboundFlowLinkage.identifier
+                || inboundProtocol == secondaryInboundFlowLinkage.identifier
         else {
             Logger.proto.fault("Received \'\(label)\' from incorrect inbound flow protocol")
             throw ProtocolInstanceError.invalidNewFlowLinkage
@@ -832,7 +851,8 @@ extension HeterogeneousManyToManyProtocolHandler {
         local: Endpoint?,
         parameters: Parameters?,
         path: PathProperties?
-    ) throws(NetworkError) -> SecondaryFlow.UpperProtocol.PairedLowerLinkage where SecondaryFlow.ParentProtocol == Self {
+    ) throws(NetworkError) -> SecondaryFlow.UpperProtocol.PairedLowerLinkage
+    where SecondaryFlow.ParentProtocol == Self {
         try performInitialSetupIfNeeded(remote: remote, local: local, parameters: parameters, path: path)
 
         var newFlow = SecondaryFlow(parent: self, inbound: false)
@@ -1050,7 +1070,13 @@ extension MultiplexedFlow {
         upper = upperProtocol
 
         do {
-            try parentProtocol.setup(flow: flowIdentifier, remote: remote, local: local, parameters: parameters, path: path)
+            try parentProtocol.setup(
+                flow: flowIdentifier,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
         } catch let error {
             upper = .init()
             throw error
@@ -1105,7 +1131,9 @@ extension MultiplexedFlow {
         in eventContext: inout NetworkContext.EventContext
     ) {
         // Don't validate upper, can pass through
-        if parentProtocol.handleApplicationEvent(flow: flowIdentifier, event: event, in: &eventContext) == .consumed { return }
+        if parentProtocol.handleApplicationEvent(flow: flowIdentifier, event: event, in: &eventContext) == .consumed {
+            return
+        }
         parentProtocol.applyToAllPaths { path in
             path.lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
         }
@@ -1167,9 +1195,16 @@ extension MultiplexedFlow {
             // Enqueue pending event instead of delivering immediately.
             // Inbound multiplexed flows may get attached after creation.
             let selfInstance = self.identifier
-            selfInstance.enqueuePendingEventForUpperProtocol(event: .connected(selfInstance, upper.identifier, { _, _ in
+            selfInstance.enqueuePendingEventForUpperProtocol(
+                event: .connected(
+                    selfInstance,
+                    upper.identifier,
+                    { _, _ in
 
-            }), in: &eventContext)
+                    }
+                ),
+                in: &eventContext
+            )
         } else {
             // Deliver connected event *followed by* any events which were buffered while detached
             upper.deliverConnectedEvent(from: self.identifier, in: &eventContext)
@@ -1183,15 +1218,21 @@ extension MultiplexedFlow {
         }
     }
 
-    fileprivate func deliverDisconnectedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
+    fileprivate func deliverDisconnectedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext)
+    {
         if upper.isDetached {
             // Enqueue pending event instead of delivering immediately.
             // Inbound multiplexed flows may get attached after creation.
             let selfInstance = self.identifier
             selfInstance.enqueuePendingEventForUpperProtocol(
-                event: .disconnected(selfInstance, upper.identifier, error: error, { _, _, _ in
+                event: .disconnected(
+                    selfInstance,
+                    upper.identifier,
+                    error: error,
+                    { _, _, _ in
 
-                }),
+                    }
+                ),
                 in: &eventContext
             )
         } else {
@@ -1346,7 +1387,10 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-open class MultiplexedStreamFlow<ParentProtocol: ManyToManyApplicationStreamProtocol, LinkageType: InboundStreamLinkage>: MultiplexedDatapathFlow,
+open class MultiplexedStreamFlow<
+    ParentProtocol: ManyToManyApplicationStreamProtocol,
+    LinkageType: InboundStreamLinkage
+>: MultiplexedDatapathFlow,
     AutomaticUpperStreamProcessing
 {
     public typealias ParentProtocol = ParentProtocol
@@ -1445,9 +1489,14 @@ extension UnidirectionalAbortingStreamFlow {
             // Inbound multiplexed flows may get attached after creation.
             let selfInstance = self.identifier
             selfInstance.enqueuePendingEventForUpperProtocol(
-                event: .inboundAborted(selfInstance, upper.identifier, error: error, { _, _, _ in
+                event: .inboundAborted(
+                    selfInstance,
+                    upper.identifier,
+                    error: error,
+                    { _, _, _ in
 
-                }),
+                    }
+                ),
                 in: &eventContext
             )
         } else {
@@ -1461,9 +1510,14 @@ extension UnidirectionalAbortingStreamFlow {
             // Inbound multiplexed flows may get attached after creation.
             let selfInstance = self.identifier
             selfInstance.enqueuePendingEventForUpperProtocol(
-                event: .outboundAborted(selfInstance, upper.identifier, error: error, { _, _, _ in
+                event: .outboundAborted(
+                    selfInstance,
+                    upper.identifier,
+                    error: error,
+                    { _, _, _ in
 
-                }),
+                    }
+                ),
                 in: &eventContext
             )
         } else {
@@ -1661,7 +1715,10 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-open class MultiplexedDatagramFlow<ParentProtocol: ManyToManyApplicationDatagramProtocol, LinkageType: InboundDatagramLinkage>: MultiplexedDatapathFlow,
+open class MultiplexedDatagramFlow<
+    ParentProtocol: ManyToManyApplicationDatagramProtocol,
+    LinkageType: InboundDatagramLinkage
+>: MultiplexedDatapathFlow,
     AutomaticUpperDatagramProcessing
 {
     public typealias ParentProtocol = ParentProtocol
@@ -1769,7 +1826,10 @@ extension MultiplexingPath {
 
 @available(Network 0.1.0, *)
 extension MultiplexingPath {
-    public func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func handleConnectedEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         do { try validate(lower: instance, #function) } catch { return }
         if parentProtocol.canCallConnect(requested: false, in: &eventContext) {
             parentProtocol.connect(in: &eventContext)
@@ -1818,7 +1878,8 @@ extension MultiplexingPath {
             return
         }
 
-        if parentProtocol.handleNetworkProtocolEvent(path: pathIdentifier, event: event, in: &eventContext) == .consumed {
+        if parentProtocol.handleNetworkProtocolEvent(path: pathIdentifier, event: event, in: &eventContext) == .consumed
+        {
             return
         }
         parentProtocol.applyToAllFlows { flow in
@@ -1867,7 +1928,10 @@ extension ManyToManyProtocolHandler {
         invokeConnect(path: pathID, in: &eventContext)
     }
 
-    public func deliverConnectedEvent(flow flowID: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func deliverConnectedEvent(
+        flow flowID: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         switch flowID {
         case .allFlows:
             inboundFlowLinkage.deliverConnectedEvent(from: identifier, in: &eventContext)
@@ -1934,7 +1998,10 @@ extension ManyToManyProtocolHandler {
 
 @available(Network 0.1.0, *)
 extension HeterogeneousManyToManyProtocolHandler {
-    public func deliverConnectedEvent(flow flowID: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func deliverConnectedEvent(
+        flow flowID: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         switch flowID {
         case .allFlows:
             inboundFlowLinkage.deliverConnectedEvent(from: identifier, in: &eventContext)
@@ -2003,7 +2070,11 @@ extension HeterogeneousManyToManyProtocolHandler {
     }
 
     /// Delivers a protocol event using an event context the caller already holds.
-    public func deliverNetworkProtocolEvent(flow flowID: MultiplexedFlowIdentifier, event: NetworkProtocolEvent, in eventContext: inout NetworkContext.EventContext) {
+    public func deliverNetworkProtocolEvent(
+        flow flowID: MultiplexedFlowIdentifier,
+        event: NetworkProtocolEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         switch flowID {
         case .allFlows:
             inboundFlowLinkage.deliverNetworkProtocolEvent(
@@ -2079,7 +2150,12 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
         guard let path = self.path(for: pathID) else { throw NetworkError.posix(EINVAL) }
-        return try path.lower.invokeGetDatagramsToSend(maximumDatagramCount: maximumDatagramCount, minimumDatagramSize: minimumDatagramSize, for: path.identifier, in: &eventContext)
+        return try path.lower.invokeGetDatagramsToSend(
+            maximumDatagramCount: maximumDatagramCount,
+            minimumDatagramSize: minimumDatagramSize,
+            for: path.identifier,
+            in: &eventContext
+        )
     }
 
     public func enqueueOutboundDatagrams(
@@ -2154,7 +2230,10 @@ extension MultiplexingDatapathPath where Self: AutomaticLowerDatagramProcessing 
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-open class MultiplexingDatagramPath<ParentProtocol: ManyToManyOutboundDatagramProtocol, LinkageType: OutboundDatagramLinkage>: MultiplexingDatapathPath,
+open class MultiplexingDatagramPath<
+    ParentProtocol: ManyToManyOutboundDatagramProtocol,
+    LinkageType: OutboundDatagramLinkage
+>: MultiplexingDatapathPath,
     AutomaticLowerDatagramProcessing
 {
     public typealias ParentProtocol = ParentProtocol

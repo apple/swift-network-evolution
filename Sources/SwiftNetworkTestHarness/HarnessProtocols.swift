@@ -189,7 +189,10 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
     public func handleOutboundRoomAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
     }
 
-    public func handleNetworkProtocolEvent(_ event: NetworkProtocolEvent, in eventContext: inout NetworkContext.EventContext) {
+    public func handleNetworkProtocolEvent(
+        _ event: NetworkProtocolEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         log.debug("Received network protocol event: \(event)")
         if let quicEvent = event.quicEvent {
             switch quicEvent {
@@ -352,7 +355,9 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public class DatagramUpperHarness<LinkageFamily: DatagramLinkageFamily>: UpperHarness<LinkageFamily>, TopDatagramProtocol {
+public class DatagramUpperHarness<LinkageFamily: DatagramLinkageFamily>: UpperHarness<LinkageFamily>,
+    TopDatagramProtocol
+{
     public func write(_ datagram: [UInt8]) -> Bool {
         fromExternal { eventContext in
             write(datagram, in: &eventContext)
@@ -538,7 +543,8 @@ public class StreamUpperHarness<LinkageFamily: StreamLinkageFamily>: UpperHarnes
     ///
     /// Inbound-data and new-flow completions run inline while the delivering event holds the
     /// state, so they have to use this rather than `readAndDrop(upTo:)`.
-    public func readAndDrop(upTo maximumBytes: Int = Int.max, in eventContext: inout NetworkContext.EventContext) -> Int {
+    public func readAndDrop(upTo maximumBytes: Int = Int.max, in eventContext: inout NetworkContext.EventContext) -> Int
+    {
         do throws(NetworkError) {
             guard
                 var frames = try invokeReceiveStreamData(
@@ -726,8 +732,10 @@ public class LowerHarness<LinkageFamily: DataLinkageFamily>: BottomProtocolHandl
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public class DatagramLowerHarness<LinkageFamily: DatagramLinkageFamily>: LowerHarness<LinkageFamily>, BottomDatagramProtocol {
-    
+public class DatagramLowerHarness<LinkageFamily: DatagramLinkageFamily>: LowerHarness<LinkageFamily>,
+    BottomDatagramProtocol
+{
+
     public var maximumOutputSize = 1500
 
     public func receiveDatagrams(
@@ -848,7 +856,10 @@ where
         return nil
     }
 
-    public func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func handleConnectedEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         log.debug("Received connected event")
         self.receivedConnected = true
         if let completion = completions.connected {
@@ -893,7 +904,10 @@ where
         }
         do throws(NetworkError) {
             var (newUpperHarness, upperLinkage) = createNewFlowHandler(&eventContext)
-            newUpperHarness.lower = try lower.invokeAttachUpperProtocolToExistingFlow(upperLinkage, existingFlowInstance: flowInstance)
+            newUpperHarness.lower = try lower.invokeAttachUpperProtocolToExistingFlow(
+                upperLinkage,
+                existingFlowInstance: flowInstance
+            )
             upperHarnesses.append(newUpperHarness)
             newUpperHarness.flowMetadata = flowMetadata
             newUpperHarness.invokeConnect(in: &eventContext)
@@ -905,7 +919,6 @@ where
             return
         }
     }
-
 
     public var newInboundCIDEventCount = 0
     public var newOutboundCIDEventCount = 0
@@ -1063,10 +1076,16 @@ where
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public class NewDatagramFlowHarness<LinkageFamily: DatagramLinkageFamily>: NewFlowHarness<LinkageFamily, DatagramUpperHarness<LinkageFamily>> { }
+public class NewDatagramFlowHarness<LinkageFamily: DatagramLinkageFamily>: NewFlowHarness<
+    LinkageFamily, DatagramUpperHarness<LinkageFamily>
+>
+{}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public class NewStreamFlowHarness<LinkageFamily: StreamLinkageFamily>: NewFlowHarness<LinkageFamily, StreamUpperHarness<LinkageFamily>> { }
+public class NewStreamFlowHarness<LinkageFamily: StreamLinkageFamily>: NewFlowHarness<
+    LinkageFamily, StreamUpperHarness<LinkageFamily>
+>
+{}
 
 #endif

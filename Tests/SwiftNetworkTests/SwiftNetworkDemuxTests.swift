@@ -22,7 +22,9 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 
 #if canImport(Glibc)
 import Glibc
@@ -198,7 +200,8 @@ final class SwiftNetworkDemuxTests: NetTestCase {
 
             // Tracks each pattern-based upper harness together with the patterns that
             // control which inbound packets it receives from the demux.
-            var patternHarnesses: [(harness: DatagramUpperHarness<TestDatagramLinkageFamily>, patterns: [DemuxPatternInput])] = []
+            var patternHarnesses:
+                [(harness: DatagramUpperHarness<TestDatagramLinkageFamily>, patterns: [DemuxPatternInput])] = []
 
             for demuxedFlow in demuxedFlows {
                 var demuxParameters = Parameters()
@@ -278,7 +281,8 @@ final class SwiftNetworkDemuxTests: NetTestCase {
             // Inject inbound datagrams for each flow. Default first, then each pattern
             // flow so that FIFO drain from the lower harness lets each upper harness
             // pull exactly the packets that belong to it.
-            var expectedInboundFlows: [(harness: DatagramUpperHarness<TestDatagramLinkageFamily>, payloads: [[UInt8]])] = []
+            var expectedInboundFlows:
+                [(harness: DatagramUpperHarness<TestDatagramLinkageFamily>, payloads: [[UInt8]])] = []
 
             var defaultInboundPayloads: [[UInt8]] = []
             for sequence in 0..<datagramsPerFlow {

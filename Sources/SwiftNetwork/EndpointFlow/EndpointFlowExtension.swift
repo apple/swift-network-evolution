@@ -264,7 +264,7 @@ extension EndpointFlow {
                         )
                     }
 
-#endif
+                #endif
                 default:
                     Logger.connection.error("Unsupported transport protocol")
                     throw NetworkError.posix(EINVAL)

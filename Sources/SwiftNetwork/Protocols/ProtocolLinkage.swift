@@ -42,11 +42,27 @@ public protocol DataLinkageFamily: LinkageFamily where Upper: InboundDataLinkage
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol DatagramLinkageFamily: DataLinkageFamily where Upper: InboundDatagramLinkage, Lower: OutboundDatagramLinkage, Listener: DatagramListenerLinkage, InboundFlow: InboundDatagramFlowLinkage, InboundFlow.DataLinkage == Lower, Listener.PairedUpperLinkage == InboundFlow { }
+public protocol DatagramLinkageFamily: DataLinkageFamily
+where
+    Upper: InboundDatagramLinkage,
+    Lower: OutboundDatagramLinkage,
+    Listener: DatagramListenerLinkage,
+    InboundFlow: InboundDatagramFlowLinkage,
+    InboundFlow.DataLinkage == Lower,
+    Listener.PairedUpperLinkage == InboundFlow
+{}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol StreamLinkageFamily: DataLinkageFamily where Upper: InboundStreamLinkage, Lower: OutboundStreamLinkage, Listener: StreamListenerLinkage, InboundFlow: InboundStreamFlowLinkage, InboundFlow.DataLinkage == Lower, Listener.PairedUpperLinkage == InboundFlow { }
+public protocol StreamLinkageFamily: DataLinkageFamily
+where
+    Upper: InboundStreamLinkage,
+    Lower: OutboundStreamLinkage,
+    Listener: StreamListenerLinkage,
+    InboundFlow: InboundStreamFlowLinkage,
+    InboundFlow.DataLinkage == Lower,
+    Listener.PairedUpperLinkage == InboundFlow
+{}
 
 /// A strongly typed structure that identifies another protocol and dispatches functions to it.
 ///
@@ -96,10 +112,20 @@ public protocol UpperProtocolLinkage: ProtocolLinkage {
 
 @available(Network 0.1.0, *)
 extension UpperProtocolLinkage {
-    public func deliverConnectedEvent(from instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
-        instance.deliverEventToUpperProtocol(event: .connected(instance, self.identifier, { eventContext, instance in
-            self.handleConnectedEvent(for: instance, in: &eventContext)
-        }), in: &eventContext)
+    public func deliverConnectedEvent(
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        instance.deliverEventToUpperProtocol(
+            event: .connected(
+                instance,
+                self.identifier,
+                { eventContext, instance in
+                    self.handleConnectedEvent(for: instance, in: &eventContext)
+                }
+            ),
+            in: &eventContext
+        )
     }
     public func deliverDisconnectedEvent(
         error: NetworkError?,
@@ -107,9 +133,14 @@ extension UpperProtocolLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         instance.deliverEventToUpperProtocol(
-            event: .disconnected(instance, self.identifier, error: error, { eventContext, instance, error in
-                self.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
-            }),
+            event: .disconnected(
+                instance,
+                self.identifier,
+                error: error,
+                { eventContext, instance, error in
+                    self.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+                }
+            ),
             in: &eventContext
         )
     }
@@ -120,9 +151,14 @@ extension UpperProtocolLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         selfInstance.deliverEventToUpperProtocol(
-            event: .networkProtocolEvent(originalInstance, self.identifier, event: event, { eventContext, from, event in
-                self.handleNetworkProtocolEvent(event: event, for: from, in: &eventContext)
-            }),
+            event: .networkProtocolEvent(
+                originalInstance,
+                self.identifier,
+                event: event,
+                { eventContext, from, event in
+                    self.handleNetworkProtocolEvent(event: event, for: from, in: &eventContext)
+                }
+            ),
             in: &eventContext
         )
     }
@@ -131,8 +167,14 @@ extension UpperProtocolLinkage {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol InboundDataLinkage: UpperProtocolLinkage where PairedLowerLinkage: OutboundDataLinkage {
-    func handleInboundDataAvailableEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext)
-    func handleOutboundRoomAvailableEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext)
+    func handleInboundDataAvailableEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
+    func handleOutboundRoomAvailableEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
 }
 
 @available(Network 0.1.0, *)
@@ -142,9 +184,13 @@ extension InboundDataLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         instance.deliverEventToUpperProtocol(
-            event: .inboundDataAvailable(instance, self.identifier, { eventContext, instance in
-                self.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
-            }),
+            event: .inboundDataAvailable(
+                instance,
+                self.identifier,
+                { eventContext, instance in
+                    self.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+                }
+            ),
             in: &eventContext
         )
     }
@@ -153,9 +199,13 @@ extension InboundDataLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         instance.deliverEventToUpperProtocol(
-            event: .outboundRoomAvailable(instance, self.identifier, { eventContext, instance in
-                self.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
-            }),
+            event: .outboundRoomAvailable(
+                instance,
+                self.identifier,
+                { eventContext, instance in
+                    self.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+                }
+            ),
             in: &eventContext
         )
     }
@@ -234,8 +284,15 @@ public protocol LowerProtocolLinkage: ProtocolLinkage {
     ) throws(NetworkError)
 
     func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext)
-    func disconnect(error: NetworkError?, for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext)
-    func detach(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError)
+    func disconnect(
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
+    func detach(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError)
     /// Releases any storage the linkage holds for the protocol instance. This runs after
     /// `detach` has returned, once the call into the protocol stack has fully unwound, so
     /// that the instance is still reachable while it is detaching.
@@ -360,19 +417,19 @@ public protocol OutboundDatagramLinkage: OutboundDataLinkage where PairedUpperLi
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public extension OutboundDatagramLinkage {
-    func invokeReceiveDatagrams(
+extension OutboundDatagramLinkage {
+    public func invokeReceiveDatagrams(
         maximumDatagramCount: Int,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
         guard !identifier.isNone else { return nil }
         return try identifier.handleCallFromUpperProtocol(in: &eventContext) { eventContext throws(NetworkError) in
-            return try self.receiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: instance, in: &eventContext)
+            try self.receiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: instance, in: &eventContext)
         }
     }
 
-    func invokeGetDatagramsToSend(
+    public func invokeGetDatagramsToSend(
         maximumDatagramCount: Int,
         minimumDatagramSize: Int,
         for instance: InstanceIdentifier,
@@ -380,11 +437,16 @@ public extension OutboundDatagramLinkage {
     ) throws(NetworkError) -> FrameArray? {
         guard !identifier.isNone else { return nil }
         return try identifier.handleCallFromUpperProtocol(in: &eventContext) { eventContext throws(NetworkError) in
-            return try self.getDatagramsToSend(maximumDatagramCount: maximumDatagramCount, minimumDatagramSize: minimumDatagramSize, for: instance, in: &eventContext)
+            try self.getDatagramsToSend(
+                maximumDatagramCount: maximumDatagramCount,
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
         }
     }
 
-    func invokeSendDatagrams(
+    public func invokeSendDatagrams(
         _ datagrams: consuming FrameArray,
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
@@ -393,8 +455,10 @@ public extension OutboundDatagramLinkage {
             datagrams.finalizeAllFramesAsFailed()
             return
         }
-        try identifier.handleCallFromUpperProtocol(datagrams, in: &eventContext) { eventContext, datagrams throws(NetworkError) in
-            return try self.sendDatagrams(datagrams, from: instance, in: &eventContext)
+        try identifier.handleCallFromUpperProtocol(datagrams, in: &eventContext) {
+            eventContext,
+            datagrams throws(NetworkError) in
+            try self.sendDatagrams(datagrams, from: instance, in: &eventContext)
         }
     }
 }
@@ -422,9 +486,14 @@ extension InboundStreamLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         instance.deliverEventToUpperProtocol(
-            event: .inboundAborted(instance, self.identifier, error: error, { eventContext, instance, error in
-                self.handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
-            }),
+            event: .inboundAborted(
+                instance,
+                self.identifier,
+                error: error,
+                { eventContext, instance, error in
+                    self.handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
+                }
+            ),
             in: &eventContext
         )
     }
@@ -434,9 +503,14 @@ extension InboundStreamLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         instance.deliverEventToUpperProtocol(
-            event: .outboundAborted(instance, self.identifier, error: error, { eventContext, instance, error in
-                self.handleOutboundAbortedEvent(error: error, for: instance, in: &eventContext)
-            }),
+            event: .outboundAborted(
+                instance,
+                self.identifier,
+                error: error,
+                { eventContext, instance, error in
+                    self.handleOutboundAbortedEvent(error: error, for: instance, in: &eventContext)
+                }
+            ),
             in: &eventContext
         )
     }
@@ -481,8 +555,8 @@ public protocol OutboundStreamLinkage: OutboundDataLinkage where PairedUpperLink
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public extension OutboundStreamLinkage {
-    func invokeReceiveStreamData(
+extension OutboundStreamLinkage {
+    public func invokeReceiveStreamData(
         minimumBytes: Int,
         maximumBytes: Int,
         for instance: InstanceIdentifier,
@@ -490,7 +564,7 @@ public extension OutboundStreamLinkage {
     ) throws(NetworkError) -> FrameArray? {
         guard !identifier.isNone else { return nil }
         return try identifier.handleCallFromUpperProtocol(in: &eventContext) { eventContext throws(NetworkError) in
-            return try self.receiveStreamData(
+            try self.receiveStreamData(
                 minimumBytes: minimumBytes,
                 maximumBytes: maximumBytes,
                 for: instance,
@@ -499,17 +573,17 @@ public extension OutboundStreamLinkage {
         }
     }
 
-    func invokeGetOutboundStreamDataRoomAvailable(
+    public func invokeGetOutboundStreamDataRoomAvailable(
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> Int {
         guard !identifier.isNone else { return 0 }
         return try identifier.handleCallFromUpperProtocol(in: &eventContext) { eventContext throws(NetworkError) in
-            return try self.getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
+            try self.getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
         }
     }
 
-    func invokeSendStreamData(
+    public func invokeSendStreamData(
         _ streamData: consuming FrameArray,
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
@@ -518,12 +592,14 @@ public extension OutboundStreamLinkage {
             streamData.finalizeAllFramesAsFailed()
             return
         }
-        try identifier.handleCallFromUpperProtocol(streamData, in: &eventContext) { eventContext, streamData throws(NetworkError) in
-            return try self.sendStreamData(streamData, from: instance, in: &eventContext)
+        try identifier.handleCallFromUpperProtocol(streamData, in: &eventContext) {
+            eventContext,
+            streamData throws(NetworkError) in
+            try self.sendStreamData(streamData, from: instance, in: &eventContext)
         }
     }
 
-    func invokeSendEarlyStreamData(
+    public func invokeSendEarlyStreamData(
         _ streamData: consuming FrameArray,
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
@@ -532,12 +608,14 @@ public extension OutboundStreamLinkage {
             streamData.finalizeAllFramesAsFailed()
             return
         }
-        try identifier.handleCallFromUpperProtocol(streamData, in: &eventContext) { eventContext, streamData throws(NetworkError) in
-            return try self.sendEarlyStreamData(streamData, from: instance, in: &eventContext)
+        try identifier.handleCallFromUpperProtocol(streamData, in: &eventContext) {
+            eventContext,
+            streamData throws(NetworkError) in
+            try self.sendEarlyStreamData(streamData, from: instance, in: &eventContext)
         }
     }
 
-    func invokeAbortInbound(
+    public func invokeAbortInbound(
         error: NetworkError?,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
@@ -548,7 +626,7 @@ public extension OutboundStreamLinkage {
         }
     }
 
-    func invokeAbortOutbound(
+    public func invokeAbortOutbound(
         error: NetworkError?,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
@@ -561,7 +639,7 @@ public extension OutboundStreamLinkage {
 
     // Optional types that may not be supported, default to error
 
-    func sendEarlyStreamData(
+    public func sendEarlyStreamData(
         _ streamData: consuming FrameArray,
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
@@ -569,7 +647,7 @@ public extension OutboundStreamLinkage {
         throw .posix(ENOTSUP)
     }
 
-    func abortInbound(
+    public func abortInbound(
         error: NetworkError?,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
@@ -577,7 +655,7 @@ public extension OutboundStreamLinkage {
         throw .posix(ENOTSUP)
     }
 
-    func abortOutbound(
+    public func abortOutbound(
         error: NetworkError?,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
@@ -602,38 +680,57 @@ public protocol MultipathLinkage: ProtocolLinkage {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol InboundDatagramFlowLinkage: InboundFlowLinkage where PairedLowerLinkage: DatagramListenerLinkage { }
+public protocol InboundDatagramFlowLinkage: InboundFlowLinkage where PairedLowerLinkage: DatagramListenerLinkage {}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol DatagramListenerLinkage: ListenerLinkage where PairedUpperLinkage: InboundDatagramFlowLinkage { }
+public protocol DatagramListenerLinkage: ListenerLinkage where PairedUpperLinkage: InboundDatagramFlowLinkage {}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol InboundStreamFlowLinkage: InboundFlowLinkage where PairedLowerLinkage: StreamListenerLinkage { }
+public protocol InboundStreamFlowLinkage: InboundFlowLinkage where PairedLowerLinkage: StreamListenerLinkage {}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol StreamListenerLinkage: ListenerLinkage where PairedUpperLinkage: InboundStreamFlowLinkage { }
+public protocol StreamListenerLinkage: ListenerLinkage where PairedUpperLinkage: InboundStreamFlowLinkage {}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol DatagramMultipathLinkage: MultipathLinkage where MultipathLowerProtocol: OutboundDatagramLinkage { }
+public protocol DatagramMultipathLinkage: MultipathLinkage where MultipathLowerProtocol: OutboundDatagramLinkage {}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public extension LowerProtocolLinkage where Self: ProtocolInstanceAsLinkage, Self: LowerProtocolHandler {
-    mutating func invokeAttachUpperProtocol(_ upperProtocol: UpperProtocol, remote: Endpoint?, local: Endpoint?, parameters: Parameters?, path: PathProperties?) throws(NetworkError) {
+extension LowerProtocolLinkage where Self: ProtocolInstanceAsLinkage, Self: LowerProtocolHandler {
+    public mutating func invokeAttachUpperProtocol(
+        _ upperProtocol: UpperProtocol,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {
         try self.attachUpperProtocol(upperProtocol, remote: remote, local: local, parameters: parameters, path: path)
     }
 }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public extension UpperProtocolLinkage where Self: ProtocolInstanceAsLinkage, Self: UpperProtocolHandler, Self == Self.LowerProtocol.PairedUpperLinkage {
-    mutating func invokeAttachLowerProtocol(_ lowerProtocol: LowerProtocol, remote: Endpoint?, local: Endpoint?, parameters: Parameters?, path: PathProperties?) throws(NetworkError) {
+extension UpperProtocolLinkage
+where Self: ProtocolInstanceAsLinkage, Self: UpperProtocolHandler, Self == Self.LowerProtocol.PairedUpperLinkage {
+    public mutating func invokeAttachLowerProtocol(
+        _ lowerProtocol: LowerProtocol,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {
         let overrideUpperLinkage = try self.attachLowerProtocol(lowerProtocol)
         let upperLinkage = overrideUpperLinkage ?? self
-        try lowerProtocol.invokeAttachUpperProtocol(upperLinkage, remote: remote, local: local, parameters: parameters, path: path)
+        try lowerProtocol.invokeAttachUpperProtocol(
+            upperLinkage,
+            remote: remote,
+            local: local,
+            parameters: parameters,
+            path: path
+        )
     }
 }

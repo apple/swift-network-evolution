@@ -494,7 +494,10 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage, @unchecked Sen
         }
     }
 
-    public func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func handleConnectedEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         switch protocolType {
         case .multiplexingPath(let path):
             path.handleConnectedEvent(for: instance, in: &eventContext)
@@ -540,7 +543,8 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage, @unchecked Sen
         case .multiplexingPath(let path):
             var path = path
             path.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
-        case .datagramUpperHarness(let harness): harness.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+        case .datagramUpperHarness(let harness):
+            harness.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         default: base.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         }
     }
@@ -553,7 +557,8 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage, @unchecked Sen
         case .multiplexingPath(let path):
             var path = path
             path.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
-        case .datagramUpperHarness(let harness): harness.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+        case .datagramUpperHarness(let harness):
+            harness.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         default: base.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         }
     }
@@ -624,10 +629,18 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
         switch target {
         case .flow(let flow):
             var mutableFlow = flow
-            return try mutableFlow.receiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: instance, in: &eventContext)
+            return try mutableFlow.receiveDatagrams(
+                maximumDatagramCount: maximumDatagramCount,
+                for: instance,
+                in: &eventContext
+            )
         case .harness(let harness):
             var mutableHarness = harness
-            return try mutableHarness.receiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: instance, in: &eventContext)
+            return try mutableHarness.receiveDatagrams(
+                maximumDatagramCount: maximumDatagramCount,
+                for: instance,
+                in: &eventContext
+            )
         }
     }
 
@@ -678,14 +691,21 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
         }
     }
 
-    func disconnect(error: NetworkError?, for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    func disconnect(
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         switch target {
         case .flow(let flow): flow.disconnect(error: error, for: instance, in: &eventContext)
         case .harness(let harness): harness.disconnect(error: error, for: instance, in: &eventContext)
         }
     }
 
-    func detach(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError) {
+    func detach(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
         switch target {
         case .flow(let flow):
             var mutableFlow = flow
@@ -1108,7 +1128,10 @@ public struct TestInboundDatagramFlowLinkage: InboundDatagramFlowLinkage, @unche
         }
     }
 
-    public func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func handleConnectedEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         switch protocolType {
         case .newDatagramFlowHarness(let harness): harness.handleConnectedEvent(for: instance, in: &eventContext)
         default: base.handleConnectedEvent(for: instance, in: &eventContext)
@@ -1244,11 +1267,18 @@ final class TestExternalDatagramListener: ExternalDatagramListenerLinkage {
         self.instance.connect(for: instance, in: &eventContext)
     }
 
-    func disconnect(error: NetworkError?, for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    func disconnect(
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         self.instance.disconnect(error: error, for: instance, in: &eventContext)
     }
 
-    func detach(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError) {
+    func detach(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
         var mutableInstance = self.instance
         try mutableInstance.detach(for: instance, in: &eventContext)
     }
@@ -1412,10 +1442,12 @@ public struct TestDatagramListenerLinkage: DatagramListenerLinkage, @unchecked S
             )
         default:
             // The framework hands back its own linkage, so put this module's wrapper on it.
-            return .init(base: try base.invokeAttachUpperProtocolToExistingFlow(
-                upperProtocol.base,
-                existingFlowInstance: existingFlowInstance
-            ))
+            return .init(
+                base: try base.invokeAttachUpperProtocolToExistingFlow(
+                    upperProtocol.base,
+                    existingFlowInstance: existingFlowInstance
+                )
+            )
         }
     }
 
@@ -1432,7 +1464,8 @@ public struct TestDatagramListenerLinkage: DatagramListenerLinkage, @unchecked S
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
-        case .multiplexing(let protocolInstance): protocolInstance.disconnect(error: error, for: instance, in: &eventContext)
+        case .multiplexing(let protocolInstance):
+            protocolInstance.disconnect(error: error, for: instance, in: &eventContext)
         default: base.disconnect(error: error, for: instance, in: &eventContext)
         }
     }
@@ -1762,7 +1795,10 @@ public struct TestInboundStreamLinkage: InboundStreamLinkage, @unchecked Sendabl
         }
     }
 
-    public func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func handleConnectedEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         switch protocolType {
         case .streamUpperHarness(let harness): harness.handleConnectedEvent(for: instance, in: &eventContext)
         default: base.handleConnectedEvent(for: instance, in: &eventContext)
@@ -1941,11 +1977,18 @@ final class TestExternalOutboundStream: ExternalOutboundStreamLinkage {
         harness.connect(for: instance, in: &eventContext)
     }
 
-    func disconnect(error: NetworkError?, for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    func disconnect(
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         harness.disconnect(error: error, for: instance, in: &eventContext)
     }
 
-    func detach(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError) {
+    func detach(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
         var mutableHarness = harness
         try mutableHarness.detach(for: instance, in: &eventContext)
     }
@@ -2345,7 +2388,10 @@ public struct TestInboundStreamFlowLinkage: InboundStreamFlowLinkage, @unchecked
         }
     }
 
-    public func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+    public func handleConnectedEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         switch protocolType {
         case .newStreamFlowHarness(let harness): harness.handleConnectedEvent(for: instance, in: &eventContext)
         default: base.handleConnectedEvent(for: instance, in: &eventContext)
@@ -2492,10 +2538,12 @@ public struct TestStreamListenerLinkage: StreamListenerLinkage, @unchecked Senda
         existingFlowInstance: InstanceIdentifier
     ) throws(NetworkError) -> TestOutboundStreamLinkage {
         // The framework hands back its own linkage, so put this module's wrapper on it.
-        .init(base: try base.invokeAttachUpperProtocolToExistingFlow(
-            upperProtocol.base,
-            existingFlowInstance: existingFlowInstance
-        ))
+        .init(
+            base: try base.invokeAttachUpperProtocolToExistingFlow(
+                upperProtocol.base,
+                existingFlowInstance: existingFlowInstance
+            )
+        )
     }
 
     public func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {

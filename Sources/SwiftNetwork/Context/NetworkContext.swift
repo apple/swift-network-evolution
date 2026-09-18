@@ -136,7 +136,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         let scheduler: any NetworkContext.Scheduler
         let schedulerIsDefault: Bool
 
-#if !NETWORK_DRIVERKIT && !NETWORK_STANDALONE
+        #if !NETWORK_DRIVERKIT && !NETWORK_STANDALONE
         func assert() {
             if schedulerIsDefault {
                 dispatchPrecondition(condition: DispatchPredicate.onQueue(queue))
@@ -144,11 +144,11 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
                 precondition(scheduler.runningInScheduler, "Not running on context scheduler")
             }
         }
-#endif
+        #endif
 
-#if !NETWORK_PRIVATE || NETWORK_STANDALONE
+        #if !NETWORK_PRIVATE || NETWORK_STANDALONE
         internal var protocolEventStates = NetworkGappyArray<ProtocolEventManagerState>()
-#endif
+        #endif
         internal mutating func registerProtocolEventState() -> NetworkStateIndex {
             protocolEventStates.insert(.init())
         }

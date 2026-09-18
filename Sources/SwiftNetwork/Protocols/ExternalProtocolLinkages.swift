@@ -150,8 +150,15 @@ public protocol ExternalInboundStreamFlowLinkage: ExternalInboundFlowLinkage {
 public protocol ExternalLowerProtocolLinkage: ExternalProtocolLinkage {
     func protocolIsConnected(in eventContext: inout NetworkContext.EventContext) -> Bool
     func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext)
-    func disconnect(error: NetworkError?, for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext)
-    func detach(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError)
+    func disconnect(
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
+    func detach(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError)
     func teardown(in eventContext: inout NetworkContext.EventContext)
     func handleApplicationEvent(
         event: ApplicationEvent,

@@ -330,11 +330,19 @@ public struct DemuxProtocol: NetworkProtocol {
 
             guard !demuxEntries.isEmpty else {
                 // No patterns, just go direct
-                return try lower.invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: self.identifier, in: &eventContext)
+                return try lower.invokeReceiveDatagrams(
+                    maximumDatagramCount: maximumDatagramCount,
+                    for: self.identifier,
+                    in: &eventContext
+                )
             }
 
             // Read datagrams out and categorize them based on patterns
-            let inboundDatagrams = try lower.invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: self.identifier, in: &eventContext)
+            let inboundDatagrams = try lower.invokeReceiveDatagrams(
+                maximumDatagramCount: maximumDatagramCount,
+                for: self.identifier,
+                in: &eventContext
+            )
             guard var inboundDatagrams, !inboundDatagrams.isEmpty else {
                 return nil
             }
@@ -380,7 +388,12 @@ public struct DemuxProtocol: NetworkProtocol {
             in eventContext: inout NetworkContext.EventContext
         ) throws(NetworkError) -> FrameArray? {
             do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
-            return try lower.invokeGetDatagramsToSend(maximumDatagramCount: maximumDatagramCount, minimumDatagramSize: minimumDatagramSize, for: self.identifier, in: &eventContext)
+            return try lower.invokeGetDatagramsToSend(
+                maximumDatagramCount: maximumDatagramCount,
+                minimumDatagramSize: minimumDatagramSize,
+                for: self.identifier,
+                in: &eventContext
+            )
         }
 
         public func sendDatagrams(
@@ -436,9 +449,16 @@ public struct DemuxProtocol: NetworkProtocol {
                 }
             } else {
                 // Just reply connected to the non-default cases
-                instance.deliverEventToUpperProtocol(event: .connected(self.identifier, instance, { _, _ in
+                instance.deliverEventToUpperProtocol(
+                    event: .connected(
+                        self.identifier,
+                        instance,
+                        { _, _ in
 
-                }), in: &eventContext)
+                        }
+                    ),
+                    in: &eventContext
+                )
             }
         }
 
@@ -455,9 +475,17 @@ public struct DemuxProtocol: NetworkProtocol {
                 }
             } else {
                 // Just reply disconnected to the non-default cases
-                instance.deliverEventToUpperProtocol(event: .disconnected(self.identifier, instance, error: error, { _, _, _ in
+                instance.deliverEventToUpperProtocol(
+                    event: .disconnected(
+                        self.identifier,
+                        instance,
+                        error: error,
+                        { _, _, _ in
 
-                }), in: &eventContext)
+                        }
+                    ),
+                    in: &eventContext
+                )
             }
         }
 
@@ -483,12 +511,19 @@ public struct DemuxProtocol: NetworkProtocol {
             for instance: InstanceIdentifier,
             in eventContext: inout NetworkContext.EventContext
         ) -> NetworkMetrics? {
-            lower.invokeGetMetrics(requestedNetworkMetric: requestedNetworkMetric, for: self.identifier, in: &eventContext)
+            lower.invokeGetMetrics(
+                requestedNetworkMetric: requestedNetworkMetric,
+                for: self.identifier,
+                in: &eventContext
+            )
         }
 
         // Events from lower
 
-        public func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+        public func handleConnectedEvent(
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) {
             do { try validate(lower: instance, #function) } catch { return }
             if canCallConnect(requested: false, in: &eventContext) {
                 defaultUpper.deliverConnectedEvent(from: self.identifier, in: &eventContext)

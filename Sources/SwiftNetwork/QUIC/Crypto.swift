@@ -290,9 +290,9 @@ extension QUICCrypto {
             parentConnection.log.debug("Signaling availability of early data")
 
             parentConnection.setupFlowControl(
-            remoteTransportParameters: remoteTransportParameters,
-            in: &eventContext
-        )
+                remoteTransportParameters: remoteTransportParameters,
+                in: &eventContext
+            )
 
             parentConnection.earlyDataSignalled = true
             parentConnection.readyAllOutboundStreams(in: &eventContext)
@@ -395,7 +395,13 @@ extension QUICCrypto: InboundStreamLinkage, OutboundStreamLinkage, ProtocolInsta
 
     // Binds both directions: set the TLS instance as our lower protocol, then call back into it
     // so it takes this crypto object as its upper protocol and runs setup.
-    func invokeAttachLowerProtocol(_ lowerProtocol: PairedLowerLinkage, remote: Endpoint?, local: Endpoint?, parameters: Parameters?, path: PathProperties?) throws(NetworkError) {
+    func invokeAttachLowerProtocol(
+        _ lowerProtocol: PairedLowerLinkage,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {
         var mutableSelf = self
         let overrideUpperLinkage = try mutableSelf.attachLowerProtocol(lowerProtocol)
         _ = overrideUpperLinkage
@@ -408,7 +414,13 @@ extension QUICCrypto: InboundStreamLinkage, OutboundStreamLinkage, ProtocolInsta
         )
     }
 
-    func invokeAttachUpperProtocol(_ upperProtocol: PairedUpperLinkage, remote: Endpoint?, local: Endpoint?, parameters: Parameters?, path: PathProperties?) throws(NetworkError) {
+    func invokeAttachUpperProtocol(
+        _ upperProtocol: PairedUpperLinkage,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {
         throw NetworkError.posix(ENOTSUP)
     }
 
@@ -590,7 +602,10 @@ extension QUICCrypto: OutboundStreamHandler {
     // One crypto object backs all four TLS encryption-level handlers, so each of them detaches
     // from it in turn. Drop the linkage that is going away; `teardown` releases the event state
     // once the last one is gone.
-    func detach(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError) {
+    func detach(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
         if instance == initialLinkage?.identifier { initialLinkage = nil }
         if instance == earlyDataLinkage?.identifier { earlyDataLinkage = nil }
         if instance == handshakeLinkage?.identifier { handshakeLinkage = nil }
@@ -598,10 +613,18 @@ extension QUICCrypto: OutboundStreamHandler {
     }
 
     func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
-        if let initialLinkage, instance == initialLinkage.identifier { initialLinkage.deliverConnectedEvent(from: identifier, in: &eventContext) }
-        if let earlyDataLinkage, instance == earlyDataLinkage.identifier { earlyDataLinkage.deliverConnectedEvent(from: identifier, in: &eventContext) }
-        if let handshakeLinkage, instance == handshakeLinkage.identifier { handshakeLinkage.deliverConnectedEvent(from: identifier, in: &eventContext) }
-        if let applicationLinkage, instance == applicationLinkage.identifier { applicationLinkage.deliverConnectedEvent(from: identifier, in: &eventContext) }
+        if let initialLinkage, instance == initialLinkage.identifier {
+            initialLinkage.deliverConnectedEvent(from: identifier, in: &eventContext)
+        }
+        if let earlyDataLinkage, instance == earlyDataLinkage.identifier {
+            earlyDataLinkage.deliverConnectedEvent(from: identifier, in: &eventContext)
+        }
+        if let handshakeLinkage, instance == handshakeLinkage.identifier {
+            handshakeLinkage.deliverConnectedEvent(from: identifier, in: &eventContext)
+        }
+        if let applicationLinkage, instance == applicationLinkage.identifier {
+            applicationLinkage.deliverConnectedEvent(from: identifier, in: &eventContext)
+        }
     }
 
     func disconnect(
@@ -614,7 +637,10 @@ extension QUICCrypto: OutboundStreamHandler {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {}
-    func getMetadata<P>(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) -> ProtocolMetadata<P>?
+    func getMetadata<P>(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> ProtocolMetadata<P>?
     where P: NetworkProtocol { nil }
     func getMetrics(
         requestedNetworkMetric: RequestedNetworkMetrics,

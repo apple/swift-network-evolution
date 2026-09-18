@@ -235,7 +235,9 @@ public struct SwiftTLSProtocol: NetworkProtocol {
 
     #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
     /// A TLS instance that runs a full record layer, for stacks that are not carrying QUIC.
-    final class SwiftTLSRecordInstance<TLSUpperProtocol: InboundStreamLinkage, TLSLowerProtocol: OutboundStreamLinkage>: OneToOneStreamProtocol {
+    final class SwiftTLSRecordInstance<TLSUpperProtocol: InboundStreamLinkage, TLSLowerProtocol: OutboundStreamLinkage>:
+        OneToOneStreamProtocol
+    {
         private var recordLayer: SwiftTLSRecordLayerInstance?
 
         private func requireRecordLayer() throws(NetworkError) -> SwiftTLSRecordLayerInstance {
@@ -267,9 +269,9 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             path: PathProperties?
         ) throws(NetworkError) {
             guard let parameters,
-                  let options = parameters.tlsOptions(for: identifier),
-                  let protocolOptions = options.perProtocolOptions,
-                  protocolOptions.tlsOptions.quicTransportParameters == nil
+                let options = parameters.tlsOptions(for: identifier),
+                let protocolOptions = options.perProtocolOptions,
+                protocolOptions.tlsOptions.quicTransportParameters == nil
             else {
                 throw NetworkError.posix(EINVAL)
             }
@@ -408,9 +410,9 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             path: PathProperties?
         ) throws(NetworkError) {
             guard let parameters,
-                  let options = parameters.tlsOptions(for: identifier),
-                  let protocolOptions = options.perProtocolOptions,
-                  protocolOptions.tlsOptions.quicTransportParameters != nil
+                let options = parameters.tlsOptions(for: identifier),
+                let protocolOptions = options.perProtocolOptions,
+                protocolOptions.tlsOptions.quicTransportParameters != nil
             else {
                 throw NetworkError.posix(EINVAL)
             }
@@ -435,7 +437,10 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             /// holds rather than re-deriving it from the context (which would trip Swift's
             /// exclusivity checking). The context itself comes from the parent, so the identifier
             /// can only be built once a parent has been assigned.
-            func setParent(_ parentInstance: SwiftTLSQUICOnlyInstance, in eventContext: inout NetworkContext.EventContext) {
+            func setParent(
+                _ parentInstance: SwiftTLSQUICOnlyInstance,
+                in eventContext: inout NetworkContext.EventContext
+            ) {
                 self.parentInstance = parentInstance
                 identifier = InstanceIdentifier(
                     eventManager: &self.eventManager,
@@ -456,7 +461,13 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             }
             convenience init() { self.init(level: .initial) }
 
-            func invokeAttachLowerProtocol(_ lowerProtocol: QUICCrypto, remote: Endpoint?, local: Endpoint?, parameters: Parameters?, path: PathProperties?) throws(NetworkError) { }
+            func invokeAttachLowerProtocol(
+                _ lowerProtocol: QUICCrypto,
+                remote: Endpoint?,
+                local: Endpoint?,
+                parameters: Parameters?,
+                path: PathProperties?
+            ) throws(NetworkError) {}
 
             func destroy() {
                 // `context` comes from the parent, and `setParent` is also what registers the
@@ -515,7 +526,9 @@ public struct SwiftTLSProtocol: NetworkProtocol {
                 }
             }
 
-            func getOutboundStreamDataRoomAvailable(in eventContext: inout NetworkContext.EventContext) throws(NetworkError) -> Int {
+            func getOutboundStreamDataRoomAvailable(
+                in eventContext: inout NetworkContext.EventContext
+            ) throws(NetworkError) -> Int {
                 guard !lower.isDetached else {
                     throw NetworkError.posix(EINVAL)
                 }
@@ -584,7 +597,11 @@ public struct SwiftTLSProtocol: NetworkProtocol {
                     }
 
                     if let peerQUICTransportParameters = handshaker.peerQUICTransportParameters {
-                        quicCrypto.updatePeerQUICTransportParameters(peerQUICTransportParameters, earlyData: false, in: &eventContext)
+                        quicCrypto.updatePeerQUICTransportParameters(
+                            peerQUICTransportParameters,
+                            earlyData: false,
+                            in: &eventContext
+                        )
                     }
 
                     let hasWriteEncryptionLevel = (handshaker.writeEncryptionLevel != .initial)
@@ -592,10 +609,20 @@ public struct SwiftTLSProtocol: NetworkProtocol {
                     if hasWriteEncryptionLevel || hasReadEncryptionLevel {
                         quicCrypto.updateNegotiatedCiphersuite(handshaker.negotiatedCiphersuite)
                         if hasReadEncryptionLevel, let readSecret = handshaker.readEncryptionSecret {
-                            quicCrypto.updateSecret(readSecret, for: handshaker.readEncryptionLevel, isWrite: false, in: &eventContext)
+                            quicCrypto.updateSecret(
+                                readSecret,
+                                for: handshaker.readEncryptionLevel,
+                                isWrite: false,
+                                in: &eventContext
+                            )
                         }
                         if hasWriteEncryptionLevel, let writeSecret = handshaker.writeEncryptionSecret {
-                            quicCrypto.updateSecret(writeSecret, for: handshaker.writeEncryptionLevel, isWrite: true, in: &eventContext)
+                            quicCrypto.updateSecret(
+                                writeSecret,
+                                for: handshaker.writeEncryptionLevel,
+                                isWrite: true,
+                                in: &eventContext
+                            )
                         }
                     }
 
@@ -803,15 +830,29 @@ public struct SwiftTLSProtocol: NetworkProtocol {
                 if handshaker.writeEncryptionLevel == .earlyData,
                     let earlyDataTransportParameters = options.resumedQUICTransportParameters
                 {
-                    quicCrypto.updatePeerQUICTransportParameters(earlyDataTransportParameters, earlyData: true, in: &eventContext)
+                    quicCrypto.updatePeerQUICTransportParameters(
+                        earlyDataTransportParameters,
+                        earlyData: true,
+                        in: &eventContext
+                    )
                 }
 
                 quicCrypto.updateNegotiatedCiphersuite(handshaker.negotiatedCiphersuite)
                 if let readSecret = handshaker.readEncryptionSecret {
-                    quicCrypto.updateSecret(readSecret, for: handshaker.readEncryptionLevel, isWrite: false, in: &eventContext)
+                    quicCrypto.updateSecret(
+                        readSecret,
+                        for: handshaker.readEncryptionLevel,
+                        isWrite: false,
+                        in: &eventContext
+                    )
                 }
                 if let writeSecret = handshaker.writeEncryptionSecret {
-                    quicCrypto.updateSecret(writeSecret, for: handshaker.writeEncryptionLevel, isWrite: true, in: &eventContext)
+                    quicCrypto.updateSecret(
+                        writeSecret,
+                        for: handshaker.writeEncryptionLevel,
+                        isWrite: true,
+                        in: &eventContext
+                    )
                 }
             }
         }
@@ -826,7 +867,11 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             throw NetworkError.posix(ENOTSUP)
         }
 
-        func sendStreamData(_ streamData: consuming FrameArray, from instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError) {
+        func sendStreamData(
+            _ streamData: consuming FrameArray,
+            from instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) {
             streamData.finalizeAllFramesAsFailed()
             throw NetworkError.posix(ENOTSUP)
         }
@@ -837,7 +882,10 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             throw NetworkError.posix(ENOTSUP)
         }
 
-        func getOutboundStreamDataRoomAvailable(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError) -> Int {
+        func getOutboundStreamDataRoomAvailable(
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> Int {
             throw NetworkError.posix(ENOTSUP)
         }
 
@@ -849,11 +897,19 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             throw NetworkError.posix(ENOTSUP)
         }
 
-        func receiveStreamData(minimumBytes: Int, maximumBytes: Int, for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError) -> FrameArray? {
+        func receiveStreamData(
+            minimumBytes: Int,
+            maximumBytes: Int,
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> FrameArray? {
             throw NetworkError.posix(ENOTSUP)
         }
 
-        func detach(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError) {
+        func detach(
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) {
             upper = .init()
             teardownHandshake(in: &eventContext)
         }
@@ -861,7 +917,13 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         // The TLS instance is its own lower linkage, so this is the callback half of
         // `QUICCrypto.invokeAttachLowerProtocol`: bind the crypto object as the upper protocol
         // and run setup.
-        func invokeAttachUpperProtocol(_ upperProtocol: QUICCrypto, remote: Endpoint?, local: Endpoint?, parameters: Parameters?, path: PathProperties?) throws(NetworkError) {
+        func invokeAttachUpperProtocol(
+            _ upperProtocol: QUICCrypto,
+            remote: Endpoint?,
+            local: Endpoint?,
+            parameters: Parameters?,
+            path: PathProperties?
+        ) throws(NetworkError) {
             var mutableSelf = self
             try mutableSelf.attachUpperProtocol(
                 upperProtocol,

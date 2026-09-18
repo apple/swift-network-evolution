@@ -162,7 +162,7 @@ extension AutomaticUpperDatagramProcessing where Self: ~Copyable {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol InboundDatagramHandler: ~Copyable, InboundDataHandler where LowerProtocol: OutboundDatagramLinkage { }
+public protocol InboundDatagramHandler: ~Copyable, InboundDataHandler where LowerProtocol: OutboundDatagramLinkage {}
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)

@@ -367,7 +367,6 @@ final class EndpointFlow: CustomDebugStringConvertible {
         }
     }
 
-
     // Runs an application completion after the event context has been released.
     //
     // Application callbacks are the boundary into user code and may call straight back into any

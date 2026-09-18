@@ -22,7 +22,9 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 
 @available(Network 0.1.0, *)
 let quicStreamTestsLogPrefixer = LogPrefixer("[QUICStreamTests]")
@@ -134,7 +136,7 @@ final class QUICStreamListTests: XCTestCase {
     }
 
     func testQUICStreamList() {
-        try self.connection.context.onQueue {
+        self.connection.context.onQueue {
             var unblockedList = QUICStreamList.unblockedSendStreamList()
             var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
             XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
@@ -152,7 +154,7 @@ final class QUICStreamListTests: XCTestCase {
     }
 
     func testQUICStreamListPreventDuplicate() {
-        try self.connection.context.onQueue {
+        self.connection.context.onQueue {
             var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
             XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
             let stream = QUICTestStream(parent: connection, inbound: false)
@@ -171,7 +173,7 @@ final class QUICStreamListTests: XCTestCase {
     }
 
     func testQUICRemoveFromStreamList() {
-        try self.connection.context.onQueue {
+        self.connection.context.onQueue {
             var unblockedList = QUICStreamList.unblockedSendStreamList()
             var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
             XCTAssertEqual(pendingReassemblyDequeueList.count, 0)

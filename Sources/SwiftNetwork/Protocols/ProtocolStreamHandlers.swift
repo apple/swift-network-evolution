@@ -292,7 +292,8 @@ extension AutomaticUpperStreamProcessing where Self: ~Copyable {
         return upperReceiveQueue.drainArray(maximumByteCount: maximumBytes)
     }
 
-    public mutating func upperReceiveQueueDrainedBytes(_ bytes: Int, in eventContext: inout NetworkContext.EventContext) {
+    public mutating func upperReceiveQueueDrainedBytes(_ bytes: Int, in eventContext: inout NetworkContext.EventContext)
+    {
         // No-op by default
     }
 

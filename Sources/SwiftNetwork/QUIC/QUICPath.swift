@@ -127,7 +127,8 @@ struct BandwidthDelayProduct {
 public final class QUICPath: MultiplexingDatagramPath<
     QUICConnection,
     BaseOutboundDatagramLinkage
->, Equatable, PrefixedLoggable {
+>, Equatable, PrefixedLoggable
+{
     // Initial probe interval for resending PATH_CHALLENGE is 250 ms
     // Further probes will follow exponential backoff.
     static let initialProbeInterval: NetworkDuration = .milliseconds(250)

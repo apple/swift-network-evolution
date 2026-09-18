@@ -26,7 +26,10 @@ public protocol UpperProtocolHandler<LowerProtocol>: ~Copyable, ProtocolInstance
         _ lowerProtocol: LowerProtocol,
     ) throws(NetworkError) -> LowerProtocol.PairedUpperLinkage?
 
-    mutating func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext)
+    mutating func handleConnectedEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
     mutating func handleDisconnectedEvent(
         error: NetworkError?,
         for instance: InstanceIdentifier,
@@ -53,7 +56,10 @@ public protocol LowerProtocolHandler<UpperProtocol>: ~Copyable, ProtocolInstance
         path: PathProperties?
     ) throws(NetworkError)
 
-    mutating func detach(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) throws(NetworkError)
+    mutating func detach(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError)
 
     mutating func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext)
     mutating func disconnect(

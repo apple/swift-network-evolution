@@ -293,10 +293,11 @@ public struct UDPProtocol: NetworkProtocol {
             in eventContext: inout NetworkContext.EventContext
         ) throws(NetworkError) -> FrameArray? {
             repeat {
-                guard var frameArray = try invokeReceiveDatagrams(
-                    maximumDatagramCount: maximumDatagramCount,
-                    in: &eventContext
-                ),
+                guard
+                    var frameArray = try invokeReceiveDatagrams(
+                        maximumDatagramCount: maximumDatagramCount,
+                        in: &eventContext
+                    ),
                     frameArray.count > 0
                 else {
                     return nil
@@ -541,8 +542,10 @@ public struct UDPProtocol: NetworkProtocol {
 
     static public func options() -> ProtocolOptions<UDPProtocol> { UDPProtocol.definition.protocolOptions() }
 
-    static public func instance<UpperLinkage: InboundDatagramLinkage, LowerLinkage: OutboundDatagramLinkage>(context: NetworkContext) -> (UpperLinkage, LowerLinkage) {
-        return (UpperLinkage(), LowerLinkage())
+    static public func instance<UpperLinkage: InboundDatagramLinkage, LowerLinkage: OutboundDatagramLinkage>(
+        context: NetworkContext
+    ) -> (UpperLinkage, LowerLinkage) {
+        (UpperLinkage(), LowerLinkage())
     }
 }
 
