@@ -165,58 +165,48 @@ where Path.LowerProtocol: OutboundDatagramLinkage {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-@frozen public enum MultiplexedFlowIdentifier: Hashable, CustomDebugStringConvertible {
-    case allFlows
+public struct MultiplexedFlowIdentifier: Hashable, Sendable, CustomDebugStringConvertible {
 
-    case someFlow(identifier: UInt64)
+    fileprivate var identifier: UInt64
 
+    public static let allFlows = MultiplexedFlowIdentifier(0)
+
+    private init(_ identifier: UInt64) {
+        self.identifier = identifier
+    }
+
+    public init(testValue identifier: UInt64) {
+        self.identifier = identifier
+    }
+
+    // Identify the flow by its own event state, not its parent's: every flow on a connection
+    // shares that parent, so allowing the parent index here would collapse them all onto one
+    // identifier.
     fileprivate init(_ identifier: InstanceIdentifier) {
-        guard let index = identifier.protocolEventStateIndex else {
+        guard let index = identifier.protocolEventStateIndex(allowParent: false) else {
             self = .allFlows
             return
         }
-        self = .someFlow(identifier: index.rawGeneration)
+        self.identifier = index.rawGeneration
     }
 
+    // Inbound and outbound flows are identified the same way; the spelling is kept so call sites
+    // still say which side they are on.
     fileprivate init(inboundInstance: InstanceIdentifier) {
-        // Identify the flow by its own event state, not its parent's: every inbound flow on a
-        // connection shares that parent, so allowing the parent index here would collapse them
-        // all onto one identifier.
-        guard let index = inboundInstance.protocolEventStateIndex(allowParent: false) else {
-            self = .allFlows
-            return
-        }
-        self = .someFlow(identifier: index.rawGeneration)
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(self.rawHashKey)
-    }
-
-    private var rawHashKey: UInt64 {
-        // Use the bottom two bits as a discriminator for the different cases. The generation is
-        // mixed in so that two flows sharing a reused slot hash differently.
-        switch self {
-        case .allFlows:
-            return 0
-        case .someFlow(let identifier):
-            return identifier
-        }
+        self.init(inboundInstance)
     }
 
     public func _rawHashValue(seed: Int) -> Int {
-        self.rawHashKey._rawHashValue(seed: seed)
+        self.identifier._rawHashValue(seed: seed)
     }
 
     public var debugDescription: String {
-        switch self {
-        case .allFlows: return "All Flows"
+        guard identifier != 0 else { return "All Flows" }
         #if !NETWORK_EMBEDDED
-        case .someFlow(let identifier): return "\(identifier)"
+        return "\(identifier)"
         #else
-        case .someFlow: return "Some Flow"
+        return "Some Flow"
         #endif
-        }
     }
 }
 
@@ -1695,6 +1685,7 @@ open class MultiplexedDatagramFlow<ParentProtocol: ManyToManyApplicationDatagram
     public required init(parent: ParentProtocol, inbound: Bool) {
         self.parentProtocol = parent
         identifier = .init(context: parent.context, eventManager: &self.eventManager)
+        identifier.setParentInstance(parent.identifier)
         if inbound {
             flowIdentifier = .init(inboundInstance: identifier)
         } else {
@@ -1881,7 +1872,7 @@ extension ManyToManyProtocolHandler {
                     connect(flow: flow.flowIdentifier, in: &eventContext)
                 }
             }
-        case .someFlow:
+        default:
             guard let flow = self.flow(for: flowID) else { return }
             flow.deliverConnectedEvent(in: &eventContext)
         }
@@ -1898,7 +1889,7 @@ extension ManyToManyProtocolHandler {
             applyToAllFlows { flow in
                 flow.deliverDisconnectedEvent(error: error, in: &eventContext)
             }
-        case .someFlow:
+        default:
             guard let flow = self.flow(for: flowID) else { return }
             flow.deliverDisconnectedEvent(error: error, in: &eventContext)
         }
@@ -1925,7 +1916,7 @@ extension ManyToManyProtocolHandler {
                     in: &eventContext
                 )
             }
-        case .someFlow:
+        default:
             guard let flow = self.flow(for: flowID) else { return }
             flow.upper.deliverNetworkProtocolEvent(
                 originalInstance: flow.identifier,
@@ -1953,7 +1944,7 @@ extension HeterogeneousManyToManyProtocolHandler {
                     connect(flow: flow.flowIdentifier, in: &eventContext)
                 }
             }
-        case .someFlow:
+        default:
             if let flow = self.flow(for: flowID) {
                 flow.deliverConnectedEvent(in: &eventContext)
             }
@@ -1973,7 +1964,7 @@ extension HeterogeneousManyToManyProtocolHandler {
             applyToAllSecondaryFlows { flow in
                 flow.deliverDisconnectedEvent(error: error)
             }
-        case .someFlow:
+        default:
             if let flow = self.flow(for: flowID) {
                 flow.deliverDisconnectedEvent(error: error)
             }
@@ -1997,7 +1988,7 @@ extension HeterogeneousManyToManyProtocolHandler {
             applyToAllSecondaryFlows { flow in
                 flow.deliverDisconnectedEvent(error: error, in: &eventContext)
             }
-        case .someFlow:
+        default:
             if let flow = self.flow(for: flowID) {
                 flow.deliverDisconnectedEvent(error: error, in: &eventContext)
             }
@@ -2033,7 +2024,7 @@ extension HeterogeneousManyToManyProtocolHandler {
                     in: &eventContext
                 )
             }
-        case .someFlow:
+        default:
             if let flow = self.flow(for: flowID) {
                 flow.upper.deliverNetworkProtocolEvent(
                     originalInstance: flow.identifier,
