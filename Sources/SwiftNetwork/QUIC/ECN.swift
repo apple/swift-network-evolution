@@ -393,12 +393,12 @@ struct ECNPathState: ~Copyable, PrefixedLoggable {
         var feedback = counters.currentECNFeedback
         if ackFrameECNCounter.ect0 < feedback.ect0 {
             log.error(
-                "\(packetNumberSpace) received ECT(0) count \(ackFrameECNCounter.ect0) < current ECT(0) count \(feedback.ect0)"
+                "\(packetNumberSpace) Received ECT(0) count \(ackFrameECNCounter.ect0) < current ECT(0) count \(feedback.ect0)"
             )
             return counters.largestCECount
         } else if ackFrameECNCounter.ect1 < feedback.ect1 {
             log.error(
-                "\(packetNumberSpace) received ECT(1) count \(ackFrameECNCounter.ect1) < current ECT(1) count \(feedback.ect1)"
+                "\(packetNumberSpace) Received ECT(1) count \(ackFrameECNCounter.ect1) < current ECT(1) count \(feedback.ect1)"
             )
             return counters.largestCECount
         } else if ackFrameECNCounter.ce < feedback.ce {
@@ -419,7 +419,7 @@ struct ECNPathState: ~Copyable, PrefixedLoggable {
             feedback.ect1 = ackFrameECNCounter.ect1
             feedback.ce = ackFrameECNCounter.ce
             log.datapath(
-                "received ECN feedback updated, pn_space: \(packetNumberSpace)), ECT(0) count: \(ackFrameECNCounter.ect0), ECT(1) count: \(ackFrameECNCounter.ect1), CE count: \(ackFrameECNCounter.ce), packets sent with ECT: \(counters.txECNPackets)"
+                "Received ECN feedback updated, pn_space: \(packetNumberSpace)), ECT(0) count: \(ackFrameECNCounter.ect0), ECT(1) count: \(ackFrameECNCounter.ect1), CE count: \(ackFrameECNCounter.ce), packets sent with ECT: \(counters.txECNPackets)"
             )
             counters.largestCECount = ackFrameECNCounter.ce
 
