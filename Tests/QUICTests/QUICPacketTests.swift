@@ -399,7 +399,7 @@ final class PacketTests: XCTestCase {
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
             0x07, 0x08,
         ]
-        let packet = QUICConnectionUtilities.createStatelessResetPacket(
+        let packet = try QUICConnectionUtilities.createStatelessResetPacket(
             token: QUICStatelessResetToken(validToken)!,
             triggeringPacketLength: 35
         )
@@ -412,19 +412,23 @@ final class PacketTests: XCTestCase {
         )
         XCTAssertTrue((packet[0] & 0x80) == 0, "Packet is not marked as a short header packet")
 
-        let packet2 = QUICConnectionUtilities.createStatelessResetPacket(
-            token: QUICStatelessResetToken(validToken)!,
-            triggeringPacketLength: 4
-        )
-        XCTAssertEqual(
-            packet2,
-            [],
+        XCTAssertThrowsError(
+            try QUICConnectionUtilities.createStatelessResetPacket(
+                token: QUICStatelessResetToken(validToken)!,
+                triggeringPacketLength: 4
+            ),
             "Stateless Reset packet bytes needs to be greater than 21 bytes"
-        )
-        XCTAssertTrue(
-            packet2.count == 0,
-            "Stateless Reset packet bytes should be zero due to a invalid packet size"
-        )
+        ) { error in
+            guard let networkError = error as? NetworkError else {
+                XCTFail("Expected a NetworkError, got \(error)")
+                return
+            }
+            XCTAssertEqual(
+                networkError.category?.identifier,
+                "QUICUtilities.packetFailedToBuild",
+                "Should fail with the packetFailedToBuild category due to an invalid packet size"
+            )
+        }
     }
 
     func testQUICVersionNegotiationPacket() throws {
@@ -434,9 +438,11 @@ final class PacketTests: XCTestCase {
             0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
         ])!
 
-        let vnPacket = QUICConnectionUtilities.createVersionNegotiationPacket(
-            destinationConnectionID: destinationConnectionID,
-            sourceConnectionID: sourceConnectionID
+        let vnPacket = try XCTUnwrap(
+            try QUICConnectionUtilities.createVersionNegotiationPacket(
+                destinationConnectionID: destinationConnectionID,
+                sourceConnectionID: sourceConnectionID
+            )
         )
 
         // firstByte(1) + version(4) + dcidLen(1) + dcid(8) + scidLen(1) + scid(4) + v1(4) + negotiationPattern(4)
@@ -483,15 +489,23 @@ final class PacketTests: XCTestCase {
             "Should advertise the requested version followed by the negotiation pattern"
         )
 
-        let packetWithNoVersions = QUICConnectionUtilities.createVersionNegotiationPacket(
-            destinationConnectionID: QUICConnectionID([])!,
-            sourceConnectionID: QUICConnectionID([])!
-        )
-        XCTAssertEqual(
-            packetWithNoVersions,
-            [],
-            "Version negotiation packet bytes should be empty because SCID and DCID are not long enough to form a valid QUIC packet"
-        )
+        XCTAssertThrowsError(
+            try QUICConnectionUtilities.createVersionNegotiationPacket(
+                destinationConnectionID: QUICConnectionID([])!,
+                sourceConnectionID: QUICConnectionID([])!
+            ),
+            "Version negotiation packet should fail to build because SCID and DCID are not long enough to form a valid QUIC packet"
+        ) { error in
+            guard let networkError = error as? NetworkError else {
+                XCTFail("Expected a NetworkError, got \(error)")
+                return
+            }
+            XCTAssertEqual(
+                networkError.category?.identifier,
+                "QUICUtilities.packetFailedToBuild",
+                "Should fail with the packetFailedToBuild category due to an invalid packet size"
+            )
+        }
     }
 
     func testDeserializePacketNumber() throws {
