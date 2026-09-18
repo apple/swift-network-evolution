@@ -193,7 +193,7 @@ public struct QUICConnectionUtilities {
         guard token.token.count > 0, triggeringPacketLength > 0 else {
             throw NetworkError(
                 category: .init(
-                    identifier: "QUICUtilities.packetFailedToBuild",
+                    identifier: "QUICUtilities",
                     description: "Failed to provide valid input: \(token), \(triggeringPacketLength)"
                 )
             )
@@ -216,7 +216,7 @@ public struct QUICConnectionUtilities {
         else {
             throw NetworkError(
                 category: .init(
-                    identifier: "QUICUtilities.packetFailedToBuild",
+                    identifier: "QUICUtilities",
                     description: "Failed to create QUICStatelessResetPacket"
                 )
             )
@@ -224,7 +224,7 @@ public struct QUICConnectionUtilities {
         guard statelessReset.bytes.count >= Constants.minimumPacketSize else {
             throw NetworkError(
                 category: .init(
-                    identifier: "QUICUtilities.packetFailedToBuild",
+                    identifier: "QUICUtilities",
                     description: "Failed to create QUICStatelessResetPacket greater than the minimum packet size"
                 )
             )
@@ -256,7 +256,7 @@ public struct QUICConnectionUtilities {
         else {
             throw NetworkError(
                 category: .init(
-                    identifier: "QUICUtilities.packetFailedToBuild",
+                    identifier: "QUICUtilities",
                     description: "Failed to build a valid version negotiation packet"
                 )
             )
@@ -264,7 +264,7 @@ public struct QUICConnectionUtilities {
         guard versionNegotiationPacket.header.count >= Constants.minimumPacketSize else {
             throw NetworkError(
                 category: .init(
-                    identifier: "QUICUtilities.packetFailedToBuild",
+                    identifier: "QUICUtilities",
                     description: "Failed to create QUICVersionNegotiation packet greater than the minimum packet size"
                 )
             )
