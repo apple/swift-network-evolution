@@ -138,7 +138,8 @@ class QUICTestHarness {
         timeout: TimeInterval = 5.0,
         clientOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
-        bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil
+        bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
+        bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil
     ) throws(NetworkError) {
         var clientConnected = false
         var serverConnected = false
@@ -168,6 +169,7 @@ class QUICTestHarness {
             let clientBridge = BridgeDatagramProtocol.instance(context: self.context)
             let clientBridgeOptions = BridgeDatagramProtocol.options()
             clientBridgeOptions.observeFirstByteHandler = bridgeObserveFirstByteHandler
+            clientBridgeOptions.observeFrameHandler = bridgeObserveFrameHandler
             clientBridgeOptions.setProtocolInstance(clientBridge)
             clientBridgeOptions.linkDelay = clientLinkDelay
             clientBridgeOptions.datagramDrops = clientDrops
@@ -196,6 +198,7 @@ class QUICTestHarness {
             let serverBridge = BridgeDatagramProtocol.instance(context: self.context)
             let serverBridgeOptions = BridgeDatagramProtocol.options()
             serverBridgeOptions.observeFirstByteHandler = bridgeObserveFirstByteHandler
+            serverBridgeOptions.observeFrameHandler = bridgeObserveFrameHandler
             serverBridgeOptions.setProtocolInstance(serverBridge)
             serverBridgeOptions.linkDelay = serverLinkDelay
             serverBridgeOptions.datagramDrops = serverDrops
@@ -924,7 +927,8 @@ class QUICTestHarness {
         extraServerCIDs: [(QUICConnectionID, QUICStatelessResetToken)] = .init(),
         afterHandshake: ((QUICTestHarness) -> Void)? = nil,  // Block to run after handshake is complete
         afterData: ((QUICTestHarness) -> Void)? = nil,  // Block to run after handshake is complete
-        bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil
+        bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
+        bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil
     ) {
         // Start with the handshake
         Logger.test.debug("Test phase: Handshake")
@@ -945,7 +949,8 @@ class QUICTestHarness {
                 timeout: timeout,
                 clientOptions: clientOptions,
                 serverOptions: serverOptions,
-                bridgeObserveFirstByteHandler: bridgeObserveFirstByteHandler
+                bridgeObserveFirstByteHandler: bridgeObserveFirstByteHandler,
+                bridgeObserveFrameHandler: bridgeObserveFrameHandler
             )
         } catch {
             if expectHandshakeError == nil {

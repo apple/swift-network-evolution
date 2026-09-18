@@ -211,7 +211,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         public var enableL4S: Bool?
 
         internal var _maxUDPPayloadSize: UInt16 = UInt16.max
-        var maxUDPPayloadSize: UInt16 {
+        public var maxUDPPayloadSize: UInt16 {
             get { self._maxUDPPayloadSize }
             set { self._maxUDPPayloadSize = newValue }
         }
@@ -235,7 +235,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         }
 
         internal var _initialPacketSize: UInt16 = 0
-        var initialPacketSize: UInt16 {
+        public var initialPacketSize: UInt16 {
             get { self._initialPacketSize }
             set { self._initialPacketSize = newValue }
         }

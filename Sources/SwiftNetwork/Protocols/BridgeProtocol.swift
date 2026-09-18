@@ -67,6 +67,7 @@ public struct DatagramDrops: Equatable {
 }
 
 public typealias BridgeObserveFirstByteHandler = ((UInt8) -> Void)?
+public typealias BridgeObserveFrameHandler = ((UInt8, Int) -> Void)?
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
@@ -78,6 +79,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
     public struct BridgeOptions: PerProtocolOptions {
         public var linkDelay: NetworkDuration = .zero
         public var observeFirstByteHandler: BridgeObserveFirstByteHandler = nil
+        public var observeFrameHandler: BridgeObserveFrameHandler = nil
         var datagramDrops: DatagramDrops?
 
         init() {}
@@ -152,6 +154,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
         var linkDelay: NetworkDuration = .zero
         var datagramDrops: DatagramDrops? = nil
         var observeFirstByteHandler: BridgeObserveFirstByteHandler = nil
+        var observeFrameHandler: BridgeObserveFrameHandler = nil
 
         private var timerSet = false
         func deliverInboundDataAvailableEvent() {
@@ -194,6 +197,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
                 self.linkDelay = bridgeOptions.linkDelay
                 self.datagramDrops = bridgeOptions.datagramDrops
                 self.observeFirstByteHandler = bridgeOptions.observeFirstByteHandler
+                self.observeFrameHandler = bridgeOptions.observeFrameHandler
             }
             #endif
 
@@ -294,6 +298,14 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
                     return true
                 }
             }
+            if let observeFrameHandler {
+                datagrams.iterateMutableFrames { frame in
+                    if let bytes = frame.bytes, bytes.byteCount > 0 {
+                        observeFrameHandler(bytes[0], bytes.byteCount)
+                    }
+                    return true
+                }
+            }
             remoteInstance.incomingFrames.add(frames: datagrams)
             remoteInstance.deliverInboundDataAvailableEvent()
         }
@@ -346,6 +358,11 @@ extension ProtocolOptions<BridgeDatagramProtocol> {
     public var observeFirstByteHandler: BridgeObserveFirstByteHandler {
         get { perProtocolOptions!.observeFirstByteHandler }
         set { perProtocolOptions!.observeFirstByteHandler = newValue }
+    }
+
+    public var observeFrameHandler: BridgeObserveFrameHandler {
+        get { perProtocolOptions!.observeFrameHandler }
+        set { perProtocolOptions!.observeFrameHandler = newValue }
     }
 
     public var datagramDrops: DatagramDrops? {
