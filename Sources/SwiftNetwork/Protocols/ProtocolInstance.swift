@@ -684,6 +684,14 @@ extension Parameters {
         return internetProtocol
     }
 
+    public func linkOptions(for instance: ProtocolInstanceReference) -> ProtocolStack.LinkProtocol? {
+        let stack = self.defaultStack
+        guard let linkProtocol = stack.link, linkProtocol.matches(protocolInstance: instance) else {
+            return nil
+        }
+        return linkProtocol
+    }
+
     #if !NETWORK_EMBEDDED
     internal func protocolOptions(for identifier: ProtocolIdentifier) -> AbstractProtocolOptions? {
         self.defaultStack.protocolOptions(for: identifier)
@@ -786,6 +794,21 @@ extension Parameters {
             case .ip(let options) = internetProtocol
         {
             return options
+        }
+        #if NETWORK_EMBEDDED
+        return nil
+        #else
+        return self.protocolOptions(for: instance)
+        #endif
+    }
+
+    public func customLinkOptions(for instance: ProtocolInstanceReference) -> ProtocolOptions<CustomLinkProtocol>? {
+        if case .customLink(let options) = self.defaultStack.link {
+            // The link slot holds exactly one protocol, so options that have not yet
+            // been associated with an instance are unambiguously these options.
+            if options.protocolInstance == nil || options.matches(protocolInstance: instance) {
+                return options
+            }
         }
         #if NETWORK_EMBEDDED
         return nil

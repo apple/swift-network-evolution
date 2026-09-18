@@ -170,10 +170,10 @@ extension ProtocolInstanceReference {
             case .datagramLowerHarness(let instance): instance.connect(from)
             case .streamLowerHarness(let instance): instance.connect(from)
             #endif
+            case .customLink(let instance): instance.connect(from)
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index): return container.accessLower(at: index) { $0.connect(from) }
             #endif
-            case .customLink(let instance): instance.connect(from)
             default: fatalError("Protocol cannot accept connect call")
             }
         }
@@ -198,11 +198,11 @@ extension ProtocolInstanceReference {
             case .datagramLowerHarness(let instance): instance.disconnect(from, error: error)
             case .streamLowerHarness(let instance): instance.disconnect(from, error: error)
             #endif
+            case .customLink(let instance): instance.disconnect(from, error: error)
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
                 return container.accessLower(at: index) { $0.disconnect(from, error: error) }
             #endif
-            case .customLink(let instance): instance.disconnect(from, error: error)
             default: fatalError("Protocol cannot accept disconnect call")
             }
         }
@@ -226,6 +226,7 @@ extension ProtocolInstanceReference {
             case .datagramLowerHarness(let instance): instance.handleApplicationEvent(from, event: event)
             case .streamLowerHarness(let instance): instance.handleApplicationEvent(from, event: event)
             #endif
+            case .customLink(let instance): instance.handleApplicationEvent(from, event: event)
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
                 return container.accessLower(at: index) { $0.handleApplicationEvent(from, event: event) }
@@ -330,6 +331,14 @@ extension ProtocolInstanceReference {
                     path: path
                 )
             #endif
+            case .customLink(var instance):
+                return try instance.attachUpperProtocol(
+                    from,
+                    remote: remote,
+                    local: local,
+                    parameters: parameters,
+                    path: path
+                )
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
                 return try container.accessLower(at: index) { instance throws(NetworkError) in
@@ -402,6 +411,14 @@ extension ProtocolInstanceReference {
                     path: path
                 )
             #endif
+            case .customLink(var instance):
+                return try instance.attachUpperStreamProtocol(
+                    from,
+                    remote: remote,
+                    local: local,
+                    parameters: parameters,
+                    path: path
+                )
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
                 return try container.accessOutboundStreamHandler(at: index) { instance throws(NetworkError) in
@@ -414,14 +431,6 @@ extension ProtocolInstanceReference {
                     )
                 }
             #endif
-            case .customLink(var instance):
-                return try instance.attachUpperStreamProtocol(
-                    from,
-                    remote: remote,
-                    local: local,
-                    parameters: parameters,
-                    path: path
-                )
             default: fatalError("Protocol cannot accept attachUpperStreamProtocol call")
             }
         }
@@ -897,13 +906,13 @@ extension ProtocolInstanceReference {
             case .datagramLowerHarness(var instance): try instance.detach(from)
             case .streamLowerHarness(var instance): try instance.detach(from)
             #endif
+            case .customLink(var instance): try instance.detach(from)
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
                 try container.accessLower(at: index) { instance throws(NetworkError) in
                     try instance.detach(from)
                 }
             #endif
-            case .customLink(var instance): try instance.detach(from)
             default: fatalError("Protocol cannot accept detach call")
             }
         }
@@ -927,6 +936,7 @@ extension ProtocolInstanceReference {
             case .datagramLowerHarness(let instance): return instance.getMetadata(from)
             case .streamLowerHarness(let instance): return instance.getMetadata(from)
             #endif
+            case .customLink(let instance): return instance.getMetadata(from)
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index): return container.accessLower(at: index) { $0.getMetadata(from) }
             #endif
@@ -963,6 +973,8 @@ extension ProtocolInstanceReference {
             case .streamLowerHarness(let instance):
                 return instance.getMetrics(from, requestedNetworkMetric: requestedNetworkMetric)
             #endif
+            case .customLink(let instance):
+                return instance.getMetrics(from, requestedNetworkMetric: requestedNetworkMetric)
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
                 return container.accessLower(at: index) {
