@@ -2697,6 +2697,14 @@ struct PendingItems: ~Copyable {
         self = PendingItems(packetNumberSpace: packetNumberSpace)
     }
 
+    // Flush sendable streams for application space when the connection is flushed
+    @discardableResult
+    mutating func flushClearingQueuedStreams() -> Deque<MultiplexedFlowIdentifier> {
+        let droppedStreams = streamsToService
+        flush()
+        return droppedStreams
+    }
+
     init(packetNumberSpace: PacketNumberSpace) {
         self.packetNumberSpace = packetNumberSpace
     }

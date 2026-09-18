@@ -3042,7 +3042,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     func flushPendingItems() {
         initialPendingItems.flush()
         handshakePendingItems.flush()
-        applicationPendingItems.flush()
+        for flowID in applicationPendingItems.flushClearingQueuedStreams() {
+            clearStreamSendable(flowID)
+        }
     }
 
     // Indicates whether the asynchronous send continuation is running or not
@@ -4638,6 +4640,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         ack.flush(for: space)
     }
 
+    // Removes sendable flag when the application state is flushed
+    private func clearStreamSendable(_ flowID: MultiplexedFlowIdentifier) {
+        flow(for: flowID)?.listMembership.remove(.sendable)
+    }
+
     private func discardKeys(
         keyState: PacketKeyState,
         pendingItems: inout PendingItems,
@@ -4652,7 +4659,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private func discardKeys(keyState: PacketKeyState, discardRecoveryState: Bool = true) {
         let space = PacketNumberSpace.fromKeyState(keyState: keyState)
         // Flush first so that we won't send out frames other than ACKs with older key
-        withPendingItems(for: space) { $0.flush() }
+        if space == .applicationData {
+            for flowID in applicationPendingItems.flushClearingQueuedStreams() {
+                clearStreamSendable(flowID)
+            }
+        } else {
+            withPendingItems(for: space) { $0.flush() }
+        }
         discardKeysInternal(keyState: keyState, space: space, discardRecoveryState: discardRecoveryState)
     }
 
