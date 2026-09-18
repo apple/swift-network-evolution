@@ -216,6 +216,31 @@ struct FlowControlState: ~Copyable {
         return true
     }
 
+    // Accounts for inbound bytes that the peer sent, and that therefore consumed
+    // receive window, but that will never be delivered to the application because
+    // the stream carrying them was closed.
+    //
+    // `inboundMaxData` is anchored on `totalInboundBytesDelivered`, so unless
+    // discarded bytes are counted as consumed, the credit they used is never
+    // returned to the peer: the usable receive window shrinks by that amount for
+    // the remaining life of the connection, and enough discarded bytes stall it
+    // outright.
+    //
+    // The caller must have already added these bytes to
+    // `totalInOrderInboundBytesRead`; this only advances the delivered counter to
+    // match, which is what moves the MAX_DATA anchor.
+    fileprivate mutating func creditDiscardedInboundBytes(_ bytes: UInt64) {
+        guard bytes > 0 else { return }
+
+        let (newDelivered, deliveredOverflow) = totalInboundBytesDelivered.addingReportingOverflow(bytes)
+        guard !deliveredOverflow else { return }
+
+        // Delivered can never exceed the in-order total: the difference between
+        // them is what remains buffered awaiting the application.
+        totalInboundBytesDelivered = min(newDelivered, totalInOrderInboundBytesRead)
+        inboundBytesDeliveredSinceLastUpdate += bytes
+    }
+
     // Outbound values (sending):
 
     // Maximum number of bytes allowed to be sent to the peer, as
@@ -342,7 +367,26 @@ extension QUICConnection {
             log.datapath(
                 "Zombie adjusted in-order inbound bytes changed from \(oldTotalInbound) to \(newValue))"
             )
+            // The stream is already gone, so these bytes can never be delivered.
+            // Count them as consumed to release the credit they used.
+            flowControlState.creditDiscardedInboundBytes(delta)
         }
+    }
+
+    // Releases the receive-window credit used by inbound bytes that arrived on a
+    // stream but that the application will never read, because the stream was
+    // closed with those bytes still buffered.
+    //
+    // The caller must have already accounted for `bytes` in the connection's
+    // in-order inbound total.
+    func creditDiscardedInboundBytes(_ bytes: UInt64) {
+        guard bytes > 0 else { return }
+        flowControlState.creditDiscardedInboundBytes(bytes)
+        log.datapath(
+            "Credited \(bytes) discarded inbound bytes; connection MAX_DATA anchor is now "
+                + "\(self.flowControlState.totalInOrderInboundBytesRead)"
+        )
+        sendInboundFlowControlCredit()
     }
 
     func updateLastReceivedOffsetForZombie(lastOffsetDelta: UInt64) {
