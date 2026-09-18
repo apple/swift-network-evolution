@@ -262,6 +262,102 @@ final class SendItemsTests: XCTestCase {
         )
     }
 
+    struct DatagramWriteOutcome {
+        var thrownError: QUICError?
+        var wroteFrame = false
+        var stillQueued = 0
+        var flowsToService = 0
+    }
+
+    // Queues `queued` identical datagrams on a fresh flow, then writes into a packet sized
+    // to hold exactly `roomFor` of them and fall one byte short of the next — what a
+    // co-resident frame such as an ACK does to an otherwise exactly-sized datagram.
+    // `usableDatagramSize` is a maximum payload and excludes the DATAGRAM frame header, so
+    // every queued payload is sendable as far as the flow is concerned.
+    func writeDatagrams(queued: Int, roomFor: Int) -> DatagramWriteOutcome {
+        let connection = QUICConnection(context: NetworkContext(identifier: "SendItemsTests"))
+        let flowID: UInt64 = 4
+        let contextID: UInt64 = 0
+        let flow = QUICDatagramFlow(parent: connection, inbound: true)
+        flow.setup(datagramFlowID: flowID, contextID: contextID, logPrefixer: LogPrefixer())
+        connection.multiplexedSecondaryFlows[flow.identifier] = flow
+
+        let payload = [UInt8](repeating: 0xAB, count: 256)
+        flow.usableDatagramSize = payload.count
+        for _ in 0..<queued {
+            flow.upperSendQueue.add(frame: Frame(copyBuffer: payload))
+        }
+
+        // The length field already covers the flow and context IDs alongside the payload.
+        let length = FrameDatagram.length(
+            dataLength: UInt64(payload.count),
+            flowID: flowID,
+            contextID: contextID
+        )
+        let framedSize =
+            FrameType.datagram(hasLength: true).rawValue.variableLengthSize
+            + length.variableLengthSize
+            + Int(length)
+
+        var packet = Frame(count: (roomFor + 1) * framedSize - 1)
+        defer { packet.finalize(success: true) }
+
+        var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+        pendingItems.prependDatagramFlowToService(flow.identifier)
+        var transmittedItems = TransmittedItems()
+        var availableCongestionWindow: UInt64 = 10000
+        var shorthandFrames: [QUICShorthandFrame]? = nil
+
+        var outcome = DatagramWriteOutcome()
+        do {
+            outcome.wroteFrame = try FrameDatagram.write(
+                into: &packet,
+                pendingItems: &pendingItems,
+                connection: connection,
+                availableCongestionWindow: &availableCongestionWindow,
+                stats: &connection.stats,
+                transmittedItems: &transmittedItems,
+                shorthandFrames: &shorthandFrames
+            )
+        } catch {
+            outcome.thrownError = error
+        }
+
+        connection.accessDatagramsToSend(flow: flow.identifier) { outcome.stillQueued = $0.count }
+        outcome.flowsToService = pendingItems.datagramFlowsToService.count
+        return outcome
+    }
+
+    func testDatagram_requeuedAndReportedFullWhenItDoesNotFit() {
+        let outcome = writeDatagrams(queued: 1, roomFor: 0)
+
+        guard case .frameWrite(.smallBuffer)? = outcome.thrownError else {
+            return XCTFail(
+                "A datagram that does not fit must report a full packet so the caller flushes it, "
+                    + "got \(String(describing: outcome.thrownError))"
+            )
+        }
+        // DATAGRAM frames are never retransmitted, so finalizing one as sent without
+        // writing it to the wire loses it outright.
+        XCTAssertEqual(outcome.stillQueued, 1, "The datagram that did not fit must stay queued")
+        XCTAssertEqual(
+            outcome.flowsToService,
+            1,
+            "The flow must stay scheduled so the requeued datagram is serviced again"
+        )
+    }
+
+    func testDatagram_writtenDatagramIsReportedWhenALaterOneDoesNotFit() {
+        let outcome = writeDatagrams(queued: 2, roomFor: 1)
+
+        // The caller reads a throw as "no frame written", so a datagram that did fit has to
+        // be reported by returning: throwing would leave it out of the packet's
+        // ack-eliciting and in-flight-eligible accounting.
+        XCTAssertNil(outcome.thrownError, "A datagram that fits must not report a full packet")
+        XCTAssertTrue(outcome.wroteFrame, "The first datagram fits and must be reported as written")
+        XCTAssertEqual(outcome.stillQueued, 1, "The datagram that did not fit must stay queued")
+    }
+
 }
 
 #endif

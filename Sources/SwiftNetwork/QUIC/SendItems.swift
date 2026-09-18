@@ -1591,6 +1591,8 @@ extension FrameDatagram: SendableItem {
                 continue
             }
             var datagramsListIsEmpty = false
+            // Thrown once the closure has returned, because `accessDatagramsToSend` takes a non-throwing closure.
+            var writeError: QUICError? = nil
             connection.accessDatagramsToSend(flow: firstFlowID) { datagrams in
                 while var datagramFrame = datagrams.popFirst() {
                     let dataLength = datagramFrame.unclaimedLength
@@ -1605,6 +1607,7 @@ extension FrameDatagram: SendableItem {
                         continue
                     }
 
+                    let roomBeforeWriting = frame.unclaimedLength
                     do throws(QUICError) {
                         try FrameDatagram.write(
                             frame: &frame,
@@ -1622,11 +1625,20 @@ extension FrameDatagram: SendableItem {
                             )
                         )
                     } catch {
-                        connection.log.error("Unable to write datagram for flow \(firstFlowID)")
+                        // Requeue rather than finalize and pass up the error so a retry is possible
+                        connection.log.datapath(
+                            "datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
+                        )
+                        datagrams.prepend(frame: datagramFrame)
+                        writeError = error
+                        return
                     }
                     datagramFrame.finalize(success: true)
                 }
                 datagramsListIsEmpty = datagrams.isEmpty
+            }
+            if let writeError, !sentDatagram {
+                throw writeError
             }
             if datagramsListIsEmpty {
                 // Nothing left to do on the first flow, remove it
