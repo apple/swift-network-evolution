@@ -41,7 +41,7 @@ final class PacerTests: XCTestCase {
         var sendTimeAbsolute = NetworkClock.Instant(nanoseconds: 0)
         var sendTimeContinuous = NetworkClock.Instant(nanoseconds: 0)
 
-        let timeBefore = NetworkClock.Instant.nowAbsolute
+        let timeBefore = NetworkClock.Instant.systemNowAbsolute
         pacer.getSendTime(
             path: path,
             packetLength: packetLength,
@@ -49,7 +49,7 @@ final class PacerTests: XCTestCase {
             sendTimeContinuous: &sendTimeContinuous
         )
 
-        let timeAfter = NetworkClock.Instant.nowAbsolute
+        let timeAfter = NetworkClock.Instant.systemNowAbsolute
 
         XCTAssertGreaterThanOrEqual(
             pacer.packetSentTime,
@@ -127,7 +127,7 @@ final class PacerTests: XCTestCase {
             sendTimeAbsolute: &sendTimeAbsolute,
             sendTimeContinuous: &sendTimeContinuous
         )
-        let currentTime = NetworkClock.Instant.now
+        let currentTime = NetworkClock.Instant.systemNow
         // First packet should be sent out almost immediately
         XCTAssertTrue(
             sendTimeAbsolute <= (currentTime + NetworkClock.Instant(nanoseconds: 1_000_000).time)

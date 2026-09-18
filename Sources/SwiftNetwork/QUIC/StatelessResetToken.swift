@@ -41,7 +41,9 @@ public struct QUICStatelessResetToken: Equatable, Sendable, CustomStringConverti
 
     public init?(_ token: [UInt8]) {
         guard token.count == QUICStatelessResetToken.size else {
+            #if !DisableErrorLogging
             Logger.proto.fault("Invalid Stateless Reset Token")
+            #endif
             return nil
         }
         _token = TokenStorage(tokenSpan: token.span)
@@ -49,7 +51,9 @@ public struct QUICStatelessResetToken: Equatable, Sendable, CustomStringConverti
 
     public init?(_ token: Span<UInt8>) {
         guard token.count == QUICStatelessResetToken.size else {
+            #if !DisableErrorLogging
             Logger.proto.fault("Invalid Stateless Reset Token")
+            #endif
             return nil
         }
         _token = TokenStorage(tokenSpan: token)

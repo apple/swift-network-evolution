@@ -85,7 +85,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                         )
 
                         // Once the delayed ACK has been sent there are no obligations left.
-                        client.ack.timerFired(at: .now)
+                        client.ack.timerFired(at: .systemNow)
                         XCTAssertEqual(
                             client.ack.unackedPacketCount,
                             0,

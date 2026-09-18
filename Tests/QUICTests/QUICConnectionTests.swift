@@ -29,6 +29,31 @@ final class QUICConnectionTests: XCTestCase {
         connection = QUICConnection(context: NetworkContext.implicitContext)
     }
 
+    /// A call nested inside a pinned scope must leave the outer readings in place; otherwise the
+    /// pin is gone when the nested call returns, `getSendTime` reads the two clocks separately,
+    /// and `Pacer` derives the offset between the clock domains from a mismatched pair.
+    func testANestedCallLeavesTheOuterReadingsInPlace() {
+        connection.withPinnedClock {
+            let readingsAtEntry = connection.pinnedClock
+            XCTAssertNotNil(readingsAtEntry)
+
+            connection.serviceReceivedDatagrams(path: 0)
+
+            XCTAssertEqual(connection.pinnedClock?.continuous, readingsAtEntry?.continuous)
+            XCTAssertEqual(connection.pinnedClock?.absolute, readingsAtEntry?.absolute)
+        }
+
+        XCTAssertNil(connection.pinnedClock)
+    }
+
+    /// The outermost call releases the pin on the way out; otherwise the connection answers every
+    /// later read with the same instant for the rest of its life.
+    func testTheOutermostCallReleasesThePin() {
+        connection.serviceReceivedDatagrams(path: 0)
+
+        XCTAssertNil(connection.pinnedClock)
+    }
+
     func testCreateInboundStreams() throws {
         let zeroStreamID: QUICStreamID = QUICStreamID(0)
         NetworkContext.implicitContext.async {

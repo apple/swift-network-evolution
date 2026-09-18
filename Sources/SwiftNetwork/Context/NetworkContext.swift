@@ -88,6 +88,17 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         func unschedule(reference: TimerReference)
         /// A Boolean value that indicates whether the current code is running in the scheduler.
         var runningInScheduler: Bool { get }
+        /// The scheduler's current notion of the continuous clock.
+        ///
+        /// The scheduler owns time because it owns the timers: one that holds scheduled tasks
+        /// instead of arming an OS timer has to report the time it fires them at, or a deadline it
+        /// just ran would still look like it is in the future.
+        var now: NetworkClock.Instant { get }
+        /// The scheduler's current notion of the absolute clock.
+        ///
+        /// Separate from `now` because the two clocks diverge across system sleep, and QUIC
+        /// reads the difference between them as a domain offset.
+        var nowAbsolute: NetworkClock.Instant { get }
     }
 
     /// Indicates the privacy level for the context.
@@ -389,6 +400,16 @@ extension NetworkContext {
             // TODO: Not supported by DispatchQueue
             fatalError("Unsupported")
         }
+        /// The system clock, read straight from the OS.
+        ///
+        /// `DefaultScheduler` is the only conformance that reads it. Every other scheduler
+        /// reports a time of its own, which is what lets a test decide what the library sees.
+        var now: NetworkClock.Instant {
+            NetworkClock.Instant.systemNow
+        }
+        var nowAbsolute: NetworkClock.Instant {
+            NetworkClock.Instant.systemNowAbsolute
+        }
     }
 }
 
@@ -441,6 +462,19 @@ extension NetworkContext {
     }
 
     #if !NETWORK_PRIVATE || NETWORK_STANDALONE
+    /// The context's current notion of the continuous clock.
+    ///
+    /// Time comes from whatever runs the context's timers, so a scheduler that holds scheduled
+    /// tasks instead of arming an OS timer reports the time it fires them at.
+    var now: NetworkClock.Instant {
+        scheduler.now
+    }
+
+    /// The context's current notion of the absolute clock.
+    var nowAbsolute: NetworkClock.Instant {
+        scheduler.nowAbsolute
+    }
+
     func resetTimer(for reference: TimerReference, to time: FutureTime) {
         switch time {
         case .unschedule:

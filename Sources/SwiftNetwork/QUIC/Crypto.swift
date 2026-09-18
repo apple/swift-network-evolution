@@ -173,6 +173,9 @@ final class QUICCrypto {
         initialOutboundData.empty()
         handshakeOutboundData.empty()
         applicationOutboundData.empty()
+        initialReassemblyQueue.dequeueAll()
+        handshakeReassemblyQueue.dequeueAll()
+        applicationReassemblyQueue.dequeueAll()
 
         self.parentConnection = nil
     }
