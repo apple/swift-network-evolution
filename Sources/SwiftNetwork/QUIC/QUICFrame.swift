@@ -1131,7 +1131,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
             // that case there is no one to deliver the reset to, so drop it.
             guard let existing = connection.flow(for: flowID) else {
                 Logger.proto.error(
-                    "stream \(streamID.value) has known flow but no QUICStreamInstance; dropping RESET_STREAM"
+                    "Stream \(streamID.value) has known flow but no QUICStreamInstance; dropping RESET_STREAM"
                 )
                 return true
             }
@@ -2486,7 +2486,7 @@ struct FrameNewConnectionID: QUICFrameProtocol {
         else {
             throw QUICError.frameParse(
                 FrameParseError.invalidValue(
-                    "cid length \(cidLength) not within 1...\(QUICConnectionID.maximumSize)"
+                    "CID length \(cidLength) not within 1...\(QUICConnectionID.maximumSize)"
                 )
             )
         }
@@ -2797,7 +2797,7 @@ struct FrameConnectionClose: ~Copyable, QUICFrameProtocol {
 
         guard let frameType = FrameType(rawValue: rawFrameType) else {
             throw QUICError.frameParse(
-                FrameParseError.invalidValue("invalid frame type: \(rawFrameType)")
+                FrameParseError.invalidValue("Invalid frame type: \(rawFrameType)")
             )
         }
         self.frameType = frameType

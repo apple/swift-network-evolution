@@ -137,7 +137,7 @@ final class Timer: PrefixedLoggable {
         if !avoidRecalculate {
             recalculate(timerNow)
         }
-        log.datapath("added timer [T\(identifier)]")
+        log.datapath("Added timer [T\(identifier)]")
         return identifier
     }
 
@@ -150,7 +150,7 @@ final class Timer: PrefixedLoggable {
                 break
             }
         }
-        log.datapath("removing timer [T\(identifier)]")
+        log.datapath("Removing timer [T\(identifier)]")
     }
 
     func stop(final: Bool = true) {
@@ -176,11 +176,11 @@ final class Timer: PrefixedLoggable {
                         fromNow = now.duration(to: entries[i].deadline)
                     }
                     log.datapath(
-                        "timer [T\(entries[i].identifier)] desc \(entries[i].description) deadline \(entries[i].deadline) (\(fromNow) from now)"
+                        "Timer [T\(entries[i].identifier)] desc \(entries[i].description) deadline \(entries[i].deadline) (\(fromNow) from now)"
                     )
                 } else {
                     log.datapath(
-                        "timer [T\(entries[i].identifier)] desc \(entries[i].description) (no deadline)"
+                        "Timer [T\(entries[i].identifier)] desc \(entries[i].description) (no deadline)"
                     )
                 }
             }
@@ -219,7 +219,7 @@ final class Timer: PrefixedLoggable {
             let deadlineDifference = earliestDeadline.duration(to: nextDeadline)
             if deadlineDifference < Timer.timerThreshold && deadlineDifference > (Timer.timerThreshold * -1) {
                 // Timer is already set to within a millisecond of where it needs to be, don't schedule it
-                log.datapath("timer already scheduled")
+                log.datapath("Timer already scheduled")
                 return
             }
         }
@@ -228,7 +228,7 @@ final class Timer: PrefixedLoggable {
         let oldDeadline = nextDeadline
         wakeup = .armed(now + delta)
         log.datapath(
-            "arming timer for the next \(delta) (now \(now)), new deadline \(nextDeadline) old deadline \(oldDeadline)"
+            "Arming timer for the next \(delta) (now \(now)), new deadline \(nextDeadline) old deadline \(oldDeadline)"
         )
         reference?.scheduleWakeup(after: delta, timerReference: timerReference)
     }
@@ -282,14 +282,14 @@ final class Timer: PrefixedLoggable {
 
         avoidRecalculate = true
         if extraDebugging {
-            log.datapath("running quic timer, now \(now)")
+            log.datapath("Running quic timer, now \(now)")
         }
         var index = 0
         while index < entries.count {
             if extraDebugging {
                 if entries[index].isEnabled && entries[index].deadline > now {
                     log.datapath(
-                        "timer [T\(entries[index].identifier)] desc \(entries[index].description) has deadline \(entries[index].deadline) > now \(now)"
+                        "Timer [T\(entries[index].identifier)] desc \(entries[index].description) has deadline \(entries[index].deadline) > now \(now)"
                     )
                 }
             }
@@ -297,7 +297,7 @@ final class Timer: PrefixedLoggable {
             if entries[index].isEnabled && entries[index].deadline <= now {
                 if extraDebugging {
                     log.datapath(
-                        "calling timer closure for [T\(entries[index].identifier)] (\(entries[index].description)) (deadline \(entries[index].deadline) <= now \(now))"
+                        "Calling timer closure for [T\(entries[index].identifier)] (\(entries[index].description)) (deadline \(entries[index].deadline) <= now \(now))"
                     )
                 }
                 entries[index].disable()

@@ -400,7 +400,7 @@ extension CongestionControlProtocol {
             let congestionWindowLimit = congestionWindow >> 2
             if pipeAckValue < congestionWindowLimit {
                 log.datapath(
-                    "congestion window not validated in slow-start, pipeack: \(pipeAckValue), congestionWindow \(congestionWindow)"
+                    "Congestion window not validated in slow-start, pipeack: \(pipeAckValue), congestionWindow \(congestionWindow)"
                 )
                 return false
             }
@@ -408,7 +408,7 @@ extension CongestionControlProtocol {
             let congestionWindowLimit = congestionWindow >> 1
             if pipeAckValue < congestionWindowLimit {
                 log.datapath(
-                    "congestion window not validated in congestion-avoidance, pipeack: \(pipeAckValue), congestionWindow: \(congestionWindow) "
+                    "Congestion window not validated in congestion-avoidance, pipeack: \(pipeAckValue), congestionWindow: \(congestionWindow) "
                 )
                 return false
             }
@@ -427,7 +427,7 @@ extension CongestionControlProtocol {
 
     mutating private func incrementBytesInFlight(_ bytesSent: Int) {
         bytesInFlight += UInt64(bytesSent)
-        log.datapath("bytes in flight updated to \(bytesInFlight)")
+        log.datapath("Bytes in flight updated to \(bytesInFlight)")
 
         QUICSignpost.bytesInFlight(bytesInFlight: Int(bytesInFlight))
     }
@@ -435,12 +435,12 @@ extension CongestionControlProtocol {
     mutating func decrementBytesInFlight(_ bytes: UInt64) {
         let result = bytesInFlight.subtractingReportingOverflow(bytes)
         if result.overflow {
-            log.fault("undeflow, \(bytes) decremented from \(bytesInFlight)")
+            log.fault("Undeflow, \(bytes) decremented from \(bytesInFlight)")
             bytesInFlight = 0
         } else {
             bytesInFlight = result.partialValue
         }
-        log.datapath("bytes in flight updated to \(bytesInFlight)")
+        log.datapath("Bytes in flight updated to \(bytesInFlight)")
         QUICSignpost.bytesInFlight(bytesInFlight: Int(bytesInFlight))
     }
 
@@ -468,7 +468,7 @@ extension CongestionControlProtocol {
         decrementBytesInFlight(bytesAcked)
         if packetInRecovery(sentTime: sentTime) {
             // Dont update the congestion window
-            log.datapath("packet was sent before recovery, ignore")
+            log.datapath("Packet was sent before recovery, ignore")
             return
         }
         // Congestion window is updated later in ackEnd
@@ -568,12 +568,12 @@ extension CongestionControlProtocol {
     func canSend(packetLength: Int) -> Bool {
         if availableCongestionWindow >= packetLength {
             log.datapath(
-                "can send packet because bytesInFlight \(bytesInFlight) + packetLength \(packetLength) <= congestionWindow \(congestionWindow)"
+                "Can send packet because bytesInFlight \(bytesInFlight) + packetLength \(packetLength) <= congestionWindow \(congestionWindow)"
             )
             return true
         } else {
             log.datapath(
-                "congestion limited because bytesInFlight \(bytesInFlight) + packetLength \(packetLength) > congestionWindow \(congestionWindow)"
+                "Congestion limited because bytesInFlight \(bytesInFlight) + packetLength \(packetLength) > congestionWindow \(congestionWindow)"
             )
             QUICSignpost.congestionWindowLimited(
                 bytesInFlight: Int(bytesInFlight),
@@ -585,7 +585,7 @@ extension CongestionControlProtocol {
 
     func logUpdate(qlog: QLog?) {
         if congestionWindow != UInt64.max {
-            log.datapath("congestion window set to \(congestionWindow) bytes, bytes in flight \(bytesInFlight)")
+            log.datapath("Congestion window set to \(congestionWindow) bytes, bytes in flight \(bytesInFlight)")
             QUICSignpost.congestionWindow(congestionWindow: Int(congestionWindow))
         }
         #if QlogOutput

@@ -59,7 +59,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
         now: NetworkClock.Instant
     ) {
         log.datapath(
-            "appending pn \(packetNumber) for space \(packetNumberSpace)"
+            "Appending pn \(packetNumber) for space \(packetNumberSpace)"
         )
 
         var oldLargest: PacketNumber
@@ -143,7 +143,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
         let index = blocks.firstIndex(where: { $0.start == startPN && $0.end == endPN })
         if let index {
             log.datapath(
-                "removing ACK block \(startPN.value)-\(endPN.value) at index \(index), current block count: \(blocks.count)"
+                "Removing ACK block \(startPN.value)-\(endPN.value) at index \(index), current block count: \(blocks.count)"
             )
             blocks.remove(at: index)
             // The next ACK must not be compressed.
@@ -173,7 +173,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
             // compress it.
             generationCount += 1
         } else if _slowPath(packetNumber < oldLargest) {
-            log.fault("packetNumber \(packetNumber) < oldest \(oldLargest)")
+            log.fault("PacketNumber \(packetNumber) < oldest \(oldLargest)")
         }
     }
 
@@ -215,7 +215,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
     ) -> Int {
         guard blocks.first != nil && needsTransmission == true, let lastBlock = blocks.last else {
             log.datapath(
-                "no ACKs to send for \(packetNumberSpace) (needsTransmission \(needsTransmission))"
+                "No ACKs to send for \(packetNumberSpace) (needsTransmission \(needsTransmission))"
             )
             return 0
         }
@@ -224,7 +224,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
             return 0
         }
         let largest = lastBlock.end
-        log.datapath("processing ACKs for \(packetNumberSpace)")
+        log.datapath("Processing ACKs for \(packetNumberSpace)")
         // Calculate ack_delay if assemble() is called
         // without calling size().
         switch packetNumberSpace {
@@ -518,7 +518,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     mutating func timerFired(at timeNow: NetworkClock.Instant) {
-        log.datapath("delayed ACK timer fired")
+        log.datapath("Delayed ACK timer fired")
         if let connection = connection {
             if sendPending(
                 isAckSet: connection.isAckSet,
@@ -766,7 +766,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             return
         }
         timerScheduled = true
-        log.datapath("scheduling delayed ACK in \(maxDelay)")
+        log.datapath("Scheduling delayed ACK in \(maxDelay)")
         if let timerID = timerID {
             if let connection {
                 connection.timer.reschedule(
@@ -808,7 +808,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             scheduleDelayedAck()
             return false
         } else {
-            log.datapath("sending ACKs immediately")
+            log.datapath("Sending ACKs immediately")
             return schedulePending(
                 on: path,
                 isAckSet: isAckSet,

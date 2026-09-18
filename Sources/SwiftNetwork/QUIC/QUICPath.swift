@@ -351,7 +351,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
     func setSCID(_ scid: QUICConnectionID) {
         self.scid = scid
         log.datapath(
-            "assigning SCID \(scid.description) to path ID \(self.identifier)"
+            "Assigning SCID \(scid.description) to path ID \(self.identifier)"
         )
     }
 
@@ -361,7 +361,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
             changeState(to: .cidAssigned)
         }
         log.datapath(
-            "assigning DCID \(dcid.description) to path ID \(self.identifier)"
+            "Assigning DCID \(dcid.description) to path ID \(self.identifier)"
         )
     }
 
