@@ -436,8 +436,7 @@ final class PacketTests: XCTestCase {
 
         let vnPacket = QUICConnectionUtilities.createVersionNegotiationPacket(
             destinationConnectionID: destinationConnectionID,
-            sourceConnectionID: sourceConnectionID,
-            supportedVersions: [.v1]
+            sourceConnectionID: sourceConnectionID
         )
 
         // firstByte(1) + version(4) + dcidLen(1) + dcid(8) + scidLen(1) + scid(4) + v1(4) + negotiationPattern(4)
@@ -485,14 +484,13 @@ final class PacketTests: XCTestCase {
         )
 
         let packetWithNoVersions = QUICConnectionUtilities.createVersionNegotiationPacket(
-            destinationConnectionID: destinationConnectionID,
-            sourceConnectionID: sourceConnectionID,
-            supportedVersions: []
+            destinationConnectionID: QUICConnectionID([])!,
+            sourceConnectionID: QUICConnectionID([])!
         )
         XCTAssertEqual(
             packetWithNoVersions,
             [],
-            "Version negotiation packet bytes should be empty when no supported versions are provided"
+            "Version negotiation packet bytes should be empty because SCID and DCID are not long enough to form a valid QUIC packet"
         )
     }
 

@@ -222,23 +222,17 @@ public struct QUICConnectionUtilities {
         }
     }
 
-    /// Creates a version negotiation packet from the given scid, dcid, and supported versions.
-    /// NOTE: Includes the negotiation pattern already.
+    /// Creates a version negotiation packet from the given SCID, DCID.
+    /// NOTE: Includes the negotiation pattern already and the supported versions of the QUIC stack.
     ///
     /// - Parameters:
     ///     - destinationConnectionID: The cid to include on the packet scid
     ///     - sourceConnectionID: The cid to include on the packet dcid
-    ///     - supportedVersions: The supported versions to advertise
     public static func createVersionNegotiationPacket(
         destinationConnectionID: QUICConnectionID,
-        sourceConnectionID: QUICConnectionID,
-        supportedVersions: [QUICVersion]
+        sourceConnectionID: QUICConnectionID
     ) -> [UInt8] {
-        guard supportedVersions.count > 0 else {
-            Logger.proto.error("Failed to provide supported versions")
-            return []
-        }
-        let versions: [QUICVersion] = supportedVersions + [.negotiationPattern]
+        let versions: [QUICVersion] = [.v1, .negotiationPattern]
 
         // Version Negotiation packets are special, they are not a specific frame type and they do not sealed so they can be sent as a one-off.
         // N.B.: The packet scid/dcid are swapped when constructing QUICVersionNegotiation
