@@ -22,6 +22,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 #if canImport(BasicContainers)
 import BasicContainers
 internal import DequeModule
@@ -34,6 +38,9 @@ let recoveryTestsLogPrefixer: LogPrefixer = LogPrefixer("[RecoveryTests]")
 final class RecoveryTests: XCTestCase {
     var connection = QUICConnection(context: .implicitContext)
     var path: QUICPath! = nil
+    // The base linkages are storage-backed, so lower harnesses have to come from storage
+    // rather than being wrapped in a bare linkage.
+    let storage = TestNetworkProtocolStorage(context: .implicitContext)
 
     override func setUp() {
         let expectation = XCTestExpectation()
@@ -41,17 +48,25 @@ final class RecoveryTests: XCTestCase {
             try? self.connection.setup(remote: nil, local: nil, parameters: nil, path: nil)
             self.connection.recovery = Recovery(logPrefixer: recoveryTestsLogPrefixer)
             self.connection.recovery.connection = self.connection
-            let lowerHarness = DatagramLowerHarness(
+            let (lowerHarness, lowerHarnessLinkage) = self.storage.createDatagramLowerHarness(
                 identifier: "Client",
                 context: .implicitContext
             )
-            lowerHarness.connect()
-            var newPath = QUICPath(parent: self.connection)
+            lowerHarness.fromExternal { eventContext in
+                lowerHarness.connect(in: &eventContext)
+            }
+            var newPath = QUICPath.makeFromExternalTest(parent: self.connection)
             newPath.set(interface: nil, priority: 1, isInitial: true)
             newPath.assignDCID(QUICConnectionID(0))
             newPath.setSCID(QUICConnectionID(0))
-            try? newPath.attachLowerProtocol(
-                lowerHarness.reference,
+            // Bind both directions: `attachLowerProtocol` only points the path at the harness,
+            // so the harness also needs the path as its upper protocol or its `validate(upper:)`
+            // rejects every call and `getDatagramsToSend` fails with EINVAL.
+            // The path is a framework protocol, so it is bound through the base form of the
+            // harness's linkage -- which carries the box that reaches back to the harness.
+            _ = try? newPath.attachLowerProtocol(lowerHarnessLinkage.base)
+            try? lowerHarnessLinkage.base.invokeAttachUpperProtocol(
+                newPath.asUpperLinkage(),
                 remote: nil,
                 local: nil,
                 parameters: nil,
@@ -59,7 +74,7 @@ final class RecoveryTests: XCTestCase {
             )
             self.path = newPath
             self.connection.currentPath = newPath
-            self.connection.multiplexingPaths[newPath.identifier] = newPath
+            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -67,12 +82,23 @@ final class RecoveryTests: XCTestCase {
 
     override func tearDown() {
         self.connection.currentPath = nil
+        self.connection.context.onQueue {
+            self.path.destroyFromExternalTest()
+        }
+        self.connection.multiplexingPaths.removeAll()
+        self.path = nil
     }
 
     func sentPacket(_ sentPacket: consuming SentPacketRecord, connection: QUICConnection) {
         var packets = NetworkUniqueDeque<SentPacketRecord>()
         packets.append(sentPacket)
-        connection.recovery.recordSentPackets(&packets, connection: connection)
+        // Driven straight from the test body rather than from the context queue, so
+        // acquire the state directly instead of going through `fromExternal`.
+        connection.recovery.recordSentPackets(
+            &packets,
+            connection: connection,
+            in: &connection.context.eventContext
+        )
     }
 
     func testInitialValues() {
@@ -117,7 +143,7 @@ final class RecoveryTests: XCTestCase {
         packet.isInFlightEligible = true
         packet.isAckEliciting = true
         packet.totalLength = 20 + 96
-        let sentPath = connection.currentPath?.identifier ?? .none
+        let sentPath = connection.currentPath?.pathIdentifier ?? .none
         packet.sentPath = sentPath
         let space = packet.identifier.space
         sentPacket(packet, connection: connection)
@@ -139,7 +165,7 @@ final class RecoveryTests: XCTestCase {
         packet.isInFlightEligible = true
         packet.isAckEliciting = true
         packet.totalLength = 500 + 500
-        packet.sentPath = connection.currentPath?.identifier ?? .none
+        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
         let space = packet.identifier.space
 
         sentPacket(packet, connection: connection)
@@ -189,7 +215,7 @@ final class RecoveryTests: XCTestCase {
         packet.isInFlightEligible = true
         packet.isAckEliciting = true
         packet.totalLength = 500 + 500
-        packet.sentPath = connection.currentPath?.identifier ?? .none
+        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
         let space = packet.identifier.space
 
         sentPacket(packet, connection: connection)
@@ -239,7 +265,7 @@ final class RecoveryTests: XCTestCase {
         packet.isInFlightEligible = true
         packet.isAckEliciting = true
         packet.totalLength = 500 + 500
-        packet.sentPath = connection.currentPath?.identifier ?? .none
+        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
         let space = packet.identifier.space
 
         sentPacket(packet, connection: connection)
@@ -289,7 +315,7 @@ final class RecoveryTests: XCTestCase {
         packet.isInFlightEligible = true
         packet.isAckEliciting = false
         packet.totalLength = 500 + 516
-        let sentPath = connection.currentPath?.identifier ?? .none
+        let sentPath = connection.currentPath?.pathIdentifier ?? .none
         packet.sentPath = sentPath
         let space = packet.identifier.space
 
@@ -346,7 +372,7 @@ final class RecoveryTests: XCTestCase {
         packet.isInFlightEligible = true
         packet.isAckEliciting = true
         packet.totalLength = 500 + 540
-        let sentPath = connection.currentPath?.identifier ?? .none
+        let sentPath = connection.currentPath?.pathIdentifier ?? .none
         packet.sentPath = sentPath
         let space = packet.identifier.space
         sentPacket(packet, connection: connection)
@@ -374,7 +400,8 @@ final class RecoveryTests: XCTestCase {
         connection.recovery.receivedAck(
             ack: ackFrame,
             ackedPath: connection.currentPath!,
-            connection: connection
+            connection: connection,
+            in: &connection.context.eventContext
         )
 
         // Validate that the congestion window has grown after the packet is acked
@@ -408,7 +435,7 @@ final class RecoveryTests: XCTestCase {
         packet.isInFlightEligible = true
         packet.isAckEliciting = false
         packet.totalLength = 500 + 524
-        packet.sentPath = connection.currentPath?.identifier ?? .none
+        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
         packet.transmittedItems = TransmittedItems()
         packet.transmittedItems.ackFrame = .init(makeAckFrame())
         let space = packet.identifier.space
@@ -428,12 +455,12 @@ final class RecoveryTests: XCTestCase {
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
         }
 
-        connection.recovery
-            .receivedAck(
-                ack: makeAckFrame(),
-                ackedPath: connection.currentPath!,
-                connection: connection
-            )
+        connection.recovery.receivedAck(
+            ack: makeAckFrame(),
+            ackedPath: connection.currentPath!,
+            connection: connection,
+            in: &connection.context.eventContext
+        )
 
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(packetNumberSpace: space),
@@ -456,7 +483,7 @@ final class RecoveryTests: XCTestCase {
         packet.isInFlightEligible = true
         packet.isAckEliciting = true
         packet.totalLength = 540 + 500
-        packet.sentPath = connection.currentPath?.identifier ?? .none
+        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
         let space = packet.identifier.space
         sentPacket(packet, connection: connection)
         XCTAssertEqual(
@@ -483,7 +510,9 @@ final class RecoveryTests: XCTestCase {
         }
         let expectation = XCTestExpectation()
         self.connection.context.async {
-            self.connection.recovery.resetAll()
+            self.connection.fromExternal { eventContext in
+                self.connection.recovery.resetAll(in: &eventContext)
+            }
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -571,7 +600,7 @@ final class RecoveryTests: XCTestCase {
         packet.totalLength = 20 + 96
         // Pretend there was an ACK eliciting frame inside the packet.
         packet.transmittedItems.ping = true
-        let sentPath = connection.currentPath?.identifier ?? .none
+        let sentPath = connection.currentPath?.pathIdentifier ?? .none
         packet.sentPath = sentPath
         var timeNow = NetworkClock.Instant.systemNow
         sentPacket(packet, connection: connection)
@@ -598,7 +627,9 @@ final class RecoveryTests: XCTestCase {
         var expectation = XCTestExpectation()
         self.connection.context.async {
             timeNow = timeNow.advanced(by: .seconds(1))
-            self.connection.recovery.timerFired(at: timeNow)
+            self.connection.fromExternal { eventContext in
+                self.connection.recovery.timerFired(at: timeNow, in: &eventContext)
+            }
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -619,7 +650,9 @@ final class RecoveryTests: XCTestCase {
         expectation = XCTestExpectation()
         self.connection.context.async {
             timeNow = timeNow.advanced(by: .seconds(2))
-            self.connection.recovery.timerFired(at: timeNow)
+            self.connection.fromExternal { eventContext in
+                self.connection.recovery.timerFired(at: timeNow, in: &eventContext)
+            }
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -640,7 +673,9 @@ final class RecoveryTests: XCTestCase {
         expectation = XCTestExpectation()
         self.connection.context.async {
             timeNow = timeNow.advanced(by: .seconds(4))
-            self.connection.recovery.timerFired(at: timeNow)
+            self.connection.fromExternal { eventContext in
+                self.connection.recovery.timerFired(at: timeNow, in: &eventContext)
+            }
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -665,9 +700,17 @@ final class RecoveryTests: XCTestCase {
     // idle timeout closes it.
     func testValidatedPTOProbesWhenTailRetransmitProducesNothing() {
         // Register a flow and close it, so its STREAM data can never be rebuilt for retransmission.
-        let stream = QUICStreamInstance(parent: connection, inbound: true)
-        stream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
-        connection.multiplexedFlows[stream.identifier] = stream
+        var streamStorage: QUICStreamInstance? = connection.context.onQueue {
+            let stream = QUICStreamInstance(parent: connection, inbound: true)
+            defer { stream.destroyFromExternalTest() }
+            stream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
+            return stream
+        }
+        // The stream's `deinit` reaches `fromExternal`, so release it on the context queue
+        // rather than letting it deallocate on the main thread at function exit.
+        defer { connection.context.onQueue { streamStorage = nil } }
+        let stream = streamStorage!
+        connection.multiplexedFlows[stream.flowIdentifier] = stream
         stream.closed = true
         XCTAssertFalse(stream.isOpen)
 
@@ -679,10 +722,10 @@ final class RecoveryTests: XCTestCase {
         packet.isInFlightEligible = true
         packet.isAckEliciting = true
         packet.totalLength = 20 + 96
-        packet.sentPath = connection.currentPath?.identifier ?? .none
+        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
         packet.transmittedItems.sentStreams.append(
             TransmittedItems.SentStream(
-                flowID: stream.identifier,
+                flowID: stream.flowIdentifier,
                 streamID: QUICStreamID(0),
                 offset: 0,
                 length: 32,
@@ -705,8 +748,14 @@ final class RecoveryTests: XCTestCase {
         // Fire the PTO with no new ack-eliciting data pending.
         let expectation = XCTestExpectation()
         self.connection.context.async {
-            self.connection.withCurrentPath { path in
-                self.connection.recovery.sendPTO(connection: self.connection, path: path)
+            self.connection.fromExternal { eventContext in
+                self.connection.withCurrentPath { path in
+                    self.connection.recovery.sendPTO(
+                        connection: self.connection,
+                        path: path,
+                        in: &eventContext
+                    )
+                }
             }
             expectation.fulfill()
         }
@@ -726,11 +775,19 @@ final class RecoveryTests: XCTestCase {
     func testPTOProbesWhenNewDataProducesNothing() {
         // A stream queued for service whose flow has since been torn down: it is absent from
         // `multiplexedFlows`, so writing it produces no payload.
-        let unregisteredStream = QUICStreamInstance(parent: connection, inbound: true)
-        unregisteredStream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
-        XCTAssertNil(connection.flow(for: unregisteredStream.identifier))
+        var unregisteredStreamStorage: QUICStreamInstance? = connection.context.onQueue {
+            let stream = QUICStreamInstance(parent: connection, inbound: true)
+            defer { stream.destroyFromExternalTest() }
+            stream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
+            return stream
+        }
+        // The stream's `deinit` reaches `fromExternal`, so release it on the context queue
+        // rather than letting it deallocate on the main thread at function exit.
+        defer { connection.context.onQueue { unregisteredStreamStorage = nil } }
+        let unregisteredStream = unregisteredStreamStorage!
+        XCTAssertNil(connection.flow(for: unregisteredStream.flowIdentifier))
         connection.withPendingItems(for: .initial) { pendingItems in
-            pendingItems.streamsToService.append(unregisteredStream.identifier)
+            pendingItems.streamsToService.append(unregisteredStream.flowIdentifier)
             pendingItems.stream = true
         }
 
@@ -746,7 +803,7 @@ final class RecoveryTests: XCTestCase {
         packet.isInFlightEligible = true
         packet.isAckEliciting = true
         packet.totalLength = 20 + 96
-        packet.sentPath = connection.currentPath?.identifier ?? .none
+        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
 
         sentPacket(packet, connection: connection)
 
@@ -756,8 +813,14 @@ final class RecoveryTests: XCTestCase {
 
         let expectation = XCTestExpectation()
         self.connection.context.async {
-            self.connection.withCurrentPath { path in
-                self.connection.recovery.sendPTO(connection: self.connection, path: path)
+            self.connection.fromExternal { eventContext in
+                self.connection.withCurrentPath { path in
+                    self.connection.recovery.sendPTO(
+                        connection: self.connection,
+                        path: path,
+                        in: &eventContext
+                    )
+                }
             }
             expectation.fulfill()
         }
@@ -783,7 +846,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 100
-            packet.sentPath = connection.currentPath?.identifier ?? .none
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
             sentPacket(packet, connection: connection)
         }
     }

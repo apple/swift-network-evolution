@@ -345,7 +345,10 @@ extension QUICConnection {
         }
     }
 
-    func updateLastReceivedOffsetForZombie(lastOffsetDelta: UInt64) {
+    func updateLastReceivedOffsetForZombie(
+        lastOffsetDelta: UInt64,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         let connectionMaxData = flowControlState.inboundMaxData
         let connectionCurrentLargestData = flowControlState.largestInboundByteOffsetReceived
         guard connectionMaxData >= connectionCurrentLargestData,
@@ -354,7 +357,7 @@ extension QUICConnection {
             log.error(
                 "Received final size adjustment \(lastOffsetDelta) which had exceeds connection flow control limits"
             )
-            close(with: .flowControlError, "exceeded flow control limits")
+            close(with: .flowControlError, "exceeded flow control limits", in: &eventContext)
             return
         }
         // This cannot overflow, since the value has been just checked
@@ -403,7 +406,9 @@ extension QUICStreamInstance {
         if self.maximumStreamDataSize == 0 {
             updateOutboundFlowControlCredit(connection: connection)
             if self.maximumStreamDataSize > 0 {
-                upper.deliverOutboundRoomAvailableEvent(reference)
+                // The packet-building path does not carry the event context, so the notification
+                // is queued and delivered once the send that reopened the permit completes.
+                connection.queueOutboundRoomAvailableEvent(for: self)
             }
         }
     }
@@ -420,7 +425,7 @@ extension QUICStreamInstance {
         if flowControlState.totalOutboundBytesSent >= flowControlState.outboundMaxData {
             if !self.hasSentDataBlocked {
                 self.hasSentDataBlocked = true
-                pendingItems.appendStreamDataBlockedFlow(self.identifier)
+                pendingItems.appendStreamDataBlockedFlow(self.flowIdentifier)
             }
         }
     }
@@ -519,7 +524,7 @@ extension QUICStreamInstance {
                 log.datapath(
                     "Updating MAX_STREAM_DATA for \(streamID!.value) to \(flowControlState.inboundMaxData)"
                 )
-                connection.applicationPendingItems.appendMaxStreamDataFlow(self.identifier)
+                connection.applicationPendingItems.appendMaxStreamDataFlow(self.flowIdentifier)
                 hasAdvertisedMaxStreamData = true
                 sendConnectionCredit = true
             }
@@ -618,7 +623,8 @@ extension QUICStreamInstance {
     @inline(always)
     func updateLastReceivedOffset(
         to newLastReceivedOffset: UInt64,
-        connection: QUICConnection
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
     ) -> UInt64? {
         let currentValue = flowControlState.largestInboundByteOffsetReceived
         guard newLastReceivedOffset >= currentValue else { return nil }
@@ -630,7 +636,11 @@ extension QUICStreamInstance {
             log.error(
                 "Received final size \(newLastReceivedOffset) which had exceeds stream flow control limits"
             )
-            connection.close(with: .flowControlError, "exceeded stream flow control limits")
+            connection.close(
+                with: .flowControlError,
+                "exceeded stream flow control limits",
+                in: &eventContext
+            )
             return nil
         }
 
@@ -643,7 +653,11 @@ extension QUICStreamInstance {
             log.error(
                 "Received final size \(newLastReceivedOffset) which had exceeds connection flow control limits"
             )
-            connection.close(with: .flowControlError, "exceeded flow control limits")
+            connection.close(
+                with: .flowControlError,
+                "exceeded flow control limits",
+                in: &eventContext
+            )
             return nil
         }
         // This cannot overflow, since the value has been just checked

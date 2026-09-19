@@ -22,6 +22,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 final class SendItemsTests: XCTestCase {
 
@@ -60,6 +64,7 @@ final class SendItemsTests: XCTestCase {
         defer { frame.finalize(success: true) }
         let context = NetworkContext(identifier: "SendItemsTests")
         let connection = QUICConnection(context: context)
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         var shorthandFrames: [QUICShorthandFrame]? = nil
         XCTAssertNoThrow(
             try pendingItems.write(
@@ -244,8 +249,8 @@ final class SendItemsTests: XCTestCase {
 
     func testStreamDataBlocked_pendingFlagMirrorsDequeAfterPartialDequeue() {
         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
-        pendingItems.appendStreamDataBlockedFlow(.outboundFlow(index: 1))
-        pendingItems.appendStreamDataBlockedFlow(.outboundFlow(index: 2))
+        pendingItems.appendStreamDataBlockedFlow(MultiplexedFlowIdentifier(testValue: 1))
+        pendingItems.appendStreamDataBlockedFlow(MultiplexedFlowIdentifier(testValue: 2))
 
         var transmittedItems = TransmittedItems()
         FrameStreamDataBlocked.addToTransmittedItems(

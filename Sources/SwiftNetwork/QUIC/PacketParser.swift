@@ -89,7 +89,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         frame: inout Frame,
         packet: inout Packet,
         connection: QUICConnection,
-        isLastPacketInFrame: Bool
+        isLastPacketInFrame: Bool,
+        in eventContext: inout NetworkContext.EventContext
     ) throws(QUICError) {
         if QUICShorthandFrame.shouldGenerateShorthandFrames(hasQLog: (connection.qLog != nil)) {
             packet.shorthandFrames = .init()
@@ -112,7 +113,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             // encoding."
 
             if _slowPath(type.isOneByte && typeLength != 1) {
-                connection.close(with: .protocolViolation, "Invalid frame type encoding")
+                connection.close(with: .protocolViolation, "Invalid frame type encoding", in: &eventContext)
                 throw QUICError.frameParse(
                     FrameParseError.invalidValue("Invalid frame type encoding")
                 )
@@ -122,7 +123,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                 frame: &frame,
                 packet: &packet,
                 connection: connection,
-                isLastPacketInFrame: isLastPacketInFrame
+                isLastPacketInFrame: isLastPacketInFrame,
+                in: &eventContext
             )
             self.framesReceived.append(quicFrame)
         }
@@ -192,7 +194,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         frame: inout Frame,
         connection: QUICConnection,
         path: QUICPath,
-        ecn: IPProtocol.ECN
+        ecn: IPProtocol.ECN,
+        in eventContext: inout NetworkContext.EventContext
     ) -> Packet? {
         let originalLength = frame.unclaimedLength
         if _slowPath(originalLength < Constants.minimumPacketSize) {
@@ -325,7 +328,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             guard reservedBits == 0 else {
                 let reason = "Reserved bits are not zero"
                 connection.log.error("\(reason)")
-                connection.close(with: .protocolViolation, reason)
+                connection.close(with: .protocolViolation, reason, in: &eventContext)
                 return nil
             }
 
@@ -339,7 +342,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                     frame: &frame,
                     packet: &packet,
                     connection: connection,
-                    isLastPacketInFrame: extraLength == 0
+                    isLastPacketInFrame: extraLength == 0,
+                    in: &eventContext
                 )
             } catch {
                 // Explicitly release finalize frames in case of error
