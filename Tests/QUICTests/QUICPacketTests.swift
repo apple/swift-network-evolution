@@ -425,7 +425,7 @@ final class PacketTests: XCTestCase {
             }
             XCTAssertEqual(
                 networkError.category?.identifier,
-                "QUICUtilities.packetFailedToBuild",
+                "QUICUtilities",
                 "Should fail with the packetFailedToBuild category due to an invalid packet size"
             )
         }
@@ -502,7 +502,7 @@ final class PacketTests: XCTestCase {
             }
             XCTAssertEqual(
                 networkError.category?.identifier,
-                "QUICUtilities.packetFailedToBuild",
+                "QUICUtilities",
                 "Should fail with the packetFailedToBuild category due to an invalid packet size"
             )
         }
