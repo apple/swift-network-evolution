@@ -477,7 +477,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
 
     @discardableResult
     mutating func packetLost(
-        path: QUICPath? = nil,
+        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -498,7 +498,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
 
     mutating func ackEnd(
         rtt: borrowing RTT,
-        path: QUICPath? = nil,
+        path: QUICPath?,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -540,7 +540,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
     }
 
     mutating func processECN(
-        path: QUICPath? = nil,
+        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,

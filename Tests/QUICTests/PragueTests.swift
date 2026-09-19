@@ -22,12 +22,18 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 final class PragueTests: XCTestCase {
 
     var rtt: RTT!
     let mss = Constants.initialMSS
     var prague: Prague!
+    // These tests drive the algorithm directly, with no path to pace.
+    let noPath: QUICPath? = nil
     var pacer: Pacer = Pacer(enabled: true)
     let defaultCongestionWindow = UInt64(12000)
 
@@ -56,7 +62,7 @@ final class PragueTests: XCTestCase {
         prague.packetSent(bytesSent: 1000)
         prague.ackBegin()
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         XCTAssertEqual(prague.availableCongestionWindow, 13000)
         prague.reset(mss: Constants.initialMSS)
         XCTAssertEqual(prague.availableCongestionWindow, defaultCongestionWindow)
@@ -68,6 +74,7 @@ final class PragueTests: XCTestCase {
         let time = NetworkClock.Instant.testBase
         prague.packetSent(bytesSent: 1000)
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: time,
             mss: mss,
@@ -95,8 +102,9 @@ final class PragueTests: XCTestCase {
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: time,
             mss: mss,
@@ -109,7 +117,7 @@ final class PragueTests: XCTestCase {
         prague.packetSent(bytesSent: 1000)
         prague.ackBegin()
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         XCTAssertEqual(prague.availableCongestionWindow, 11953)
     }
 
@@ -132,6 +140,7 @@ final class PragueTests: XCTestCase {
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.processECN(
+            path: noPath,
             ceCount: 1,
             packetsAcked: 6,
             largestSentPN: 5,
@@ -141,7 +150,7 @@ final class PragueTests: XCTestCase {
             smoothedRTT: rtt.smoothedRTT,
             now: time
         )
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         // cwnd after reduction = 6313 and after AI increase for 5 unmarked packets = 6826
         XCTAssertEqual(prague.availableCongestionWindow, 6826)
 
@@ -149,7 +158,7 @@ final class PragueTests: XCTestCase {
         prague.packetSent(bytesSent: 1000)
         prague.ackBegin()
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         /* congestion window grows during congestion avoidance */
         XCTAssertEqual(prague.availableCongestionWindow, 6924)
     }
@@ -171,6 +180,7 @@ final class PragueTests: XCTestCase {
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.processECN(
+            path: noPath,
             ceCount: 1,
             packetsAcked: 4,
             largestSentPN: 5,
@@ -180,7 +190,7 @@ final class PragueTests: XCTestCase {
             smoothedRTT: rtt.smoothedRTT,
             now: time
         )
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         // cwnd after decrease = 6282, after AI increase = 6582
         // allowed cwnd = cwnd - bytes_in_flight = 6582 - 2000 = 4582
         XCTAssertEqual(prague.availableCongestionWindow, 4582)
@@ -189,6 +199,7 @@ final class PragueTests: XCTestCase {
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.processECN(
+            path: noPath,
             ceCount: 2,
             packetsAcked: 6,
             largestSentPN: 5,
@@ -198,7 +209,7 @@ final class PragueTests: XCTestCase {
             smoothedRTT: rtt.smoothedRTT,
             now: time
         )
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         // cwnd is 6664 after AI for 1 unmarked packet
         XCTAssertEqual(prague.availableCongestionWindow, 6664)
     }
@@ -220,19 +231,20 @@ final class PragueTests: XCTestCase {
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: time,
             mss: mss,
             smoothedRTT: .microseconds(0),
             now: time
         )
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: true, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: true, now: time)
         XCTAssertEqual(prague.availableCongestionWindow, 8400)
         time = NetworkClock.Instant.testBase.advanced(by: .microseconds(100))
         prague.packetSent(bytesSent: 1000)
         prague.ackBegin()
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         XCTAssertEqual(prague.availableCongestionWindow, 8475)
     }
 
@@ -252,7 +264,7 @@ final class PragueTests: XCTestCase {
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         XCTAssertEqual(prague.availableCongestionWindow, 18000)
         prague.idleTimeout(mss: mss)
         XCTAssertEqual(prague.availableCongestionWindow, defaultCongestionWindow)
@@ -286,6 +298,7 @@ final class PragueTests: XCTestCase {
         prague.packetsAcked(bytesAcked: 1000, sentTime: sentTime)
         prague.packetsAcked(bytesAcked: 1000, sentTime: sentTime)
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -300,6 +313,7 @@ final class PragueTests: XCTestCase {
         prague.packetSent(bytesSent: 1000)
         prague.packetSent(bytesSent: 1000)
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -307,6 +321,7 @@ final class PragueTests: XCTestCase {
             now: detectedAt
         )
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -314,6 +329,7 @@ final class PragueTests: XCTestCase {
             now: detectedAt
         )
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -321,6 +337,7 @@ final class PragueTests: XCTestCase {
             now: detectedAt
         )
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -332,6 +349,7 @@ final class PragueTests: XCTestCase {
         prague.packetSent(bytesSent: 1000)
         prague.packetSent(bytesSent: 1000)
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -339,6 +357,7 @@ final class PragueTests: XCTestCase {
             now: detectedAt
         )
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -365,6 +384,7 @@ final class PragueTests: XCTestCase {
         prague.packetSent(bytesSent: 1000)
         prague.packetSent(bytesSent: 1000)
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: time,
             mss: mss,
@@ -385,13 +405,14 @@ final class PragueTests: XCTestCase {
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetLost(
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: time,
             mss: mss,
             smoothedRTT: .microseconds(0),
             now: time
         )
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: true, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: true, now: time)
         XCTAssertEqual(prague.availableCongestionWindow, 8400)
         prague.idleTimeout(mss: mss)
         XCTAssertEqual(prague.availableCongestionWindow, 8400)
@@ -403,7 +424,7 @@ final class PragueTests: XCTestCase {
         prague.packetsAcked(bytesAcked: 1200, sentTime: time)
         prague.packetsAcked(bytesAcked: 1200, sentTime: time)
         prague.packetsAcked(bytesAcked: 1200, sentTime: time)
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         /* Enter CA */
         XCTAssertEqual(prague.availableCongestionWindow, 12000)
         for _ in 0..<12 {
@@ -413,7 +434,7 @@ final class PragueTests: XCTestCase {
         for _ in 0..<12 {
             prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         }
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         XCTAssertEqual(prague.availableCongestionWindow, 13200)
     }
 
@@ -432,7 +453,7 @@ final class PragueTests: XCTestCase {
         prague.ackBegin()
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
         prague.packetsAcked(bytesAcked: 1000, sentTime: time)
-        prague.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        prague.ackEnd(rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
 
         prague.filloutDataTransferSnapshot(dataTransferSnapshot: &dataTransferSnapshot)
         XCTAssertEqual(
@@ -444,7 +465,11 @@ final class PragueTests: XCTestCase {
     func testPragueExercisingPacer() {
         // Path holds both Pacer and Prague, thats why its setup this way.
         let connection = QUICConnection(context: NetworkContext.implicitContext)
-        let path = QUICPath(parent: connection)
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+        let path = connection.context.onQueue {
+            QUICPath.makeFromExternalTest(parent: connection)
+        }
+        defer { connection.context.onQueue { path.destroyFromExternalTest() } }
         path.pacePackets = true
         path.set(interface: nil, priority: 1, isInitial: true)
         // startupRate is 10 Mbps, this will affect the pacing time
