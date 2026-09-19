@@ -2,7 +2,6 @@
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
-import Foundation
 
 // Availability Macros
 
@@ -38,6 +37,9 @@ let allApplePlatforms: [Platform] = [
     .driverKit, .iOS, .macCatalyst, .macOS, .tvOS, .visionOS, .watchOS,
 ]
 
+let swiftFuzzFlags: [String] = ["-sanitize=fuzzer,address"]
+let fuzzBuildCondition: BuildSettingCondition = .when(traits: ["Fuzzing"])
+
 // Logging levels, qlog output, and QUIC signposts are configured via package
 // traits. See the `traits:` list on the `Package(...)` initializer below.
 let settings: [SwiftSetting] = [
@@ -49,6 +51,7 @@ let settings: [SwiftSetting] = [
     .enableExperimentalFeature("Lifetimes"),
     .enableExperimentalFeature("AnyAppleOSAvailability"),
     .enableUpcomingFeature("ExistentialAny"),
+    .unsafeFlags(swiftFuzzFlags, fuzzBuildCondition),
 ]
 
 let package = Package(
@@ -92,6 +95,11 @@ let package = Package(
             name: "DISABLE_SHIM_CRYPTO_SPAN_APIS",
             description: "Disable backwards compatible crypto shim for performance sensitive cases"
         ),
+        .trait(
+            name: "Fuzzing",
+            description:
+                "Builds with fuzzer and address sanitizer instrumentation, for use with fuzzing"
+        ),
         .default(enabledTraits: []),
     ],
     dependencies: [
@@ -112,7 +120,10 @@ let package = Package(
                 .product(name: "CryptoExtras", package: "swift-crypto"),
                 .product(name: "SwiftTLS", package: "swift-tls"),
             ],
-            swiftSettings: availabilityMacros + settings
+            swiftSettings: availabilityMacros + settings + [
+                // Fuzzers need testable imports.
+                .unsafeFlags(["-enable-testing"], fuzzBuildCondition)
+            ]
         ),
         .target(
             name: "SwiftNetworkLinuxShim",
@@ -135,53 +146,75 @@ let package = Package(
         .testTarget(
             name: "SwiftNetworkTests",
             dependencies: ["SwiftNetwork"],
-            swiftSettings: availabilityMacros + settings
+            swiftSettings: availabilityMacros + settings,
+            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
         .testTarget(
             name: "QUICTests",
             dependencies: ["SwiftNetwork"],
-            swiftSettings: availabilityMacros + settings
+            swiftSettings: availabilityMacros + settings,
+            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
         .executableTarget(
             name: "QUICHandshake",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/QUICHandshake",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings
+            swiftSettings: availabilityMacros + settings,
+            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
         .executableTarget(
             name: "IPUDPTransfer",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/IPUDPTransfer",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings
+            swiftSettings: availabilityMacros + settings,
+            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
         .executableTarget(
             name: "QUICTransfer",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/QUICTransfer",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings
+            swiftSettings: availabilityMacros + settings,
+            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
         .executableTarget(
             name: "QUICStreamLoad",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/QUICStreamLoad",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings
+            swiftSettings: availabilityMacros + settings,
+            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
         .executableTarget(
             name: "SocketTransfer",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/SocketTransfer",
             exclude: ["README.md"],
-            swiftSettings: availabilityMacros + settings
+            swiftSettings: availabilityMacros + settings,
+            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
         .executableTarget(
             name: "DeserializerBenchmark",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks"],
             path: "Sources/Tools/DeserializerBenchmark",
-            swiftSettings: availabilityMacros + settings
+            swiftSettings: availabilityMacros + settings,
+            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
+        ),
+        .executableTarget(
+            name: "FuzzTransportParameters",
+            dependencies: ["SwiftNetwork"],
+            path: "Tests/Fuzzers/TransportParameters",
+            swiftSettings: availabilityMacros + settings + [.unsafeFlags(["-parse-as-library"])],
+            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
+        ),
+        .executableTarget(
+            name: "FuzzQUICPackets",
+            dependencies: ["SwiftNetwork"],
+            path: "Tests/Fuzzers/QUICPackets",
+            swiftSettings: availabilityMacros + settings + [.unsafeFlags(["-parse-as-library"])],
+            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
     ]
 )

@@ -47,3 +47,15 @@ jobs:
     with:
       license_header_check_project_name: "Swift"
       api_breakage_check_container_image: "swiftlang/swift:nightly-6.3-jammy"
+  fuzz-smoke:
+    # Quick smoke check that the fuzz targets still build and don't crash
+    # immediately - not a substitute for the much longer, corpus-persisting
+    # nightly fuzzing run (see fuzz-nightly.yml).
+    #
+    # Named "Test" so the check reads "Pull request / Test / Fuzzing": GitHub
+    # composes the name from the workflow name, this caller job's name, and the
+    # job name inside the called workflow.
+    name: Test
+    uses: ./.github/workflows/fuzz.yml
+    with:
+      durations: 'FuzzQUICPackets=200 FuzzTransportParameters=10'

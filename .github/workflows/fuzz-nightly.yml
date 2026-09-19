@@ -1,0 +1,25 @@
+name: Nightly fuzzing
+
+on:
+  schedule:
+    # 03:00 UTC daily.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      durations:
+        description: 'Per-target fuzz durations, as <target>=<seconds> pairs'
+        required: false
+        default: 'FuzzQUICPackets=2400 FuzzTransportParameters=600'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz
+    uses: ./.github/workflows/fuzz.yml
+    with:
+      durations: ${{ inputs.durations || 'FuzzQUICPackets=2400 FuzzTransportParameters=600' }}
+      persist_corpus: true
+      timeout_minutes: 120
+      crash_retention_days: 90

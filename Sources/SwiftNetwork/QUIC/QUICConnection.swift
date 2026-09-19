@@ -327,7 +327,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
 
-    private(set) var localCIDLength: Int = 0
+    var localCIDLength: Int = 0
     private var initialSourceConnectionID: QUICConnectionID?
     private var initialStatelessResetToken: QUICStatelessResetToken?
     private var disableAutomaticNewConnectionIDs = false
