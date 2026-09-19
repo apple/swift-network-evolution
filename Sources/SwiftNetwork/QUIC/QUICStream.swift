@@ -315,6 +315,7 @@ struct StreamListMembership: OptionSet {
         switch self {
         case .none: return "none"
         case .pendingReassemblyDequeue: return "pendingReassemblyDequeue"
+        case .sendable: return "sendable"
         case .unblockedSend: return "unblockedSend"
         default: return "none"
         }

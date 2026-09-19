@@ -2491,7 +2491,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 QUICSignpost.outboundStopping(outboundInterval)
             }
 
-            accessStreamDataToSend(flow: flowID) { streamData in
+            accessStreamDataToSend(stream: stream) { streamData in
                 while var frame = streamData.popFirst() {
 
                     // If the connection is complete, it is always a FIN
@@ -2510,9 +2510,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                             isFinal = isFinal || metadataComplete
                         }
                     }
+                    #if DatapathLogging
                     log.datapath(
                         "Handle outbound stream data for [\(streamID)] (size \(dataLength) metadataComplete: \(metadataComplete), connectionComplete: \(connectionComplete), isFinal: \(isFinal))"
                     )
+                    #endif
 
                     if dataLength > 0 {
                         processOutbound(frame: frame, flowID: flowID, stream: stream, isLast: isFinal)
@@ -3048,7 +3050,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     func flushPendingItems() {
         initialPendingItems.flush()
         handshakePendingItems.flush()
-        applicationPendingItems.flush()
+        for flowID in applicationPendingItems.flushClearingQueuedStreams() {
+            clearStreamSendable(flowID)
+        }
     }
 
     // Indicates whether the asynchronous send continuation is running or not
@@ -4651,6 +4655,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         ack.flush(for: space)
     }
 
+    // Removes sendable flag when the application state is flushed
+    private func clearStreamSendable(_ flowID: MultiplexedFlowIdentifier) {
+        flow(for: flowID)?.listMembership.remove(.sendable)
+    }
+
     private func discardKeys(
         keyState: PacketKeyState,
         pendingItems: inout PendingItems,
@@ -4665,7 +4674,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private func discardKeys(keyState: PacketKeyState, discardRecoveryState: Bool = true) {
         let space = PacketNumberSpace.fromKeyState(keyState: keyState)
         // Flush first so that we won't send out frames other than ACKs with older key
-        withPendingItems(for: space) { $0.flush() }
+        if space == .applicationData {
+            for flowID in applicationPendingItems.flushClearingQueuedStreams() {
+                clearStreamSendable(flowID)
+            }
+        } else {
+            withPendingItems(for: space) { $0.flush() }
+        }
         discardKeysInternal(keyState: keyState, space: space, discardRecoveryState: discardRecoveryState)
     }
 
@@ -6210,6 +6225,13 @@ extension QUICConnection {
     }
 
     func checkConnectionIdle(unackedPacketCount: Int) {
+        // If no flow has ever been marked idle, `connectionIsIdleForAllStreams`
+        // can only return false, and since `path.reportedIdleEvent` is only
+        // ever set inside this function, no path can have it set either.
+        // The traversal below would be a guaranteed no-op, so skip it entirely.
+        guard flowsHaveEverMarkedIdle else {
+            return
+        }
         let isIdle = connectionIsIdleForAllStreams(unackedPacketCount: unackedPacketCount)
         applyToAllPaths { path in
             let pathIsIdle = isIdle && !path.isProbing && !path.shouldSendPathResponses
