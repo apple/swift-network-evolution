@@ -188,11 +188,15 @@ public struct QUICConnectionUtilities {
     public static func createStatelessResetPacket(
         token: QUICStatelessResetToken,
         triggeringPacketLength: Int
-    ) -> [UInt8] {
+    ) throws(NetworkError) -> [UInt8] {
 
         guard token.token.count > 0, triggeringPacketLength > 0 else {
-            Logger.proto.error("Failed to provide valid input: \(token), \(triggeringPacketLength)")
-            return []
+            throw NetworkError(
+                category: .init(
+                    identifier: "QUICUtilities",
+                    description: "Failed to provide valid input: \(token), \(triggeringPacketLength)"
+                )
+            )
         }
         // An endpoint MUST ensure that every Stateless Reset that it sends is smaller than the packet that triggered it
         let totalLength = triggeringPacketLength
@@ -204,22 +208,69 @@ public struct QUICConnectionUtilities {
                 (QUICStatelessResetPacket.unpredictableBytes + token.token.count) - totalLength + 1
             unpredictableBytesOverride = QUICStatelessResetPacket.unpredictableBytes - overLength
         }
-        do {
-            let statelessReset = try QUICStatelessResetPacket(
+        guard
+            let statelessReset = try? QUICStatelessResetPacket(
                 resetToken: token.token,
                 unpredictableBytes: unpredictableBytesOverride
             )
-            guard statelessReset.bytes.count >= Constants.minimumPacketSize else {
-                Logger.proto.error(
-                    "Failed to create QUICStatelessResetPacket greater than the minimum packet size"
+        else {
+            throw NetworkError(
+                category: .init(
+                    identifier: "QUICUtilities",
+                    description: "Failed to create QUICStatelessResetPacket"
                 )
-                return []
-            }
-            return statelessReset.bytes
-        } catch {
-            Logger.proto.error("Failed to create QUICStatelessResetPacket")
-            return []
+            )
         }
+        guard statelessReset.bytes.count >= Constants.minimumPacketSize else {
+            throw NetworkError(
+                category: .init(
+                    identifier: "QUICUtilities",
+                    description: "Failed to create QUICStatelessResetPacket greater than the minimum packet size"
+                )
+            )
+        }
+        return statelessReset.bytes
+    }
+
+    /// Creates a version negotiation packet from the given SCID, DCID.
+    /// NOTE: Includes the negotiation pattern already and the supported versions of the QUIC stack.
+    /// NOTE: The DCID and SCID are swapped when building the packet.
+    ///
+    /// - Parameters:
+    ///     - destinationConnectionID: The cid to include on the packet scid
+    ///     - sourceConnectionID: The cid to include on the packet dcid
+    public static func createVersionNegotiationPacket(
+        destinationConnectionID: QUICConnectionID,
+        sourceConnectionID: QUICConnectionID
+    ) throws(NetworkError) -> [UInt8]? {
+        let versions: [QUICVersion] = [.v1, .negotiationPattern]
+
+        // Version Negotiation packets are special, they are not a specific frame type and they do not sealed so they can be sent as a one-off.
+        // N.B.: The packet scid/dcid are swapped when constructing QUICVersionNegotiation
+        guard
+            let versionNegotiationPacket = try? QUICVersionNegotiation(
+                destinationConnectionID: sourceConnectionID,
+                sourceConnectionID: destinationConnectionID,
+                supportedVersions: versions
+            )
+        else {
+            throw NetworkError(
+                category: .init(
+                    identifier: "QUICUtilities",
+                    description: "Failed to build a valid version negotiation packet"
+                )
+            )
+        }
+        guard versionNegotiationPacket.header.count >= Constants.minimumPacketSize else {
+            throw NetworkError(
+                category: .init(
+                    identifier: "QUICUtilities",
+                    description: "Failed to create QUICVersionNegotiation packet greater than the minimum packet size"
+                )
+            )
+
+        }
+        return versionNegotiationPacket.header
     }
 }
 #endif

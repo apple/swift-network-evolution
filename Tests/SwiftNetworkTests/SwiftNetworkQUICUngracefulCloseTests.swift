@@ -146,7 +146,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
                         expectation.fulfill()
                     }
 
-                    let statelessResetPacket = QUICConnectionUtilities.createStatelessResetPacket(
+                    let statelessResetPacket = try! QUICConnectionUtilities.createStatelessResetPacket(
                         token: QUICStatelessResetToken(token)!,
                         triggeringPacketLength: 35
                     )
@@ -180,7 +180,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
                         expectation.fulfill()
                     }
 
-                    let statelessResetPacket = QUICConnectionUtilities.createStatelessResetPacket(
+                    let statelessResetPacket = try! QUICConnectionUtilities.createStatelessResetPacket(
                         token: QUICStatelessResetToken(token)!,
                         triggeringPacketLength: 35
                     )
