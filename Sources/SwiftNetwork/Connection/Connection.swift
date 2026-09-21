@@ -1077,7 +1077,7 @@ public struct CustomLink: StreamProtocol {
         return mutableSelf
     }
 
-    init() {
+    public init() {
     }
 
     public func configure(parameters: Parameters) {
