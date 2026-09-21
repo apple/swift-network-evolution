@@ -1454,6 +1454,284 @@ class QUICTestHarness {
         stop()
     }
 
+    /// Closes a stream that still has unread inbound bytes using `stop()`, which
+    /// tears down both directions at once and so emits a `RESET_STREAM`.
+    ///
+    /// When the peer ACKs that `RESET_STREAM`, the ACK walk closes the stream, and
+    /// closing a stream flushes frames. That flush re-enters `sendFrames()` while
+    /// `recovery` is still exclusively borrowed for ACK processing, which traps
+    /// under Swift's exclusivity enforcement. The trap fires on the ACK, well
+    /// after `stop()` has returned, so this waits for the round trip to complete.
+    ///
+    /// - Parameter readBeforeStop: When `true`, drain the bytes first. The trap
+    ///   does not depend on unread data, so both variants must survive.
+    func runQUICStopStreamAfterPeerWrite(
+        readBeforeStop: Bool = false,
+        payloadSize: Int = 4000,
+        timeout: TimeInterval = 5.0
+    ) {
+        do {
+            try quicHandshake(timeout: timeout)
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1") else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        let serverFlowExpectation = XCTestExpectation(description: "Server sees new flow")
+        var serverStream: StreamUpperHarness?
+        context.async {
+            self.state?.serverHarness.waitForNewFlow {
+                serverStream = self.state?.serverHarness.upperHarnesses.last
+                serverFlowExpectation.fulfill()
+            }
+        }
+        context.async {
+            let wrote = clientStream.write([UInt8](repeating: 0x41, count: payloadSize))
+            XCTAssertTrue(wrote, "Client failed to write payload")
+        }
+        wait(for: [serverFlowExpectation], timeout: timeout)
+        XCTAssertNotNil(serverStream, "Server flow missing")
+
+        let stopExpectation = XCTestExpectation(description: "Server stops the stream")
+        context.async {
+            if readBeforeStop {
+                while serverStream?.read() != nil {}
+            }
+            // Tears down both directions, so a RESET_STREAM goes out.
+            serverStream?.stop()
+            stopExpectation.fulfill()
+        }
+        wait(for: [stopExpectation], timeout: timeout)
+
+        // The trap happens when the ACK for the RESET_STREAM comes back, so give
+        // the round trip time to land before checking the connection is alive.
+        let settleExpectation = XCTestExpectation(description: "RESET_STREAM ack round trip")
+        _ = XCTWaiter.wait(for: [settleExpectation], timeout: 1.0)
+
+        // Reaching this point at all means the ACK was processed without trapping.
+        // Confirm both endpoints are still usable rather than wedged.
+        let stateExpectation = XCTestExpectation(description: "Connections still healthy")
+        context.async {
+            if let server = self.state?.serverInstance {
+                XCTAssertNil(
+                    server.closeError,
+                    "Server connection should not have closed with an error"
+                )
+            } else {
+                XCTFail("Server connection missing")
+            }
+            if let client = self.state?.clientInstance {
+                XCTAssertNil(
+                    client.closeError,
+                    "Client connection should not have closed with an error"
+                )
+            } else {
+                XCTFail("Client connection missing")
+            }
+            stateExpectation.fulfill()
+        }
+        wait(for: [stateExpectation], timeout: timeout)
+
+        // A fresh stream must still work end to end, proving the deferred frame
+        // flush after ACK processing was not simply dropped.
+        guard let followUpStream = createNewStream(identifier: "C2") else {
+            XCTFail("Could not open a stream after stopping the first one")
+            return
+        }
+        let followUpPayload = Array("after-stop".utf8)
+        let followUpExpectation = XCTestExpectation(description: "Follow-up stream delivers data")
+        context.async {
+            self.state?.serverHarness.waitForNewFlow {
+                guard let stream = self.state?.serverHarness.upperHarnesses.last else {
+                    XCTFail("Follow-up server flow missing")
+                    followUpExpectation.fulfill()
+                    return
+                }
+                XCTAssertEqual(
+                    stream.read(),
+                    followUpPayload,
+                    "Follow-up stream should deliver its payload intact"
+                )
+                followUpExpectation.fulfill()
+            }
+        }
+        context.async {
+            let wrote = followUpStream.write(followUpPayload)
+            XCTAssertTrue(wrote, "Failed to write on the follow-up stream")
+        }
+        wait(for: [followUpExpectation], timeout: timeout)
+
+        Logger.test.debug("Test phase: Termination")
+        stop()
+    }
+
+    /// Repeatedly opens a stream, has the peer send `chunkSize` bytes on it, and
+    /// then aborts both directions from the receiving side *without ever reading
+    /// the inbound bytes*.
+    ///
+    /// Every one of those dropped bytes consumed connection-level flow control
+    /// credit. If that credit is not returned, the connection-level receive
+    /// window is permanently consumed and, after enough rounds, the peer can no
+    /// longer send anything at all — the connection stalls even though both
+    /// endpoints are healthy and no stream limit has been reached.
+    ///
+    /// The server advertises a deliberately small initial `MAX_DATA` (and a
+    /// generous stream limit) so that connection-level flow control, rather than
+    /// the concurrent-stream cap, is what runs out first.
+    ///
+    /// - Parameter readBeforeAbort: When `true`, the receiving side drains the
+    ///   bytes before aborting. That is the control case: credit is returned via
+    ///   the normal read path, and the loop must not stall. When `false`, the
+    ///   bytes are dropped unread, which is the case under test.
+    func runQUICDropUnreadInboundBytesLoop(
+        rounds: Int = 20,
+        chunkSize: Int = 4000,
+        initialMaxData: UInt64 = 40_000,
+        readBeforeAbort: Bool = false,
+        timeout: TimeInterval = 4.0
+    ) {
+        let serverOptions = QUICProtocol.options()
+        serverOptions.connectionOptions.initialMaxData = initialMaxData
+        serverOptions.connectionOptions.initialMaxStreamDataBidirectionalRemote = initialMaxData
+        serverOptions.connectionOptions.initialMaxStreamDataBidirectionalLocal = initialMaxData
+        // Keep the stream limits well clear of `rounds` so that a stall can only
+        // be caused by connection-level flow control.
+        serverOptions.connectionOptions.initialMaxStreamsBidirectional = UInt64(rounds * 2 + 10)
+        serverOptions.connectionOptions.maximumConcurrentBidirectionalStreams = rounds * 2 + 10
+
+        do {
+            try quicHandshake(timeout: timeout, serverOptions: serverOptions)
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        // Total bytes dropped must exceed the advertised window several times
+        // over, so a missing credit update is guaranteed to exhaust it.
+        XCTAssertGreaterThan(
+            UInt64(rounds * chunkSize),
+            initialMaxData,
+            "Test must send more than the initial window to exercise credit return"
+        )
+
+        for round in 0..<rounds {
+            guard let clientStream = createNewStream(identifier: "C\(round)") else {
+                XCTFail(
+                    "Stalled at round \(round): could not open a stream. Connection-level "
+                        + "credit for dropped inbound bytes was never returned."
+                )
+                return
+            }
+
+            let serverFlowExpectation = XCTestExpectation(description: "Server sees flow \(round)")
+            var serverStream: StreamUpperHarness?
+            context.async {
+                self.state?.serverHarness.waitForNewFlow {
+                    serverStream = self.state?.serverHarness.upperHarnesses.last
+                    serverFlowExpectation.fulfill()
+                }
+            }
+            context.async {
+                let wrote = clientStream.write([UInt8](repeating: 0x41, count: chunkSize))
+                XCTAssertTrue(wrote, "Client failed to write on round \(round)")
+            }
+
+            // A stalled connection shows up here: the bytes never arrive because
+            // the client has no send credit left.
+            guard XCTWaiter.wait(for: [serverFlowExpectation], timeout: timeout) == .completed else {
+                #if canImport(SwiftNetwork)
+                var diagnostics = ""
+                let diagnosticsExpectation = XCTestExpectation(description: "Collect stall state")
+                context.async {
+                    if let client = self.state?.clientInstance, let server = self.state?.serverInstance {
+                        let sendWindow =
+                            Int64(client.flowControlState.outboundMaxData) - Int64(client.sendOffset)
+                        diagnostics =
+                            "client sent \(client.sendOffset) of \(client.flowControlState.outboundMaxData) "
+                            + "allowed (remaining send window \(sendWindow)); server advertised MAX_DATA "
+                            + "\(server.flowControlState.inboundMaxData) with largest received offset "
+                            + "\(server.lastReceivedOffset)"
+                    }
+                    diagnosticsExpectation.fulfill()
+                }
+                wait(for: [diagnosticsExpectation], timeout: timeout)
+                #else
+                let diagnostics = "flow control state unavailable"
+                #endif
+
+                XCTFail(
+                    "Connection stalled at round \(round) after dropping \(round * chunkSize) unread "
+                        + "inbound bytes: \(diagnostics). Flow control credit for inbound bytes that the "
+                        + "application never read was not returned to the peer."
+                )
+                return
+            }
+
+            let abortExpectation = XCTestExpectation(description: "Abort \(round)")
+            context.async {
+                if readBeforeAbort {
+                    // Control case: consume the bytes through the normal read
+                    // path, which is what returns credit today.
+                    while serverStream?.read() != nil {}
+                }
+                // Abort both directions so the stream is fully torn down and its
+                // slot released, leaving flow control as the only limit.
+                serverStream?.abortInbound(error: .init(quicApplicationError: 7))
+                serverStream?.abortOutbound(error: .init(quicApplicationError: 7))
+                abortExpectation.fulfill()
+            }
+            wait(for: [abortExpectation], timeout: timeout)
+
+            // Let the STOP_SENDING / RESET_STREAM exchange settle so the credit
+            // update, if any, reaches the client before the next round.
+            let settleExpectation = XCTestExpectation(description: "Settle \(round)")
+            _ = XCTWaiter.wait(for: [settleExpectation], timeout: 0.15)
+
+            let checkExpectation = XCTestExpectation(description: "Check \(round)")
+            context.async {
+                if let server = self.state?.serverInstance {
+                    XCTAssertNil(
+                        server.closeError,
+                        "Server closed the connection on round \(round) instead of crediting "
+                            + "the dropped inbound bytes"
+                    )
+                }
+                checkExpectation.fulfill()
+            }
+            wait(for: [checkExpectation], timeout: timeout)
+        }
+
+        // Having completed every round, confirm the peer still has room to send:
+        // the credit for all the dropped bytes was genuinely returned.
+        #if canImport(SwiftNetwork)
+        let finalExpectation = XCTestExpectation(description: "Final credit check")
+        context.async {
+            if let client = self.state?.clientInstance {
+                let totalDropped = UInt64(rounds * chunkSize)
+                XCTAssertGreaterThan(
+                    client.flowControlState.outboundMaxData,
+                    totalDropped,
+                    "After dropping \(totalDropped) unread bytes, the peer's send limit must have "
+                        + "advanced beyond them, otherwise the dropped bytes permanently consumed "
+                        + "connection flow control credit"
+                )
+            } else {
+                XCTFail("Client connection missing; cannot verify returned credit")
+            }
+            finalExpectation.fulfill()
+        }
+        wait(for: [finalExpectation], timeout: timeout)
+        #endif
+
+        Logger.test.debug("Test phase: Termination")
+        stop()
+    }
+
     /// A clean close of a send side that never wrote any data must be encoded as a
     /// zero-length `STREAM` frame with the FIN bit set (RFC 9000 §3.1 / §19.8), not
     /// a `RESET_STREAM`.

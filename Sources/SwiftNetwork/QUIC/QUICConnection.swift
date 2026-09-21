@@ -387,6 +387,18 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     private var pendOutboundData = false  // Don't immediately process application sends
 
+    // Set while `recovery` is exclusively borrowed for ACK processing.
+    //
+    // Acknowledging a packet can close a stream (a fully-ACKed RESET_STREAM or
+    // FIN), and closing a stream wants to flush frames. The no-argument
+    // `sendFrames()` passes `&recovery` inout, so doing that from inside the ACK
+    // walk would be a second overlapping modification of `recovery` and traps
+    // under exclusivity enforcement. While this is set, `sendFrames()` records
+    // the request instead of performing it, and the ACK path flushes once the
+    // borrow ends.
+    private var isProcessingAcks = false
+    private var deferredSendFramesRequested = false
+
     // false == IPv6, true == IPv4
     private(set) var initialAddressIsIPv4 = false
 
@@ -3087,7 +3099,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Adds recovery and applicationPendingItems to avoid extra begin/end acccess checking overhead
     @discardableResult
     func sendFrames(ignoreCongestionWindow: Bool = false, delayedACK: Bool = false) -> Bool {
-        sendFrames(
+        // ACK processing holds `recovery` exclusively, and acknowledging a packet
+        // can close a stream, which in turn wants to flush frames. Passing
+        // `&recovery` again here would overlap that borrow and trap, so record
+        // the request and let the ACK path flush once its borrow has ended.
+        if isProcessingAcks {
+            deferredSendFramesRequested = true
+            return false
+        }
+        return sendFrames(
             ignoreCongestionWindow: ignoreCongestionWindow,
             delayedACK: delayedACK,
             sentPackets: &sentPackets,
@@ -4172,6 +4192,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 localMaxStreamData: stream.flowControlState.inboundMaxData
             )
 
+            // The application has given up on reading, so any bytes still
+            // buffered are discarded here. Return the receive-window credit they
+            // consumed; the zombie's final-size handling covers only the bytes
+            // still in flight beyond what we have already received.
+            stream.discardUnreadInboundBytes(connection: self)
+
             // Do we delete this 'stream' somehow, now that it's a zombie?
             // Once it's got no more references it will automatically taken care of
             // with ARC. It may have references in pendingStartStreams (removed above)
@@ -4726,6 +4752,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 log.error("Error sending frames on stream close: \(error)")
             }
         }
+
+        // Anything the application did not read above is now unreachable: the
+        // flow is about to be torn down. Those bytes consumed connection receive
+        // window when they arrived, so hand that credit back before the buffers
+        // are dropped, otherwise the window shrinks for the rest of the
+        // connection's life.
+        stream.discardUnreadInboundBytes(connection: self)
+
         stream.closed = true
         deliverDisconnectedEvent(flow: flowID, error: error)
         knownFlows.removeValue(forKey: streamID)
@@ -5281,6 +5315,11 @@ extension QUICConnection {
             return false
         }
 
+        // Acknowledging a packet can close a stream, and closing a stream wants
+        // to flush frames. Suppress those nested flushes for the duration of the
+        // `recovery` borrow below, then perform one flush afterwards if any were
+        // requested.
+        isProcessingAcks = true
         recovery.receivedAck(
             ack: frame,
             ackedPath: path,
@@ -5291,6 +5330,13 @@ extension QUICConnection {
         var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
         path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets)
         recovery.recordSentPackets(&sentPackets, connection: self)
+
+        // The borrow of `recovery` has ended, so it is safe to flush again.
+        isProcessingAcks = false
+        if deferredSendFramesRequested {
+            deferredSendFramesRequested = false
+            sendFrames()
+        }
         return true
     }
 
