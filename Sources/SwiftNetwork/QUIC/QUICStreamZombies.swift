@@ -51,7 +51,7 @@ struct QUICStreamZombie {
         self.localMaxStreamData = localMaxStreamData
         self.logIDString = logIDString
         Logger.proto.info(
-            "\(logIDString) unknown final size; creating zombie stream (last size \(lastSize))"
+            "\(logIDString) Unknown final size; creating zombie stream (last size \(lastSize))"
         )
     }
 
@@ -73,7 +73,7 @@ struct QUICStreamZombie {
         // than the size of the stream data that was already established
         if newLastOffset < lastOffset {
             connection.log.error(
-                "[false:zombie] endpoint received size \(newLastOffset) that's lower than size of the stream \(lastOffset)"
+                "Endpoint received size \(newLastOffset) that's lower than size of the stream \(lastOffset)"
             )
             connection.close(
                 with:
@@ -84,7 +84,7 @@ struct QUICStreamZombie {
         }
 
         // Case 3 is never true because finalSize is invalid
-        connection.log.datapath("zombie final size was \(newFinalSize)")
+        connection.log.datapath("Zombie final size was \(newFinalSize)")
 
         guard lastOffset < newLastOffset else {
             return nil
@@ -107,12 +107,12 @@ struct QUICStreamZombieList {
     ) {
         guard !zombies.contains(where: { $0.streamID == streamID }) else {
             Logger.proto.fault(
-                "\(logIDString) connection trying to create zombie that's already on zombie list! (last size \(lastSize))"
+                "\(logIDString) Connection trying to create zombie that's already on zombie list! (last size \(lastSize))"
             )
             return
         }
         Logger.proto.info(
-            "\(logIDString) unknown final size; creating a zombie stream (last size \(lastSize))"
+            "\(logIDString) Unknown final size; creating a zombie stream (last size \(lastSize))"
         )
 
         let zombie = QUICStreamZombie(
@@ -146,7 +146,7 @@ struct QUICStreamZombieList {
 
         guard let zombie, let lastSize else {
             connection.log.debug(
-                "[S\(streamID)] received final size of \(finalSize) but zombie not found or last size unknown"
+                "[S\(streamID)] Received final size of \(finalSize) but zombie not found or last size unknown"
             )
             return
         }

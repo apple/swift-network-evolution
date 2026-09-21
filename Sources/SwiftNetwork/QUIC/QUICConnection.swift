@@ -638,7 +638,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Only setup qlog if the directory is set
         if let qlogConfiguration {
             self.qLog = QLog(configuration: qlogConfiguration, context: context)
-            log.info("qlog setup with configuration: \(qlogConfiguration)")
+            log.info("QLog setup with configuration: \(qlogConfiguration)")
         }
         #endif
         log.info("Setup QUIC connection (spin bit \(spinBitEnabled ? "enabled" : "disabled"))")
@@ -3447,7 +3447,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             // If we've exceeded the send burst limit, trigger an async before servicing more data
             if shouldEndBurst {
-                log.datapath("burst limit application data")
+                log.datapath("Burst limit application data")
                 applicationPendingItems.rotateFirstStreamToService()
                 burstLimitReached()
                 break
@@ -4377,7 +4377,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 ))
         {
             log.datapath(
-                "reordering/loss detected (received: \(packet.number), largest ack-eliciting: \(largetACKElicitingPN), sending ACK"
+                "Reordering/loss detected (received: \(packet.number), largest ack-eliciting: \(largetACKElicitingPN), sending ACK"
             )
             stats.increment(.rxReorderedPackets)
             stats.increment(.rxReorderedBytes, by: Int(packet.totalLength))
@@ -4510,7 +4510,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     func reportReady() {
         // Crypto should already have set this up using setRemoteTransportParameters()
         guard let remoteTransportParameters, !remoteTransportParametersForEarlyData else {
-            let error = "missing peer transport parameters"
+            let error = "Missing peer transport parameters"
             log.error(error)
             close(with: .transportParameterError, error)
             return
@@ -4763,7 +4763,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         stream.closed = true
         deliverDisconnectedEvent(flow: flowID, error: error)
         knownFlows.removeValue(forKey: streamID)
-        log.datapath("closed stream \(streamID.value)")
+        log.datapath("Closed stream \(streamID.value)")
 
         if let streamID = stream.streamID {
             if streamID.isReceiveOnly(server: self.isServer) {
@@ -4953,7 +4953,7 @@ extension QUICConnection {
     // Process an incoming STREAM frame
     func processStreamFrame(_ frame: consuming FrameStreamReceived) -> Bool {
         log.datapath(
-            "received STREAM frame with id: \(frame.id), offset: \(frame.offset) data length: \(frame.length)"
+            "Received STREAM frame with id: \(frame.id), offset: \(frame.offset) data length: \(frame.length)"
         )
         guard let streamID = QUICStreamID(frame.id) else {
             log.error("Stream frame with invalid stream ID \(frame.id)")
@@ -5006,7 +5006,7 @@ extension QUICConnection {
             return stream.processIncomingStream(connection: self, frame: frame)
         } else {
             stream.log.datapath(
-                "unable to handle frame len \(frame.length) offset \(frame.offset) fin \(frame.isFinal) on stream"
+                "Unable to handle frame len \(frame.length) offset \(frame.offset) fin \(frame.isFinal) on stream"
             )
             frame.frame.finalize(success: true)
             return true
@@ -5060,9 +5060,9 @@ extension QUICConnection {
             return false
         }
 
-        log.datapath("connection has received more credit")
+        log.datapath("Connection has received more credit")
         if hasSentDataBlocked {
-            log.datapath("unblocked")
+            log.datapath("Unblocked")
             applicationPendingItems.triggerAllStreamsUnblocked = true
             hasSentDataBlocked = false
         }
@@ -5071,7 +5071,7 @@ extension QUICConnection {
 
     // Handle incoming maxStreamData frame and update the remoteMaxStreamData if needed
     func processMaxStreamDataFrame(_ frame: consuming FrameMaxStreamData) -> Bool {
-        log.datapath("process MAX_STREAM_DATA")
+        log.datapath("Process MAX_STREAM_DATA")
 
         // 1. check streamID against the protocol streamID
         //    - if is recv only, close STREAM_STATE_ERROR
@@ -5147,7 +5147,7 @@ extension QUICConnection {
     // Handle incoming stream data blocked frame and notify application protocol if needed
     func processStreamDataBlocked(frame: consuming FrameStreamDataBlocked) -> Bool {
         guard let stream = streamFromStreamID(frame.id) else {
-            log.datapath("invalid streamID: \(frame.id)")
+            log.datapath("Invalid streamID: \(frame.id)")
             return false
         }
         guard !stream.streamID!.isSendOnly(server: isServer) else {
@@ -5345,7 +5345,7 @@ extension QUICConnection {
             self.applicationCloseError = QUICApplicationError(frame.errorCode, frame.reason)
             receivedApplicationClose = true
         }
-        log.info("received APPLICATION_CLOSE code: \(frame.errorCode), reason: '\(frame.reason)'")
+        log.info("Received APPLICATION_CLOSE code: \(frame.errorCode), reason: '\(frame.reason)'")
         close()
         return true
     }
@@ -5355,7 +5355,7 @@ extension QUICConnection {
             self.closeError = QUICTransportError(frame.errorCode, frame.reason)
             receivedConnectionClose = true
         }
-        log.info("received CONNECTION_CLOSE code: \(frame.errorCode), reason: '\(frame.reason)'")
+        log.info("Received CONNECTION_CLOSE code: \(frame.errorCode), reason: '\(frame.reason)'")
         close()
         return true
     }
@@ -5704,14 +5704,14 @@ extension QUICConnection {
             return
         }
         asyncSendRunning = true
-        log.datapath("async: scheduling restart after packet burst")
+        log.datapath("Async: scheduling restart after packet burst")
         self.async {
             self.resumeSendingAfterBurstLimit()
         }
     }
 
     fileprivate func resumeSendingAfterBurstLimit() {
-        log.datapath("async: resuming sending packets")
+        log.datapath("Async: resuming sending packets")
         asyncSendRunning = false
         sendFrames()
     }
@@ -5817,7 +5817,7 @@ extension QUICConnection {
             return (created: false, checkZombie: false)
         }
 
-        log.datapath("creating missing streams from \(streamID) to \(nextInboundStreamID)")
+        log.datapath("Creating missing streams from \(streamID) to \(nextInboundStreamID)")
 
         if self.streamIDBlocked(streamID: streamID) {
             log.error(
@@ -5919,7 +5919,7 @@ extension QUICConnection {
             return
         }
         if !sendFrames() {
-            log.datapath("failed to send DATAGRAM frames")
+            log.datapath("Failed to send DATAGRAM frames")
         }
     }
 
@@ -5954,18 +5954,18 @@ extension QUICConnection {
     func processDatagramFrame(_ frame: consuming FrameDatagram) -> Bool {
         if let datagramFlowID = frame.flowID, let contextID = frame.contextID {
             log.datapath(
-                "received DATAGRAM frame with length: \(frame.length), flow: \(datagramFlowID), context: \(contextID)"
+                "Received DATAGRAM frame with length: \(frame.length), flow: \(datagramFlowID), context: \(contextID)"
             )
         } else if let datagramFlowID = frame.flowID {
             log.datapath(
-                "received DATAGRAM frame with length: \(frame.length), flow: \(datagramFlowID)"
+                "Received DATAGRAM frame with length: \(frame.length), flow: \(datagramFlowID)"
             )
         } else if let contextID = frame.contextID {
             log.datapath(
-                "received DATAGRAM frame with length: \(frame.length), context: \(contextID)"
+                "Received DATAGRAM frame with length: \(frame.length), context: \(contextID)"
             )
         } else {
-            log.datapath("received DATAGRAM frame with length: \(frame.length)")
+            log.datapath("Received DATAGRAM frame with length: \(frame.length)")
         }
 
         var matchingFlowIdentifier = findSecondaryFlow(where: { candidateFlow in

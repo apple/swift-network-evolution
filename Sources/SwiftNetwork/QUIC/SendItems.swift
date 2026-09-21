@@ -1599,7 +1599,7 @@ extension FrameDatagram: SendableItem {
                 while var datagramFrame = datagrams.popFirst() {
                     let dataLength = datagramFrame.unclaimedLength
                     connection.log.datapath(
-                        "handle output datagram for flow \(firstFlowID.debugDescription) (size \(dataLength))"
+                        "Handle output datagram for flow \(firstFlowID.debugDescription) (size \(dataLength))"
                     )
                     guard dataLength <= datagramFlow.usableDatagramSize else {
                         connection.log.error(

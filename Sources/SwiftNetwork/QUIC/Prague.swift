@@ -412,7 +412,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
     ) {
         if !rttElapsed(largestSentPN: largestSentPNForAlpha, largestAckedPN: largestAckedPN) {
             // One RTT hasn't elapsed yet, don't update alpha
-            log.datapath("one RTT hasn't elapsed, not updating alpha")
+            log.datapath("One RTT hasn't elapsed, not updating alpha")
             return
         }
 
@@ -599,7 +599,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
 
         if !rttElapsed(largestSentPN: self.largestSentPN, largestAckedPN: largestAckedPN) {
             // Haven't elapsed one RTT yet from last CWR
-            log.datapath("haven't elapsed one RTT yet from last CWR")
+            log.datapath("Haven't elapsed one RTT yet from last CWR")
             return
         }
 

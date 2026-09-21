@@ -252,10 +252,10 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
         log: LogPrefixer
     ) -> SecFramerKeys {
         guard _slowPath(key.bitCount == headerProtectionKey.bitCount) else {
-            fatalError("invalid key or headerProtectionKey")
+            fatalError("Invalid key or headerProtectionKey")
         }
         guard _slowPath(key.bitCount == 128 || key.bitCount == 256) else {
-            fatalError("invalid key size")
+            fatalError("Invalid key size")
         }
         return SecFramerKeys(
             key: key,
@@ -280,7 +280,7 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
         let payloadLength = packet.payloadLength
         let tagLength = packet.tagLength
         keys.log.datapath(
-            "sealing for AESGCM\(size), nonce len \(nonce.count), header \(headerLength), payload \(payloadLength) tag \(tagLength)"
+            "Sealing for AESGCM\(size), nonce len \(nonce.count), header \(headerLength), payload \(payloadLength) tag \(tagLength)"
         )
         #endif
 
@@ -398,7 +398,7 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
         let tagLength = packet.tagLength
         let pn = packet.number.value
         keys.log.datapath(
-            "opening for AESGCM\(size), nonce len \(nonce.count), header \(headerLength), payload \(payloadLength), tag \(tagLength), pn \(pn)"
+            "Opening for AESGCM\(size), nonce len \(nonce.count), header \(headerLength), payload \(payloadLength), tag \(tagLength), pn \(pn)"
         )
         #endif
         guard var buffer = frame.mutableSpan else {
@@ -442,10 +442,10 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
         log: LogPrefixer
     ) -> SecFramerKeys {
         guard _slowPath(key.bitCount == headerProtectionKey.bitCount) else {
-            fatalError("invalid key or headerProtectionKey")
+            fatalError("Invalid key or headerProtectionKey")
         }
         guard _slowPath(key.bitCount == 256) else {
-            fatalError("invalid key size")
+            fatalError("Invalid key size")
         }
         return SecFramerKeys(
             key: key,
@@ -469,7 +469,7 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
         let payloadLength = packet.payloadLength
         let tagLength = packet.tagLength
         keys.log.datapath(
-            "sealing for ChaCha20Poly1305, nonce len \(nonce.count), header \(headerLength), payload \(payloadLength) tag \(tagLength)"
+            "Sealing for ChaCha20Poly1305, nonce len \(nonce.count), header \(headerLength), payload \(payloadLength) tag \(tagLength)"
         )
         #endif
         guard var buffer = frame.mutableSpan else {
@@ -546,7 +546,7 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
             throw QUICError.protector(.headerProtectionFailed)
         }
         #else
-        fatalError("not implemented")
+        fatalError("Not implemented")
         #endif
     }
 
@@ -561,7 +561,7 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
         let payloadLength = packet.payloadLength
         let tagLength = packet.tagLength
         keys.log.datapath(
-            "opening for ChaCha20Poly1305, nonce len \(nonce.count), header \(headerLength), payload \(payloadLength), tag \(tagLength)"
+            "Opening for ChaCha20Poly1305, nonce len \(nonce.count), header \(headerLength), payload \(payloadLength), tag \(tagLength)"
         )
         #endif
         guard var buffer = frame.mutableSpan else {

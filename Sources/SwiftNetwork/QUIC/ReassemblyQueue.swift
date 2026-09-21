@@ -148,7 +148,7 @@ struct ReassemblyQueue: ~Copyable {
             if offset &+ originalBufferLength > currentOffset {
                 let startingPoint = currentOffset - offset
                 log.datapath(
-                    "ignoring duplicate bytes [\(offset), \(offset + startingPoint)]"
+                    "Ignoring duplicate bytes [\(offset), \(offset + startingPoint)]"
                 )
                 offset &+= startingPoint
                 bufferStartPoint &+= startingPoint
@@ -162,7 +162,7 @@ struct ReassemblyQueue: ~Copyable {
             } else {
                 frame.finalize(success: false)
                 log.datapath(
-                    "dropping duplicate buffer [\(offset), \(offset + originalBufferLength)]"
+                    "Dropping duplicate buffer [\(offset), \(offset + originalBufferLength)]"
                 )
                 return appendResult(sizeAdded: 0)
             }
@@ -173,7 +173,7 @@ struct ReassemblyQueue: ~Copyable {
         lastOffset =
             (offset == 0 && newItem.length == 0) ? 0 : max(lastOffset, offset &+ newItem.length - 1)
         traceDump()
-        log.datapath("appending to reassq: offset \(newItem.offset) len \(newItem.length)")
+        log.datapath("Appending to reassembly queue: offset \(newItem.offset) len \(newItem.length)")
         // Case 0: empty reassembly queue
         if items.isEmpty {
             let newItemOffset = newItem.offset
@@ -287,7 +287,7 @@ struct ReassemblyQueue: ~Copyable {
 
         if _slowPath(size < oldSize) {
             traceDump()
-            log.fault("Reassq length went backwards \(size) < \(oldSize)")
+            log.fault("Reassembly queue length went backwards \(size) < \(oldSize)")
             return appendResult(sizeAdded: 0)
         }
         return appendResult(sizeAdded: size - oldSize)
@@ -308,7 +308,7 @@ struct ReassemblyQueue: ~Copyable {
             size -= dequeueItem.length
             availableToDequeue -= dequeueItem.length
             log.datapath(
-                "advanced \(dequeueItem.length), current offset \(currentOffset)"
+                "Advanced \(dequeueItem.length), current offset \(currentOffset)"
             )
             if headOfLineBlocked {
                 log.debug("No longer head of line blocked")

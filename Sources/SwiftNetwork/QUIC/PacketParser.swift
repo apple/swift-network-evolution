@@ -184,7 +184,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         {
             packet.number = packet.number - Int64(packetNumberLength)
         }
-        connection.log.datapath("received pn \(packet.number.value)")
+        connection.log.datapath("Received \(packet.number)")
         return reservedBits
     }
 

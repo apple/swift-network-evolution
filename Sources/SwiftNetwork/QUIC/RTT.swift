@@ -130,13 +130,13 @@ struct RTT: ~Copyable, PrefixedLoggable {
             adjustedRTT = latestRTT
             hasInitialMeasurement = true
             log.datapath(
-                "initial RTT measurement: smoothed RTT \(smoothedRTT), variance \(RTTVariance)"
+                "Initial RTT measurement: smoothed RTT \(smoothedRTT), variance \(RTTVariance)"
             )
             return
         }
         if latestRTT < minRTT {
             log.datapath(
-                "new min RTT: \(latestRTT) (replacing previous value \(minRTT))"
+                "New min RTT: \(latestRTT) (replacing previous value \(minRTT))"
             )
             minRTT = latestRTT
         }
@@ -144,7 +144,7 @@ struct RTT: ~Copyable, PrefixedLoggable {
         if _slowPath(ackDelay > remoteMaxAckDelay) {
             validAckDelay = remoteMaxAckDelay
             log.datapath(
-                "limiting ackDelay to max from peer: \(remoteMaxAckDelay) (raw ack delay \(ackDelay))"
+                "Limiting ackDelay to max from peer: \(remoteMaxAckDelay) (raw ack delay \(ackDelay))"
             )
         }
         var includeAckDelay = false
@@ -159,7 +159,7 @@ struct RTT: ~Copyable, PrefixedLoggable {
 
         let includingAckDelay = includeAckDelay ? "including" : "not including"
         log.datapath(
-            "new RTT sample (\(includingAckDelay) ACK delay \(ackDelay)): \(latestRTT)"
+            "New RTT sample (\(includingAckDelay) ACK delay \(ackDelay)): \(latestRTT)"
         )
 
         smoothedRTT = (smoothedRTT * 7 / 8) + adjustedRTT / 8
@@ -169,7 +169,7 @@ struct RTT: ~Copyable, PrefixedLoggable {
         RTTVariance = RTTVariance * 3 / 4 + difference / 4
         RTTVariance = RTTVariance.roundedMicroseconds
         log.datapath(
-            "calculated new smoothed RTT: \(smoothedRTT), variance: \(RTTVariance)"
+            "Calculated new smoothed RTT: \(smoothedRTT), variance: \(RTTVariance)"
         )
     }
 
@@ -183,10 +183,10 @@ struct RTT: ~Copyable, PrefixedLoggable {
 
         if validCachedRTT {
             rttInitial = min(RTT.initialRTT, cachedAvgRTT)
-            log.datapath("initial RTT: \(rttInitial)")
+            log.datapath("Initial RTT: \(rttInitial)")
             if cachedRTTVariance != RTT.invalidRTT && rttInitial < RTT.initialRTT {
                 rttVariance = cachedRTTVariance
-                log.datapath("initial RTT variance: \(rttVariance)")
+                log.datapath("Initial RTT variance: \(rttVariance)")
             }
         }
 

@@ -779,7 +779,7 @@ extension QUICStreamInstance {
             self.updateMaximumUnreadInboundBytesAllowed(increment: increment)
             connection.updateMaximumUnreadInboundBytesAllowed(increment: increment)
             log.datapath(
-                "increased the receive high watermark to \(flowControlState.maximumUnreadInboundBytesAllowed)"
+                "Increased the receive high watermark to \(flowControlState.maximumUnreadInboundBytesAllowed)"
             )
             return true
         }
