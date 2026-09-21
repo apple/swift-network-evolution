@@ -19,7 +19,7 @@ import XCTest
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 #elseif canImport(Network)
-@_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
+@_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
 #if IMPORT_SWIFTTLS
@@ -1639,6 +1639,7 @@ class QUICTestHarness {
             // A stalled connection shows up here: the bytes never arrive because
             // the client has no send credit left.
             guard XCTWaiter.wait(for: [serverFlowExpectation], timeout: timeout) == .completed else {
+                #if canImport(SwiftNetwork)
                 var diagnostics = ""
                 let diagnosticsExpectation = XCTestExpectation(description: "Collect stall state")
                 context.async {
@@ -1654,6 +1655,9 @@ class QUICTestHarness {
                     diagnosticsExpectation.fulfill()
                 }
                 wait(for: [diagnosticsExpectation], timeout: timeout)
+                #else
+                let diagnostics = "flow control state unavailable"
+                #endif
 
                 XCTFail(
                     "Connection stalled at round \(round) after dropping \(round * chunkSize) unread "
@@ -1699,6 +1703,7 @@ class QUICTestHarness {
 
         // Having completed every round, confirm the peer still has room to send:
         // the credit for all the dropped bytes was genuinely returned.
+        #if canImport(SwiftNetwork)
         let finalExpectation = XCTestExpectation(description: "Final credit check")
         context.async {
             if let client = self.state?.clientInstance {
@@ -1716,6 +1721,7 @@ class QUICTestHarness {
             finalExpectation.fulfill()
         }
         wait(for: [finalExpectation], timeout: timeout)
+        #endif
 
         Logger.test.debug("Test phase: Termination")
         stop()
