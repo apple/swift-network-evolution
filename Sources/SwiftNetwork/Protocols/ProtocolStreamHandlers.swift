@@ -336,14 +336,14 @@ extension ProtocolInstanceReference {
             case .streamLowerHarness(var instance):
                 return try instance.receiveStreamData(from, minimumBytes: minimumBytes, maximumBytes: maximumBytes)
             #endif
+            case .customLink(var instance):
+                return try instance.receiveStreamData(from, minimumBytes: minimumBytes, maximumBytes: maximumBytes)
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
                 return try container.accessOutboundStreamHandler(at: index) { instance throws(NetworkError) in
                     try instance.receiveStreamData(from, minimumBytes: minimumBytes, maximumBytes: maximumBytes)
                 }
             #endif
-            case .customLink(var instance):
-                return try instance.receiveStreamData(from, minimumBytes: minimumBytes, maximumBytes: maximumBytes)
             default: fatalError("Protocol cannot accept receiveStreamData call")
             }
         }
@@ -363,13 +363,13 @@ extension ProtocolInstanceReference {
             #if !NETWORK_NO_TESTING_HARNESS
             case .streamLowerHarness(var instance): return try instance.getOutboundStreamDataRoomAvailable(from)
             #endif
+            case .customLink(var instance): return try instance.getOutboundStreamDataRoomAvailable(from)
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
                 return try container.accessOutboundStreamHandler(at: index) { instance throws(NetworkError) in
                     try instance.getOutboundStreamDataRoomAvailable(from)
                 }
             #endif
-            case .customLink(var instance): return try instance.getOutboundStreamDataRoomAvailable(from)
             default: fatalError("Protocol cannot accept getOutboundStreamDataRoomAvailable call")
             }
         }
@@ -395,6 +395,7 @@ extension ProtocolInstanceReference {
             #if !NETWORK_NO_TESTING_HARNESS
             case .streamLowerHarness(var instance): try instance.sendStreamData(from, streamData: streamData)
             #endif
+            case .customLink(var instance): try instance.sendStreamData(from, streamData: streamData)
             #if !NETWORK_EMBEDDED
             case .custom(let container, let index):
                 try container.accessOutboundStreamHandler(at: index, streamData) {
@@ -403,7 +404,6 @@ extension ProtocolInstanceReference {
                     try instance.sendStreamData(from, streamData: streamData)
                 }
             #endif
-            case .customLink(var instance): try instance.sendStreamData(from, streamData: streamData)
             default: fatalError("Protocol cannot accept sendStreamData call")
             }
         }
