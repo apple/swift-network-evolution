@@ -702,7 +702,22 @@ public struct IPProtocol: NetworkProtocol {
                 var hadFragments = false
                 // If fragments are present, hadFragments will be set and metadataComplete will not be set on the frame.
                 inboundFrames.iterateMutableFrames { frame in
+                    // Chain-member frames of a single-IP aggregate carry no IP
+                    // header of their own; they are payload continuation of the
+                    // preceding aggregate head. Pass them through untouched so
+                    // the transport can regroup the datagram. Mark them
+                    // metadataComplete so the fragment-reassembly slow path
+                    // below does not try to parse them as fragment headers.
+                    if frame.isPacketChainMember {
+                        frame.metadataComplete = true
+                        return .continueIterating
+                    }
                     let originalFrameLength = frame.unclaimedLength
+                    // For a single-IP aggregate head, the datagram spans this
+                    // frame plus its chain members; packetChainTotalLength holds
+                    // the true datagram length (this buffer holds only the head).
+                    let datagramLength =
+                        frame.isSingleIPAggregate ? frame.packetChainTotalLength : originalFrameLength
                     var versionAndHeaderLength: UInt8 = 0
                     var tos: UInt8 = 0
                     var totalLength: UInt16 = 0
@@ -768,9 +783,9 @@ public struct IPProtocol: NetworkProtocol {
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
-                    guard totalLength == originalFrameLength else {
+                    guard totalLength == datagramLength else {
                         log.error(
-                            "Received length mismatch with IP total length \(totalLength) != \(originalFrameLength)"
+                            "Received length mismatch with IP total length \(totalLength) != \(datagramLength)"
                         )
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
@@ -829,7 +844,14 @@ public struct IPProtocol: NetworkProtocol {
                             return .removeFrameAndContinue
                         }
                     }
-                    _ = frame.claim(fromStart: Int(headerLength), fromEnd: originalFrameLength - Int(totalLength))
+                    if frame.isSingleIPAggregate {
+                        // Payload continues into chain-member frames; claim only
+                        // the IP header from this head frame. claim() also
+                        // decrements packetChainTotalLength by headerLength.
+                        _ = frame.claim(fromStart: Int(headerLength))
+                    } else {
+                        _ = frame.claim(fromStart: Int(headerLength), fromEnd: originalFrameLength - Int(totalLength))
+                    }
                     self.counters.rxPackets += 1
                     return .continueIterating
                 }
@@ -1468,7 +1490,19 @@ public struct IPProtocol: NetworkProtocol {
                 var hadFragments = false
                 // If fragments are present, hadFragments will be set and metadataComplete will not be set on the frame.
                 inboundFrames.iterateMutableFrames { frame in
+                    // Chain-member frames of a single-IP aggregate carry no IP
+                    // header of their own; they are payload continuation of the
+                    // preceding aggregate head. Pass them through untouched so
+                    // the transport can regroup the datagram. Mark them
+                    // metadataComplete so the fragment-reassembly slow path
+                    // below does not try to parse them as fragment headers.
+                    if frame.isPacketChainMember {
+                        frame.metadataComplete = true
+                        return .continueIterating
+                    }
                     let originalFrameLength = frame.unclaimedLength
+                    let datagramLength =
+                        frame.isSingleIPAggregate ? frame.packetChainTotalLength : originalFrameLength
                     var flow: UInt32 = 0
                     var payloadLength: UInt16 = 0
                     var hopLimit: UInt8 = 0
@@ -1510,9 +1544,9 @@ public struct IPProtocol: NetworkProtocol {
                         return .removeFrameAndContinue
                     }
                     let ipv6Length = (payloadLength + UInt16(IPv6Instance.headerLength))
-                    guard ipv6Length == originalFrameLength else {
+                    guard ipv6Length == datagramLength else {
                         log.error(
-                            "Received IPv6 packet with incorrect length, expected \(ipv6Length) received \(originalFrameLength)"
+                            "Received IPv6 packet with incorrect length, expected \(ipv6Length) received \(datagramLength)"
                         )
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
@@ -1600,10 +1634,17 @@ public struct IPProtocol: NetworkProtocol {
                     frame.dscpValue = trafficClass >> 2
                     frame.metadataComplete = true
 
-                    _ = frame.claim(
-                        fromStart: headerOffset,
-                        fromEnd: originalFrameLength - (Int(payloadLength) + IPv6Instance.headerLength)
-                    )
+                    if frame.isSingleIPAggregate {
+                        // Payload continues into chain-member frames; claim only
+                        // the IPv6 header from this head frame. claim() also
+                        // decrements packetChainTotalLength by headerOffset.
+                        _ = frame.claim(fromStart: headerOffset)
+                    } else {
+                        _ = frame.claim(
+                            fromStart: headerOffset,
+                            fromEnd: originalFrameLength - (Int(payloadLength) + IPv6Instance.headerLength)
+                        )
+                    }
                     self.counters.rxPackets += 1
                     return .continueIterating
                 }
