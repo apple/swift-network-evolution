@@ -275,7 +275,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             // Get tls options here
             // note: all logic about what tlsOptions are valid/required
             // should be handled within SwiftTLS, so that logic does not
-            // need to be duplicated here and in nwswifttls.m/nwswifttlsrecord.m
+            // need to be duplicated here.
             guard let parameters,
                 let options = tlsOptions(from: parameters),
                 let protocolOptions = options.perProtocolOptions
@@ -799,6 +799,324 @@ public struct SwiftTLSProtocol: NetworkProtocol {
     static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
         SwiftTLSProtocol().newProtocolInstance(context: context)!
     }
+
+    #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
+    final class SwiftTLSRecordLayerInstance {
+        var handle: SwiftTLSInstance
+
+        var tlsState: SwiftTLSRecordProtocolState {
+            tlsManager.state
+        }
+        var isServer = false
+        var tlsManager: SwiftTLSHandshakeAndRecordManager
+        var options: SwiftTLSProtocolOptions
+        var setConnectionClosed: Bool = false
+
+        #if !os(Linux) && !NETWORK_STANDALONE
+        static let successErrorCode = errSecSuccess
+        #else
+        static let successErrorCode = 0
+        #endif
+
+        init(
+            _ handle: SwiftTLSInstance,
+            _ options: SwiftTLSProtocolOptions,
+            _ parameters: Parameters?
+        ) throws(NetworkError) {
+            self.handle = handle
+            self.options = options
+            if let parameters {
+                isServer = parameters.isServer
+            }
+            do {
+                if isServer {
+                    tlsManager = try SwiftTLSHandshakeAndRecordManager(options: options.tlsOptions, isServer: true)
+                } else {
+                    tlsManager = try SwiftTLSHandshakeAndRecordManager(options: options.tlsOptions, isServer: false)
+                }
+            } catch {
+                handle.log.error("failed to initialize tls handshake and record manager: \(error)")
+                throw NetworkError.posix(EINVAL)
+            }
+        }
+
+        func teardown() {}
+
+        // our upper protocol told us to disconnect
+        // tls manager will handle sending close notify (if it is complete and we
+        // haven't already sent an alert)
+        func disconnect(error: NetworkError?) {
+            handle.invokeDisconnect(error: error)  // call disconnect down the stack
+        }
+
+        func handleDisconnectedEvent(error: NetworkError?) {
+            try? readInputData(ignoreReadLimit: true)
+
+            if !tlsManager.alertSentOrReceived {
+                // if lower protocol disconnects without close notify or alert this is a potential truncation attack
+                if tlsState == .handshake || tlsState == .connected {
+                    handle.log.error("peer disconnected without sending a close notify or alert, potential truncation")
+                    handle.deliverDisconnectedEvent(error: .tls(.tlsError))
+                    return
+                }
+            } else if !setConnectionClosed {
+                // if we received a close notify we want to make sure upper sees connectionClosed.
+                // tell upper to read
+                handle.deliverInboundDataAvailableEvent()
+            }
+            // default to pass through
+            handle.deliverDisconnectedEvent(error: error)
+        }
+
+        // `connect` is called once our lower protocol is connected
+        // It starts the TLS handshake
+        // by sending the client hello if we are a client.
+        func connect() {
+            do {
+                if !isServer {
+                    try tlsManager.startHandshake()
+                    // Send initial handshake data for client
+                    try? sendAllOutgoingData()
+                }
+            } catch {
+                handle.log.error("failed to start client handshake: \(error)")
+                handle.invokeDisconnect()
+            }
+        }
+
+        // called after handshake has completed successfully
+        // lets our upper protocol
+        // know that we are connected
+        func completeHandshake() {
+            handle.log.debug("handshake completed successfully")
+            handle.deliverConnectedEvent()
+        }
+
+        // Helper function that sends all outgoing bytes in the
+        // TLS manager (encrypted data or handshake bytes)
+        func sendAllOutgoingData() throws(NetworkError) {
+            if tlsManager.outgoingBytesCount > 0 {
+                let outgoingByteCount = tlsManager.outgoingBytesCount
+                handle.log.debug("sending \(outgoingByteCount) bytes of data")
+                if let outgoingData = tlsManager.getOutput(numBytes: outgoingByteCount) {
+                    try handle.invokeSendStreamData(FrameArray(frame: Frame(copyBuffer: [UInt8](outgoingData))))
+                }
+            }
+        }
+
+        // upper protocol uses this callback to write data.
+        // only works after handshake is complete
+        func sendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {
+            // readclosed is never set in SwiftTLS yet, but it indicates
+            // we received a close notify (so peer is done sending data)
+            // but we can theoretically still write data.
+            guard tlsState == .connected || tlsState == .readclosed else {
+                handle.log.error("sendStreamData failed - not connected")
+                throw NetworkError.posix(ENOTCONN)
+            }
+
+            var totalBytes = 0
+            streamData.iterateMutableFrames { frame in
+                do throws(SwiftTLSError) {
+                    if let bytes = frame.span, !bytes.isEmpty {
+                        totalBytes += bytes.count
+                        try tlsManager.addApplicationData(bytes: [UInt8](copying: bytes, maxCount: bytes.count))
+                    }
+                    if frame.connectionComplete {
+                        try tlsManager.sendCloseNotify()
+                    }
+                } catch {
+                    handle.log.error("error adding application data \(error)")
+                    frame.finalize(success: false)
+                    return false
+                }
+                frame.finalize(success: true)
+                return true
+            }
+
+            if streamData.unclaimedLength != 0 {
+                // we did not finalize all frames and an error must have been hit
+                streamData.finalizeAllFramesAsFailed()
+                try? sendAllOutgoingData()  // send any pending alert bytes
+                handle.invokeDisconnect()  // call disconnect down stack.
+                return
+            }
+
+            handle.log.debug("sending \(totalBytes) bytes of application data")
+            // Send any encrypted data that's ready
+            try sendAllOutgoingData()
+        }
+
+        public func getOutboundStreamDataRoomAvailable() throws(NetworkError) -> Int {
+            // how much we want to allow upper to queue
+            Int(UInt16.max)
+        }
+
+        // Our upper protocol uses this callback to read data.
+        // It requires the handshake has already completed.
+        // It will return all decrypted application data.
+        // If we don't have any available data then we try to read from our lower protocol first.
+        // If we know that the other side has finished sending data by
+        // sending a TLS alert (close notify or error alert) then the final
+        // frame returned will have connectionComplete set.
+
+        // If our peer disconnects with no alert (e.g. tcp reset),
+        // connectionComplete will not be set on last frame passed up
+        // since TLS does not know if that was actually the last byte
+        // sent by the peer and we call disconnected up the stack.
+        func receiveStreamData(minimumBytes: Int, maximumBytes: Int) throws(NetworkError) -> FrameArray? {
+            // even if tlsState is now readClosed or disconnected there may be
+            // application data buffered in the tlsManager waiting to be read
+            guard tlsState != .initial && tlsState != .handshake else {
+                handle.log.debug("handshake not completed yet - no application data to return")
+                return nil
+            }
+
+            // Return any decrypted application data
+            var availableDataLength = tlsManager.availableApplicationDataLength
+            if availableDataLength == 0 {
+                try readInputData()
+                availableDataLength = tlsManager.availableApplicationDataLength
+            }
+            guard availableDataLength > 0 else {
+                handle.log.debug("no decrypted application data available")
+                return nil
+            }
+
+            let bytesToRead = min(availableDataLength, maximumBytes)
+            handle.log.debug("returning \(bytesToRead) bytes of decrypted application data")
+            // Check if input is finished:
+            // either the peer sent a close notify or fatal alert, OR we sent a fatal alert.
+            // If so, we set a connectionComplete flag on the final frame.
+            if let decryptedData = tlsManager.getAvailableApplicationData(numBytes: bytesToRead) {
+                var frame = Frame(copyBuffer: [UInt8](decryptedData))
+                if (tlsManager.state == .readclosed || tlsManager.state == .disconnected)
+                    && bytesToRead == availableDataLength
+                {
+                    frame.connectionComplete = true
+                    setConnectionClosed = true
+                }
+                return FrameArray(frame: frame)
+            } else if (tlsManager.state == .readclosed || tlsManager.state == .disconnected) && !setConnectionClosed {
+                // we received a close notify and have no application data to send so send an empty frame with connection closed set
+                var frame = Frame(copyBuffer: [UInt8]())
+                frame.connectionComplete = true
+                setConnectionClosed = true
+                return FrameArray(frame: frame)
+            }
+            return nil
+        }
+
+        func readInputData(ignoreReadLimit: Bool = false) throws(NetworkError) {
+            let availableAppDataLength = tlsManager.availableApplicationDataLength
+            if !ignoreReadLimit && availableAppDataLength > SwiftTLSRecordProtocolMaxOutstandingReadBytes {
+                handle.log.debug(
+                    "readInputData - above maximum input threshold, skipping reading \(availableAppDataLength)"
+                )
+                return
+            }
+            let maxToRead =
+                ignoreReadLimit
+                ? availableAppDataLength : SwiftTLSRecordProtocolMaxOutstandingReadBytes - availableAppDataLength
+            guard var receivedFrames = try handle.invokeReceiveStreamData(minimumBytes: 1, maximumBytes: maxToRead)
+            else {
+                handle.log.debug("readInputData - no data available")
+                return
+            }
+
+            guard tlsManager.state != .disconnected && tlsManager.state != .readclosed else {
+                handle.log.debug("readInputData failed - called when tls manager in \(self.tlsManager.state) state.")
+                receivedFrames.finalizeAllFramesAsFailed()
+                return
+            }
+
+            var totalReceivedBytes = 0
+            var generatedError = false
+            let priorTLSState = tlsManager.state
+
+            // Process all incoming network data
+            while var frame = receivedFrames.popFirst() {
+                do throws(SwiftTLSError) {
+                    if var bytes = frame.mutableSpan, !bytes.isEmpty {
+                        totalReceivedBytes += bytes.count
+                        handle.log.debug("processing \(bytes.count) bytes of incoming data")
+                        try bytes.withUnsafeMutableBytes { buffer throws(SwiftTLSError) in
+                            try tlsManager.processNetworkData(networkDataIn: buffer)
+                        }
+                    }
+                } catch {
+                    handle.log.error("tls manager hit error while processing network data: \(error)")
+                    if tlsManager.errorCode == Self.successErrorCode {
+                        // If we hit an error then the errorCode should always be set to something
+                        preconditionFailure(
+                            "tls manager hit error while processing network data, but errorCode not set: \(error)"
+                        )
+                    }
+                    frame.finalize(success: false)
+                    generatedError = true
+                    break
+                }
+                frame.finalize(success: true)
+            }
+
+            if generatedError {
+                // Finalize any unused frames
+                receivedFrames.finalizeAllFramesAsFailed()
+            }
+
+            // Always try to sending any pending data
+            try? sendAllOutgoingData()
+
+            if tlsManager.state == .disconnected {
+                let disconnectedError: NetworkError
+                if priorTLSState == .handshake {
+                    handle.log.debug("handshake failed")
+                    disconnectedError = .tls(.handshakeFailed)
+                } else {
+                    handle.log.debug("tls failed")
+                    disconnectedError = .tls(.tlsError)
+                }
+                handle.deliverDisconnectedEvent(error: disconnectedError)
+                handle.invokeDisconnect()
+                return
+            }
+
+            let justConnected = (priorTLSState == .handshake && tlsManager.state == .connected)
+            if tlsManager.state == .handshake || justConnected {
+                // Send any pending handshake data
+                try? sendAllOutgoingData()
+            }
+
+            // Check if handshake completed
+            if justConnected {
+                handle.log.debug("handshake completed during receive")
+                completeHandshake()
+                // could change logic to notify when connected (by checking after each frame is processed)
+            }
+        }
+
+        // called whenever our lower protocol has data ready to be delivered
+        // we then use `readInputData` to read all available data.
+        // If there is application data available for our upper protocol to read
+        // then we let our upper protocol know.
+        func handleInboundDataAvailableEvent(_ from: ProtocolInstanceReference) {
+            let existingAppDataLength = tlsManager.availableApplicationDataLength
+            do {
+                try readInputData()
+            } catch {
+                return
+            }
+            let availableDataLength = tlsManager.availableApplicationDataLength
+            // notify upper protocol if there is new application data available
+            if availableDataLength > existingAppDataLength && availableDataLength > 0 {
+                if tlsState != .initial && tlsState != .handshake {
+                    handle.deliverInboundDataAvailableEvent()
+                }
+            }
+        }
+    }
+    #endif
+
 }
 
 @_spi(ProtocolProvider)

@@ -43,6 +43,7 @@ let allApplePlatforms: [Platform] = [
 let settings: [SwiftSetting] = [
     .define("IMPORT_SWIFTTLS"),
     .define("EXPORT_SWIFTTLS"),
+    .define("HAS_SWIFTTLS_RECORD"),
     .define("IMPORT_CRYPTO"),
     .define("SWIFTTLS_CERTIFICATE_VERIFICATION"),
     .unsafeFlags(["-Xfrontend", "-experimental-spi-only-imports"]),
@@ -98,7 +99,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "5.0.0-beta.1"),
-        .package(url: "https://github.com/apple/swift-tls.git", .upToNextMinor(from: "0.1.0")),
+        .package(url: "https://github.com/apple/swift-tls.git", .upToNextMinor(from: "0.1.1")),
     ],
     targets: [
         .target(
