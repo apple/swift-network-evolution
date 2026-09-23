@@ -811,6 +811,7 @@ extension Parameters {
         if usesTLS { description += ", tls" }
         if prohibitExpensivePaths { description += ", no expensive" }
         if prohibitConstrainedPaths { description += ", no constrained" }
+        if prohibitLocalNetwork { description += ", no local network" }
         if prohibitCellularPaths { description += ", no cellular" }
         if preferNoProxy { description += ", prefer no proxy" }
         if noProxyPathSelection { description += ", no proxy path selection" }
@@ -1018,6 +1019,10 @@ extension Parameters {
     var prohibitConstrainedPaths: Bool {
         get { pathParameters.pathValue.prohibitConstrainedPaths }
         set { pathParameters.pathValue.prohibitConstrainedPaths = newValue }
+    }
+    var prohibitLocalNetwork: Bool {
+        get { pathParameters.pathValue.prohibitLocalNetwork }
+        set { pathParameters.pathValue.prohibitLocalNetwork = newValue }
     }
     var prohibitCellularPaths: Bool {
         get { pathParameters.prohibitedInterfaceTypes?.contains(.cellular) ?? false }
