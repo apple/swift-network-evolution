@@ -225,6 +225,16 @@ public protocol ParametersProvider {
     /// - Parameter prohibited: True if constrained paths are prohibited, false otherwise.
     func constrainedPathsProhibited(_ prohibited: Bool) -> Self
 
+    /// Prohibit using paths over the local network.
+    ///
+    /// Prohibit connections and listeners from using a route that goes
+    /// directly to a peer device on the local area network. This does not
+    /// include loopback connections; to prohibit loopback, prohibit the
+    /// loopback interface type.
+    ///
+    /// - Parameter prohibited: True if local network paths are prohibited, false otherwise.
+    func localNetworkProhibited(_ prohibited: Bool) -> Self
+
     /// Specify a specific endpoint to use as the local endpoint.
     ///
     /// For connections, this will be used to initiate traffic;
@@ -402,6 +412,20 @@ extension ParametersProvider {
     public func constrainedPathsProhibited(_ prohibited: Bool) -> Self {
         var mutableSelf = self
         mutableSelf.parameters.prohibitConstrainedPaths = prohibited
+        return mutableSelf
+    }
+
+    /// Prohibit using paths over the local network.
+    ///
+    /// Prohibit connections and listeners from using a route that goes
+    /// directly to a peer device on the local area network. This does not
+    /// include loopback connections; to prohibit loopback, prohibit the
+    /// loopback interface type.
+    ///
+    /// - Parameter prohibited: True if local network paths are prohibited, false otherwise.
+    public func localNetworkProhibited(_ prohibited: Bool) -> Self {
+        var mutableSelf = self
+        mutableSelf.parameters.prohibitLocalNetwork = prohibited
         return mutableSelf
     }
 

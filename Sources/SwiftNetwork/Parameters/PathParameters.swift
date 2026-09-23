@@ -93,6 +93,7 @@ struct PathParameters: Hashable, CustomStringConvertible {
             static let privacyProxyFailClosed = Flags(rawValue: 1 << 3)
             static let nextHop = Flags(rawValue: 1 << 4)
             static let privacyProxyStrictFailClosed = Flags(rawValue: 1 << 5)
+            static let prohibitLocalNetwork = Flags(rawValue: 1 << 6)
         }
         var flags: Flags = Flags(rawValue: 0)
 
@@ -105,6 +106,13 @@ struct PathParameters: Hashable, CustomStringConvertible {
             get { flags.contains(.prohibitConstrainedPaths) }
             set {
                 if newValue { flags.insert(.prohibitConstrainedPaths) } else { flags.remove(.prohibitConstrainedPaths) }
+            }
+        }
+
+        var prohibitLocalNetwork: Bool {
+            get { flags.contains(.prohibitLocalNetwork) }
+            set {
+                if newValue { flags.insert(.prohibitLocalNetwork) } else { flags.remove(.prohibitLocalNetwork) }
             }
         }
 
@@ -603,6 +611,7 @@ extension PathParameters {
         }
         if pathValue.prohibitExpensivePaths { description += ", prohibit expensive" }
         if pathValue.prohibitConstrainedPaths { description += ", prohibit constrained" }
+        if pathValue.prohibitLocalNetwork { description += ", prohibit local network" }
         if joinablePathValue.noProxy { description += ", no proxy" }
         if joinablePathValue.noWakeFromSleep { description += ", no wake from sleep" }
         if pathValue.allowSocketAccess { description += ", allow socket access" }
