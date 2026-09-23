@@ -738,6 +738,10 @@ final class SwiftNetworkConnectionTests: NetTestCase {
 
     #if HAS_SWIFTTLS_RECORD
     func testTLSNoTransportDataPath() {
+        let serverSigningKey = P256.Signing.PrivateKey()
+        let serverPrivateKey = [UInt8](serverSigningKey.rawRepresentation)
+        let serverPublicKeys = [[UInt8](serverSigningKey.publicKey.derRepresentation)]
+
         let group = DispatchGroup()
         group.enter()
         let c1 = NetworkConnection(
@@ -748,6 +752,8 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                         StreamBridge()
                     }
                 }
+                .trustedRawPublicKeyCertificates(serverPublicKeys)
+                .applicationProtocols(["network_test"])
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
@@ -770,7 +776,10 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                         StreamBridge()
                     }
                 }
+                .rawPrivateKey(serverPrivateKey)
+                .applicationProtocols(["network_test"])
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7778))
+                .serverMode(true)
         )
         .onStateUpdate { _, state in
             print("c2 \(state)")
@@ -783,8 +792,11 @@ final class SwiftNetworkConnectionTests: NetTestCase {
         }
         XCTAssertNotNil(c2)
 
-        c1.start()
+        // `StreamBridge` resolves its peer through a static port registry populated in
+        // `setup()` and drops anything addressed to an unregistered port. The TLS client
+        // transmits its ClientHello during `start()`, so the server must be started first.
         c2.start()
+        c1.start()
 
         c1.send(.message(content: [1, 2, 3])) { result in
             switch result {
@@ -925,6 +937,9 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                     }
                 }
                 .trustedRawPublicKeyCertificates(serverPublicKeys)
+                // SwiftTLS requires ALPN on the client; without it the client state machine
+                // fails to build and the connection fails with EINVAL before any bytes flow.
+                .applicationProtocols(["network_test"])
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
@@ -948,6 +963,7 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                     }
                 }
                 .rawPrivateKey(serverPrivateKey)
+                .applicationProtocols(["network_test"])
                 // `clientAuthRequired` has no dedicated modifier; it is reachable only
                 // through the `customOptions` escape hatch.
                 .customOptions { options in
