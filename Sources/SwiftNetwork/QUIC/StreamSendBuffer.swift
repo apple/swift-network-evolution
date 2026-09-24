@@ -60,6 +60,11 @@ struct StreamSendBuffer: ~Copyable {
         storageStartOffset + StreamLength(storage.unclaimedLength) > currentSendOffset
     }
 
+    // Returns remaining data to service and the flag for `hasLast`
+    func sendServiceState(currentSendOffset: StreamOffset) -> (remaining: StreamLength, hasLast: Bool) {
+        (remainingDataLengthToService(currentSendOffset: currentSendOffset), hasLast)
+    }
+
     // How much remains to be serviced == has not yet been sent out once.
     func remainingDataLengthToService(currentSendOffset: StreamOffset) -> StreamLength {
         let offsetPastLastByte = storageStartOffset + StreamLength(storage.unclaimedLength)

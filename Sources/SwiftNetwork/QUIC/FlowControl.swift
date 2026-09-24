@@ -254,7 +254,7 @@ struct FlowControlState: ~Copyable {
     fileprivate(set) var pendingOutboundBytesToSend: UInt64 = 0
 
     // Number of bytes that can be sent to the peer before the maximum is reached.
-    fileprivate var remainingOutboundBytesAllowed: UInt64 {
+    func remainingOutboundBytesAllowed() -> UInt64 {
         guard outboundMaxData > totalOutboundBytesSent else {
             return 0
         }
@@ -264,6 +264,11 @@ struct FlowControlState: ~Copyable {
     mutating func resetSentBytes() {
         totalOutboundBytesSent = 0
         pendingOutboundBytesToSend = 0
+    }
+
+    mutating func recordSent(_ bytes: UInt64) {
+        pendingOutboundBytesToSend -= bytes
+        totalOutboundBytesSent += bytes
     }
 
     // Pass false for connection-wide values
@@ -307,10 +312,6 @@ extension QUICConnection {
                 pendingItems.dataBlocked = true
             }
         }
-    }
-
-    var availableRemoteReceiveWindow: UInt64 {
-        flowControlState.remainingOutboundBytesAllowed
     }
 
     func updateOutboundMaxData(to newValue: UInt64) -> Bool {
@@ -438,10 +439,8 @@ extension QUICStreamInstance {
         precondition(bytes <= flowControlState.pendingOutboundBytesToSend)
         precondition(bytes <= connection.flowControlState.pendingOutboundBytesToSend)
 
-        flowControlState.pendingOutboundBytesToSend -= bytes
-        flowControlState.totalOutboundBytesSent += bytes
-        connection.flowControlState.pendingOutboundBytesToSend -= bytes
-        connection.flowControlState.totalOutboundBytesSent += bytes
+        flowControlState.recordSent(bytes)
+        connection.flowControlState.recordSent(bytes)
 
         // Draining can reopen a permit that transient backpressure latched to 0
         if self.maximumStreamDataSize == 0 {
@@ -574,13 +573,9 @@ extension QUICStreamInstance {
     }
 
     func availableRemoteReceiveWindow(for connection: QUICConnection) -> UInt64 {
-        let connectionFlowControl = connection.flowControlState.remainingOutboundBytesAllowed
-        let streamFlowControl = self.flowControlState.remainingOutboundBytesAllowed
+        let connectionFlowControl = connection.flowControlState.remainingOutboundBytesAllowed()
+        let streamFlowControl = self.flowControlState.remainingOutboundBytesAllowed()
         return min(connectionFlowControl, streamFlowControl)
-    }
-
-    var availableRemoteReceiveWindow: UInt64 {
-        availableRemoteReceiveWindow(for: parentProtocol)
     }
 
     func updateOutboundMaxData(to newValue: UInt64) -> Bool {

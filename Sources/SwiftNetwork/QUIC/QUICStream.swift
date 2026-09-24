@@ -1124,14 +1124,19 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
         sendBuffer.hasMoreSendDataToService(currentSendOffset: sendOffset)
     }
 
-    @inline(always)
-    var remainingSendDataToService: UInt64 {
-        sendBuffer.remainingDataLengthToService(currentSendOffset: sendOffset)
+    // Available view into the sendBuffer for building outbound stream frames
+    func availableSendData() -> (offset: UInt64, remaining: UInt64, hasLast: Bool) {
+        let offset = sendOffset
+        let (remaining, hasLast) = sendBuffer.sendServiceState(currentSendOffset: offset)
+        return (offset, remaining, hasLast)
     }
 
+    // NOTE: hasMoreDataToService is a signal that the sendBuffer contains the `hasLast` already
+    // so no need to determine if data is blocked.
     func recordStreamDataSending(
         writtenLength: UInt64,
         isFinal: Bool,
+        hasMoreDataToService: Bool,
         pendingItems: inout PendingItems,
         connection: QUICConnection
     ) {
@@ -1143,7 +1148,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection>,
 
         updateFlowControlWithSentBytes(writtenLength, connection: connection)
 
-        if hasMoreSendDataToService {
+        if hasMoreDataToService {
             self.reportDataBlockedIfNecessary(on: &pendingItems)
             connection.reportDataBlockedIfNecessary(on: &pendingItems)
         }
