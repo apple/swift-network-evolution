@@ -97,17 +97,7 @@ public struct QUICConnectionUtilities {
         let packetType = (firstOctet & 0x30) >> 4
         if longHeader {
             // Retry packet present
-            var padding = 0
             if packetType == 0x03 {
-                // If retry packet determine if there is padding to compute the size of the token
-                var paddingIndex = 0
-                for index in buffer.indices.reversed() {
-                    if buffer[index] != 0 && index != 0 {
-                        paddingIndex = index + 1
-                        break
-                    }
-                }
-                padding = buffer.count - paddingIndex
                 retryPacket = true
             }
             let result = Deserializer.deserialize(buffer.bytes) { read throws(DeserializationError) in
@@ -128,7 +118,7 @@ public struct QUICConnectionUtilities {
                         UInt8(staticHeaderBytes) + parsedDcidLength + parsedScidLength
                     // Compute the length minus the header, padding, and integrity tag
                     let retryTokenLength =
-                        Int(buffer.count) - Int(expectedLongHeaderLength) - padding
+                        Int(buffer.count) - Int(expectedLongHeaderLength)
                         - Int(Constants.retryTokenIntegrityTagLength)
                     if retryTokenLength > 0 {
                         try read.buffer(&retryToken, length: retryTokenLength)
