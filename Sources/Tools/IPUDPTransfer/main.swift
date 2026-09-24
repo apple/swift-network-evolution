@@ -34,13 +34,19 @@ final class IPUDPTransfer {
     // 169.254.225.163
     let remoteIPv4Address: [UInt8] = [0xa9, 0xfe, 0xe1, 0xa3]
 
-    let dataBenchmarkUtility = DataBenchmarkUtility()
     let NSEC_PER_MSEC = UInt64(Duration.milliseconds(1) / Duration.nanoseconds(1))
 
     func run(iterations: Int, packets: Int, loggingHandle: LoggingHandle, group: DispatchGroup, sendSize: Int) -> Double
     {
-        let ipv4Client = Endpoint(address: IPv4Address(localIPv4Address)!, port: 0)
-        let ipv4Server = Endpoint(address: IPv4Address(remoteIPv4Address)!, port: 0)
+        // The bridge routes by port, so the two endpoints need distinct ports.
+        let ipv4Client = Endpoint(
+            address: IPv4Address(localIPv4Address)!,
+            port: BridgeDatagramProtocol.Instance.nextGeneratedPort
+        )
+        let ipv4Server = Endpoint(
+            address: IPv4Address(remoteIPv4Address)!,
+            port: BridgeDatagramProtocol.Instance.nextGeneratedPort
+        )
         // Create a random payload to send back and forth
         var payload = [UInt8](repeating: 0, count: sendSize)
         payload = (0..<sendSize).map { _ in UInt8.random(in: 0...255) }
@@ -58,6 +64,7 @@ final class IPUDPTransfer {
         clientParameters.context = context
         context.activate()
         context.async {
+            defer { group.leave() }
             for _ in 0..<iterations {
                 // Client
                 let path = PathProperties(parameters: clientParameters)
@@ -74,6 +81,11 @@ final class IPUDPTransfer {
                 clientUDPOptions.setProtocolInstance(clientUDP)
                 clientParameters.defaultStack.transport = .udp(clientUDPOptions)
 
+                let clientOutput = BridgeDatagramProtocol.instance(context: context)
+                let clientBridgeOptions = BridgeDatagramProtocol.options()
+                clientBridgeOptions.setProtocolInstance(clientOutput)
+                clientParameters.defaultStack.link = .custom(clientBridgeOptions)
+
                 let clientUDPLinkage = OutboundDatagramLinkage(reference: clientUDP)
                 let clientInput = DatagramUpperHarness(
                     identifier: "Client",
@@ -88,10 +100,6 @@ final class IPUDPTransfer {
                     return
                 }
 
-                let clientOutput = DatagramLowerHarness(
-                    identifier: "Client",
-                    context: clientParameters.context
-                )
                 do {
                     try clientUDP.attachLowerDatagramProtocol(
                         clientIP,
@@ -101,7 +109,7 @@ final class IPUDPTransfer {
                         path: path
                     )
                     try clientIP.attachLowerDatagramProtocol(
-                        clientOutput.reference,
+                        clientOutput,
                         remote: ipv4Server,
                         local: ipv4Client,
                         parameters: clientParameters,
@@ -128,6 +136,11 @@ final class IPUDPTransfer {
                 serverUDPOptions.setProtocolInstance(serverUDP)
                 serverParameters.defaultStack.transport = .udp(serverUDPOptions)
 
+                let serverOutput = BridgeDatagramProtocol.instance(context: context)
+                let serverBridgeOptions = BridgeDatagramProtocol.options()
+                serverBridgeOptions.setProtocolInstance(serverOutput)
+                serverParameters.defaultStack.link = .custom(serverBridgeOptions)
+
                 let serverUDPLinkage = OutboundDatagramLinkage(reference: serverUDP)
                 let serverInput = DatagramUpperHarness(
                     identifier: "Server",
@@ -142,10 +155,6 @@ final class IPUDPTransfer {
                     return
                 }
 
-                let serverOutput = DatagramLowerHarness(
-                    identifier: "Server",
-                    context: clientParameters.context
-                )
                 do {
                     try serverUDP.attachLowerDatagramProtocol(
                         serverIP,
@@ -155,7 +164,7 @@ final class IPUDPTransfer {
                         path: path
                     )
                     try serverIP.attachLowerDatagramProtocol(
-                        serverOutput.reference,
+                        serverOutput,
                         remote: ipv4Client,
                         local: ipv4Server,
                         parameters: serverParameters,
@@ -168,15 +177,11 @@ final class IPUDPTransfer {
                 serverInput.start()
                 clientInput.start()
                 // Transfer data
+                var transferSucceeded = true
                 for _ in 0..<packets {
-                    let _ = clientInput.write(payload)
-                    let _ = self.dataBenchmarkUtility.loopOutputHandlerPackets(
-                        sender: clientOutput,
-                        receiver: serverOutput,
-                        maximumBurst: 10
-                    )
-                    guard serverInput.read() != nil else {
-                        loggingHandle.log("Failed to read a payload")
+                    guard clientInput.write(payload), serverInput.read() != nil else {
+                        loggingHandle.log("Failed to transfer a payload")
+                        transferSucceeded = false
                         break
                     }
                 }
@@ -185,9 +190,9 @@ final class IPUDPTransfer {
                 serverInput.stop()
                 serverInput.teardown()
 
+                guard transferSucceeded else { return }
                 iterationIndex += 1
             }
-            group.leave()
         }
         group.wait()
         print("Completed \(iterationIndex) / \(iterations) iterations")
