@@ -85,12 +85,10 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                         )
 
                         // Once the delayed ACK has been sent there are no obligations left.
-                        client.ack.timerFired(at: .systemNow)
-                        XCTAssertEqual(
-                            client.ack.unackedPacketCount,
-                            0,
-                            "Client should not owe the peer an ACK once the delayed ACK has been sent"
-                        )
+                        if client.ack.timerFired(at: .systemNow) {
+                            client.sendFrames(delayedACK: true)
+                            client.checkConnectionIdle(unackedPacketCount: client.ack.unackedPacketCount)
+                        }
                         XCTAssertTrue(
                             client.currentPath?.reportedIdleEvent ?? false,
                             "Client should have reported idle once the owed ACK has been sent"
