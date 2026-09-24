@@ -157,9 +157,12 @@ enum TLSCipherSuite: CaseIterable {
 
 @available(Network 0.1.0, *)
 struct SecFramerKeys: ~Copyable {
-    enum KeyType {
+    enum KeyType: Equatable {
         case aesGCM
         case chaChaPoly
+        #if Fuzzing
+        case null
+        #endif
     }
     let key: SymmetricKey
     let iv: ProtectorIV
@@ -239,6 +242,56 @@ protocol SecFramerProtocol: ~Copyable {
         loggingOperation: StaticString
     ) throws(QUICError)
 }
+
+#if Fuzzing
+// A no-op packet protector used only by fuzz targets.
+@available(Network 0.1.0, *)
+struct SecFramerNull: ~Copyable, SecFramerProtocol {
+    static func createKeyStorage(
+        key: SymmetricKey,
+        iv: ProtectorIV,
+        headerProtectionKey: SymmetricKey,
+        savedWriteSecret: SymmetricKey? = nil,
+        savedReadSecret: SymmetricKey? = nil,
+        log: LogPrefixer
+    ) -> SecFramerKeys {
+        SecFramerKeys(
+            key: key,
+            iv: iv,
+            headerProtectionKey: headerProtectionKey,
+            savedWriteSecret: savedWriteSecret,
+            savedReadSecret: savedReadSecret,
+            type: .null,
+            log: log
+        )
+    }
+
+    static func seal(
+        keys: borrowing SecFramerKeys,
+        nonce: ProtectorNonce,
+        packet: inout Packet,
+        frame: inout Frame
+    ) throws(QUICError) {
+    }
+
+    static func open(
+        keys: borrowing SecFramerKeys,
+        nonce: ProtectorNonce,
+        packet: inout Packet,
+        frame: inout Frame
+    ) throws(QUICError) {
+    }
+
+    static func headerProtection(
+        keys: borrowing SecFramerKeys,
+        packet: inout Packet,
+        frame: inout Frame,
+        mask: inout MutableRawSpan,
+        loggingOperation: StaticString
+    ) throws(QUICError) {
+    }
+}
+#endif
 
 @available(Network 0.1.0, *)
 struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
@@ -916,6 +969,10 @@ struct Protector: ~Copyable, PrefixedLoggable {
             #else
             throw (.protector(.unsupportedAlgorithm))
             #endif
+        #if Fuzzing
+        case .null:
+            break
+        #endif
         }
     }
 
@@ -967,6 +1024,21 @@ struct Protector: ~Copyable, PrefixedLoggable {
             #else
             throw (.protector(.unsupportedAlgorithm))
             #endif
+        #if Fuzzing
+        case .null:
+            var maskSpan = mask.mutableSpan
+            var maskRawSpan = maskSpan.mutableBytes
+            try SecFramerNull.headerProtection(
+                keys: keys,
+                packet: &packet,
+                frame: &frame,
+                mask: &maskRawSpan,
+                loggingOperation: "open"
+            )
+            // The mask stays zeroed, so this leaves the header untouched:
+            // fuzzer input is treated as already-plaintext.
+            Protector.processHeaderProtection(packet: &packet, frame: &frame, mask: mask.span.bytes)
+        #endif
         }
     }
 
@@ -1000,6 +1072,11 @@ struct Protector: ~Copyable, PrefixedLoggable {
             #else
             throw (.protector(.unsupportedAlgorithm))
             #endif
+        #if Fuzzing
+        case .null:
+            let nonce = prepareNonce(iv: keys.iv, packetNumber: packet.number)
+            try SecFramerNull.open(keys: keys, nonce: nonce, packet: &packet, frame: &frame)
+        #endif
         }
     }
 
@@ -1141,6 +1218,12 @@ struct Protector: ~Copyable, PrefixedLoggable {
                 isWrite ? savedWriteSecret! : savedReadSecret!
             keySize = key.bitCount / 8
             ivSize = iv.count
+        #if Fuzzing
+        case .null:
+            // Null protector keys are never phase0/phase1 traffic secrets,
+            // so key-phase rotation should never be triggered for them.
+            fatalError("trafficUpdate is unreachable for a null protector")
+        #endif
         }
         let keyUpdateSecret: SymmetricKey
         let key: SymmetricKey
@@ -1221,6 +1304,10 @@ struct Protector: ~Copyable, PrefixedLoggable {
                 nextFramer.savedReadSecret = keyUpdateSecret
                 readFramer[nextKeyState.rawValue] = nextFramer
             }
+        #if Fuzzing
+        case .null:
+            fatalError("trafficUpdate is unreachable for a null protector")
+        #endif
         }
     }
 
@@ -1281,6 +1368,22 @@ struct Protector: ~Copyable, PrefixedLoggable {
         keys.type
     }
 
+    #if Fuzzing
+    // Installs a no-op protector for the given key state so incoming packets
+    // are treated as already-plaintext instead of being rejected/queued for
+    // missing keys. Only usable by fuzz targets; never available in
+    // production builds. Only the read side is installed since fuzzing only
+    // exercises the receive path.
+    mutating func installNullProtector(for keyState: PacketKeyState) {
+        readFramer[keyState.rawValue] = SecFramerNull.createKeyStorage(
+            key: SymmetricKey(data: []),
+            iv: ProtectorIV(repeating: 0),
+            headerProtectionKey: SymmetricKey(data: []),
+            log: log
+        )
+    }
+    #endif
+
     mutating func drop(keyState: PacketKeyState) {
         log.info("Dropping keys for state: \(keyState.description)")
         let readType: SecFramerKeys.KeyType = keyType(keys: readFramer[keyState.rawValue])
@@ -1312,7 +1415,12 @@ struct Protector: ~Copyable, PrefixedLoggable {
 
     @inline(always)
     func getTagSize(for keyState: PacketKeyState?) -> UInt8 {
-        16
+        #if Fuzzing
+        if let keyState, readFramer[keyState.rawValue].type == .null {
+            return 0
+        }
+        #endif
+        return 16
     }
 
     static func openRetry(retryPseudo: RawSpan, retryTag: RawSpan) throws(QUICError) {
