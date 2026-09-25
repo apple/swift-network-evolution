@@ -359,6 +359,21 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
         self.dcid = dcid
         if case .routeEstablished = state {
             changeState(to: .cidAssigned)
+            if let localEndpoint, let remoteEndpoint,
+                case .address(let localAddress) = localEndpoint.type,
+                case .address(let remoteAddress) = remoteEndpoint.type
+            {
+                // If the cid is now assigned we can send and receive on the path
+                let pathInfo = QUICPathInfo(
+                    isValidated: self.isValidated,
+                    remote: remoteAddress,
+                    local: localAddress
+                )
+                parentProtocol.deliverNetworkProtocolEvent(
+                    flow: .allFlows,
+                    event: .init(quicEvent: .pathCIDAssigned(pathInfo))
+                )
+            }
         }
         log.datapath(
             "Assigning DCID \(dcid.description) to path ID \(self.identifier)"
