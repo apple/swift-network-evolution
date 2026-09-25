@@ -590,6 +590,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         let handshakeExpectation = XCTestExpectation(description: "QUIC handshake complete")
         let pathChangedExpectation = XCTestExpectation(description: "pathChanged event received")
         let pathValidatedExpectation = XCTestExpectation(description: "pathValidated event received")
+        let pathAssignedExpectation = XCTestExpectation(description: "pathCIDAssigned event received")
 
         var clientQUICReference: ProtocolInstanceReference?
         var serverQUICReference: ProtocolInstanceReference?
@@ -599,6 +600,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
 
         var receivedPathChangedInfo: QUICPathInfo?
         var receivedPathValidatedInfo: QUICPathInfo?
+        var receivedPathAssignedInfo: QUICPathInfo?
 
         context.async {
             defer { handshakeExpectation.fulfill() }
@@ -686,6 +688,11 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                 pathValidatedExpectation.fulfill()
             }
 
+            serverUpperHarness.completions.pathCIDAssigned = { pathInfo in
+                receivedPathAssignedInfo = pathInfo
+                pathAssignedExpectation.fulfill()
+            }
+
             var serverConnected = false
             serverUpperHarness.start { connected in
                 serverConnected = true
@@ -761,6 +768,10 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             XCTAssertTrue(pathInfo.remote == AddressEndpoint(address: newClientAddress, port: newCLientPort))
         }
         if let pathInfo = receivedPathChangedInfo {
+            XCTAssertTrue(pathInfo.local == AddressEndpoint(address: serverAddress, port: serverPort))
+            XCTAssertTrue(pathInfo.remote == AddressEndpoint(address: newClientAddress, port: newCLientPort))
+        }
+        if let pathInfo = receivedPathAssignedInfo {
             XCTAssertTrue(pathInfo.local == AddressEndpoint(address: serverAddress, port: serverPort))
             XCTAssertTrue(pathInfo.remote == AddressEndpoint(address: newClientAddress, port: newCLientPort))
         }
