@@ -33,11 +33,15 @@ struct StreamSendBuffer: ~Copyable {
     private(set) var storageStartOffset: StreamOffset = 0
     private(set) var hasLast = false
 
+    struct Cursor: ~Copyable {
+        var previousCursorIndex: Int = 0
+        var previousCursorFrameStartOffset: StreamOffset = 0
+        var previousCursorResumeOffset: StreamOffset = 0
+        var previousCursorValid: Bool = false
+    }
+
     // Used to save the previous index and offset for resuming at a position in the frame array
-    private var previousCursorIndex: Int = 0
-    private var previousCursorFrameStartOffset: StreamOffset = 0
-    private var previousCursorResumeOffset: StreamOffset = 0
-    private var previousCursorValid: Bool = false
+    private var cursor: Cursor = Cursor()
 
     mutating func addSendData(_ data: consuming Frame, isLast: Bool) {
         if isLast {
@@ -59,7 +63,7 @@ struct StreamSendBuffer: ~Copyable {
 
     mutating func empty() {
         storage.finalizeAllFramesAsFailed()
-        previousCursorValid = false
+        cursor.previousCursorValid = false
     }
 
     // If we've sent all the stored data out once.
@@ -124,9 +128,9 @@ struct StreamSendBuffer: ~Copyable {
         // If the previously saved cursor is still valid set the start index
         var startIndex = 0
         var currentFrameOffset: StreamOffset = storageStartOffset
-        if previousCursorValid, previousCursorResumeOffset == requestedOffset {
-            startIndex = previousCursorIndex
-            currentFrameOffset = previousCursorFrameStartOffset
+        if cursor.previousCursorValid, cursor.previousCursorResumeOffset == requestedOffset {
+            startIndex = cursor.previousCursorIndex
+            currentFrameOffset = cursor.previousCursorFrameStartOffset
         }
 
         // This can use FrameArray.iterateImmutableFrames() because it does NOT alter
@@ -178,10 +182,10 @@ struct StreamSendBuffer: ~Copyable {
         }
         // Save where we ended so the next call can resume without
         // traversing the frame array from the start.
-        previousCursorIndex = lastVisitedIndex
-        previousCursorFrameStartOffset = lastVisitedFrameStartOffset
-        previousCursorResumeOffset = requestedOffset + totalLengthCopied
-        previousCursorValid = true
+        cursor.previousCursorIndex = lastVisitedIndex
+        cursor.previousCursorFrameStartOffset = lastVisitedFrameStartOffset
+        cursor.previousCursorResumeOffset = requestedOffset + totalLengthCopied
+        cursor.previousCursorValid = true
         return totalLengthCopied
     }
 
@@ -239,7 +243,7 @@ struct StreamSendBuffer: ~Copyable {
                     )
                     return
                 }
-                previousCursorValid = false
+                cursor.previousCursorValid = false
             }
             return
         }
