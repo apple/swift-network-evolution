@@ -762,7 +762,7 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
         public var pathChanged: ((QUICPathInfo) -> Void)?
         public var pathValidated: ((QUICPathInfo) -> Void)?
         public var pathUnreachable: ((QUICPathInfo) -> Void)?
-        public var pathAssigned: ((QUICPathInfo) -> Void)?
+        public var pathCIDAssigned: ((QUICPathInfo) -> Void)?
         public init() {}
     }
     public var completions: Completions = .init()
@@ -849,8 +849,8 @@ public class NewFlowHarness<LinkageType: InboundFlowLinkage, HarnessType: UpperH
                 if let completion = completions.pathUnreachable {
                     completion(info)
                 }
-            case .pathAssigned(let info):
-                if let completion = completions.pathAssigned {
+            case .pathCIDAssigned(let info):
+                if let completion = completions.pathCIDAssigned {
                     completion(info)
                 }
             default: break
