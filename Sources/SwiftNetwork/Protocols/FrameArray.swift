@@ -143,6 +143,18 @@ public struct FrameArray: ~Copyable {
         }
     }
 
+    // Start iterating from a known index
+    public func iterateImmutableFrames(startingAt startIndex: Int, _ enumerator: (Int, borrowing Frame) -> Bool) {
+        let count = frames.count
+        var index = startIndex
+        while index < count {
+            if !enumerator(index, frames[index]) {
+                return
+            }
+            index += 1
+        }
+    }
+
     public mutating func drainArrayKeepingCapacity() -> FrameArray {
         let count = self.count
         let returnArray = self
