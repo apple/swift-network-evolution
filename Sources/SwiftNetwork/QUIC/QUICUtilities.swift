@@ -94,21 +94,14 @@ public struct QUICConnectionUtilities {
         var scidStorage = QUICConnectionIDStorage.empty
         var destinationConnectionID: QUICConnectionID?
         var sourceConnectionID: QUICConnectionID?
-        let packetType = (firstOctet & 0x30) >> 4
+        let packetType = PacketParser.LongPacketTypes(value: (firstOctet & 0x30) >> 4)
         if longHeader {
             // Retry packet present
-            var padding = 0
-            if packetType == 0x03 {
-                // If retry packet determine if there is padding to compute the size of the token
-                var paddingIndex = 0
-                for index in buffer.indices.reversed() {
-                    if buffer[index] != 0 && index != 0 {
-                        paddingIndex = index + 1
-                        break
-                    }
-                }
-                padding = buffer.count - paddingIndex
+            switch packetType {
+            case .retry:
                 retryPacket = true
+            default:
+                break
             }
             let result = Deserializer.deserialize(buffer.bytes) { read throws(DeserializationError) in
                 try read.uint8(&firstOctet)
@@ -128,7 +121,7 @@ public struct QUICConnectionUtilities {
                         UInt8(staticHeaderBytes) + parsedDcidLength + parsedScidLength
                     // Compute the length minus the header, padding, and integrity tag
                     let retryTokenLength =
-                        Int(buffer.count) - Int(expectedLongHeaderLength) - padding
+                        Int(buffer.count) - Int(expectedLongHeaderLength)
                         - Int(Constants.retryTokenIntegrityTagLength)
                     if retryTokenLength > 0 {
                         try read.buffer(&retryToken, length: retryTokenLength)
@@ -172,7 +165,7 @@ public struct QUICConnectionUtilities {
         }
 
         return QUICRoutingHeader(
-            type: packetType,
+            type: packetType?.rawValue,
             version: returnVersion,
             destinationConnectionID: destinationConnectionID,
             sourceConnectionID: sourceConnectionID,

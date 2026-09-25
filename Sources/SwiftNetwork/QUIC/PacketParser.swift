@@ -31,6 +31,28 @@ internal import os
 
 @available(Network 0.1.0, *)
 struct PacketParser: ~Copyable, PrefixedLoggable {
+
+    enum LongPacketTypes: UInt8 {
+        case initial    = 0x0
+        case zeroRTT    = 0x1
+        case handshake  = 0x2
+        case retry      = 0x3
+
+        init?(value: UInt8) {
+            switch value {
+            case 0x0:
+                self = .initial
+            case 0x1:
+                self = .zeroRTT
+            case 0x2:
+                self = .handshake
+            case 0x3:
+                self = .retry
+            default:
+                return nil
+            }
+        }
+    }
     var log: LogPrefixer
 
     // Temporary storage for the frames parsed out of the packet currently being
@@ -454,7 +476,10 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
 
         } else {
             let fixed = (firstOctet & 0x40) != 0
-            let packetType = (firstOctet & 0x30) >> 4
+            guard let packetType = LongPacketTypes(value: (firstOctet & 0x30) >> 4) else {
+                log.error("Long header packet type unrecognized")
+                throw QUICError.packet(QUICPacketError.deserializationError)
+            }
 
             if _slowPath(!fixed) {
                 log.error("Long header fixed bit is zero")
@@ -464,7 +489,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             var payloadLength: UInt16 = 0
             var keyState: PacketKeyState
             switch packetType {
-            case 0x0:
+            case .initial:
                 // Initial Packet
                 var rawTokenLength: Int = 0
                 var tokenBuffer: [UInt8] = []
@@ -485,21 +510,21 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                     payloadLength: payloadLength,
                     headerLength: UInt16(originalLength - frame.unclaimedLength)
                 )
-            case 0x1:
+            case .zeroRTT:
                 // 0-RTT Packet
                 keyState = .earlyData
                 let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
                     try read.vle(&payloadLength)
                 }
                 try validateDeserializationResult(result)
-            case 0x2:
+            case .handshake:
                 // Handshake Packet
                 keyState = .handshake
                 let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
                     try read.vle(&payloadLength)
                 }
                 try validateDeserializationResult(result)
-            case 0x3:
+            case .retry:
                 // Retry Packet
                 var retryToken: [UInt8] = []
                 var retryIntegrityTag: [UInt8] = []
@@ -526,9 +551,6 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                     payloadLength: payloadLength,
                     headerLength: UInt16(originalLength - frame.unclaimedLength)
                 )
-
-            default:
-                throw QUICError.packet(QUICPacketError.deserializationError)
             }
             let space = PacketNumberSpace.fromKeyState(keyState: keyState)
 
@@ -644,8 +666,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             log.error("Received invalid packet")
             return false
         }
-        let packetType = (firstOctet & 0x30) >> 4
-        guard packetType == 0x0 else {
+        guard let packetType = LongPacketTypes(value: (firstOctet & 0x30) >> 4),
+              packetType == .initial else {
             log.error("Received packet when expecting Initial with retry token")
             return false
         }
