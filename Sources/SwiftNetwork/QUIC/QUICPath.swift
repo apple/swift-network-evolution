@@ -371,7 +371,7 @@ public final class QUICPath: MultiplexingDatagramPath<QUICConnection>, Equatable
                 )
                 parentProtocol.deliverNetworkProtocolEvent(
                     flow: .allFlows,
-                    event: .init(quicEvent: .pathCIDAssigned(pathInfo))
+                    event: .init(quicEvent: .pathAssigned(pathInfo))
                 )
             }
         }

@@ -590,7 +590,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         let handshakeExpectation = XCTestExpectation(description: "QUIC handshake complete")
         let pathChangedExpectation = XCTestExpectation(description: "pathChanged event received")
         let pathValidatedExpectation = XCTestExpectation(description: "pathValidated event received")
-        let pathAssignedExpectation = XCTestExpectation(description: "pathCIDAssigned event received")
+        let pathAssignedExpectation = XCTestExpectation(description: "pathAssigned event received")
 
         var clientQUICReference: ProtocolInstanceReference?
         var serverQUICReference: ProtocolInstanceReference?
@@ -688,7 +688,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                 pathValidatedExpectation.fulfill()
             }
 
-            serverUpperHarness.completions.pathCIDAssigned = { pathInfo in
+            serverUpperHarness.completions.pathAssigned = { pathInfo in
                 receivedPathAssignedInfo = pathInfo
                 pathAssignedExpectation.fulfill()
             }
