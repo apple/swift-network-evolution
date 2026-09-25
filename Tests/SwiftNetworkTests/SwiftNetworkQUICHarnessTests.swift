@@ -504,6 +504,11 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 10)
     }
 
+    // Good test for resuming the StreamSendBuffer at a particular index
+    func testQUICEcho300KiB() {
+        QUICTestHarness().runQUICTest(blockSize: 300, blockCount: 1000)
+    }
+
     // 1MiB == 1,048,576, this is 1,024,000
     func testQUICEcho1MiB() {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 100)
