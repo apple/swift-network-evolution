@@ -94,11 +94,11 @@ public struct QUICConnectionUtilities {
         var scidStorage = QUICConnectionIDStorage.empty
         var destinationConnectionID: QUICConnectionID?
         var sourceConnectionID: QUICConnectionID?
-        let packetType = PacketParser.PacketTypes(rawValue: (firstOctet & 0x30) >> 4)
+        let packetType = PacketParser.LongPacketTypes(value: (firstOctet & 0x30) >> 4)
         if longHeader {
             // Retry packet present
             switch packetType {
-            case .Retry:
+            case .retry:
                 retryPacket = true
             default:
                 break
