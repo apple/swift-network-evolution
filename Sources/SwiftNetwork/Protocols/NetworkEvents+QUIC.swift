@@ -79,7 +79,7 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
                 "QUIC: Path unreachable local: \(pathInfo.local.description) remote: \(pathInfo.remote.description)"
         case .pathCIDAssigned(let pathInfo):
             return
-                "QUIC: Path cid assigned local: \(pathInfo.local.description) remote: \(pathInfo.remote.description)"
+                "QUIC: Path ConnectionID assigned, local: \(pathInfo.local.description) remote: \(pathInfo.remote.description)"
         }
     }
 }
