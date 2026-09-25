@@ -2432,7 +2432,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Send pending acks
         if !state.isTerminal {
             _ = ack.processPending(
-                connectionWindow: Int(availableRemoteReceiveWindow),
+                connectionWindow: Int(self.flowControlState.remainingOutboundBytesAllowed()),
                 isAckSet: isAckSet,
                 setAckFrame: scheduleAckFrame,
                 ecn: ecn
