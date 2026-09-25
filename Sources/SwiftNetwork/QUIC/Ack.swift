@@ -421,7 +421,7 @@ struct AckBlockSequence: Sequence {
 }
 
 @available(Network 0.1.0, *)
-struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
+struct Ack: ~Copyable, PrefixedLoggable {
     var log: LogPrefixer
 
     // When an outgoing ACK reports more than this many blocks (i.e. this many gaps
@@ -517,25 +517,18 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
     }
 
-    mutating func timerFired(at timeNow: NetworkClock.Instant) {
+    // Returns true if a delayed ACK send is needed.
+    mutating func timerFired(at timeNow: NetworkClock.Instant) -> Bool {
         log.datapath("Delayed ACK timer fired")
-        if let connection = connection {
-            if sendPending(
-                isAckSet: connection.isAckSet,
-                setAckFrame: connection.scheduleAckFrame,
-                ecn: connection.ecn,
-                now: timeNow
-            ) {
-                connection.sendFrames(delayedACK: true)
-
-                // An ACK-only packet is not ack-eliciting, so once it is sent
-                // there is nothing left in pending items or in recovery to
-                // observe. This is the only place that can return the
-                // connection to idle after a delayed ACK.
-                connection.checkConnectionIdle(unackedPacketCount: unackedPacketCount)
-            }
+        guard let connection = connection else {
+            return false
         }
-
+        return sendPending(
+            isAckSet: connection.isAckSet,
+            setAckFrame: connection.scheduleAckFrame,
+            ecn: connection.ecn,
+            now: timeNow
+        )
     }
 
     @discardableResult

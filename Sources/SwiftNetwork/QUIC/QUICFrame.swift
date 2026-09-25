@@ -167,6 +167,7 @@ enum QUICFrame: ~Copyable {
         frame: inout Frame,
         packet: inout Packet,
         connection: QUICConnection,
+        stats: inout Statistics,
         isLastPacketInFrame: Bool = true
     ) throws(QUICError) -> QUICFrame {
         switch type {
@@ -197,13 +198,13 @@ enum QUICFrame: ~Copyable {
         case .resetStream:
             return try FrameResetStream.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .stopSending:
             return try FrameStopSending.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .crypto:
@@ -211,19 +212,19 @@ enum QUICFrame: ~Copyable {
                 frame: &frame,
                 packetNumberSpace: packet.numberSpace,
                 isLastPacketInFrame: isLastPacketInFrame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .newToken:
             return try FrameNewToken.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .stream:
             return try FrameStreamReceived.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .maxData:
@@ -249,25 +250,25 @@ enum QUICFrame: ~Copyable {
         case .dataBlocked:
             return try FrameDataBlocked.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .streamDataBlocked:
             return try FrameStreamDataBlocked.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .streamsBlockedBidirectional:
             return try FrameStreamsBlockedBidirectional.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .streamsBlockedUnidirectional:
             return try FrameStreamsBlockedUnidirectional.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .newConnectionID:
@@ -295,13 +296,13 @@ enum QUICFrame: ~Copyable {
         case .connectionClose:
             return try FrameConnectionClose.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .applicationClose:
             return try FrameApplicationClose.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .handshakeDone:
@@ -315,6 +316,7 @@ enum QUICFrame: ~Copyable {
                 useFlowID: connection.datagramEnableFlowID,
                 useContextID: connection.datagramUseContextID,
                 connection: connection,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         }
@@ -2992,13 +2994,15 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         useFlowID: Bool,
         useContextID: Bool,
         connection: QUICConnection,
+        stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) -> QUICFrame {
         let frame = try FrameDatagram(
             frame: &frame,
             useFlowID: useFlowID,
             useContextID: useContextID,
-            connection: connection
+            connection: connection,
+            stats: &stats
         )
         if shorthandFrames != nil {
             shorthandFrames!.append(frame.toShorthandLogEntry(outgoing: false))
@@ -3029,7 +3033,8 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         frame: inout Frame,
         useFlowID: Bool,
         useContextID: Bool,
-        connection: QUICConnection
+        connection: QUICConnection,
+        stats: inout Statistics
     ) throws(QUICError) {
         var rawType: UInt64 = 0
         var contextID: UInt64 = 0
@@ -3135,9 +3140,9 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         self.frame.takeOwnershipOfBytes()
 
         if hasLength {
-            connection.stats.increment(.rxDatagramFrameWithLength)
+            stats.increment(.rxDatagramFrameWithLength)
         } else {
-            connection.stats.increment(.rxDatagramFrameWithOutLength)
+            stats.increment(.rxDatagramFrameWithOutLength)
         }
     }
 

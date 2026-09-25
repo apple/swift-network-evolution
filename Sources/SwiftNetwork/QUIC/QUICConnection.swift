@@ -491,7 +491,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         self.timer = Timer(reference: self.reference, timerReference: timerReference, logPrefixer: logPrefixer)
         let ackTimerID = timer.insert(description: "ACK", timerNow: self.now) { firedAt in
-            self.ack.timerFired(at: firedAt)
+            // Consult with ack.timerFired to decide whether a delayed ACK needs to be sent. the
+            // send itself happens here, after its borrow of `self.ack` has ended.
+            if self.ack.timerFired(at: firedAt) {
+                self.sendFrames(delayedACK: true)
+                self.checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount)
+            }
         }
         self.ack = Ack(connection: self, timerID: ackTimerID, logPrefixer: logPrefixer)
 
@@ -1646,14 +1651,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         frame: &frame,
                         from: path,
                         inConnectedState: inConnectedState,
-                        isServerConnection: isServerConnection
+                        isServerConnection: isServerConnection,
+                        packetParser: &packetParser
                     )
                     return .removeFrameAndContinue
                 }
-                stats.increment(.rxPackets, by: receivedPackets)
-                stats.increment(.rxBytes, by: receivedBytes)
-                path.pathStatistics.increment(.rxPackets, by: receivedPackets)
-                path.pathStatistics.increment(.rxBytes, by: receivedBytes)
+                recordRxPackets(
+                    totalRxBytes: receivedBytes,
+                    totalPackets: receivedPackets,
+                    pathStatistics: &path.pathStatistics,
+                    connectionStatistics: &stats
+                )
             }
 
             // Note: inboundStopping() triggers any sendFrames*() as necessary due
@@ -1664,11 +1672,24 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
+    func recordRxPackets(
+        totalRxBytes: Int,
+        totalPackets: Int,
+        pathStatistics: inout Statistics,
+        connectionStatistics: inout Statistics
+    ) {
+        connectionStatistics.increment(.rxBytes, by: totalRxBytes)
+        connectionStatistics.increment(.rxPackets, by: totalPackets)
+        pathStatistics.increment(.rxPackets, by: totalPackets)
+        pathStatistics.increment(.rxBytes, by: totalRxBytes)
+    }
+
     func handleInbound(
         frame: inout Frame,
         from path: QUICPath,
         inConnectedState: Bool,
         isServerConnection: Bool,
+        packetParser: inout PacketParser
     ) {
         deferClosing = true
         defer {
@@ -1751,6 +1772,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 unvalidatedPath: unvalidatedPath,
                 coalesced: coalesced,
                 isServerConnection: isServerConnection,
+                packetParser: &packetParser
             )
             if !continueProcessing {
                 frame.finalize(success: true)
@@ -1782,15 +1804,66 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
+    @inline(always)
+    func withAckState<Result: ~Copyable>(_ body: (inout Ack) -> Result) -> Result {
+        body(&ack)
+    }
+
+    @inline(always)
+    func withPacketParsingState<Result: ~Copyable>(
+        _ body: (inout Ack, inout Statistics, inout Protector) -> Result
+    ) -> Result {
+        body(&ack, &stats, &protector)
+    }
+
     private func handleInboundPacket(
         frame: inout Frame,
         path: QUICPath,
         ecnFlags: IPProtocol.ECN,
         unvalidatedPath: Bool,
         coalesced: Bool,
-        isServerConnection: Bool
+        isServerConnection: Bool,
+        packetParser: inout PacketParser
     ) -> Bool {
-        let packet = packetParser.parse(frame: &frame, connection: self, path: path, ecn: ecnFlags)
+        //
+        var ceMarked = false
+        var continueProcessing = false
+        let packet = withPacketParsingState { (ack, stats, protector) -> Packet? in
+            var parsedPacket = packetParser.parse(
+                frame: &frame,
+                connection: self,
+                ecn: ecnFlags,
+                ack: &ack,
+                protector: &protector,
+                stats: &stats
+            )
+            // Dont proceed if long header with vn / retry / or a packet that cannot be decrypted
+            guard let transferredPacket = parsedPacket.take() else { return nil }
+            guard !transferredPacket.versionNegotiation, !transferredPacket.retry, !transferredPacket.failedDecryption
+            else {
+                return transferredPacket
+            }
+            // Process ECN for all packets, this should be done
+            // before packet is appended for ACK below.
+            ceMarked = ECN.processIPCodpoint(
+                ecn: self.ecn,
+                path: path,
+                stats: &stats,
+                packetNumberSpace: transferredPacket.numberSpace,
+                flag: ecnFlags
+            )
+            if transferredPacket.longHeader {
+                continueProcessing = handleInboundLongHeader(
+                    transferredPacket,
+                    isServerConnection: isServerConnection,
+                    ack: &ack,
+                    protector: &protector
+                )
+            } else {
+                continueProcessing = handleInboundShortHeader(transferredPacket, path: path, ack: &ack)
+            }
+            return transferredPacket
+        }
         guard var packet else {
             if state == .connected {
                 log.error("Unable to parse packet")
@@ -1832,21 +1905,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return false
         }
 
-        // Process ECN for all packets, this should be done
-        // before packet is appended for ACK below.
-        let ceMarked = ECN.processIPCodpoint(
-            ecn: self.ecn,
-            path: path,
-            stats: &stats,
-            packetNumberSpace: packet.numberSpace,
-            flag: ecnFlags
-        )
-        let continueProcessing: Bool
-        if packet.longHeader {
-            continueProcessing = handleInboundLongHeader(packet, isServerConnection: isServerConnection)
-        } else {
-            continueProcessing = handleInboundShortHeader(packet, path: path)
-        }
         if !continueProcessing {
             return true
         }
@@ -1910,31 +1968,35 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         if isServerConnection, isNonProbing, path != currentPath {
             migration.migrate(to: path, connection: self)
         }
-        if isAckEliciting {
-            ack.unackedPacketCount += 1
-            let reordering = processReordering(packet: packet)
-            let ackAggressively = ceMarked || reordering
-            if ackAggressively {
-                // Force ACKs for the next several packets.
-                ack.ackAgressively()
-            } else if packet.numberSpace == .initial || packet.numberSpace == .handshake {
-                // Force an ACK for this packet.
-                ack.ackImmediately()
-            }
-        }
 
-        // Update largest Packet Number
-        ack
-            .updateLargestPacketNumber(
-                packetNumber: packet.number,
-                packetNumberSpace: packet.numberSpace
-            )
-        if isAckEliciting {
+        withAckState { ack in
+            if isAckEliciting {
+                ack.unackedPacketCount += 1
+                let reordering = processReordering(packet: packet, ack: &ack)
+                let ackAggressively = ceMarked || reordering
+                if ackAggressively {
+                    // Force ACKs for the next several packets.
+                    ack.ackAgressively()
+                } else if packet.numberSpace == .initial || packet.numberSpace == .handshake {
+                    // Force an ACK for this packet.
+                    ack.ackImmediately()
+                }
+            }
+
+            // Update largest Packet Number
+
             ack
-                .updateLargestAckElicitingPacketNumber(
+                .updateLargestPacketNumber(
                     packetNumber: packet.number,
                     packetNumberSpace: packet.numberSpace
                 )
+            if isAckEliciting {
+                ack
+                    .updateLargestAckElicitingPacketNumber(
+                        packetNumber: packet.number,
+                        packetNumberSpace: packet.numberSpace
+                    )
+            }
         }
 
         return true
@@ -2110,7 +2172,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         state.change(to: .initialSent, logIDString: logPrefixer.logIDString)
     }
 
-    private func handleInboundLongHeader(_ packet: borrowing Packet, isServerConnection: Bool) -> Bool {
+    private func handleInboundLongHeader(
+        _ packet: borrowing Packet,
+        isServerConnection: Bool,
+        ack: inout Ack,
+        protector: inout Protector
+    ) -> Bool {
         switch state {
         case .idle:
             if !isServerConnection {
@@ -2280,14 +2347,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 // packet.
                 // Endpoints MUST NOT send Initial packets after
                 // this point.
-                discardKeys(keyState: .initial)
+                discardKeys(keyState: .initial, ack: &ack, protector: &protector)
                 initialKeysDiscarded = true
             }
         }
 
         // Note: the sending of this ACK is still driven by crypto doing
         // sendFrames*() and sent together with any CRYPTO frames
-        self.ack.append(
+        ack.append(
             packetNumberSpace: packet.numberSpace,
             packetNumber: packet.identifier.number,
             now: self.now
@@ -2383,7 +2450,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         return true
     }
 
-    private func handleInboundShortHeader(_ packet: borrowing Packet, path: QUICPath) -> Bool {
+    private func handleInboundShortHeader(_ packet: borrowing Packet, path: QUICPath, ack: inout Ack) -> Bool {
         guard let packetKeyState = packet.keyState else {
             log.error("Received short header without keystate set")
             return false
@@ -2393,7 +2460,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             keyState = packetKeyState
         }
 
-        self.ack.append(
+        ack.append(
             packetNumberSpace: packet.numberSpace,
             packetNumber: packet.number,
             now: self.now
@@ -3526,7 +3593,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         recordTxPackets(
             totalTxBytes: totalTxBytes,
             totalPackets: totalTxPackets,
-            path: path
+            pathStatistics: &path.pathStatistics,
+            connectionStatistics: &stats
         )
         sendOutboundFrames(on: path)
         return true
@@ -3598,7 +3666,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             recordTxPackets(
                 totalTxBytes: totalTxBytes,
                 totalPackets: totalTxPackets,
-                path: path
+                pathStatistics: &path.pathStatistics,
+                connectionStatistics: &stats
             )
             sendOutboundFrames(on: path)
             return success
@@ -3726,7 +3795,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         recordTxPackets(
             totalTxBytes: totalTxBytes,
             totalPackets: totalTxPackets,
-            path: path
+            pathStatistics: &path.pathStatistics,
+            connectionStatistics: &stats
         )
         sendOutboundFrames(on: path)
         return true
@@ -4045,11 +4115,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         return true
     }
 
-    func recordTxPackets(totalTxBytes: Int, totalPackets: Int, path: QUICPath) {
-        stats.increment(.txBytes, by: totalTxBytes)
-        stats.increment(.txPackets, by: totalPackets)
-        path.pathStatistics.increment(.txPackets, by: totalPackets)
-        path.pathStatistics.increment(.txBytes, by: totalTxBytes)
+    func recordTxPackets(
+        totalTxBytes: Int,
+        totalPackets: Int,
+        pathStatistics: inout Statistics,
+        connectionStatistics: inout Statistics
+    ) {
+        connectionStatistics.increment(.txBytes, by: totalTxBytes)
+        connectionStatistics.increment(.txPackets, by: totalPackets)
+        pathStatistics.increment(.txPackets, by: totalPackets)
+        pathStatistics.increment(.txBytes, by: totalTxBytes)
     }
 
     func retransmitPacket(
@@ -4351,7 +4426,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     // Returns true if reordering was detected, and hence an ACK should be sent immediately
-    private func processReordering(packet: borrowing Packet) -> Bool {
+    private func processReordering(packet: borrowing Packet, ack: inout Ack) -> Bool {
         let largetACKElicitingPN = ack.getLargestAckElicitingPacketNumber(
             packetNumberSpace: packet.numberSpace
         )
@@ -4463,7 +4538,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return
         }
 
-        discardKeys(keyState: .handshake)
+        discardKeys(keyState: .handshake, ack: &ack, protector: &protector)
 
         if isServer {
             withPendingItemsForKeyState { $0.handshakeDone = true }
@@ -4488,7 +4563,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     func updateEarlyDataAccepted(_ accepted: Bool) {
-        discardKeys(keyState: .earlyData)
+        discardKeys(keyState: .earlyData, ack: &ack, protector: &protector)
         if accepted {
             earlyDataAccepted = true
         } else {
@@ -4658,7 +4733,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private func discardKeysInternal(
         keyState: PacketKeyState,
         space: PacketNumberSpace,
-        discardRecoveryState: Bool = true
+        discardRecoveryState: Bool = true,
+        ack: inout Ack,
+        protector: inout Protector
     ) {
         protector.drop(keyState: keyState)
 
@@ -4694,10 +4771,21 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let space = PacketNumberSpace.fromKeyState(keyState: keyState)
         // Flush first so that we won't send out frames other than ACKs with older key
         pendingItems.flush()
-        discardKeysInternal(keyState: keyState, space: space, discardRecoveryState: discardRecoveryState)
+        discardKeysInternal(
+            keyState: keyState,
+            space: space,
+            discardRecoveryState: discardRecoveryState,
+            ack: &ack,
+            protector: &protector
+        )
     }
 
-    private func discardKeys(keyState: PacketKeyState, discardRecoveryState: Bool = true) {
+    private func discardKeys(
+        keyState: PacketKeyState,
+        discardRecoveryState: Bool = true,
+        ack: inout Ack,
+        protector: inout Protector
+    ) {
         let space = PacketNumberSpace.fromKeyState(keyState: keyState)
         // Flush first so that we won't send out frames other than ACKs with older key
         if space == .applicationData {
@@ -4707,7 +4795,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } else {
             withPendingItems(for: space) { $0.flush() }
         }
-        discardKeysInternal(keyState: keyState, space: space, discardRecoveryState: discardRecoveryState)
+        discardKeysInternal(
+            keyState: keyState,
+            space: space,
+            discardRecoveryState: discardRecoveryState,
+            ack: &ack,
+            protector: &protector
+        )
     }
 
     public func wakeup() {
