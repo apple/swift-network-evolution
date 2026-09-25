@@ -31,6 +31,13 @@ internal import os
 
 @available(Network 0.1.0, *)
 struct PacketParser: ~Copyable, PrefixedLoggable {
+
+    enum PacketTypes: UInt8 {
+        case Initial    = 0x0
+        case ZeroRTT    = 0x1
+        case Handshake  = 0x2
+        case Retry      = 0x3
+    }
     var log: LogPrefixer
 
     // Temporary storage for the frames parsed out of the packet currently being
@@ -454,7 +461,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
 
         } else {
             let fixed = (firstOctet & 0x40) != 0
-            let packetType = (firstOctet & 0x30) >> 4
+            let packetType = PacketTypes(rawValue: (firstOctet & 0x30) >> 4)
 
             if _slowPath(!fixed) {
                 log.error("Long header fixed bit is zero")
@@ -464,7 +471,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             var payloadLength: UInt16 = 0
             var keyState: PacketKeyState
             switch packetType {
-            case 0x0:
+            case .Initial:
                 // Initial Packet
                 var rawTokenLength: Int = 0
                 var tokenBuffer: [UInt8] = []
@@ -485,21 +492,21 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                     payloadLength: payloadLength,
                     headerLength: UInt16(originalLength - frame.unclaimedLength)
                 )
-            case 0x1:
+            case .ZeroRTT:
                 // 0-RTT Packet
                 keyState = .earlyData
                 let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
                     try read.vle(&payloadLength)
                 }
                 try validateDeserializationResult(result)
-            case 0x2:
+            case .Handshake:
                 // Handshake Packet
                 keyState = .handshake
                 let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
                     try read.vle(&payloadLength)
                 }
                 try validateDeserializationResult(result)
-            case 0x3:
+            case .Retry:
                 // Retry Packet
                 var retryToken: [UInt8] = []
                 var retryIntegrityTag: [UInt8] = []
@@ -644,8 +651,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             log.error("Received invalid packet")
             return false
         }
-        let packetType = (firstOctet & 0x30) >> 4
-        guard packetType == 0x0 else {
+        let packetType = PacketParser.PacketTypes(rawValue: (firstOctet & 0x30) >> 4)
+        guard packetType?.rawValue == 0x0 else {
             log.error("Received packet when expecting Initial with retry token")
             return false
         }

@@ -94,11 +94,14 @@ public struct QUICConnectionUtilities {
         var scidStorage = QUICConnectionIDStorage.empty
         var destinationConnectionID: QUICConnectionID?
         var sourceConnectionID: QUICConnectionID?
-        let packetType = (firstOctet & 0x30) >> 4
+        let packetType = PacketParser.PacketTypes(rawValue: (firstOctet & 0x30) >> 4)
         if longHeader {
             // Retry packet present
-            if packetType == 0x03 {
+            switch packetType {
+            case .Retry:
                 retryPacket = true
+            default:
+                break
             }
             let result = Deserializer.deserialize(buffer.bytes) { read throws(DeserializationError) in
                 try read.uint8(&firstOctet)
@@ -162,7 +165,7 @@ public struct QUICConnectionUtilities {
         }
 
         return QUICRoutingHeader(
-            type: packetType,
+            type: packetType?.rawValue,
             version: returnVersion,
             destinationConnectionID: destinationConnectionID,
             sourceConnectionID: sourceConnectionID,
