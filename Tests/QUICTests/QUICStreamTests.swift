@@ -22,6 +22,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 let quicStreamTestsLogPrefixer = LogPrefixer("[QUICStreamTests]")
 
@@ -38,19 +42,41 @@ final class QUICStreamTests: XCTestCase {
         )
     }
 
+    override func tearDown() {
+        // The stream and the connection were both built outside a protocol stack, so nothing
+        // else hands their event states back. The stream's `deinit` is an external entry point
+        // that acquires the event context, so release it on the queue too.
+        connection.context.onQueue {
+            self.stream.destroyFromExternalTest()
+            self.stream = nil
+            self.connection.destroyFromExternalTest()
+        }
+    }
+
     func testProcessIncomingStream() {
-        let streamFrame = FrameStreamReceived(id: 0, offset: 0, data: [], isFinal: true)
-        let result = stream.processIncomingStream(connection: connection, frame: streamFrame)
-        XCTAssertTrue(result)
+        connection.context.onQueue {
+            let streamFrame = FrameStreamReceived(id: 0, offset: 0, data: [], isFinal: true)
+            let result = connection.fromExternal(streamFrame) { eventContext, frame in
+                stream.processIncomingStream(connection: connection, frame: frame, in: &eventContext)
+            }
+            XCTAssertTrue(result)
+        }
     }
 
     func testProcessIncomingMaxStreamData() {
-        let newMaxData: UInt64 = 2048
-        let maxStreamDataFrame = FrameMaxStreamData(id: 0, max: newMaxData)
-        stream.flowControlState.initializeMaxDataValues(remoteMaxData: 1024, localMaxData: 1024)
-        XCTAssertTrue(stream.flowControlState.outboundMaxData == 1024)
-        stream.processIncomingMaxStreamData(remoteMaxStreamData: maxStreamDataFrame.max)
-        XCTAssertTrue(stream.flowControlState.outboundMaxData == 2048)
+        self.connection.context.onQueue {
+            let newMaxData: UInt64 = 2048
+            let maxStreamDataFrame = FrameMaxStreamData(id: 0, max: newMaxData)
+            stream.flowControlState.initializeMaxDataValues(remoteMaxData: 1024, localMaxData: 1024)
+            XCTAssertTrue(stream.flowControlState.outboundMaxData == 1024)
+            connection.fromExternal { eventContext in
+                stream.processIncomingMaxStreamData(
+                    remoteMaxStreamData: maxStreamDataFrame.max,
+                    in: &eventContext
+                )
+            }
+            XCTAssertTrue(stream.flowControlState.outboundMaxData == 2048)
+        }
     }
 }
 
@@ -71,6 +97,14 @@ final class QUICStreamIDStateTests: XCTestCase {
 
     override func tearDown() {
         streamsState.removeAllPending()
+        // The stream and the connection were both built outside a protocol stack, so nothing
+        // else hands their event states back. The stream's `deinit` is an external entry point
+        // that acquires the event context, so release it on the queue too.
+        connection.context.onQueue {
+            self.stream.destroyFromExternalTest()
+            self.stream = nil
+            self.connection.destroyFromExternalTest()
+        }
     }
 
     func testPendingStartStreams() {
@@ -95,56 +129,71 @@ final class QUICStreamListTests: XCTestCase {
     var connection = QUICConnection(context: NetworkContext.implicitContext)
     var logPrefix = LogPrefixer("[QUICStreamListTests]")
 
+    override func tearDown() {
+        // The connection was built directly rather than attached to a stack, so nothing else
+        // hands its event state back.
+        connection.context.onQueue { self.connection.destroyFromExternalTest() }
+    }
+
     func testQUICStreamList() {
-        var unblockedList = QUICStreamList.unblockedSendStreamList()
-        var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
-        XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
-        let stream = QUICStreamInstance(parent: connection, inbound: false)
-        stream.setup(
-            streamID: QUICStreamID(0),
-            logPrefixer: quicStreamTestsLogPrefixer
-        )
-        pendingReassemblyDequeueList.append(stream)
-        XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
-        unblockedList.append(stream)
-        XCTAssertEqual(unblockedList.count, 1)
+        self.connection.context.onQueue {
+            var unblockedList = QUICStreamList.unblockedSendStreamList()
+            var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
+            XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
+            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            defer { stream.destroyFromExternalTest() }
+            stream.setup(
+                streamID: QUICStreamID(0),
+                logPrefixer: quicStreamTestsLogPrefixer
+            )
+            pendingReassemblyDequeueList.append(stream)
+            XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
+            unblockedList.append(stream)
+            XCTAssertEqual(unblockedList.count, 1)
+        }
     }
 
     func testQUICStreamListPreventDuplicate() {
-        var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
-        XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
-        let stream = QUICStreamInstance(parent: connection, inbound: false)
-        stream.setup(
-            streamID: QUICStreamID(0),
-            logPrefixer: quicStreamTestsLogPrefixer
-        )
-        pendingReassemblyDequeueList.append(stream)
-        XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
-        pendingReassemblyDequeueList.append(stream)
-        XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
-        pendingReassemblyDequeueList.remove(stream)
-        XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
+        self.connection.context.onQueue {
+            var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
+            XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
+            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            defer { stream.destroyFromExternalTest() }
+            stream.setup(
+                streamID: QUICStreamID(0),
+                logPrefixer: quicStreamTestsLogPrefixer
+            )
+            pendingReassemblyDequeueList.append(stream)
+            XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
+            pendingReassemblyDequeueList.append(stream)
+            XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
+            pendingReassemblyDequeueList.remove(stream)
+            XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
+        }
     }
 
     func testQUICRemoveFromStreamList() {
-        var unblockedList = QUICStreamList.unblockedSendStreamList()
-        var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
-        XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
-        let stream = QUICStreamInstance(parent: connection, inbound: false)
-        stream.setup(
-            streamID: QUICStreamID(0),
-            logPrefixer: quicStreamTestsLogPrefixer
-        )
-        pendingReassemblyDequeueList.append(stream)
-        XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
-        unblockedList.append(stream)
-        XCTAssertEqual(unblockedList.count, 1)
-        // Removing from pendingReassemblyDequeueList should not remove from sendableList
-        pendingReassemblyDequeueList.remove(stream)
-        XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
-        XCTAssertEqual(unblockedList.count, 1)
-        unblockedList.remove(stream)
-        XCTAssertEqual(unblockedList.count, 0)
+        self.connection.context.onQueue {
+            var unblockedList = QUICStreamList.unblockedSendStreamList()
+            var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
+            XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
+            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            defer { stream.destroyFromExternalTest() }
+            stream.setup(
+                streamID: QUICStreamID(0),
+                logPrefixer: quicStreamTestsLogPrefixer
+            )
+            pendingReassemblyDequeueList.append(stream)
+            XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
+            unblockedList.append(stream)
+            XCTAssertEqual(unblockedList.count, 1)
+            // Removing from pendingReassemblyDequeueList should not remove from sendableList
+            pendingReassemblyDequeueList.remove(stream)
+            XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
+            XCTAssertEqual(unblockedList.count, 1)
+            unblockedList.remove(stream)
+            XCTAssertEqual(unblockedList.count, 0)
+        }
     }
 }
 

@@ -22,12 +22,19 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 let migrationTestsLogPrefixer: LogPrefixer = LogPrefixer("[MigrationTests]")
 
 @available(Network 0.1.0, *)
 final class MigrationTests: XCTestCase {
     var connection = QUICConnection(context: .implicitContext)
+    // The base linkages are storage-backed, so lower harnesses have to come from storage
+    // rather than being wrapped in a bare linkage.
+    let storage = TestNetworkProtocolStorage(context: .implicitContext)
 
     static let oldCID = QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!
     static let newCID = QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!
@@ -45,22 +52,45 @@ final class MigrationTests: XCTestCase {
 
     override func tearDown() {
         self.connection.currentPath = nil
+        // The paths built by `makePath` outlive the test body, and migration only destroys the
+        // one it migrated away from, so release whatever is left.
+        self.connection.context.onQueue {
+            for path in self.connection.multiplexingPaths.values {
+                path.destroyFromExternalTest()
+            }
+        }
+        self.connection.multiplexingPaths.removeAll()
     }
 
     // Builds a path that is open for sending, backed by a lower harness, with its DCID
     // registered in `remoteCIDs` so it can be retired. `validated` drives it to the
     // validated state so `migrate(to:)` will accept it.
     private func makePath(dcid: QUICConnectionID, sequenceNumber: UInt64, validated: Bool) -> QUICPath {
-        let lower = DatagramLowerHarness(identifier: "\(sequenceNumber)", context: .implicitContext)
-        lower.connect()
-        var path = QUICPath(parent: connection)
+        let (lower, lowerLinkage) = storage.createDatagramLowerHarness(
+            identifier: "\(sequenceNumber)",
+            context: .implicitContext
+        )
+        lower.fromExternal { eventContext in
+            lower.connect(in: &eventContext)
+        }
+        // Every caller builds its paths from inside `context.async`, so this runs on the context.
+        var path = QUICPath.makeFromExternalTest(parent: self.connection)
         path.set(interface: nil, priority: 1, isInitial: true)  // -> .routeEstablished
         path.assignDCID(dcid)  // -> .cidAssigned (open for sending)
         if validated {
             path.changeState(to: .probing)
             path.changeState(to: .validated)
         }
-        try? path.attachLowerProtocol(lower.reference, remote: nil, local: nil, parameters: nil, path: nil)
+        // The path is a framework protocol, so it is bound through the base form of the
+        // harness's linkage.
+        _ = try? path.attachLowerProtocol(lowerLinkage.base)
+        try? lowerLinkage.base.invokeAttachUpperProtocol(
+            path.asUpperLinkage(),
+            remote: nil,
+            local: nil,
+            parameters: nil,
+            path: nil
+        )
         try? connection.remoteCIDs.insert(
             sequenceNumber: sequenceNumber,
             connectionID: dcid,
@@ -76,11 +106,17 @@ final class MigrationTests: XCTestCase {
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
 
             self.connection.currentPath = oldPath
-            self.connection.multiplexingPaths[oldPath.identifier] = oldPath
-            self.connection.multiplexingPaths[newPath.identifier] = newPath
-            let oldPathID = oldPath.identifier
+            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
+            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+            let oldPathID = oldPath.pathIdentifier
 
-            self.connection.migration.migrate(to: newPath, connection: self.connection)
+            self.connection.fromExternal { eventContext in
+                self.connection.migration.migrate(
+                    to: newPath,
+                    connection: self.connection,
+                    in: &eventContext
+                )
+            }
 
             // The path we migrated away from is dropped from the connection and its
             // remote CID is retired.
@@ -119,13 +155,15 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
             self.connection.currentPath = path
-            self.connection.multiplexingPaths[path.identifier] = path
+            self.connection.multiplexingPaths[path.pathIdentifier] = path
             path.changeState(to: .probing)
 
             // Send the first challenge, which sets the next challenge deadline and arms the timer.
             let base = NetworkClock.Instant.testBase
             var pendingItems = PendingItems(packetNumberSpace: .applicationData)
-            path.addPathChallenge(to: &pendingItems, now: base)
+            self.connection.fromExternal { eventContext in
+                path.addPathChallenge(to: &pendingItems, now: base, in: &eventContext)
+            }
             guard let nextChallengeTime = path.nextChallengeTime else {
                 XCTFail("First challenge did not schedule a follow-up")
                 expectation.fulfill()
@@ -136,7 +174,12 @@ final class MigrationTests: XCTestCase {
             // Wake one microsecond early, which is inside the leeway window `Timer` allows. Go
             // through `Timer.timerFired`, since that is what disables the entry before handing the
             // instant to the handler.
-            self.connection.timer.timerFired(at: nextChallengeTime.advanced(by: .microseconds(-1)))
+            self.connection.fromExternal { eventContext in
+                self.connection.timer.timerFired(
+                    at: nextChallengeTime.advanced(by: .microseconds(-1)),
+                    in: &eventContext
+                )
+            }
 
             XCTAssertEqual(
                 self.connection.timer.nextDeadline,

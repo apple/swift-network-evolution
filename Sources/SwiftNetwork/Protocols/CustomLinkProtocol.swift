@@ -72,13 +72,18 @@ public struct CustomLinkProtocol: NetworkProtocol {
         }
     }
 
-    public final class CustomLinkInstance: BottomStreamProtocol, ProtocolInstanceContainer {
-        public var upper = InboundStreamLinkage()
-        var lower = OutboundStreamLinkage()
+    public final class CustomLinkInstance: BottomStreamProtocol {
+        public typealias LinkageType = BaseOutboundStreamLinkage
+        public typealias UpperProtocol = BaseInboundStreamLinkage
+
+        public var upper = UpperProtocol()
 
         public private(set) var context: NetworkContext
-        init(context: NetworkContext) { self.context = context }
-        public var reference: ProtocolInstanceReference { ProtocolInstanceReference(customLinkProtocol: self) }
+        init(context: NetworkContext) {
+            self.context = context
+            self.identifier = InstanceIdentifier(context: context, eventManager: &self.eventManager)
+        }
+        public var identifier: InstanceIdentifier
         var log = NetworkLoggerState()
         public var eventManager = ProtocolEventManager()
         private var incomingFrames = FrameArray()
@@ -91,7 +96,7 @@ public struct CustomLinkProtocol: NetworkProtocol {
             parameters: Parameters?,
             path: PathProperties?
         ) throws(NetworkError) {
-            if let parameters, let customLinkOptions = parameters.customLinkOptions(for: self.reference) {
+            if let parameters, let customLinkOptions = parameters.customLinkOptions(for: self.identifier) {
                 self.tx = customLinkOptions.tx
                 self.rx = customLinkOptions.rx
             }
@@ -99,7 +104,14 @@ public struct CustomLinkProtocol: NetworkProtocol {
                 rx { bytes in
                     self.context.assert()
                     self.incomingFrames.add(frames: FrameArray(frame: Frame(copyBuffer: bytes)))
-                    self.deliverInboundDataAvailableEvent()
+                    // The read handler is an entry point into the stack, so acquire the event
+                    // state here rather than assuming the caller holds it.
+                    self.fromExternal { eventContext in
+                        self.upper.deliverInboundDataAvailableEvent(
+                            from: self.identifier,
+                            in: &eventContext
+                        )
+                    }
                 }
             }
         }
@@ -112,21 +124,28 @@ public struct CustomLinkProtocol: NetworkProtocol {
             incomingFrames.finalizeAllFramesAsFailed()
         }
 
-        public func connect(_ from: ProtocolInstanceReference) {
-            fromExternal {
-                upper.deliverConnectedEvent(reference)
-            }
+        public func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+            upper.deliverConnectedEvent(from: identifier, in: &eventContext)
         }
 
-        public func receiveStreamData(minimumBytes: Int, maximumBytes: Int) throws(NetworkError) -> FrameArray? {
+        public func receiveStreamData(
+            minimumBytes: Int,
+            maximumBytes: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> FrameArray? {
             incomingFrames.drainArray(maximumByteCount: maximumBytes)
         }
 
-        public func getOutboundStreamDataRoomAvailable() throws(NetworkError) -> Int {
+        public func getOutboundStreamDataRoomAvailable(
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> Int {
             Int.max
         }
 
-        public func sendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {
+        public func sendStreamData(
+            _ streamData: consuming FrameArray,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) {
             streamData.iterateMutableFrames { frame in
                 if let tx, let span = frame.span {
                     tx(span)
@@ -148,19 +167,12 @@ public struct CustomLinkProtocol: NetworkProtocol {
         CustomLinkOptions(from: serializedBytes)
     }
     public func newPerProtocolMetadata() -> CustomLinkMetadata? { CustomLinkMetadata() }
-    public func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? {
-        CustomLinkInstance(context: context).reference
-    }
 
     static let identifier = ProtocolIdentifier(name: "CustomLink", level: .link, mapping: .oneToOne)
     static let definition = ProtocolDefinition<CustomLinkProtocol>(identifier: identifier)
 
     static public func options() -> ProtocolOptions<CustomLinkProtocol> {
         CustomLinkProtocol.definition.protocolOptions()
-    }
-
-    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
-        CustomLinkProtocol().newProtocolInstance(context: context)!
     }
 }
 

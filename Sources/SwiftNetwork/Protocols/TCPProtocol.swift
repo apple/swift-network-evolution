@@ -36,7 +36,6 @@ enum MultipathVersion: UInt8 {
 public struct TCPProtocol: NetworkProtocol {
     public typealias Options = TCPOptions
     public typealias Metadata = TCPMetadata
-    typealias Instance = TCPInstance
 
     static public var headerLength: Int {
         MemoryLayout<UInt8>.size * 20
@@ -371,12 +370,19 @@ public struct TCPProtocol: NetworkProtocol {
     }
 
     final class TCPInstance: OneToOneStreamToDatagramProtocol, TimerSchedulable {
-        var upper = InboundStreamLinkage()
-        var lower = OutboundDatagramLinkage()
+
+        typealias UpperProtocol = BaseInboundStreamLinkage
+        typealias LowerProtocol = BaseOutboundDatagramLinkage
+
+        var upper = UpperProtocol()
+        var lower = LowerProtocol()
 
         private(set) var context: NetworkContext
-        init(context: NetworkContext) { self.context = context }
-        var reference: ProtocolInstanceReference { ProtocolInstanceReference(tcp: self) }
+        init(context: NetworkContext) {
+            self.context = context
+            self.identifier = InstanceIdentifier(context: context, eventManager: &self.eventManager)
+        }
+        var identifier: InstanceIdentifier
         var passthroughEvents = false
         var log = NetworkLoggerState()
         var eventManager = ProtocolEventManager()
@@ -389,10 +395,19 @@ public struct TCPProtocol: NetworkProtocol {
         ) throws(NetworkError) {
             throw NetworkError.posix(ENOTSUP)
         }
-        func wakeup() {}
-        func receiveStreamData(minimumBytes: Int, maximumBytes: Int) throws(NetworkError) -> FrameArray? { nil }
-        func getOutboundStreamDataRoomAvailable() throws(NetworkError) -> Int { 0 }
-        func sendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {}
+        func wakeup(in eventContext: inout NetworkContext.EventContext) {}
+        func receiveStreamData(
+            minimumBytes: Int,
+            maximumBytes: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> FrameArray? { nil }
+        func getOutboundStreamDataRoomAvailable(
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> Int { 0 }
+        func sendStreamData(
+            _ streamData: consuming FrameArray,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) {}
         #if !NETWORK_EMBEDDED
         var metadata: AbstractProtocolMetadata? { nil }
         #endif
@@ -403,7 +418,6 @@ public struct TCPProtocol: NetworkProtocol {
     public func newPerProtocolOptions(from existing: TCPOptions) -> TCPOptions { existing }
     public func newPerProtocolOptions(from serializedBytes: [UInt8]) -> TCPOptions? { nil }
     public func newPerProtocolMetadata() -> TCPMetadata? { TCPMetadata() }
-    public func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? { nil }
 
     static let identifier = ProtocolIdentifier(name: "tcp", level: .transport, mapping: .oneToOne)
 
@@ -412,10 +426,6 @@ public struct TCPProtocol: NetworkProtocol {
     #endif
 
     static public func options() -> ProtocolOptions<TCPProtocol> { TCPProtocol.definition.protocolOptions() }
-
-    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
-        TCPProtocol().newProtocolInstance(context: context)!
-    }
 }
 
 @_spi(Essentials)

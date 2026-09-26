@@ -22,6 +22,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 final class PacerTests: XCTestCase {
 
@@ -30,12 +34,22 @@ final class PacerTests: XCTestCase {
         connection = QUICConnection(context: NetworkContext.implicitContext)
     }
 
+    override func tearDown() {
+        // The connection was built directly rather than attached to a stack, so nothing else
+        // hands its event state back.
+        connection.context.onQueue { self.connection.destroyFromExternalTest() }
+        connection = nil
+    }
+
     func testGetSendTime() {
         var pacer = Pacer(enabled: true)
         pacer.rate = 1_000_000
         pacer.burstSize = 0
 
-        let path = QUICPath(parent: connection)
+        let path = connection.context.onQueue {
+            QUICPath.makeFromExternalTest(parent: self.connection)
+        }
+        defer { connection.context.onQueue { path.destroyFromExternalTest() } }
 
         let packetLength: UInt16 = 1000
         var sendTimeAbsolute = NetworkClock.Instant(nanoseconds: 0)
@@ -113,7 +127,10 @@ final class PacerTests: XCTestCase {
 
     func testPacerBurstLimit() {
 
-        let path = QUICPath(parent: connection)
+        let path = connection.context.onQueue {
+            QUICPath.makeFromExternalTest(parent: self.connection)
+        }
+        defer { connection.context.onQueue { path.destroyFromExternalTest() } }
         path.pacePackets = true
         path.set(interface: nil, priority: 1, isInitial: true)
         // startupRate is 10 Mbps, this will affect the pacing time

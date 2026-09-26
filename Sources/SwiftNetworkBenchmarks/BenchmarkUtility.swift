@@ -13,6 +13,9 @@
 //===----------------------------------------------------------------------===//
 
 @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetwork
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 import Dispatch
 
 #if canImport(CryptoKit)
@@ -42,22 +45,22 @@ internal import os
 @available(Network 0.1.0, *)
 public struct QUICLoopbackState {
     public let context: NetworkContext
-    public var clientApplicationLayers: [StreamUpperHarness]
+    public var clientApplicationLayers: [StreamUpperHarness<TestStreamLinkageFamily>]
     public let clientInstance: QUICConnection
-    public let clientNetworkLayer: DatagramLowerHarness
-    public let serverApplicationLayer: NewStreamFlowHarness
-    public let serverNetworkLayer: DatagramLowerHarness
+    public let clientNetworkLayer: DatagramLowerHarness<TestDatagramLinkageFamily>
+    public let serverApplicationLayer: NewStreamFlowHarness<TestStreamLinkageFamily>
+    public let serverNetworkLayer: DatagramLowerHarness<TestDatagramLinkageFamily>
     public let serverInstance: QUICConnection
-    public let clientNewFlowHandler: NewStreamFlowHarness?
+    public let clientNewFlowHandler: NewStreamFlowHarness<TestStreamLinkageFamily>?
     public init(
         context: NetworkContext,
-        clientApplicationLayers: [StreamUpperHarness],
+        clientApplicationLayers: [StreamUpperHarness<TestStreamLinkageFamily>],
         clientInstance: QUICConnection,
-        clientNetworkLayer: DatagramLowerHarness,
-        serverApplicationLayer: NewStreamFlowHarness,
-        serverNetworkLayer: DatagramLowerHarness,
+        clientNetworkLayer: DatagramLowerHarness<TestDatagramLinkageFamily>,
+        serverApplicationLayer: NewStreamFlowHarness<TestStreamLinkageFamily>,
+        serverNetworkLayer: DatagramLowerHarness<TestDatagramLinkageFamily>,
         serverInstance: QUICConnection,
-        clientNewFlowHandler: NewStreamFlowHarness?
+        clientNewFlowHandler: NewStreamFlowHarness<TestStreamLinkageFamily>?
     ) {
         self.context = context
         self.clientApplicationLayers = clientApplicationLayers
@@ -75,9 +78,9 @@ public struct QUICLoopbackState {
 public struct QUICClientEndpointResult {
     public var instance: QUICConnection
     public var parameters: Parameters
-    public var upperHandler: StreamUpperHarness
-    public var lowerHandler: DatagramLowerHarness
-    public var clientNewFlowHandler: NewStreamFlowHarness?
+    public var upperHandler: StreamUpperHarness<TestStreamLinkageFamily>
+    public var lowerHandler: DatagramLowerHarness<TestDatagramLinkageFamily>
+    public var clientNewFlowHandler: NewStreamFlowHarness<TestStreamLinkageFamily>?
 }
 
 @_spi(ProtocolProvider)
@@ -85,8 +88,8 @@ public struct QUICClientEndpointResult {
 public struct QUICServerEndpointResult {
     public var instance: QUICConnection
     public var parameters: Parameters
-    public var upperHandler: NewStreamFlowHarness
-    public var lowerHandler: DatagramLowerHarness
+    public var upperHandler: NewStreamFlowHarness<TestStreamLinkageFamily>
+    public var lowerHandler: DatagramLowerHarness<TestDatagramLinkageFamily>
 }
 
 @_spi(ProtocolProvider)
@@ -137,8 +140,15 @@ public final class QUICBenchmarkUtility {
         return quicOptions
     }
 
+    /// Builds the client half of a loopback QUIC stack.
+    ///
+    /// The QUIC instance is created by `storage`, which owns it and hands back the linkages used
+    /// to wire the stack together. `options` must already name the instance's identifier, so the
+    /// caller creates the instance first via `createTestQUICInstance()`.
     public func createClientEndpoint(
-        instance: QUICProtocol.Instance,
+        storage: TestNetworkProtocolStorage,
+        streamListener: TestStreamListenerLinkage,
+        multipath: TestDatagramMultipathLinkage,
         context: NetworkContext,
         options: ProtocolOptions<QUICProtocol>,
         localEndpoint: Endpoint,
@@ -152,32 +162,48 @@ public final class QUICBenchmarkUtility {
 
         parameters.defaultStack.transport = .quic(options)
         let path = PathProperties(parameters: parameters)
-        var instance = instance
 
-        let listenerLinkage = StreamListenerLinkage(reference: instance.reference)
-        let streamHandler = StreamUpperHarness(
+        guard let instance = storage.quicInstance(for: streamListener.base) else {
+            logger.log("Failed to look up the client QUIC instance")
+            throw BenchmarkError.setupError
+        }
+
+        let (streamHandler, streamHandlerLinkage) = storage.createStreamUpperHarness(
             identifier: "Client",
             local: localEndpoint,
             remote: remoteEndpoint,
             parameters: parameters,
             path: path,
-            context: context,
-            listenerProtocol: listenerLinkage
+            context: context
         )
-        guard let streamHandler else {
-            return nil
-        }
-        let outputHandler = DatagramLowerHarness(identifier: "Client", context: context)
         do {
-            try instance.attachLowerDatagramProtocolForNewPath(
-                outputHandler.reference,
+            try streamListener.invokeAttachUpperProtocolToNewFlow(
+                streamHandlerLinkage,
                 remote: remoteEndpoint,
                 local: localEndpoint,
                 parameters: parameters,
                 path: path
             )
         } catch {
-            logger.log("Failed to attach the output handler to the instace")
+            logger.log("Failed to attach the client stream handler to QUIC")
+            throw BenchmarkError.setupError
+        }
+
+        let (outputHandler, outputHandlerLinkage) = storage.createDatagramLowerHarness(
+            identifier: "Client",
+            context: context
+        )
+        do {
+            var multipath = multipath
+            try multipath.invokeAttachLowerProtocolForNewPath(
+                outputHandlerLinkage,
+                remote: remoteEndpoint,
+                local: localEndpoint,
+                parameters: parameters,
+                path: path
+            )
+        } catch {
+            logger.log("Failed to attach the output handler to the instance")
             throw BenchmarkError.setupError
         }
         return QUICClientEndpointResult(
@@ -189,8 +215,11 @@ public final class QUICBenchmarkUtility {
         )
     }
 
+    /// Builds the server half of a loopback QUIC stack. See `createClientEndpoint`.
     public func createServerEndpoint(
-        instance: QUICProtocol.Instance,
+        storage: TestNetworkProtocolStorage,
+        streamListener: TestStreamListenerLinkage,
+        multipath: TestDatagramMultipathLinkage,
         context: NetworkContext,
         options: ProtocolOptions<QUICProtocol>,
         localEndpoint: Endpoint,
@@ -203,34 +232,50 @@ public final class QUICBenchmarkUtility {
         serverParameters.isServer = true
         let serverPath = PathProperties(parameters: serverParameters)
 
-        var instance = instance
+        guard let instance = storage.quicInstance(for: streamListener.base) else {
+            logger.log("Failed to look up the server QUIC instance")
+            throw BenchmarkError.setupError
+        }
 
-        let listenerLinkage = StreamListenerLinkage(reference: instance.reference)
-
-        let serverNewFlowHandler = NewStreamFlowHarness(
+        let (serverNewFlowHandler, serverNewFlowHandlerLinkage) = storage.createNewStreamFlowHarness(
+            identifier: "Server",
             local: localEndpoint,
             remote: remoteEndpoint,
             parameters: serverParameters,
             path: serverPath,
-            context: context,
-            streamListenerProtocol: listenerLinkage
+            context: context
         )
-        guard let serverNewFlowHandler else {
-            logger.log("Failed to create server new flow handler")
-            return nil
-        }
-
-        let outputHandler = DatagramLowerHarness(identifier: "Server", context: context)
         do {
-            try instance.attachLowerDatagramProtocolForNewPath(
-                outputHandler.reference,
+            // Attach from the upper linkage so both directions are bound.
+            try serverNewFlowHandlerLinkage.invokeAttachLowerProtocol(
+                // The inherited QUIC factory hands back the framework's listener; the harness's
+                // flow linkage pairs with the test family's wrapper around it.
+                streamListener,
                 remote: remoteEndpoint,
                 local: localEndpoint,
                 parameters: serverParameters,
                 path: serverPath
             )
         } catch {
-            logger.log("Failed to attach the output handler to the instace")
+            logger.log("Failed to attach the server new flow handler to QUIC")
+            throw BenchmarkError.setupError
+        }
+
+        let (outputHandler, outputHandlerLinkage) = storage.createDatagramLowerHarness(
+            identifier: "Server",
+            context: context
+        )
+        do {
+            var multipath = multipath
+            try multipath.invokeAttachLowerProtocolForNewPath(
+                outputHandlerLinkage,
+                remote: remoteEndpoint,
+                local: localEndpoint,
+                parameters: serverParameters,
+                path: serverPath
+            )
+        } catch {
+            logger.log("Failed to attach the output handler to the instance")
             throw BenchmarkError.setupError
         }
         return QUICServerEndpointResult(
@@ -253,8 +298,9 @@ public final class QUICBenchmarkUtility {
             clientApplicationLayer.teardown()
         }
         state.serverApplicationLayer.teardown()
-        state.clientInstance.close()
-        state.serverInstance.close()
+        // Tearing down the application layers detaches them from QUIC, which retires each
+        // connection once its last upper protocol has gone. Closing the connections here as well
+        // would reach an already-released instance.
     }
     public init() {}
 }
@@ -324,9 +370,9 @@ public struct LoggingHandle: CustomStringConvertible {
 @available(Network 0.1.0, *)
 public final class DataBenchmarkUtility {
     @discardableResult
-    public func loopOutputHandlerPackets(
-        sender: DatagramLowerHarness,
-        receiver: DatagramLowerHarness,
+    public func loopOutputHandlerPackets<LinkageFamily: DatagramLinkageFamily>(
+        sender: DatagramLowerHarness<LinkageFamily>,
+        receiver: DatagramLowerHarness<LinkageFamily>,
         maximumBurst: Int
     ) -> Int {
         var packetsSent: Int = 0

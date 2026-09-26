@@ -13,6 +13,9 @@
 //===----------------------------------------------------------------------===//
 
 @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetwork
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
 @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkBenchmarks
 import Dispatch
 
@@ -65,51 +68,54 @@ final class IPUDPTransfer {
         context.activate()
         context.async {
             defer { group.leave() }
+            let storage = TestNetworkProtocolStorage(context: context)
             for _ in 0..<iterations {
                 // Client
                 let path = PathProperties(parameters: clientParameters)
-                let clientIP = IPProtocol.instance(context: clientParameters.context)
+                let (clientIPUpper, clientIPLower) = storage.createTestIPInstance()
                 let clientIPOptions = IPProtocol.options()
                 clientIPOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 2)
-                clientIPOptions.setProtocolInstance(clientIP)
+                clientIPOptions.setProtocolInstance(clientIPUpper.identifier)
                 clientParameters.defaultStack.internet = .ip(clientIPOptions)
 
-                let clientUDP = UDPProtocol.instance(context: context)
+                let (clientUDPUpper, clientUDPLower) = storage.createTestUDPInstance()
                 let clientUDPOptions = UDPProtocol.options()
                 clientUDPOptions.noMetadata = true
                 clientUDPOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
-                clientUDPOptions.setProtocolInstance(clientUDP)
+                clientUDPOptions.setProtocolInstance(clientUDPUpper.identifier)
                 clientParameters.defaultStack.transport = .udp(clientUDPOptions)
 
-                let clientOutput = BridgeDatagramProtocol.instance(context: context)
-                let clientBridgeOptions = BridgeDatagramProtocol.options()
-                clientBridgeOptions.setProtocolInstance(clientOutput)
-                clientParameters.defaultStack.link = .custom(clientBridgeOptions)
-
-                let clientUDPLinkage = OutboundDatagramLinkage(reference: clientUDP)
-                let clientInput = DatagramUpperHarness(
+                let (clientInput, clientInputLinkage) = storage.createDatagramUpperHarness(
                     identifier: "Client",
                     local: ipv4Client,
                     remote: ipv4Server,
                     parameters: clientParameters,
                     path: path,
-                    context: context,
-                    lowerProtocol: clientUDPLinkage
+                    context: context
                 )
-                guard let clientInput else {
-                    return
-                }
+
+                let clientBridge = storage.createTestBridgeDatagramInstance()
+                let clientBridgeOptions = BridgeDatagramProtocol.options()
+                clientBridgeOptions.setProtocolInstance(clientBridge.identifier)
+                clientParameters.defaultStack.link = .custom(clientBridgeOptions)
 
                 do {
-                    try clientUDP.attachLowerDatagramProtocol(
-                        clientIP,
+                    try clientInputLinkage.invokeAttachLowerProtocol(
+                        clientUDPLower,
                         remote: ipv4Server,
                         local: ipv4Client,
                         parameters: clientParameters,
                         path: path
                     )
-                    try clientIP.attachLowerDatagramProtocol(
-                        clientOutput,
+                    try clientUDPUpper.invokeAttachLowerProtocol(
+                        clientIPLower,
+                        remote: ipv4Server,
+                        local: ipv4Client,
+                        parameters: clientParameters,
+                        path: path
+                    )
+                    try clientIPUpper.invokeAttachLowerProtocol(
+                        clientBridge,
                         remote: ipv4Server,
                         local: ipv4Client,
                         parameters: clientParameters,
@@ -117,54 +123,57 @@ final class IPUDPTransfer {
                     )
                 } catch {
                     loggingHandle.log("Failed to attach client IP to lower protocol")
-                    return
+                    break
                 }
+
                 // Server
                 var serverParameters = Parameters()
                 serverParameters.context = context
                 let serverPath = PathProperties(parameters: serverParameters)
-                let serverIP = IPProtocol.instance(context: clientParameters.context)
+                let (serverIPUpper, serverIPLower) = storage.createTestIPInstance()
                 let serverIPOptions = IPProtocol.options()
                 serverIPOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 2)
-                clientIPOptions.setProtocolInstance(serverIP)
+                serverIPOptions.setProtocolInstance(serverIPUpper.identifier)
                 serverParameters.defaultStack.internet = .ip(serverIPOptions)
 
-                let serverUDP = UDPProtocol.instance(context: context)
+                let (serverUDPUpper, serverUDPLower) = storage.createTestUDPInstance()
                 let serverUDPOptions = UDPProtocol.options()
                 serverUDPOptions.noMetadata = true
                 serverUDPOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
-                serverUDPOptions.setProtocolInstance(serverUDP)
+                serverUDPOptions.setProtocolInstance(serverUDPUpper.identifier)
                 serverParameters.defaultStack.transport = .udp(serverUDPOptions)
 
-                let serverOutput = BridgeDatagramProtocol.instance(context: context)
-                let serverBridgeOptions = BridgeDatagramProtocol.options()
-                serverBridgeOptions.setProtocolInstance(serverOutput)
-                serverParameters.defaultStack.link = .custom(serverBridgeOptions)
-
-                let serverUDPLinkage = OutboundDatagramLinkage(reference: serverUDP)
-                let serverInput = DatagramUpperHarness(
+                let (serverInput, serverInputLinkage) = storage.createDatagramUpperHarness(
                     identifier: "Server",
                     local: ipv4Server,
                     remote: ipv4Client,
                     parameters: serverParameters,
                     path: serverPath,
-                    context: context,
-                    lowerProtocol: serverUDPLinkage
+                    context: context
                 )
-                guard let serverInput else {
-                    return
-                }
+
+                let serverBridge = storage.createTestBridgeDatagramInstance()
+                let serverBridgeOptions = BridgeDatagramProtocol.options()
+                serverBridgeOptions.setProtocolInstance(serverBridge.identifier)
+                serverParameters.defaultStack.link = .custom(serverBridgeOptions)
 
                 do {
-                    try serverUDP.attachLowerDatagramProtocol(
-                        serverIP,
+                    try serverInputLinkage.invokeAttachLowerProtocol(
+                        serverUDPLower,
                         remote: ipv4Client,
                         local: ipv4Server,
-                        parameters: clientParameters,
-                        path: path
+                        parameters: serverParameters,
+                        path: serverPath
                     )
-                    try serverIP.attachLowerDatagramProtocol(
-                        serverOutput,
+                    try serverUDPUpper.invokeAttachLowerProtocol(
+                        serverIPLower,
+                        remote: ipv4Client,
+                        local: ipv4Server,
+                        parameters: serverParameters,
+                        path: serverPath
+                    )
+                    try serverIPUpper.invokeAttachLowerProtocol(
+                        serverBridge,
                         remote: ipv4Client,
                         local: ipv4Server,
                         parameters: serverParameters,
@@ -172,8 +181,9 @@ final class IPUDPTransfer {
                     )
                 } catch {
                     loggingHandle.log("Failed to attach server IP to lower protocol")
-                    return
+                    break
                 }
+
                 serverInput.start()
                 clientInput.start()
                 // Transfer data

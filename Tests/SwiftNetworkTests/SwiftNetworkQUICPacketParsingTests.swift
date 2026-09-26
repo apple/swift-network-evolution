@@ -21,6 +21,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 #if IMPORT_SWIFTTLS
 #if EXPORT_SWIFTTLS
 @_spi(SwiftTLSOptions) @_spi(SwiftTLSProtocol) import SwiftTLS
@@ -64,6 +68,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
             harness.context.async {
                 server.harness.stop()
                 server.harness.teardown()
+                harness.storage.releaseHeldInstances()
                 teardownExpectation.fulfill()
             }
             wait(for: [teardownExpectation], timeout: 5.0)
@@ -92,7 +97,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
 
         let injectExpectation = XCTestExpectation(description: "Malformed Initial injected")
         harness.context.async {
-            BridgeDatagramProtocol.Instance.injectDatagram(
+            BridgeDatagramProtocol.BridgeInstance.injectDatagram(
                 Frame(copyBuffer: datagram),
                 to: harness.serverPort
             )
@@ -149,7 +154,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                     datagram.append(contentsOf: [UInt8](repeating: 0x42, count: 12))
                     XCTAssertEqual(datagram.count, Constants.minimumPacketSize)
 
-                    BridgeDatagramProtocol.Instance.injectDatagram(
+                    BridgeDatagramProtocol.BridgeInstance.injectDatagram(
                         Frame(copyBuffer: datagram),
                         to: harness.serverPort
                     )
@@ -213,7 +218,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                     datagram.append(contentsOf: [UInt8](repeating: 0x42, count: 16))
                     XCTAssertEqual(datagram.count, 25)
 
-                    BridgeDatagramProtocol.Instance.injectDatagram(
+                    BridgeDatagramProtocol.BridgeInstance.injectDatagram(
                         Frame(copyBuffer: datagram),
                         to: harness.serverPort
                     )
@@ -238,8 +243,8 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
     // MARK: - Helpers
 
     private struct IdleServer {
-        let instance: QUICProtocol.Instance
-        let harness: NewStreamFlowHarness
+        let instance: QUICConnection
+        let harness: NewStreamFlowHarness<TestStreamLinkageFamily>
     }
 
     private func attachIdleServer(_ harness: QUICTestHarness) throws -> IdleServer {
@@ -251,8 +256,12 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
             serverParameters.context = harness.context
             serverParameters.isServer = true
 
-            let serverInstance = QUICProtocol.Instance(context: harness.context)
-            let serverReference = serverInstance.reference
+            var (serverQUICStreamListener, _, serverQUICMultipath) = harness.storage.createTestQUICInstance()
+            guard let serverInstance = harness.storage.quicInstance(for: serverQUICStreamListener.base) else {
+                XCTFail("Failed to create the server QUIC instance")
+                attachExpectation.fulfill()
+                return
+            }
 
             let serverOptions = QUICProtocol.options()
             harness.updateQUICOptions(serverOptions, server: true)
@@ -261,35 +270,43 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                 parent: "1",
                 protocolLogIDNumber: 1
             )
-            serverOptions.setProtocolInstance(serverReference)
+            serverOptions.setProtocolInstance(serverQUICStreamListener.identifier)
             serverParameters.defaultStack.transport = .quic(serverOptions)
 
-            let serverBridge = BridgeDatagramProtocol.instance(context: harness.context)
+            let serverBridge = harness.storage.createTestBridgeDatagramInstance()
             let serverBridgeOptions = BridgeDatagramProtocol.options()
-            serverBridgeOptions.setProtocolInstance(serverBridge)
+            serverBridgeOptions.setProtocolInstance(serverBridge.identifier)
             serverParameters.defaultStack.link = .custom(serverBridgeOptions)
 
             var serverPath = PathProperties(parameters: serverParameters)
             serverPath.effectiveMTU = 1500
-            let serverLinkage = StreamListenerLinkage(reference: serverReference)
 
-            let serverFlowHarness = NewStreamFlowHarness(
+            let (serverFlowHarness, serverHarnessLinkage) = harness.storage.createNewStreamFlowHarness(
                 identifier: "Server",
                 local: harness.serverEndpoint,
                 remote: harness.clientEndpoint,
                 parameters: serverParameters,
                 path: serverPath,
-                context: harness.context,
-                listenerProtocol: serverLinkage
+                context: harness.context
             )
-            XCTAssertNotNil(serverFlowHarness, "Failed to create the server flow harness")
-            guard let serverFlowHarness else {
+
+            do {
+                // Attach from the upper linkage so both directions are bound.
+                try serverHarnessLinkage.invokeAttachLowerProtocol(
+                    serverQUICStreamListener,
+                    remote: harness.clientEndpoint,
+                    local: harness.serverEndpoint,
+                    parameters: serverParameters,
+                    path: serverPath
+                )
+            } catch {
+                XCTFail("Failed to attach the server harness to QUIC: \(error)")
                 attachExpectation.fulfill()
                 return
             }
 
             do {
-                try serverReference.attachLowerDatagramProtocolForNewPath(
+                try serverQUICMultipath.invokeAttachLowerProtocolForNewPath(
                     serverBridge,
                     remote: harness.clientEndpoint,
                     local: harness.serverEndpoint,

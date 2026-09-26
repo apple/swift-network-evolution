@@ -30,22 +30,27 @@ struct Migration: ~Copyable {
 
     private func sendPendingChallenges(
         connection: QUICConnection,
-        now: NetworkClock.Instant
+        now: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         connection.applyToAllPaths { path in
             if path.hasPendingItems(now: now) {
-                connection.sendFrames(on: path)
+                connection.sendFrames(on: path, in: &eventContext)
             }
         }
     }
 
-    func resetTimer(now: NetworkClock.Instant, connection: QUICConnection) {
+    func resetTimer(
+        now: NetworkClock.Instant,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         guard let timerID else {
             connection.log.fault("Attempt to arm the migration timer when timer ID is unset")
             return
         }
 
-        sendPendingChallenges(connection: connection, now: now)
+        sendPendingChallenges(connection: connection, now: now, in: &eventContext)
 
         var firstChallengeTime: NetworkClock.Instant?
         connection.applyToAllPaths { path in
@@ -71,7 +76,8 @@ struct Migration: ~Copyable {
             connection.timer.reschedule(
                 identifier: timerID,
                 fromNow: .zero,
-                timerNow: now
+                timerNow: now,
+                in: &eventContext
             )
             return
         }
@@ -84,20 +90,29 @@ struct Migration: ~Copyable {
         connection.timer.reschedule(
             identifier: timerID,
             fromNow: duration,
-            timerNow: now
+            timerNow: now,
+            in: &eventContext
         )
     }
 
-    func timerFired(at firedAt: NetworkClock.Instant, connection: QUICConnection) {
+    func timerFired(
+        at firedAt: NetworkClock.Instant,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         connection.log.debug("Migration timer fired")
 
         // The timer must be re-armed even when no challenge is due: `Timer` fires up to
         // `Timer.timerThreshold` early and has already disabled the entry, so an early wakeup would
         // otherwise stall probing. `resetTimer` sends whatever is due before arming.
-        resetTimer(now: firedAt, connection: connection)
+        resetTimer(now: firedAt, connection: connection, in: &eventContext)
     }
 
-    func migrate(to path: QUICPath, connection: QUICConnection) {
+    func migrate(
+        to path: QUICPath,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         guard connection.currentPath != path else {
             return
         }
@@ -109,12 +124,12 @@ struct Migration: ~Copyable {
         }
 
         let oldPath = connection.currentPath
-        connection.log.notice("Migrating to path \(path.identifier)")
+        connection.log.notice("Migrating to path \(path.pathIdentifier)")
         connection.currentPath = path
         path.spinValue = connection.initialSpinValue
-        connection.recovery.resetTimer(now: connection.now, connection: connection)
+        connection.recovery.resetTimer(now: connection.now, connection: connection, in: &eventContext)
         path.resetPacer()
-        path.pmtudState.start(on: path)
+        path.pmtudState.start(on: path, in: &eventContext)
         connection.applyToAllPaths { otherPath in
             if otherPath != path {
                 otherPath.pmtudState.stop(on: otherPath)
@@ -127,13 +142,13 @@ struct Migration: ~Copyable {
                     $0.ping = true
                 }
             }
-            connection.sendFrames()
+            connection.sendFrames(in: &eventContext)
         }
         // TODO: Handle preferred address migration
 
         // Remove the path we just migrated away from.
         if let oldPath, oldPath != path {
-            connection.tearDownMigratedPath(oldPath)
+            connection.tearDownMigratedPath(oldPath, in: &eventContext)
         }
     }
 
@@ -173,7 +188,8 @@ extension QUICConnection {
     public func handlePathChanged(
         path pathID: MultiplexingPathIdentifier,
         event: MultiplexingPathEvent,
-        isPrimary: Bool
+        isPrimary: Bool,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         guard !migration.activeMigrationDisabled || isServer else {
             return
@@ -193,7 +209,7 @@ extension QUICConnection {
                 path.pacePackets = pacingEnabled
                 if self.state == .connected {
                     log.debug("Bringing up path \(pathID.description)")
-                    invokeEstablish(path: pathID)
+                    invokeEstablish(path: pathID, in: &eventContext)
                 }
             }
             break
@@ -203,8 +219,8 @@ extension QUICConnection {
             }
             if isServer, path != currentPath, !path.isValidated {
                 path.beginValidation()
-                sendFrames(on: path)
-                migration.resetTimer(now: self.now, connection: self)
+                sendFrames(on: path, in: &eventContext)
+                migration.resetTimer(now: self.now, connection: self, in: &eventContext)
             }
             break
         case .unavailable:
@@ -214,7 +230,11 @@ extension QUICConnection {
         }
 
         if isServer {
-            for (id, path) in multiplexingPaths where path.state == .routeUnavailable {
+            allPathIdentifiers { id in
+                guard var path = multiplexingPaths[id], path.state == .routeUnavailable, path !== currentPath else {
+                    return
+                }
+                path.destroy(in: &eventContext)
                 multiplexingPaths.removeValue(forKey: id)
             }
         }
@@ -222,7 +242,7 @@ extension QUICConnection {
         log.debug("Existing paths:")
         applyToAllPaths { path in
             log.debug(
-                "Path \(path.identifier) \(path.state) over \(path.interface?.description ?? "nil")"
+                "Path \(path.pathIdentifier) \(path.state) over \(path.interface?.description ?? "nil")"
             )
         }
         // Notify the stack about a path change event
@@ -238,14 +258,18 @@ extension QUICConnection {
                 remote: remoteAddress,
                 local: localAddress
             )
-            deliverNetworkProtocolEvent(flow: .allFlows, event: .init(quicEvent: .pathChanged(pathInfo)))
+            deliverNetworkProtocolEvent(
+                flow: .allFlows,
+                event: .init(quicEvent: .pathChanged(pathInfo)),
+                in: &eventContext
+            )
         }
 
         // This is a new primary path. Migrate to it if we are the client.
         if !isServer, path != currentPath, isPrimary, path.isRouteEstablished {
-            migration.migrate(to: path, connection: self)
+            migration.migrate(to: path, connection: self, in: &eventContext)
             // Send packets if necessary
-            sendFrames(on: path)
+            sendFrames(on: path, in: &eventContext)
         }
     }
 
@@ -262,21 +286,25 @@ extension QUICConnection {
     }
 
     // Removes a path we migrated away from.
-    func tearDownMigratedPath(_ oldPath: QUICPath) {
+    func tearDownMigratedPath(
+        _ oldPath: QUICPath,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        var oldPath = oldPath
         guard oldPath !== currentPath else {
-            log.fault("Refusing to tear down the current path \(oldPath.identifier)")
+            log.fault("Refusing to tear down the current path \(oldPath.pathIdentifier)")
             return
         }
-        log.notice("Tearing down old path \(oldPath.identifier) after migration")
+        log.notice("Tearing down old path \(oldPath.pathIdentifier) after migration")
 
         retireOutboundCID(forPathGoingAway: oldPath)
 
         if oldPath.state.isValidStateChange(to: .routeUnavailable) {
             oldPath.changeState(to: .routeUnavailable)
         }
-        oldPath.tearDownLowerStack()
-        multiplexingPaths.removeValue(forKey: oldPath.identifier)
-        sendFrames()
+        oldPath.destroy(in: &eventContext)
+        multiplexingPaths.removeValue(forKey: oldPath.pathIdentifier)
+        sendFrames(in: &eventContext)
     }
 }
 #endif

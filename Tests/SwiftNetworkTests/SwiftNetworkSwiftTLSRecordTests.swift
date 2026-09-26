@@ -16,10 +16,17 @@ import XCTest
 
 #if !targetEnvironment(simulator) && (os(iOS) || os(macOS))
 
+// The harness is a module of its own in the package, and part of the Network module in the
+// internal build, so the record-layer instance and the harnesses come from different imports
+// depending on which one this is built in.
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 #elseif canImport(Network)
-@_spi(Essentials) @_spi(ProtocolProvider) import Network
+@_spi(Essentials) @_spi(ProtocolProvider) @_spi(TestHarness) import Network
+#endif
+
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
 #if canImport(CryptoKit)
@@ -68,8 +75,8 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
     @discardableResult
     // abstract a reliable transport by just shuttling packets between client and server
     func sendPacket(
-        sender: StreamLowerHarness,
-        receiver: StreamLowerHarness,
+        sender: StreamLowerHarness<TestStreamLinkageFamily>,
+        receiver: StreamLowerHarness<TestStreamLinkageFamily>,
         maximumBurst: Int,
         verbose: Bool = true
     ) -> Int {
@@ -88,26 +95,30 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
         return packetsSent
     }
 
+    /// The linkages a record-layer TLS instance's neighbours hold. The instance type is internal
+    /// to the module, so a test reaches it the same way a client does: through these.
+    typealias TLSRecordLinkages = (upper: BaseInboundStreamLinkage, lower: BaseOutboundStreamLinkage)
+
     struct TLSLoopBackState {
         let context: NetworkContext
-        let clientReference: ProtocolInstanceReference
-        let clientNetworkLayer: StreamLowerHarness
-        let clientApplicationLayer: StreamUpperHarness
-        let serverReference: ProtocolInstanceReference
-        let serverNetworkLayer: StreamLowerHarness
-        let serverApplicationLayer: StreamUpperHarness
+        let clientTLS: TLSRecordLinkages
+        let clientNetworkLayer: StreamLowerHarness<TestStreamLinkageFamily>
+        let clientApplicationLayer: StreamUpperHarness<TestStreamLinkageFamily>
+        let serverTLS: TLSRecordLinkages
+        let serverNetworkLayer: StreamLowerHarness<TestStreamLinkageFamily>
+        let serverApplicationLayer: StreamUpperHarness<TestStreamLinkageFamily>
     }
 
     struct EndpointResult {
-        var reference: ProtocolInstanceReference
+        var tls: TLSRecordLinkages
         var parameters: Parameters
-        var upperHarness: StreamUpperHarness
-        var lowerHarness: StreamLowerHarness
+        var upperHarness: StreamUpperHarness<TestStreamLinkageFamily>
+        var lowerHarness: StreamLowerHarness<TestStreamLinkageFamily>
     }
 
     func createEndpoint(
         identifier: String,
-        reference: ProtocolInstanceReference,
+        tls: TLSRecordLinkages,
         context: NetworkContext,
         options: ProtocolOptions<SwiftTLSProtocol>,
         localEndpoint: Endpoint,
@@ -121,45 +132,56 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
         parameters.defaultStack.prepend(applicationProtocol: options)
         let path = PathProperties(parameters: parameters)
 
-        let tlsLinkage = OutboundStreamLinkage(reference: reference)
-        let upperHarness = StreamUpperHarness(
+        let upperHarness = StreamUpperHarness<TestStreamLinkageFamily>(
             identifier: identifier,
             local: localEndpoint,
             remote: remoteEndpoint,
             parameters: parameters,
             path: path,
-            context: parameters.context,
-            lowerStreamProtocol: tlsLinkage
+            context: parameters.context
         )
 
-        let lowerHarness = StreamLowerHarness(identifier: identifier, context: parameters.context)
-
-        XCTAssertNotNil(upperHarness, "Failed to attach TLS to upper harness")
-        guard let upperHarness else {
-            return nil
-        }
+        let lowerHarness = StreamLowerHarness<TestStreamLinkageFamily>(
+            identifier: identifier,
+            context: parameters.context
+        )
 
         do {
-            try reference.attachLowerStreamProtocol(
-                lowerHarness.reference,
+            try TestInboundStreamLinkage(harness: upperHarness).invokeAttachLowerProtocol(
+                TestOutboundStreamLinkage(base: tls.lower),
                 remote: remoteEndpoint,
                 local: localEndpoint,
                 parameters: parameters,
                 path: path
             )
         } catch {
-            XCTAssertTrue(false, "Failed to attach TLS to lower harness)")
+            XCTFail("Failed to attach TLS to upper harness: \(error)")
+            return nil
+        }
+
+        do {
+            // Pairing from the TLS instance's upper linkage is the same as asking the instance to
+            // attach its lower: the linkage runs the instance's attach and then wires back up.
+            try tls.upper.invokeAttachLowerProtocol(
+                TestOutboundStreamLinkage(harness: lowerHarness).base,
+                remote: remoteEndpoint,
+                local: localEndpoint,
+                parameters: parameters,
+                path: path
+            )
+        } catch {
+            XCTFail("Failed to attach TLS to lower harness: \(error)")
         }
 
         return EndpointResult(
-            reference: reference,
+            tls: tls,
             parameters: parameters,
             upperHarness: upperHarness,
             lowerHarness: lowerHarness
         )
     }
 
-    #if !NETWORK_PRIVATE && !NETWORK_STANDALONE && canImport(Dispatch)
+    #if !canImport(Network_Internal) && !NETWORK_STANDALONE && canImport(Dispatch)
     final class TestInlineScheduler: NetworkContext.Scheduler {
         /// Run an immediate task.  No assumptions are made about how the task will be run.
         func runImmediate(_ task: @escaping (() -> Void)) {
@@ -177,12 +199,15 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
         var runningInScheduler: Bool {
             true
         }
-        /// A fixed instant. Scheduling is unsupported here, so nothing fires on a deadline.
+        /// The system clock, read straight from the OS.
+        ///
+        /// This scheduler reads it directly. A scheduler that reports a time of its own is what
+        /// lets a test decide what the library sees.
         var now: NetworkClock.Instant {
-            NetworkClock.Instant(milliseconds: 1000)
+            NetworkClock.Instant.systemNow
         }
         var nowAbsolute: NetworkClock.Instant {
-            self.now
+            NetworkClock.Instant.systemNowAbsolute
         }
     }
     #endif
@@ -198,7 +223,7 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
         )
         let context: NetworkContext
         if inlineScheduler {
-            #if !NETWORK_PRIVATE && !NETWORK_STANDALONE && canImport(Dispatch)
+            #if !canImport(Network_Internal) && !NETWORK_STANDALONE && canImport(Dispatch)
             context = NetworkContext(identifier: identifier, externalScheduler: TestInlineScheduler())
             #else
             context = NetworkContext(identifier: identifier)
@@ -208,14 +233,16 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
         }
         context.activate()
 
-        let clientReference = SwiftTLSProtocol.instance(context: context)
+        let storage = BaseNetworkProtocolStorage(context: context)
+
+        let clientTLS = storage.createSwiftTLSRecordInstance()
         let clientOptions = createTLSRecordTestOptions(server: false)
-        clientOptions.setProtocolInstance(clientReference)
+        clientOptions.setProtocolInstance(clientTLS.lower.identifier)
         clientOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
 
-        let serverReference = SwiftTLSProtocol.instance(context: context)
+        let serverTLS = storage.createSwiftTLSRecordInstance()
         let serverOptions = createTLSRecordTestOptions(server: true, mismatch: fail)
-        serverOptions.setProtocolInstance(serverReference)
+        serverOptions.setProtocolInstance(serverTLS.lower.identifier)
         serverOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
 
         let handshakeExpectaton = XCTestExpectation(description: "Wait for TLS handshake to complete")
@@ -232,7 +259,7 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
             guard
                 let client = self.createEndpoint(
                     identifier: "Client",
-                    reference: clientReference,
+                    tls: clientTLS,
                     context: context,
                     options: clientOptions,
                     localEndpoint: clientEndpoint,
@@ -248,7 +275,7 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
             guard
                 let server = self.createEndpoint(
                     identifier: "Server",
-                    reference: serverReference,
+                    tls: serverTLS,
                     context: context,
                     options: serverOptions,
                     localEndpoint: serverEndpoint,
@@ -263,10 +290,10 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
 
             result = TLSLoopBackState(
                 context: context,
-                clientReference: clientReference,
+                clientTLS: clientTLS,
                 clientNetworkLayer: client.lowerHarness,
                 clientApplicationLayer: client.upperHarness,
-                serverReference: serverReference,
+                serverTLS: serverTLS,
                 serverNetworkLayer: server.lowerHarness,
                 serverApplicationLayer: server.upperHarness
             )
@@ -467,7 +494,12 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
             state.clientApplicationLayer.waitForInboundDataAvailable { success in
                 XCTAssertTrue(success)
                 initialClientReadExpectation.fulfill()
-                client()
+                // The completion runs while the delivering event holds the event state, and
+                // `client()` reads through the harness's external-entry API, which acquires it
+                // again -- so it gets its own turn.
+                context.async {
+                    client()
+                }
             }
         }
 

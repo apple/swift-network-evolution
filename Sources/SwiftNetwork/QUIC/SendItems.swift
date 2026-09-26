@@ -825,7 +825,7 @@ extension FrameStreamSendMetadata: SendableItem {
             if lengthWritten < lengthToSend {
                 // Incomplete write. Save what was transmitted, and record what is left.
                 let writtenStream = TransmittedItems.SentStream(
-                    flowID: stream.identifier,
+                    flowID: stream.flowIdentifier,
                     streamID: stream.streamID!,
                     offset: offset,
                     length: UInt64(lengthWritten),
@@ -849,7 +849,7 @@ extension FrameStreamSendMetadata: SendableItem {
             } else {
                 // Complete write. Save it to transmitted items for a record.
                 let writtenStream = TransmittedItems.SentStream(
-                    flowID: stream.identifier,
+                    flowID: stream.flowIdentifier,
                     streamID: stream.streamID!,
                     offset: offset,
                     length: UInt64(lengthWritten),
@@ -2588,7 +2588,7 @@ struct PendingItems: ~Copyable {
             return
         }
         newStream.listMembership.insert(.sendable)
-        streamsToService.append(newStream.identifier)
+        streamsToService.append(newStream.flowIdentifier)
         stream = true
     }
 
@@ -2602,7 +2602,7 @@ struct PendingItems: ~Copyable {
             return
         }
         newStream.listMembership.insert(.sendable)
-        streamsToService.prepend(newStream.identifier)
+        streamsToService.prepend(newStream.flowIdentifier)
         stream = true
     }
 
@@ -3166,7 +3166,8 @@ struct TransmittedItems: ~Copyable {
         connection: QUICConnection,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
-        sentPath: QUICPath
+        sentPath: QUICPath,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         if let ackFrame {
             connection.acknowledgedAck(
@@ -3182,7 +3183,8 @@ struct TransmittedItems: ~Copyable {
                 flowID: sentStreams[i].flowID,
                 offset: sentStreams[i].offset,
                 length: sentStreams[i].length,
-                isFinal: sentStreams[i].isFinal
+                isFinal: sentStreams[i].isFinal,
+                in: &eventContext
             )
         }
         for i in 0..<sentCrypto.count {
@@ -3194,14 +3196,15 @@ struct TransmittedItems: ~Copyable {
         }
 
         for streamReset in streamResets {
-            connection.acknowledgedResetStream(id: streamReset.streamID)
+            connection.acknowledgedResetStream(id: streamReset.streamID, in: &eventContext)
         }
 
         if let pmtudProbeMSS {
             connection.acknowledgedPMTUDProbe(
                 on: sentPath,
                 packetNumber: packetNumber,
-                mss: pmtudProbeMSS
+                mss: pmtudProbeMSS,
+                in: &eventContext
             )
         }
 
