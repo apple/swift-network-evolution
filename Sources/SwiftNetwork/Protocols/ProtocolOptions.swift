@@ -69,7 +69,7 @@ public class AbstractProtocolOptions: PerProtocolOptions, Hashable {
         self.identifier == identifier
     }
 
-    public func matches(protocolInstance: ProtocolInstanceReference) -> Bool {
+    public func matches(protocolInstance: InstanceIdentifier) -> Bool {
         guard let instance = self.protocolInstance else {
             return false
         }
@@ -85,12 +85,12 @@ public class AbstractProtocolOptions: PerProtocolOptions, Hashable {
     }
 
     internal enum AssociatedProtocolInstance {
-        case instance(_ instance: ProtocolInstanceReference)
+        case instance(_ instance: InstanceIdentifier)
         case legacyHandle(_ handle: UnsafeRawPointer)
     }
     internal var associatedProtocolInstance: AssociatedProtocolInstance? = nil
 
-    public var protocolInstance: ProtocolInstanceReference? {
+    public var protocolInstance: InstanceIdentifier? {
         get {
             switch associatedProtocolInstance {
             case .instance(let instance):
@@ -131,7 +131,7 @@ public class AbstractProtocolOptions: PerProtocolOptions, Hashable {
     }
 
     public func setProtocolInstance(
-        _ instance: ProtocolInstanceReference,
+        _ instance: InstanceIdentifier,
         for handle: UnsafeRawPointer
     ) {
         guard case .legacyHandle(let existingHandle) = associatedProtocolInstance,
@@ -147,15 +147,11 @@ public class AbstractProtocolOptions: PerProtocolOptions, Hashable {
         fatalError("Unimplemented")
     }
     #else
-    public var protocolInstance: ProtocolInstanceReference? = nil
+    public var protocolInstance: InstanceIdentifier? = nil
     #endif
 
-    public func setProtocolInstance(_ reference: ProtocolInstanceReference) {
-        self.protocolInstance = reference
-    }
-
-    public func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? {
-        nil
+    public func setProtocolInstance(_ identifier: InstanceIdentifier) {
+        self.protocolInstance = identifier
     }
 
     public var identifier: ProtocolIdentifier
@@ -234,10 +230,6 @@ public final class ProtocolOptions<P: NetworkProtocol>: AbstractProtocolOptions 
 
     public override func serialize() -> [UInt8]? {
         perProtocolOptions?.serialize() ?? nil
-    }
-
-    public override func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? {
-        P().newProtocolInstance(context: context)
     }
 
     public init(protocolIdentifier: ProtocolIdentifier, perProtocolOptions: P.Options?) {

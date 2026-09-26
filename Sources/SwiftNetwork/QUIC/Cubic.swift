@@ -222,7 +222,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         }
     }
 
-    private mutating func updatePacerState(path: QUICPath? = nil, smoothedRTT: NetworkDuration) {
+    private mutating func updatePacerState(path: QUICPath?, smoothedRTT: NetworkDuration) {
         guard let path, path.pacer.enabled else {
             return
         }
@@ -245,7 +245,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
 
     @discardableResult
     mutating func packetLost(
-        path: QUICPath? = nil,
+        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -303,7 +303,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
 
     mutating func ackEnd(
         rtt: borrowing RTT,
-        path: QUICPath? = nil,
+        path: QUICPath?,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -345,7 +345,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
     }
 
     mutating func processECN(
-        path: QUICPath? = nil,
+        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,

@@ -22,6 +22,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 #if canImport(Glibc)
 import Glibc
 internal import Logging
@@ -125,57 +129,79 @@ final class SwiftNetworkDemuxTests: NetTestCase {
             let remoteEndpoint = Endpoint(address: IPv4Address(Self.remoteIPv4Address)!, port: 8080)
 
             let path = PathProperties(parameters: parameters)
+            let storage = TestNetworkProtocolStorage(context: context)
 
-            let udp = UDPProtocol.instance(context: context)
+            let (udpUpper, udpLower) = storage.createTestUDPInstance()
             let udpOptions = UDPProtocol.options()
             udpOptions.noMetadata = true
             // Accept the checksum=0 packets we inject on inbound so we don't need to compute one.
             udpOptions.ignoreInboundChecksum = true
             udpOptions.setLogID(prefix: "D", parent: "1", protocolLogIDNumber: 1)
-            udpOptions.setProtocolInstance(udp)
+            udpOptions.setProtocolInstance(udpUpper.identifier)
             parameters.defaultStack.transport = .udp(udpOptions)
 
-            let demux = DemuxProtocol.instance(context: context)
+            let (demuxUpper, demuxLower) = storage.createTestDemuxInstance()
 
-            let demuxLinkage = OutboundDatagramLinkage(reference: demux)
-
-            let upperHarness = DatagramUpperHarness(
+            // The default upper harness attaches first, so the demux treats it as the
+            // catch-all for datagrams that match none of the patterns.
+            let (upperHarness, upperHarnessLinkage) = storage.createDatagramUpperHarness(
                 identifier: "Default",
                 local: localEndpoint,
                 remote: remoteEndpoint,
                 parameters: parameters,
                 path: path,
-                context: context,
-                lowerProtocol: demuxLinkage
+                context: context
             )
-            XCTAssertNotNil(upperHarness, "Failed to attach default upper harness")
-            guard let upperHarness else {
+            do {
+                try upperHarnessLinkage.invokeAttachLowerProtocol(
+                    demuxLower,
+                    remote: remoteEndpoint,
+                    local: localEndpoint,
+                    parameters: parameters,
+                    path: path
+                )
+            } catch {
+                XCTFail("Failed to attach demux to default upper harness: \(error)")
                 return
             }
 
-            let lowerHarness = DatagramLowerHarness(context: context)
+            // Stack below the demux: demux -> UDP -> lower harness.
+            do {
+                try demuxUpper.invokeAttachLowerProtocol(
+                    udpLower,
+                    remote: remoteEndpoint,
+                    local: localEndpoint,
+                    parameters: parameters,
+                    path: path
+                )
+            } catch {
+                XCTFail("Failed to attach UDP to demux: \(error)")
+                return
+            }
 
-            try! demux.attachLowerDatagramProtocol(
-                udp,
-                remote: remoteEndpoint,
-                local: localEndpoint,
-                parameters: parameters,
-                path: path
+            let (lowerHarness, lowerHarnessLinkage) = storage.createDatagramLowerHarness(
+                identifier: "Lower",
+                context: context
             )
-
-            try! udp.attachLowerDatagramProtocol(
-                lowerHarness.reference,
-                remote: remoteEndpoint,
-                local: localEndpoint,
-                parameters: parameters,
-                path: path
-            )
+            do {
+                try udpUpper.invokeAttachLowerProtocol(
+                    lowerHarnessLinkage,
+                    remote: remoteEndpoint,
+                    local: localEndpoint,
+                    parameters: parameters,
+                    path: path
+                )
+            } catch {
+                XCTFail("Failed to attach lower harness to UDP: \(error)")
+                return
+            }
 
             upperHarness.invokeConnect()
 
             // Tracks each pattern-based upper harness together with the patterns that
             // control which inbound packets it receives from the demux.
-            var patternHarnesses: [(harness: DatagramUpperHarness, patterns: [DemuxPatternInput])] = []
+            var patternHarnesses:
+                [(harness: DatagramUpperHarness<TestDatagramLinkageFamily>, patterns: [DemuxPatternInput])] = []
 
             for demuxedFlow in demuxedFlows {
                 var demuxParameters = Parameters()
@@ -191,21 +217,28 @@ final class SwiftNetworkDemuxTests: NetTestCase {
                         mask: patternInput.mask?.span.bytes
                     )
                 }
-                demuxOptions.setProtocolInstance(demux)
+                demuxOptions.setProtocolInstance(demuxUpper.identifier)
 
                 demuxParameters.defaultStack.append(applicationProtocol: .custom(demuxOptions))
 
-                let demuxUpperHarness = DatagramUpperHarness(
+                let (demuxUpperHarness, demuxUpperHarnessLinkage) = storage.createDatagramUpperHarness(
                     identifier: "Demux",
                     local: localEndpoint,
                     remote: remoteEndpoint,
                     parameters: demuxParameters,
                     path: path,
-                    context: context,
-                    lowerProtocol: demuxLinkage
+                    context: context
                 )
-                XCTAssertNotNil(demuxUpperHarness, "Failed to attach demux upper harness")
-                guard let demuxUpperHarness else {
+                do {
+                    try demuxUpperHarnessLinkage.invokeAttachLowerProtocol(
+                        demuxLower,
+                        remote: remoteEndpoint,
+                        local: localEndpoint,
+                        parameters: demuxParameters,
+                        path: path
+                    )
+                } catch {
+                    XCTFail("Failed to attach demux to pattern upper harness: \(error)")
                     return
                 }
 
@@ -248,7 +281,8 @@ final class SwiftNetworkDemuxTests: NetTestCase {
             // Inject inbound datagrams for each flow. Default first, then each pattern
             // flow so that FIFO drain from the lower harness lets each upper harness
             // pull exactly the packets that belong to it.
-            var expectedInboundFlows: [(harness: DatagramUpperHarness, payloads: [[UInt8]])] = []
+            var expectedInboundFlows:
+                [(harness: DatagramUpperHarness<TestDatagramLinkageFamily>, payloads: [[UInt8]])] = []
 
             var defaultInboundPayloads: [[UInt8]] = []
             for sequence in 0..<datagramsPerFlow {

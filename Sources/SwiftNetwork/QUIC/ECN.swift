@@ -242,7 +242,7 @@ struct ECNPathState: ~Copyable, PrefixedLoggable {
         }
     }
 
-    mutating func reset(ecn: inout ECN, path: QUICPath? = nil) {
+    mutating func reset(ecn: inout ECN, path: QUICPath?) {
         state = markingEnabled ? .probing : .disabled
         validationSentPacketCount = 0
         validationAckElicitingLostPacketCount = 0

@@ -32,13 +32,13 @@ internal import os
 @available(Network 0.1.0, *)
 protocol TimerUser {
     var timerID: Timer.TimerID? { get set }
-    func timerFired(at timeNow: NetworkClock.Instant)
+    func timerFired(at timeNow: NetworkClock.Instant, in eventContext: inout NetworkContext.EventContext)
 }
 
 @available(Network 0.1.0, *)
 protocol NonCopyableTimerUser: ~Copyable {
     var timerID: Timer.TimerID? { get set }
-    mutating func timerFired(at timeNow: NetworkClock.Instant)
+    mutating func timerFired(at timeNow: NetworkClock.Instant, in eventContext: inout NetworkContext.EventContext)
 }
 
 @available(Network 0.1.0, *)
@@ -46,9 +46,13 @@ private struct TimerEntry: ~Copyable {
     let identifier: Timer.TimerID
     var deadline: NetworkClock.Instant = .zero
     let description: String
-    let closure: (NetworkClock.Instant) -> Void
+    let closure: (NetworkClock.Instant, inout NetworkContext.EventContext) -> Void
 
-    init(identifier: Timer.TimerID, description: String, closure: @escaping (NetworkClock.Instant) -> Void) {
+    init(
+        identifier: Timer.TimerID,
+        description: String,
+        closure: @escaping (NetworkClock.Instant, inout NetworkContext.EventContext) -> Void
+    ) {
         self.identifier = identifier
         self.description = description
         self.closure = closure
@@ -70,10 +74,11 @@ private struct TimerEntry: ~Copyable {
 // TODO: convert timer to ~Copyable
 @available(Network 0.1.0, *)
 final class Timer: PrefixedLoggable {
-    typealias TimerID = UInt8
+    typealias TimerID = UInt16
 
     var log: LogPrefixer
-    private var reference: ProtocolInstanceReference? = nil
+    private var identifier: InstanceIdentifier? = nil
+    private var context: NetworkContext? = nil
     private var timerReference: TimerReference
     private var nextID: TimerID = 1
     private var timerCancelled = false
@@ -94,6 +99,8 @@ final class Timer: PrefixedLoggable {
     }
     private var wakeup: WakeupState = .idle
 
+    private var wakeupCompletion: ((inout NetworkContext.EventContext) -> Void)? = nil
+
     private enum WakeupState {
         case idle
         case armed(NetworkClock.Instant)
@@ -111,9 +118,15 @@ final class Timer: PrefixedLoggable {
     /// millisecond out, a coalesced wakeup could land after the deadline had already passed.
     static let timerThreshold = NetworkDuration.milliseconds(1)
 
-    init(reference: ProtocolInstanceReference, timerReference: TimerReference, logPrefixer: LogPrefixer) {
+    init(
+        identifier: InstanceIdentifier,
+        context: NetworkContext,
+        timerReference: TimerReference,
+        logPrefixer: LogPrefixer
+    ) {
         self.log = logPrefixer
-        self.reference = reference
+        self.identifier = identifier
+        self.context = context
         self.timerReference = timerReference
     }
 
@@ -125,7 +138,8 @@ final class Timer: PrefixedLoggable {
         description: String,
         fromNow: NetworkDuration = .zero,
         timerNow: NetworkClock.Instant,
-        closure: @escaping (NetworkClock.Instant) -> Void
+        in eventContext: inout NetworkContext.EventContext,
+        closure: @escaping (NetworkClock.Instant, inout NetworkContext.EventContext) -> Void
     ) -> TimerID {
         let identifier = nextID
         var entry = TimerEntry(identifier: nextID, description: description, closure: closure)
@@ -135,7 +149,7 @@ final class Timer: PrefixedLoggable {
         entries.append(entry)
         nextID += 1
         if !avoidRecalculate {
-            recalculate(timerNow)
+            recalculate(timerNow, in: &eventContext)
         }
         log.datapath("Added timer [T\(identifier)]")
         return identifier
@@ -153,20 +167,26 @@ final class Timer: PrefixedLoggable {
         log.datapath("Removing timer [T\(identifier)]")
     }
 
-    func stop(final: Bool = true) {
+    func stop(final: Bool = true, in eventContext: inout NetworkContext.EventContext) {
         if !timerCancelled {
             log.debug("Stopping timer")
             timerCancelled = true
             wakeup = .idle
-            reference?.unscheduleWakeup(timerReference: timerReference)
+            wakeupCompletion = nil
+            if let identifier {
+                identifier.unscheduleWakeup(
+                    timerReference: timerReference,
+                    in: &eventContext
+                )
+            }
         }
         if final {
             entries.removeAll()
-            reference = nil
+            identifier = nil
         }
     }
 
-    private func recalculate(_ now: NetworkClock.Instant) {
+    private func recalculate(_ now: NetworkClock.Instant, in eventContext: inout NetworkContext.EventContext) {
         if extraDebugging {
             let entryCount = entries.count
             for i in 0..<entryCount {
@@ -200,7 +220,7 @@ final class Timer: PrefixedLoggable {
 
         guard let earliestDeadline else {
             log.debug("No more timers to run")
-            stop(final: false)
+            stop(final: false, in: &eventContext)
             return
         }
 
@@ -230,7 +250,23 @@ final class Timer: PrefixedLoggable {
         log.datapath(
             "Arming timer for the next \(delta) (now \(now)), new deadline \(nextDeadline) old deadline \(oldDeadline)"
         )
-        reference?.scheduleWakeup(after: delta, timerReference: timerReference)
+        if let identifier, let context {
+            // The wakeup block is built once and reused for every re-arm, so re-arming costs no
+            // allocation. It captures the timer, so the timer holds itself until `stop(final:)`
+            // drops the block on teardown.
+            if wakeupCompletion == nil {
+                wakeupCompletion = { timerState in
+                    self.timerFired(at: context.now, in: &timerState)
+                }
+            }
+            identifier.scheduleWakeup(
+                context: context,
+                after: delta,
+                timerReference: timerReference,
+                in: &eventContext,
+                wakeupCompletion!
+            )
+        }
     }
 
     private func find(_ identifier: TimerID) -> Int? {
@@ -249,7 +285,8 @@ final class Timer: PrefixedLoggable {
     func reschedule(
         identifier: TimerID,
         fromNow: NetworkDuration,
-        timerNow: NetworkClock.Instant
+        timerNow: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         guard let index = find(identifier) else {
             return
@@ -263,11 +300,14 @@ final class Timer: PrefixedLoggable {
             entries[index].schedule(fromNow: fromNow, timerNow: timerNow)
         }
         if !avoidRecalculate {
-            recalculate(timerNow)
+            recalculate(timerNow, in: &eventContext)
         }
     }
 
-    public func timerFired(at timeNow: NetworkClock.Instant) {
+    public func timerFired(
+        at timeNow: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         // Timer fired means the kernel woke us up.
         wakeup = .idle
 
@@ -301,7 +341,7 @@ final class Timer: PrefixedLoggable {
                     )
                 }
                 entries[index].disable()
-                entries[index].closure(timeNow)
+                entries[index].closure(timeNow, &eventContext)
                 ranOne = true
             }
             index += 1
@@ -318,7 +358,7 @@ final class Timer: PrefixedLoggable {
                 "Spurious timer at \(now)), next deadline \(nextDeadline), cancelled? \(timerCancelled)"
             )
         }
-        recalculate(timeNow)
+        recalculate(timeNow, in: &eventContext)
         avoidRecalculate = false
     }
 }

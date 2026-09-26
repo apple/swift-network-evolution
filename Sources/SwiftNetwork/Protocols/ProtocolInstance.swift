@@ -43,8 +43,8 @@ public protocol ProtocolInstance: ~Copyable {
     /// The scheduling context on which the protocol instance must run.
     var context: NetworkContext { get }
 
-    /// A structure that refers to the protocol instance and holds a reference to its containing object.
-    var reference: ProtocolInstanceReference { get }
+    /// A structure that identifies the protocol instance and holds a reference to its containing object.
+    var identifier: InstanceIdentifier { get set }
 
     /// An opaque structure that tracks the internal consistency of any protocol.
     var eventManager: ProtocolEventManager { get set }
@@ -53,25 +53,84 @@ public protocol ProtocolInstance: ~Copyable {
 @available(Network 0.1.0, *)
 extension ProtocolInstance where Self: ~Copyable {
 
+    /// Removes this instance's event state from its context.
+    ///
+    /// Every protocol instance registers an event state when it builds its identifier, and that
+    /// state has to be handed back before the instance goes away. A protocol that sits below
+    /// another one is unregistered by its lower linkage's `teardown(in:)` as part of being
+    /// detached from above, so it never needs to call this. Anything that isn't torn down that
+    /// way — a top protocol, or an instance that a linkage doesn't own storage for, such as
+    /// an encryption-level handler — must call this itself while tearing down. Not calling it
+    /// trips a precondition when the instance is destroyed.
+    ///
+    /// Safe to call from inside a call this instance is already handling: the event state is only
+    /// removed once nothing still holds it, so a retirement requested mid-call runs as the tail of
+    /// the work already in flight.
+    public mutating func unregisterEventManager(in eventContext: inout NetworkContext.EventContext) {
+        eventManager.unregister(in: &eventContext)
+        identifier = .init()
+    }
+}
+
+@available(Network 0.1.0, *)
+extension ProtocolInstance where Self: AnyObject {
+
+    /// Removes this instance's event state from its context.
+    ///
+    /// Class-based instances are usually held through an immutable reference, so this overload
+    /// takes `self` non-mutating; see `unregisterEventManager(in:)` on `ProtocolInstance`.
+    public func unregisterEventManager(in eventContext: inout NetworkContext.EventContext) {
+        var mutableSelf = self
+        mutableSelf.eventManager.unregister(in: &eventContext)
+        mutableSelf.identifier = .init()
+    }
+}
+
+@available(Network 0.1.0, *)
+extension ProtocolInstance where Self: ~Copyable {
+
     /// Schedules an asynchronous block from within a protocol implementation.
-    public func async(_ block: @escaping () -> Void) {
-        reference.async(block)
+    ///
+    /// The block runs later as a fresh entry into the stack, so it receives the event context
+    /// and must thread it into any calls made to other protocols.
+    ///
+    /// This is an external entry point: call it from code outside the protocol stack. If you
+    /// already hold the event context, call the `in:`-taking variant instead so the state
+    /// isn't re-derived from the context.
+    public func async(_ block: @escaping (inout NetworkContext.EventContext) -> Void) {
+        identifier.async(context: context, in: &context.eventContext, block)
+    }
+
+    /// Schedules an asynchronous block, using an already-acquired event context.
+    ///
+    /// The block still receives the state that is current when it runs; see `async(_:)`.
+    public func async(
+        in eventContext: inout NetworkContext.EventContext,
+        _ block: @escaping (inout NetworkContext.EventContext) -> Void
+    ) {
+        identifier.async(context: context, in: &eventContext, block)
     }
 
     /// Enters a protocol's execution state from an external source.
     ///
     /// Call this on the context, and call it before the protocol invokes any calls to other protocols.
-    public func fromExternal<R, E: Error>(_ block: () throws(E) -> R) throws(E) -> R {
-        try reference.fromExternal(block)
+    /// The block receives the event context, which must be threaded into any calls made to other
+    /// protocols so that the state is never re-derived from the context class.
+    public func fromExternal<R, E: Error>(
+        _ block: (inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R {
+        try identifier.fromExternal(in: &context.eventContext, block)
     }
-    public func fromExternal<R: ~Copyable, E: Error>(_ block: () throws(E) -> R) throws(E) -> R {
-        try reference.fromExternal(block)
+    public func fromExternal<R: ~Copyable, E: Error>(
+        _ block: (inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R {
+        try identifier.fromExternal(in: &context.eventContext, block)
     }
     public func fromExternal<R, T: ~Copyable, E: Error>(
         _ value: consuming T,
-        _ block: (consuming T) throws(E) -> R
+        _ block: (inout NetworkContext.EventContext, consuming T) throws(E) -> R
     ) throws(E) -> R {
-        try reference.fromExternal(value, block)
+        try identifier.fromExternal(value, in: &context.eventContext, block)
     }
 }
 
@@ -82,20 +141,48 @@ extension ProtocolInstance where Self: ~Copyable {
 @available(Network 0.1.0, *)
 public protocol TimerSchedulable: ~Copyable, ProtocolInstance {
     /// Handles a wakeup from a timer.
-    func wakeup()
+    ///
+    /// The timer is an entry point into the stack, so the framework acquires the event context
+    /// and hands it in. Thread it into any calls made to other protocols.
+    func wakeup(in eventContext: inout NetworkContext.EventContext)
 
-    /// A reference for a timer, which should be initialized as `TimerSchedulable()`
+    /// A reference for a timer, which should be initialized as `TimerReference()`
     var timerReference: TimerReference { get }
 }
 
 @available(Network 0.1.0, *)
 extension TimerSchedulable {
+    /// Schedules a timer wakeup.
+    ///
+    /// This is an external entry point; see `async(_:)`.
     public func scheduleWakeup(after delay: NetworkDuration) {
-        reference.scheduleWakeup(after: delay, timerReference: timerReference)
+        fromExternal { eventContext in
+            scheduleWakeup(after: delay, in: &eventContext)
+        }
     }
 
+    /// Schedules a timer wakeup, using an already-acquired event context.
+    public func scheduleWakeup(after delay: NetworkDuration, in eventContext: inout NetworkContext.EventContext) {
+        identifier.scheduleWakeup(
+            context: context,
+            after: delay,
+            timerReference: timerReference,
+            in: &eventContext
+        ) { timerState in
+            self.wakeup(in: &timerState)
+        }
+    }
+
+    /// Unschedules a timer wakeup.
+    ///
+    /// This is an external entry point; see `async(_:)`.
     public func unscheduleWakeup() {
-        reference.unscheduleWakeup(timerReference: timerReference)
+        identifier.unscheduleWakeup(timerReference: timerReference, in: &context.eventContext)
+    }
+
+    /// Unschedules a timer wakeup, using an already-acquired event context.
+    public func unscheduleWakeup(in eventContext: inout NetworkContext.EventContext) {
+        identifier.unscheduleWakeup(timerReference: timerReference, in: &eventContext)
     }
 }
 
@@ -245,6 +332,44 @@ public struct NetworkLoggerState: ~Copyable {
     #endif
 }
 
+// MARK: Protocol Instance As Linkage
+
+@available(Network 0.1.0, *)
+internal struct ProtocolInstanceBox<Instance: AnyObject>: Hashable {
+    let instance: Instance
+
+    init(_ instance: Instance) {
+        self.instance = instance
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.instance === rhs.instance
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(ObjectIdentifier(instance))
+    }
+}
+
+/// Mark on protocols to allow them to be represented as their own linkage types
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+public protocol ProtocolInstanceAsLinkage: ProtocolInstance, AnyObject, ProtocolLinkage {}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+extension ProtocolInstanceAsLinkage {
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs === rhs
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(ObjectIdentifier(self))
+    }
+}
+
 // MARK: Protocol Instance Errors
 
 @_spi(ProtocolProvider)
@@ -255,405 +380,10 @@ public enum ProtocolInstanceError: Error {
     case invalidNewFlowLinkage
 }
 
-// MARK: Protocol Instance Container
-
-/// A container that hosts one or more custom protocol implementations.
-///
-/// Conform to `ProtocolInstanceContainer` to implement a custom protocol.
-/// Use the index to host multiple protocols within one object.
-@_spi(ProtocolProvider)
-@available(Network 0.1.0, *)
-public protocol ProtocolInstanceContainer: AnyObject {
-    #if !NETWORK_EMBEDDED
-    func accessInstance<R, E: Error>(at index: Int?, _ body: (inout any ProtocolInstance) throws(E) -> R) throws(E) -> R
-    func accessTimerSchedulable<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any TimerSchedulable) throws(E) -> R
-    ) throws(E) -> R
-    func accessLower<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any LowerProtocolHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessUpper<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any UpperProtocolHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessManyToMany<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any ManyToManyProtocolHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessInboundFlowHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundFlowHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessListenerHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any ListenerHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessDatagramListenerHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any DatagramListenerHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessStreamListenerHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any StreamListenerHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessInboundDataHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundDataHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessInboundDatagramHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundDatagramHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessInboundStreamHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundStreamHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessOutboundDataHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundDataHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessOutboundDatagramHandler<R: ~Copyable, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundDatagramHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessOutboundDatagramHandler<R, T: ~Copyable, E: Error>(
-        at index: Int?,
-        _ value: consuming T,
-        _ body: (inout any OutboundDatagramHandler, consuming T) throws(E) -> R
-    ) throws(E) -> R
-    func accessOutboundStreamHandler<R: ~Copyable, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundStreamHandler) throws(E) -> R
-    ) throws(E) -> R
-    func accessOutboundStreamHandler<R, T: ~Copyable, E: Error>(
-        at index: Int?,
-        _ value: consuming T,
-        _ body: (inout any OutboundStreamHandler, consuming T) throws(E) -> R
-    ) throws(E) -> R
-    func accessOutboundStreamEarlyDataHandler<R, T: ~Copyable, E: Error>(
-        at index: Int?,
-        _ value: consuming T,
-        _ body: (inout any OutboundStreamEarlyDataHandler, consuming T) throws(E) -> R
-    ) throws(E) -> R
-    func accessOutboundStreamUnidirectionalAbortHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundStreamUnidirectionalAbortHandler) throws(E) -> R
-    ) throws(E) -> R
-    #endif
-}
-
-#if !NETWORK_EMBEDDED
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer {
-    public func accessLower<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any LowerProtocolHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessTimerSchedulable<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any TimerSchedulable) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessUpper<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any UpperProtocolHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessManyToMany<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any ManyToManyProtocolHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessInboundFlowHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundFlowHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessListenerHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any ListenerHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessDatagramListenerHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any DatagramListenerHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessStreamListenerHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any StreamListenerHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessInboundDataHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundDataHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessInboundDatagramHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundDatagramHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessInboundStreamHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundStreamHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessOutboundDataHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundDataHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessOutboundDatagramHandler<R: ~Copyable, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundDatagramHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessOutboundDatagramHandler<R, T: ~Copyable, E: Error>(
-        at index: Int?,
-        _ value: consuming T,
-        _ body: (inout any OutboundDatagramHandler, consuming T) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessOutboundStreamHandler<R: ~Copyable, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundStreamHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessOutboundStreamHandler<R, T: ~Copyable, E: Error>(
-        at index: Int?,
-        _ value: consuming T,
-        _ body: (inout any OutboundStreamHandler, consuming T) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessOutboundStreamUnidirectionalAbortHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundStreamUnidirectionalAbortHandler) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-    public func accessOutboundStreamEarlyDataHandler<R, T: ~Copyable, E: Error>(
-        at index: Int?,
-        _ value: consuming T,
-        _ body: (inout any OutboundStreamEarlyDataHandler, consuming T) throws(E) -> R
-    ) throws(E) -> R {
-        fatalError("Unimplemented container function")
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: ProtocolInstance {
-    var reference: ProtocolInstanceReference { ProtocolInstanceReference(custom: self) }
-
-    public func accessInstance<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any ProtocolInstance) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any ProtocolInstance) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: LowerProtocolHandler {
-    public func accessLower<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any LowerProtocolHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any LowerProtocolHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: TimerSchedulable {
-    public func accessTimerSchedulable<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any TimerSchedulable) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any TimerSchedulable) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: UpperProtocolHandler {
-    public func accessUpper<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any UpperProtocolHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any UpperProtocolHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: ManyToManyProtocolHandler {
-    public func accessManyToMany<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any ManyToManyProtocolHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any ManyToManyProtocolHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: InboundFlowHandler {
-    public func accessInboundFlowHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundFlowHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any InboundFlowHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: ListenerHandler {
-    public func accessListenerHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any ListenerHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any ListenerHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: DatagramListenerHandler {
-    public func accessDatagramListenerHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any DatagramListenerHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any DatagramListenerHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: StreamListenerHandler {
-    public func accessStreamListenerHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any StreamListenerHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any StreamListenerHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: InboundDataHandler {
-    public func accessInboundDataHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundDataHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any InboundDataHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: InboundDatagramHandler {
-    public func accessInboundDatagramHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundDatagramHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any InboundDatagramHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: InboundStreamHandler {
-    public func accessInboundStreamHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any InboundStreamHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any InboundStreamHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: OutboundDataHandler {
-    public func accessOutboundDataHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundDataHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any OutboundDataHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: OutboundDatagramHandler {
-    public func accessOutboundDatagramHandler<R: ~Copyable, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundDatagramHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any OutboundDatagramHandler) = self
-        return try body(&selfAccess)
-    }
-    public func accessOutboundDatagramHandler<R, T: ~Copyable, E: Error>(
-        at index: Int?,
-        _ value: consuming T,
-        _ body: (inout any OutboundDatagramHandler, consuming T) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any OutboundDatagramHandler) = self
-        return try body(&selfAccess, value)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: OutboundStreamHandler {
-    public func accessOutboundStreamHandler<R: ~Copyable, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundStreamHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any OutboundStreamHandler) = self
-        return try body(&selfAccess)
-    }
-    public func accessOutboundStreamHandler<R, T: ~Copyable, E: Error>(
-        at index: Int?,
-        _ value: consuming T,
-        _ body: (inout any OutboundStreamHandler, consuming T) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any OutboundStreamHandler) = self
-        return try body(&selfAccess, value)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: OutboundStreamUnidirectionalAbortHandler {
-    public func accessOutboundStreamUnidirectionalAbortHandler<R, E: Error>(
-        at index: Int?,
-        _ body: (inout any OutboundStreamUnidirectionalAbortHandler) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any OutboundStreamUnidirectionalAbortHandler) = self
-        return try body(&selfAccess)
-    }
-}
-@available(Network 0.1.0, *)
-extension ProtocolInstanceContainer where Self: OutboundStreamEarlyDataHandler {
-    public func accessOutboundStreamEarlyDataHandler<R, T: ~Copyable, E: Error>(
-        at index: Int?,
-        _ value: consuming T,
-        _ body: (inout any OutboundStreamEarlyDataHandler, consuming T) throws(E) -> R
-    ) throws(E) -> R {
-        var selfAccess: (any OutboundStreamEarlyDataHandler) = self
-        return try body(&selfAccess, value)
-    }
-}
-#endif
-
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 extension Parameters {
-    public func applicationOptions(for instance: ProtocolInstanceReference) -> ProtocolStack.ApplicationProtocol? {
+    public func applicationOptions(for instance: InstanceIdentifier) -> ProtocolStack.ApplicationProtocol? {
         let stack = self.defaultStack
         for applicationProtocol in stack.persistentApplication {
             if applicationProtocol.matches(protocolInstance: instance) {
@@ -668,7 +398,7 @@ extension Parameters {
         return nil
     }
 
-    public func transportOptions(for instance: ProtocolInstanceReference) -> ProtocolStack.TransportProtocol? {
+    public func transportOptions(for instance: InstanceIdentifier) -> ProtocolStack.TransportProtocol? {
         let stack = self.defaultStack
         guard let transportProtocol = stack.transport, transportProtocol.matches(protocolInstance: instance) else {
             return nil
@@ -676,7 +406,7 @@ extension Parameters {
         return transportProtocol
     }
 
-    public func internetOptions(for instance: ProtocolInstanceReference) -> ProtocolStack.InternetProtocol? {
+    public func internetOptions(for instance: InstanceIdentifier) -> ProtocolStack.InternetProtocol? {
         let stack = self.defaultStack
         guard let internetProtocol = stack.internet, internetProtocol.matches(protocolInstance: instance) else {
             return nil
@@ -684,7 +414,7 @@ extension Parameters {
         return internetProtocol
     }
 
-    public func linkOptions(for instance: ProtocolInstanceReference) -> ProtocolStack.LinkProtocol? {
+    public func linkOptions(for instance: InstanceIdentifier) -> ProtocolStack.LinkProtocol? {
         let stack = self.defaultStack
         guard let linkProtocol = stack.link, linkProtocol.matches(protocolInstance: instance) else {
             return nil
@@ -697,7 +427,7 @@ extension Parameters {
         self.defaultStack.protocolOptions(for: identifier)
     }
 
-    internal func protocolOptions(for instance: ProtocolInstanceReference) -> AbstractProtocolOptions? {
+    internal func protocolOptions(for instance: InstanceIdentifier) -> AbstractProtocolOptions? {
         self.defaultStack.protocolOptions(for: instance)
     }
 
@@ -718,7 +448,7 @@ extension Parameters {
     }
     #endif
 
-    public func protocolOptions<T>(for instance: ProtocolInstanceReference) -> ProtocolOptions<T>? {
+    public func protocolOptions<T>(for instance: InstanceIdentifier) -> ProtocolOptions<T>? {
         guard let options = self.protocolOptions(for: instance) else {
             return nil
         }
@@ -737,7 +467,7 @@ extension Parameters {
     }
 
     public func setProtocolInstance(
-        _ instance: ProtocolInstanceReference,
+        _ instance: InstanceIdentifier,
         for handle: UnsafeRawPointer
     ) {
         self.defaultStack.setProtocolInstance(instance, for: handle)
@@ -745,7 +475,7 @@ extension Parameters {
     #endif
 
     #if !NETWORK_NO_SWIFT_QUIC
-    public func quicOptions(for instance: ProtocolInstanceReference) -> ProtocolOptions<QUICProtocol>? {
+    public func quicOptions(for instance: InstanceIdentifier) -> ProtocolOptions<QUICProtocol>? {
         if let applicationProtocol = applicationOptions(for: instance),
             case .quic(let options) = applicationProtocol
         {
@@ -763,7 +493,7 @@ extension Parameters {
     }
     #endif
 
-    public func tlsOptions(for instance: ProtocolInstanceReference) -> ProtocolOptions<SwiftTLSProtocol>? {
+    public func tlsOptions(for instance: InstanceIdentifier) -> ProtocolOptions<SwiftTLSProtocol>? {
         if let applicationProtocol = applicationOptions(for: instance),
             case .swiftTLS(let options) = applicationProtocol
         {
@@ -776,7 +506,7 @@ extension Parameters {
         #endif
     }
 
-    public func udpOptions(for instance: ProtocolInstanceReference) -> ProtocolOptions<UDPProtocol>? {
+    public func udpOptions(for instance: InstanceIdentifier) -> ProtocolOptions<UDPProtocol>? {
         if let transportProtocol = transportOptions(for: instance),
             case .udp(let options) = transportProtocol
         {
@@ -789,7 +519,7 @@ extension Parameters {
         #endif
     }
 
-    public func ipOptions(for instance: ProtocolInstanceReference) -> ProtocolOptions<IPProtocol>? {
+    public func ipOptions(for instance: InstanceIdentifier) -> ProtocolOptions<IPProtocol>? {
         if let internetProtocol = internetOptions(for: instance),
             case .ip(let options) = internetProtocol
         {
@@ -802,7 +532,7 @@ extension Parameters {
         #endif
     }
 
-    public func customLinkOptions(for instance: ProtocolInstanceReference) -> ProtocolOptions<CustomLinkProtocol>? {
+    public func customLinkOptions(for instance: InstanceIdentifier) -> ProtocolOptions<CustomLinkProtocol>? {
         if case .customLink(let options) = self.defaultStack.link {
             // The link slot holds exactly one protocol, so options that have not yet
             // been associated with an instance are unambiguously these options.

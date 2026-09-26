@@ -308,11 +308,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 smallestTime: smallestLostSentTime
             ) {
                 log.datapath(
-                    "Persistent congestion detected on path \(path.identifier), setting congestion window to minimum"
+                    "Persistent congestion detected on path \(path.pathIdentifier), setting congestion window to minimum"
                 )
                 path.congestionControlPersistentCongestion(mss: path.mss, qlog: nil)
                 log.datapath(
-                    "Congestion window of path \(path.identifier) is now \(path.congestionControlWindow)"
+                    "Congestion window of path \(path.pathIdentifier) is now \(path.congestionControlWindow)"
                 )
                 if path.pacer.enabled {
                     path.resetPacer()
@@ -403,7 +403,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         mutating func packetAcked(
             sentPath: QUICPath,
             sentEntry: borrowing PacketContainerEntry,
-            connection: QUICConnection
+            connection: QUICConnection,
+            in eventContext: inout NetworkContext.EventContext
         ) {
             if sentEntry.lostTime == .zero && sentEntry.packet.isInFlightEligible {
                 if sentEntry.packet.isAckEliciting {
@@ -437,7 +438,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 sentEntry.packet,
                 packetNumber: sentEntry.packet.number,
                 packetNumberSpace: sentEntry.packet.numberSpace,
-                sentPath: sentPath
+                sentPath: sentPath,
+                in: &eventContext
             )
         }
 
@@ -520,7 +522,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             ackFrame: borrowing FrameAck,
             path: QUICPath,
             now: NetworkClock.Instant,
-            connection: QUICConnection
+            connection: QUICConnection,
+            in eventContext: inout NetworkContext.EventContext
         ) -> Bool {
             let packetNumberSpace = ackFrame.packetNumberSpace
             var newlyECTAcked: UInt64 = 0
@@ -565,7 +568,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 packetAcked(
                     sentPath: sentPath,
                     sentEntry: ackedEntry,
-                    connection: connection
+                    connection: connection,
+                    in: &eventContext
                 )
             }
 
@@ -625,7 +629,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         ) {
             let sentPath: QUICPath
             if let currentPath = connection.currentPath,
-                sentPacket.sentPath == currentPath.identifier
+                sentPacket.sentPath == currentPath.pathIdentifier
             {
                 sentPath = currentPath
             } else if let lookedUpPath = connection.path(for: sentPacket.sentPath) {
@@ -796,18 +800,22 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         inBatch = true
         shouldResetTimer = false
     }
-    mutating func endBatch(connection: QUICConnection) {
+    mutating func endBatch(
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         inBatch = false
         if shouldResetTimer {
             shouldResetTimer = false
-            resetTimer(now: connection.now, connection: connection)
+            resetTimer(now: connection.now, connection: connection, in: &eventContext)
         }
     }
 
     // Note: drains 'sentPackets', leaving the caller's storage empty and reusable.
     mutating func recordSentPackets(
         _ sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
-        connection: QUICConnection
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         let now = connection.now
         while let packet = sentPackets.popFirst() {
@@ -816,7 +824,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         if inBatch {
             shouldResetTimer = true
         } else {
-            resetTimer(now: now, connection: connection)
+            resetTimer(now: now, connection: connection, in: &eventContext)
         }
     }
 
@@ -910,7 +918,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     mutating func findLostPacketInner(
         pnSpace: PacketNumberSpace,
         timeNow: NetworkClock.Instant,
-        connection: QUICConnection
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         connection.applyToAllPaths { path in
             let maxRTT = max(path.rtt.latestRTT, path.rtt.smoothedRTT)
@@ -999,7 +1008,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             withMutableInnerState(packetNumberSpace: pnSpace) { innerState in
                 innerState.declarePacketLost(lostPackets, connection: connection)
             }
-            retransmitPackets(lostPackets, connection: connection)
+            retransmitPackets(lostPackets, connection: connection, in: &eventContext)
             lostPacket = true
         }
         return lostPacket
@@ -1007,7 +1016,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
     mutating func retransmitPackets(
         _ lostPackets: [PacketIdentifier],
-        connection: QUICConnection
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         for identifier in lostPackets {
             var discardInitialRecoveryState = false
@@ -1018,7 +1028,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 }
                 let sentPackets = connection.retransmitPacket(
                     entry.packet,
-                    discardInitialRecoveryState: &discardInitialRecoveryState
+                    discardInitialRecoveryState: &discardInitialRecoveryState,
+                    in: &eventContext
                 )
                 innerState.recordSentPackets(sentPackets, connection: connection)
             }
@@ -1033,8 +1044,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         // We may have lost a PMTUD probe, so check if we want to resend it
         connection.withCurrentPath { path in
             var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
-            path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets)
-            recordSentPackets(&sentPackets, connection: connection)
+            path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets, in: &eventContext)
+            recordSentPackets(&sentPackets, connection: connection, in: &eventContext)
             return
         }
     }
@@ -1044,34 +1055,39 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         pnSpace: PacketNumberSpace? = nil,
         path: QUICPath? = nil,
         timeNow: NetworkClock.Instant,
-        connection: QUICConnection
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         var packetLost = false
         if let pnSpace {
             packetLost = findLostPacketInner(
                 pnSpace: pnSpace,
                 timeNow: timeNow,
-                connection: connection
+                connection: connection,
+                in: &eventContext
             )
         } else {
             if findLostPacketInner(
                 pnSpace: .initial,
                 timeNow: timeNow,
-                connection: connection
+                connection: connection,
+                in: &eventContext
             ) {
                 packetLost = true
             }
             if findLostPacketInner(
                 pnSpace: .handshake,
                 timeNow: timeNow,
-                connection: connection
+                connection: connection,
+                in: &eventContext
             ) {
                 packetLost = true
             }
             if findLostPacketInner(
                 pnSpace: .applicationData,
                 timeNow: timeNow,
-                connection: connection
+                connection: connection,
+                in: &eventContext
             ) {
                 packetLost = true
             }
@@ -1082,10 +1098,10 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             let path = path ?? connection.currentPath
             if let path {
                 var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
-                path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets)
-                recordSentPackets(&sentPackets, connection: connection)
+                path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets, in: &eventContext)
+                recordSentPackets(&sentPackets, connection: connection, in: &eventContext)
             }
-            connection.sendAllEnqueuedOutboundDatagrams()
+            connection.sendAllEnqueuedOutboundDatagrams(in: &eventContext)
         }
         return packetLost
     }
@@ -1164,14 +1180,20 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         return (earliestTime, pnSpace)
     }
 
-    func setTimer(delay: NetworkDuration, now: NetworkClock.Instant, connection: QUICConnection) {
+    func setTimer(
+        delay: NetworkDuration,
+        now: NetworkClock.Instant,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         guard let timerID = timerID else {
             return
         }
         connection.timer.reschedule(
             identifier: timerID,
             fromNow: delay,
-            timerNow: now
+            timerNow: now,
+            in: &eventContext
         )
         log.datapath("Reset loss recovery timer [T\(timerID)] to \(delay)")
     }
@@ -1181,7 +1203,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         log.datapath("PTO count reset to 0")
     }
 
-    mutating func sendPTO(connection: QUICConnection, path: QUICPath) {
+    mutating func sendPTO(
+        connection: QUICConnection,
+        path: QUICPath,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         var sentPTO = false
 
         var discardInitialRecoveryState = false
@@ -1192,7 +1218,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             }
 
             connection.log.datapath(
-                "PTO \(path.recoveryState.PTOCount) (\(packetNumberSpace)) fired on path \(path.identifier) with \(ackElicitingPacketsInFlight) ack-eliciting packets in flight"
+                "PTO \(path.recoveryState.PTOCount) (\(packetNumberSpace)) fired on path \(path.pathIdentifier) with \(ackElicitingPacketsInFlight) ack-eliciting packets in flight"
             )
 
             let hasAckEliciting = connection.withPendingItems(for: packetNumberSpace) {
@@ -1204,7 +1230,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 let packets = connection.sendFramesFromRecovery(
                     on: path,
                     ignoreCongestionWindow: true,
-                    discardInitialRecoveryState: &discardInitialRecoveryState
+                    discardInitialRecoveryState: &discardInitialRecoveryState,
+                    in: &eventContext
                 )
                 // Only a recorded packet counts as a probe; the pending items may write no payload.
                 if innerState.recordSentPackets(packets, connection: connection) {
@@ -1240,7 +1267,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                         packets = connection.retransmitOnePacketForced(
                             packet: entry.packet,
                             path: path,
-                            discardInitialRecoveryState: &discardInitialRecoveryState
+                            discardInitialRecoveryState: &discardInitialRecoveryState,
+                            in: &eventContext
                         )
                     }
 
@@ -1286,7 +1314,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 let packets = connection.sendFramesFromRecovery(
                     on: path,
                     ignoreCongestionWindow: true,
-                    discardInitialRecoveryState: &discardInitialRecoveryState
+                    discardInitialRecoveryState: &discardInitialRecoveryState,
+                    in: &eventContext
                 )
                 if !innerState.recordSentPackets(packets, connection: connection) {
                     connection.log.datapath(
@@ -1328,13 +1357,17 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             path.pmtudState.ptoEvent(
                 on: path,
                 ptoCount: path.recoveryState.PTOCount,
-                sentPackets: &sentPackets
+                sentPackets: &sentPackets,
+                in: &eventContext
             )
-            recordSentPackets(&sentPackets, connection: connection)
+            recordSentPackets(&sentPackets, connection: connection, in: &eventContext)
         }
     }
 
-    mutating func timerFired(at timeNow: NetworkClock.Instant) {
+    mutating func timerFired(
+        at timeNow: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         guard let connection = connection else {
             return
         }
@@ -1344,14 +1377,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         )
         if lossTime != .zero {
             log.datapath("Recovery timer fired, finding lost packets")
-            findLostPacket(timeNow: timeNow, connection: connection)
+            findLostPacket(timeNow: timeNow, connection: connection, in: &eventContext)
         } else {
             log.datapath("Recovery timer fired, PTO")
             connection.withCurrentPath { path in
-                sendPTO(connection: connection, path: path)
+                sendPTO(connection: connection, path: path, in: &eventContext)
             }
         }
-        resetTimer(now: timeNow, connection: connection)
+        resetTimer(now: timeNow, connection: connection, in: &eventContext)
     }
 
     static func PTOPeriod(
@@ -1391,15 +1424,19 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         guard rtt.hasInitialMeasurement else {
             return false
         }
-        let pto = self.computedPTO(rtt: rtt)
+        let pto = Recovery.computedPTO(rtt: rtt)
         return (largestTime >= smallestTime + pto * Constants.persistentCongestionThreshold)
     }
 
-    mutating func resetTimer(now: NetworkClock.Instant, connection: QUICConnection) {
+    mutating func resetTimer(
+        now: NetworkClock.Instant,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         // if there are ack eliciting packets on any of the innerStates, the L4S error should not be emitted
         if totalAckElicitingPacketsInFlight == 0 && peerCompletedValidation(connection: connection) {
             log.datapath("No ack eliciting packets in flight, cancelling timer")
-            setTimer(delay: .zero, now: now, connection: connection)
+            setTimer(delay: .zero, now: now, connection: connection, in: &eventContext)
             connection.withCurrentPath { path in
                 guard path.isValidated else { return }
                 var bytesInFlight: UInt64 = 0
@@ -1411,7 +1448,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 // as those containing PADDING frames) to bytes_in_flight.
                 if !connection.isL4SEnabled && bytesInFlight != 0 {
                     log.error(
-                        "No ack eliciting outstanding packets, bytesInFlight on path \(path.identifier) is \(bytesInFlight), and not 0"
+                        "No ack eliciting outstanding packets, bytesInFlight on path \(path.pathIdentifier) is \(bytesInFlight), and not 0"
                     )
                 }
             }
@@ -1427,7 +1464,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 // lossTime has already passed
                 timeout = .microseconds(1000)
             }
-            setTimer(delay: timeout, now: now, connection: connection)
+            setTimer(delay: timeout, now: now, connection: connection, in: &eventContext)
         } else {
             // Arm PTO
             let (sentTime, pnSpace) = getEarliestTime(
@@ -1438,7 +1475,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             connection.withCurrentPath { path in
                 if pnSpace == .applicationData && !connection.isHandshakeConfirmed {
                     log.datapath("Handshake not confirmed, cancelling timer")
-                    setTimer(delay: .zero, now: now, connection: connection)
+                    setTimer(delay: .zero, now: now, connection: connection, in: &eventContext)
                     path.recoveryState.PTOPeriod = .zero
                     return
                 }
@@ -1452,19 +1489,19 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     computedTimeout = timeout
                 }
                 log.datapath("Resetting recovery timer to \(computedTimeout)")
-                setTimer(delay: computedTimeout, now: now, connection: connection)
+                setTimer(delay: computedTimeout, now: now, connection: connection, in: &eventContext)
             }
         }
     }
 
-    mutating func resetAll() {
+    mutating func resetAll(in eventContext: inout NetworkContext.EventContext) {
         let connection = connection
         applyToAllInnerStatesMutable { innerState, _ in
             innerState.reset(connection: connection)
         }
 
         // TODO: Later, instead use a timer on the many-to-many to delay teardown on close
-        self.connection?.timer.stop()
+        self.connection?.timer.stop(in: &eventContext)
         self.connection = nil
     }
 
@@ -1505,7 +1542,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     mutating func receivedAck(
         ack: consuming FrameAck,
         ackedPath: QUICPath,
-        connection: QUICConnection
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         let packetNumberSpace = ack.packetNumberSpace
         if packetNumberSpace == PacketNumberSpace.handshake {
@@ -1582,7 +1620,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 ackFrame: ack,
                 path: ackedPath,
                 now: timeNow,
-                connection: connection
+                connection: connection,
+                in: &eventContext
             )
         }
 
@@ -1620,7 +1659,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 pnSpace: packetNumberSpace,
                 path: ackedPath,
                 timeNow: timeNow,
-                connection: connection
+                connection: connection,
+                in: &eventContext
             )
         }
         // Update the congestion window based on the previously saved per ACK received state
@@ -1643,7 +1683,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         if inBatch {
             shouldResetTimer = true
         } else {
-            resetTimer(now: timeNow, connection: connection)
+            resetTimer(now: timeNow, connection: connection, in: &eventContext)
         }
 
         // Now that we have deal with all the ACK'ed packets,

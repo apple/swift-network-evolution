@@ -143,6 +143,7 @@ enum CongestionControl {
     }
 
     mutating func packetsLost(
+        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -152,6 +153,7 @@ enum CongestionControl {
         switch self {
         case .cubic(algorithm: var cubic):
             let reducedCongestionWindow = cubic.packetLost(
+                path: path,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
@@ -163,6 +165,7 @@ enum CongestionControl {
         #if !NETWORK_EMBEDDED
         case .ledbat(algorithm: var ledbat):
             let reducedCongestionWindow = ledbat.packetLost(
+                path: path,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
@@ -173,6 +176,7 @@ enum CongestionControl {
             return reducedCongestionWindow
         case .prague(algorithm: var prague):
             let reducedCongestionWindow = prague.packetLost(
+                path: path,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,

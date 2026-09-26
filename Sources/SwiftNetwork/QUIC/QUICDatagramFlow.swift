@@ -26,15 +26,13 @@ internal import os
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public final class QUICDatagramFlow: MultiplexedDatagramFlow<QUICConnection> {
+public final class QUICDatagramFlow: MultiplexedDatagramFlow<QUICConnection, BaseInboundDatagramLinkage> {
     private(set) var flowID: UInt64?
     private(set) var contextID: UInt64?
     var applicationMarkedIdle: Bool = false
 
-    override public var reference: ProtocolInstanceReference {
-        var reference = ProtocolInstanceReference(quicDatagram: self)
-        reference.parentReference = parentProtocol.reference
-        return reference
+    override public func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {
+        BaseOutboundDatagramLinkage(quicDatagramFlow: self)
     }
 
     var usableDatagramSize: Int {

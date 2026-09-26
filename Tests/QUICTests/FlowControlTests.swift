@@ -22,6 +22,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 final class FlowControlTests: XCTestCase {
     func testOutboundFlowControl() {
@@ -29,35 +33,39 @@ final class FlowControlTests: XCTestCase {
         let connection = QUICConnection(
             context: NetworkContext(identifier: "test context")
         )
-        let stream = QUICStreamInstance(parent: connection, inbound: false)
-        stream.setup(
-            streamID: QUICStreamID(0),
-            logPrefixer: logPrefixer
-        )
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+        connection.context.onQueue {
+            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            defer { stream.destroyFromExternalTest() }
+            stream.setup(
+                streamID: QUICStreamID(0),
+                logPrefixer: logPrefixer
+            )
 
-        let unsetMaxStreamDataSize = stream.maximumStreamDataSize
-        XCTAssertEqual(unsetMaxStreamDataSize, Int.max)
+            let unsetMaxStreamDataSize = stream.maximumStreamDataSize
+            XCTAssertEqual(unsetMaxStreamDataSize, Int.max)
 
-        stream.updateOutboundFlowControlCredit(connection: connection)
+            stream.updateOutboundFlowControlCredit(connection: connection)
 
-        // Initial size is initial MSS * 10
-        let initialMaxStreamDataSize = stream.maximumStreamDataSize
-        XCTAssertEqual(initialMaxStreamDataSize, 1200 * 10)
+            // Initial size is initial MSS * 10
+            let initialMaxStreamDataSize = stream.maximumStreamDataSize
+            XCTAssertEqual(initialMaxStreamDataSize, 1200 * 10)
 
-        var updated = stream.updateOutboundMaxData(to: 40000)
-        XCTAssertTrue(updated)
+            var updated = stream.updateOutboundMaxData(to: 40000)
+            XCTAssertTrue(updated)
 
-        updated = connection.updateOutboundMaxData(to: 100000)
-        XCTAssertTrue(updated)
+            updated = connection.updateOutboundMaxData(to: 100000)
+            XCTAssertTrue(updated)
 
-        stream.updateFlowControlWithEnqueuedBytesToSend(8000, connection: connection)
-        stream.updateFlowControlWithSentBytes(3000, connection: connection)
+            stream.updateFlowControlWithEnqueuedBytesToSend(8000, connection: connection)
+            stream.updateFlowControlWithSentBytes(3000, connection: connection)
 
-        stream.updateOutboundFlowControlCredit(connection: connection)
+            stream.updateOutboundFlowControlCredit(connection: connection)
 
-        // Check that pending outbound data is accounted for
-        let updatedMaxStreamDataSize = stream.maximumStreamDataSize
-        XCTAssertEqual(updatedMaxStreamDataSize, 1200 * 10 - (8000 - 3000))
+            // Check that pending outbound data is accounted for
+            let updatedMaxStreamDataSize = stream.maximumStreamDataSize
+            XCTAssertEqual(updatedMaxStreamDataSize, 1200 * 10 - (8000 - 3000))
+        }
     }
 
     func testInboundFlowControl() {
@@ -65,36 +73,41 @@ final class FlowControlTests: XCTestCase {
         let connection = QUICConnection(
             context: NetworkContext(identifier: "test context")
         )
-        let stream = QUICStreamInstance(parent: connection, inbound: false)
-        stream.setup(
-            streamID: QUICStreamID(0),
-            logPrefixer: logPrefixer
-        )
-        let newPath = QUICPath(parent: connection)
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+        connection.context.onQueue {
+            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            defer { stream.destroyFromExternalTest() }
+            stream.setup(
+                streamID: QUICStreamID(0),
+                logPrefixer: logPrefixer
+            )
+            let newPath = QUICPath.makeFromExternalTest(parent: connection)
 
-        newPath.mss = 1200
-        connection.currentPath = newPath
+            newPath.mss = 1200
+            connection.currentPath = newPath
 
-        stream.receiveState.change(logIDString: "FlowControlTests", to: .receive)
+            stream.receiveState.change(logIDString: "FlowControlTests", to: .receive)
 
-        stream.sendInboundFlowControlCreditIfNeeded(connection: connection)
-        let initialReceiveSpace: UInt64 = 2 * 1024 * 1024
+            stream.sendInboundFlowControlCreditIfNeeded(connection: connection)
+            let initialReceiveSpace: UInt64 = 2 * 1024 * 1024
 
-        var inboundMaxData = stream.flowControlState.inboundMaxData
-        var maxUnreadInbound = stream.flowControlState.maximumUnreadInboundBytesAllowed
-        XCTAssertEqual(maxUnreadInbound, initialReceiveSpace)
+            var inboundMaxData = stream.flowControlState.inboundMaxData
+            var maxUnreadInbound = stream.flowControlState.maximumUnreadInboundBytesAllowed
+            XCTAssertEqual(maxUnreadInbound, initialReceiveSpace)
 
-        stream.updateFlowControlWithTotalInOrderInboundBytesRead(1_500_000, connection: connection)
-        stream.updateFlowControlWithInboundBytesDelivered(1_500_000, connection: connection)
+            stream.updateFlowControlWithTotalInOrderInboundBytesRead(1_500_000, connection: connection)
+            stream.updateFlowControlWithInboundBytesDelivered(1_500_000, connection: connection)
 
-        stream.sendInboundFlowControlCreditIfNeeded(connection: connection)
+            stream.sendInboundFlowControlCreditIfNeeded(connection: connection)
 
-        inboundMaxData = stream.flowControlState.inboundMaxData
-        maxUnreadInbound = stream.flowControlState.maximumUnreadInboundBytesAllowed
-        XCTAssertEqual(inboundMaxData, initialReceiveSpace + 1_500_000)
-        XCTAssertEqual(maxUnreadInbound, initialReceiveSpace)
+            inboundMaxData = stream.flowControlState.inboundMaxData
+            maxUnreadInbound = stream.flowControlState.maximumUnreadInboundBytesAllowed
+            XCTAssertEqual(inboundMaxData, initialReceiveSpace + 1_500_000)
+            XCTAssertEqual(maxUnreadInbound, initialReceiveSpace)
 
-        connection.currentPath = nil
+            connection.currentPath = nil
+            newPath.destroyFromExternalTest()
+        }
     }
 
     func testSendPermitReopensAfterDrainWithoutMaxStreamData() {
@@ -122,18 +135,24 @@ final class FlowControlTests: XCTestCase {
             stream.updateFlowControlWithEnqueuedBytesToSend(16_384, connection: connection)
             stream.updateOutboundFlowControlCredit(connection: connection)
             XCTAssertEqual(stream.maximumStreamDataSize, 0)
-            XCTAssertEqual(try? stream.getOutboundStreamDataRoomAvailable(), 0)
-
-            // Send the bytes to drain the backlog, with no MAX_STREAM_DATA
-            // arriving. Run inside an external cycle so the reopen event has a
-            // valid event state, as a real send does.
-            stream.fromExternal {
-                stream.updateFlowControlWithSentBytes(16_384, connection: connection)
+            connection.fromExternal { eventContext in
+                XCTAssertEqual(try? stream.getOutboundStreamDataRoomAvailable(in: &eventContext), 0)
             }
+
+            // Send the bytes to drain the backlog, with no MAX_STREAM_DATA arriving.
+            stream.updateFlowControlWithSentBytes(16_384, connection: connection)
 
             // Draining reopens the permit without an inbound MAX_STREAM_DATA
             XCTAssertGreaterThan(stream.maximumStreamDataSize, 0)
-            XCTAssertGreaterThan((try? stream.getOutboundStreamDataRoomAvailable()) ?? 0, 0)
+            connection.fromExternal { eventContext in
+                XCTAssertGreaterThan(
+                    (try? stream.getOutboundStreamDataRoomAvailable(in: &eventContext)) ?? 0,
+                    0
+                )
+            }
+
+            stream.destroyFromExternalTest()
+            connection.destroyFromExternalTest()
             done.fulfill()
         }
         wait(for: [done], timeout: 5.0)
@@ -144,34 +163,38 @@ final class FlowControlTests: XCTestCase {
         let connection = QUICConnection(
             context: NetworkContext(identifier: "test context")
         )
-        let stream = QUICStreamInstance(parent: connection, inbound: false)
-        stream.setup(
-            streamID: QUICStreamID(0),
-            logPrefixer: logPrefixer
-        )
-
-        // Baseline: both counters start at 0.
-        XCTAssertEqual(stream.flowControlState.totalInOrderInboundBytesRead, 0)
-        XCTAssertEqual(
-            connection.flowControlState.totalInOrderInboundBytesRead,
-            0
-        )
-
-        let finalSize = UInt64(4_611_686_018_427_387_903)
-
-        // Loop 5 times to add a very large size to the flow control, without
-        // updating the stream. The parsing of reset stream guards against this
-        // but we also check here to ensure that the connection value doesn't overflow.
-        for _ in 1...5 {
-            stream.updateFlowControlWithTotalInOrderInboundBytesRead(
-                finalSize,
-                connection: connection,
-                updateStream: false,
-                updateConnection: true
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+        connection.context.onQueue {
+            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            defer { stream.destroyFromExternalTest() }
+            stream.setup(
+                streamID: QUICStreamID(0),
+                logPrefixer: logPrefixer
             )
-        }
 
-        XCTAssertEqual(connection.flowControlState.totalInOrderInboundBytesRead, finalSize * 4)
+            // Baseline: both counters start at 0.
+            XCTAssertEqual(stream.flowControlState.totalInOrderInboundBytesRead, 0)
+            XCTAssertEqual(
+                connection.flowControlState.totalInOrderInboundBytesRead,
+                0
+            )
+
+            let finalSize = UInt64(4_611_686_018_427_387_903)
+
+            // Loop 5 times to add a very large size to the flow control, without
+            // updating the stream. The parsing of reset stream guards against this
+            // but we also check here to ensure that the connection value doesn't overflow.
+            for _ in 1...5 {
+                stream.updateFlowControlWithTotalInOrderInboundBytesRead(
+                    finalSize,
+                    connection: connection,
+                    updateStream: false,
+                    updateConnection: true
+                )
+            }
+
+            XCTAssertEqual(connection.flowControlState.totalInOrderInboundBytesRead, finalSize * 4)
+        }
     }
 
     // MARK: Credit for inbound bytes the application never reads
@@ -182,18 +205,21 @@ final class FlowControlTests: XCTestCase {
     private func makeStreamWithUnreadInboundBytes(
         byteCount: Int,
         window: UInt64,
-        connection: QUICConnection
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
     ) -> QUICStreamInstance {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
-        let path = QUICPath(parent: connection)
+        let path = QUICPath(parent: connection, in: &eventContext)
         path.mss = 1200
         connection.currentPath = path
+        // The connection owns its paths, and tearing it down is what retires this one's event state.
+        connection.multiplexingPaths[path.pathIdentifier] = path
         connection.flowControlState.initializeMaxDataValues(
             remoteMaxData: window,
             localMaxData: window
         )
 
-        var stream = QUICStreamInstance(parent: connection, inbound: true)
+        var stream = QUICStreamInstance(parent: connection, inbound: true, in: &eventContext)
         stream.setup(streamID: QUICStreamID(0), logPrefixer: logPrefixer)
         stream.flowControlState.initializeMaxDataValues(
             remoteMaxData: window,
@@ -208,7 +234,8 @@ final class FlowControlTests: XCTestCase {
                 offset: 0,
                 data: [UInt8](repeating: 0x41, count: byteCount),
                 isFinal: false
-            )
+            ),
+            in: &eventContext
         )
 
         // Move the bytes out of the reassembly queue and into the upper receive
@@ -231,11 +258,14 @@ final class FlowControlTests: XCTestCase {
         let done = XCTestExpectation(description: "read-all accounting complete")
         context.async {
             let connection = QUICConnection(context: context)
-            let stream = self.makeStreamWithUnreadInboundBytes(
-                byteCount: byteCount,
-                window: window,
-                connection: connection
-            )
+            let stream = connection.fromExternal { eventContext in
+                self.makeStreamWithUnreadInboundBytes(
+                    byteCount: byteCount,
+                    window: window,
+                    connection: connection,
+                    in: &eventContext
+                )
+            }
 
             // The application reads every byte.
             stream.deliveredInboundBytes(consumedLength: byteCount, connection: connection)
@@ -254,6 +284,8 @@ final class FlowControlTests: XCTestCase {
                 "MAX_DATA should move past bytes the application has consumed"
             )
             connection.currentPath = nil
+            stream.destroyFromExternalTest()
+            connection.destroyFromExternalTest()
             done.fulfill()
         }
         wait(for: [done], timeout: 5.0)
@@ -272,11 +304,14 @@ final class FlowControlTests: XCTestCase {
         let done = XCTestExpectation(description: "drop accounting complete")
         context.async {
             let connection = QUICConnection(context: context)
-            let stream = self.makeStreamWithUnreadInboundBytes(
-                byteCount: byteCount,
-                window: window,
-                connection: connection
-            )
+            let stream = connection.fromExternal { eventContext in
+                self.makeStreamWithUnreadInboundBytes(
+                    byteCount: byteCount,
+                    window: window,
+                    connection: connection,
+                    in: &eventContext
+                )
+            }
             XCTAssertEqual(
                 stream.upperReceiveQueue.unclaimedLength,
                 byteCount,
@@ -285,7 +320,7 @@ final class FlowControlTests: XCTestCase {
             let maxDataBeforeClose = connection.flowControlState.inboundMaxData
 
             // The application closes the read side without reading anything.
-            connection.fromExternal {
+            connection.fromExternal { _ in
                 connection.handleStopRead(for: stream)
             }
             stream.readClosed = true
@@ -316,6 +351,8 @@ final class FlowControlTests: XCTestCase {
                 "MAX_DATA must move past the bytes that were dropped"
             )
             connection.currentPath = nil
+            stream.destroyFromExternalTest()
+            connection.destroyFromExternalTest()
             done.fulfill()
         }
         wait(for: [done], timeout: 5.0)
@@ -344,7 +381,7 @@ final class FlowControlTests: XCTestCase {
             let lastSize: UInt64 = 4000
             let finalSize: UInt64 = 6000
 
-            connection.fromExternal {
+            connection.fromExternal { _ in
                 zombies.append(
                     logIDString: "[FlowControlTests]",
                     streamID: streamID,
@@ -355,12 +392,13 @@ final class FlowControlTests: XCTestCase {
             XCTAssertNotNil(zombies.find(streamID: streamID))
             XCTAssertEqual(connection.flowControlState.totalInOrderInboundBytesRead, 0)
 
-            connection.fromExternal {
+            connection.fromExternal { eventContext in
                 zombies.finalSizeReceived(
                     logIDString: "[FlowControlTests]",
                     streamID: streamID,
                     finalSize: finalSize,
-                    connection: connection
+                    connection: connection,
+                    in: &eventContext
                 )
             }
 
@@ -376,6 +414,7 @@ final class FlowControlTests: XCTestCase {
                 "Zombie should be retired once its final size is known"
             )
             connection.currentPath = nil
+            connection.destroyFromExternalTest()
             done.fulfill()
         }
         wait(for: [done], timeout: 5.0)
