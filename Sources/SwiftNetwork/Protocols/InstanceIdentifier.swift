@@ -40,6 +40,18 @@ public struct InstanceIdentifier: Hashable {
         eventStateIndex = .none
     }
 
+    /// Rebuilds an identifier from just the instance's own event state index.
+    ///
+    /// The datagram linkage implementations in `DatagramLinkageImplementations.swift` store this
+    /// one index rather than a whole identifier, so that the implementation fits in an
+    /// existential's inline buffer. The parent index is lost, so this is only correct for
+    /// protocols that never call `setParentInstance` -- multiplexed protocols route events
+    /// through `protocolEventStateIndex`, which prefers the parent. The linkage factories
+    /// assert that before dropping the index.
+    init(eventStateIndex: NetworkStateIndex) {
+        self.eventStateIndex = eventStateIndex
+    }
+
     public init(context: NetworkContext, eventManager: inout ProtocolEventManager) {
         self.eventStateIndex = eventManager.register(in: &context.eventContext)
     }

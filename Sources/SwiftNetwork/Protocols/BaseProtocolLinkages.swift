@@ -51,21 +51,10 @@ public struct BaseStreamLinkageFamily: StreamLinkageFamily {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
-    enum ProtocolType {
-        case unknown
-        case udp(NetworkStateIndex)
-        case ip(NetworkStateIndex)
-        case tcp(NetworkStateIndex)
-        case demux(NetworkStateIndex)
-        case datagramEndpointFlow(ProtocolInstanceBox<DatagramEndpointFlowProtocol>)
-        #if !NETWORK_NO_SWIFT_QUIC
-        case quicPath(ProtocolInstanceBox<QUICPath>)
-        #endif
-        // A protocol from outside the framework, reached through one class call.
-        #if !NETWORK_EMBEDDED
-        case external(any ExternalInboundDatagramLinkage)
-        #endif
-    }
+    // The protocol this linkage points at. See `DatagramLinkageImplementations.swift`: each
+    // protocol has its own implementation type, sized to sit inline in the existential rather
+    // than being boxed on the heap. `nil` means detached.
+    let implementation: (any InboundDatagramLinkageImplementation)?
 
     public func invokeAttachLowerProtocol(
         _ lowerProtocol: BaseOutboundDatagramLinkage,
@@ -74,39 +63,9 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         parameters: Parameters?,
         path: PathProperties?
     ) throws(NetworkError) {
-        let overrideUpperLinkage: BaseInboundDatagramLinkage?
-        switch protocolType {
-        case .udp(let index): overrideUpperLinkage = try storage!.udpInstances[index].attachLowerProtocol(lowerProtocol)
-        case .demux(let index):
-            overrideUpperLinkage = try storage!.demuxInstances[index].attachLowerProtocol(lowerProtocol)
-        case .ip(let index): overrideUpperLinkage = try storage!.ipInstances[index].attachLowerProtocol(lowerProtocol)
-        case .tcp(let index): overrideUpperLinkage = try storage!.tcpInstances[index].attachLowerProtocol(lowerProtocol)
-        case .datagramEndpointFlow(let box):
-            var flow = box.instance
-            overrideUpperLinkage = try flow.attachLowerProtocol(lowerProtocol)
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            var path = box.instance
-            overrideUpperLinkage = try path.attachLowerProtocol(lowerProtocol)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            // The foreign protocol owns the pairing: it knows which of its own linkages to hand
-            // back, so it completes the attach itself rather than reporting an override here.
-            try external.invokeAttachLowerProtocol(
-                lowerProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-            return
-        #endif
-        case .unknown: fatalError("Protocol cannot accept attachLowerProtocol call")
-        }
-        let upperLinkage = overrideUpperLinkage ?? self
-        try lowerProtocol.invokeAttachUpperProtocol(
-            upperLinkage,
+        guard let implementation else { fatalError("Protocol cannot accept attachLowerProtocol call") }
+        try implementation.invokeAttachLowerProtocol(
+            lowerProtocol,
             remote: remote,
             local: local,
             parameters: parameters,
@@ -118,22 +77,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        switch protocolType {
-        case .udp(let index): storage!.udpInstances[index].handleConnectedEvent(for: instance, in: &eventContext)
-        case .demux(let index): storage!.demuxInstances[index].handleConnectedEvent(for: instance, in: &eventContext)
-        case .ip(let index): storage!.ipInstances[index].handleConnectedEvent(for: instance, in: &eventContext)
-        case .tcp(let index): storage!.tcpInstances[index].handleConnectedEvent(for: instance, in: &eventContext)
-        case .datagramEndpointFlow(let box):
-            box.instance.handleConnectedEvent(for: instance, in: &eventContext)
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            box.instance.handleConnectedEvent(for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept handleConnectedEvent call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept handleConnectedEvent call") }
+        implementation.handleConnectedEvent(for: instance, in: &eventContext)
     }
 
     public func handleDisconnectedEvent(
@@ -141,27 +86,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        switch protocolType {
-        case .udp(let index):
-            storage!.udpInstances[index].handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
-        case .demux(let index):
-            storage!.demuxInstances[index].handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
-        case .ip(let index):
-            storage!.ipInstances[index].handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
-        case .tcp(let index):
-            storage!.tcpInstances[index].handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
-        case .datagramEndpointFlow(let box):
-            box.instance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            box.instance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept handleDisconnectedEvent call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept handleDisconnectedEvent call") }
+        implementation.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
     }
 
     public func handleNetworkProtocolEvent(
@@ -169,113 +95,49 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        switch protocolType {
-        case .udp(let index):
-            storage!.udpInstances[index].handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
-        case .demux(let index):
-            storage!.demuxInstances[index].handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
-        case .ip(let index):
-            storage!.ipInstances[index].handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
-        case .tcp(let index):
-            storage!.tcpInstances[index].handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
-        case .datagramEndpointFlow(let box):
-            box.instance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            var protocolInstance = box.instance
-            protocolInstance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept handleNetworkProtocolEvent call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept handleNetworkProtocolEvent call") }
+        implementation.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
     }
 
     public func handleInboundDataAvailableEvent(
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        switch protocolType {
-        case .udp(let index):
-            storage!.udpInstances[index].handleInboundDataAvailableEvent(for: instance, in: &eventContext)
-        case .demux(let index):
-            storage!.demuxInstances[index].handleInboundDataAvailableEvent(for: instance, in: &eventContext)
-        case .ip(let index):
-            storage!.ipInstances[index].handleInboundDataAvailableEvent(for: instance, in: &eventContext)
-        case .tcp(let index):
-            storage!.tcpInstances[index].handleInboundDataAvailableEvent(for: instance, in: &eventContext)
-        case .datagramEndpointFlow(let box):
-            box.instance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            var protocolInstance = box.instance
-            protocolInstance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept handleInboundDataAvailableEvent call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept handleInboundDataAvailableEvent call") }
+        implementation.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
     }
 
     public func handleOutboundRoomAvailableEvent(
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        switch protocolType {
-        case .udp(let index):
-            storage!.udpInstances[index].handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
-        case .demux(let index):
-            storage!.demuxInstances[index].handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
-        case .ip(let index):
-            storage!.ipInstances[index].handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
-        case .tcp(let index):
-            storage!.tcpInstances[index].handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
-        case .datagramEndpointFlow(let box):
-            box.instance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            var protocolInstance = box.instance
-            protocolInstance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept handleOutboundRoomAvailableEvent call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept handleOutboundRoomAvailableEvent call") }
+        implementation.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
     }
 
     public typealias PairedLowerLinkage = BaseOutboundDatagramLinkage
 
     public init() {
-        self.identifier = .init()
-        self.storage = nil
-        self.protocolType = .unknown
+        self.implementation = nil
     }
 
     #if !NETWORK_EMBEDDED
     /// Wraps a protocol from outside the framework, so framework protocols can reach it without
     /// knowing what it is.
+    ///
+    /// `ExternalInboundDatagramLinkage` requires exactly what an implementation does, so a foreign
+    /// protocol goes in the existential alongside the framework's own rather than being a case of
+    /// its own.
     public init(external: any ExternalInboundDatagramLinkage) {
-        self.identifier = external.identifier
-        self.storage = nil
-        self.protocolType = .external(external)
+        self.implementation = external
     }
     #endif
 
-    init(identifier: InstanceIdentifier, storage: BaseNetworkProtocolStorage?, protocolType: ProtocolType) {
-        self.identifier = identifier
-        self.storage = storage
-        self.protocolType = protocolType
+    init(implementation: any InboundDatagramLinkageImplementation) {
+        self.implementation = implementation
     }
 
-    public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
-    let protocolType: ProtocolType
+    public var identifier: InstanceIdentifier { implementation?.identifier ?? .init() }
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
         lhs.identifier == rhs.identifier
@@ -289,81 +151,21 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
-    enum ProtocolType {
-        case unknown
-        case udp(NetworkStateIndex)
-        case ip(NetworkStateIndex)
-        case demux(NetworkStateIndex)
-        case bridgeDatagram(NetworkStateIndex)
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case socketDatagram(NetworkStateIndex)
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case quicDatagramFlow(ProtocolInstanceBox<QUICDatagramFlow>)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case external(any ExternalOutboundDatagramLinkage)
-        #endif
-    }
+    // The protocol this linkage points at; see `DatagramLinkageImplementations.swift`.
+    // `nil` means detached.
+    let implementation: (any OutboundDatagramLinkageImplementation)?
 
     public func receiveDatagrams(
         maximumDatagramCount: Int,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
-        switch protocolType {
-        case .udp(let index):
-            return try storage!.udpInstances[index].receiveDatagrams(
-                maximumDatagramCount: maximumDatagramCount,
-                for: instance,
-                in: &eventContext
-            )
-        case .demux(let index):
-            return try storage!.demuxInstances[index].receiveDatagrams(
-                maximumDatagramCount: maximumDatagramCount,
-                for: instance,
-                in: &eventContext
-            )
-        case .ip(let index):
-            return try storage!.ipInstances[index].receiveDatagrams(
-                maximumDatagramCount: maximumDatagramCount,
-                for: instance,
-                in: &eventContext
-            )
-        case .bridgeDatagram(let index):
-            return try storage!.bridgeDatagramInstances[index].receiveDatagrams(
-                maximumDatagramCount: maximumDatagramCount,
-                for: instance,
-                in: &eventContext
-            )
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            return try storage!.socketDatagramInstances[index].receiveDatagrams(
-                maximumDatagramCount: maximumDatagramCount,
-                for: instance,
-                in: &eventContext
-            )
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            var protocolInstance = box.instance
-            return try protocolInstance.receiveDatagrams(
-                maximumDatagramCount: maximumDatagramCount,
-                for: instance,
-                in: &eventContext
-            )
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return try external.receiveDatagrams(
-                maximumDatagramCount: maximumDatagramCount,
-                for: instance,
-                in: &eventContext
-            )
-        #endif
-        case .unknown:
-            return nil
-        }
+        guard let implementation else { return nil }
+        return try implementation.receiveDatagrams(
+            maximumDatagramCount: maximumDatagramCount,
+            for: instance,
+            in: &eventContext
+        )
     }
 
     public func getDatagramsToSend(
@@ -372,65 +174,13 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
-        switch protocolType {
-        case .udp(let index):
-            return try storage!.udpInstances[index].getDatagramsToSend(
-                maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize,
-                for: instance,
-                in: &eventContext
-            )
-        case .demux(let index):
-            return try storage!.demuxInstances[index].getDatagramsToSend(
-                maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize,
-                for: instance,
-                in: &eventContext
-            )
-        case .ip(let index):
-            return try storage!.ipInstances[index].getDatagramsToSend(
-                maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize,
-                for: instance,
-                in: &eventContext
-            )
-        case .bridgeDatagram(let index):
-            return try storage!.bridgeDatagramInstances[index].getDatagramsToSend(
-                maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize,
-                for: instance,
-                in: &eventContext
-            )
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            return try storage!.socketDatagramInstances[index].getDatagramsToSend(
-                maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize,
-                for: instance,
-                in: &eventContext
-            )
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            return try box.instance.getDatagramsToSend(
-                maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize,
-                for: instance,
-                in: &eventContext
-            )
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return try external.getDatagramsToSend(
-                maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize,
-                for: instance,
-                in: &eventContext
-            )
-        #endif
-        case .unknown:
-            return nil
-        }
+        guard let implementation else { return nil }
+        return try implementation.getDatagramsToSend(
+            maximumDatagramCount: maximumDatagramCount,
+            minimumDatagramSize: minimumDatagramSize,
+            for: instance,
+            in: &eventContext
+        )
     }
 
     public func sendDatagrams(
@@ -438,32 +188,11 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        switch protocolType {
-        case .udp(let index):
-            try storage!.udpInstances[index].sendDatagrams(datagrams, from: instance, in: &eventContext)
-        case .demux(let index):
-            try storage!.demuxInstances[index].sendDatagrams(datagrams, from: instance, in: &eventContext)
-        case .ip(let index):
-            try storage!.ipInstances[index].sendDatagrams(datagrams, from: instance, in: &eventContext)
-        case .bridgeDatagram(let index):
-            try storage!.bridgeDatagramInstances[index].sendDatagrams(datagrams, from: instance, in: &eventContext)
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            try storage!.socketDatagramInstances[index].sendDatagrams(datagrams, from: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            var protocolInstance = box.instance
-            try protocolInstance.sendDatagrams(datagrams, from: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.sendDatagrams(datagrams, from: instance, in: &eventContext)
-        #endif
-        case .unknown:
+        guard let implementation else {
             datagrams.finalizeAllFramesAsFailed()
             return
         }
+        try implementation.sendDatagrams(datagrams, from: instance, in: &eventContext)
     }
 
     public func isConnected(in eventContext: inout NetworkContext.EventContext) -> Bool {
@@ -471,33 +200,13 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
     }
 
     public func protocolIsConnected(in eventContext: inout NetworkContext.EventContext) -> Bool {
-        switch protocolType {
-        #if !NETWORK_EMBEDDED
-        case .external(let external): return external.protocolIsConnected(in: &eventContext)
-        #endif
-        default: return identifier.isConnected(in: &eventContext)
-        }
+        guard let implementation else { return identifier.isConnected(in: &eventContext) }
+        return implementation.protocolIsConnected(in: &eventContext)
     }
 
     public func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
-        switch protocolType {
-        case .udp(let index): storage!.udpInstances[index].connect(for: instance, in: &eventContext)
-        case .demux(let index): storage!.demuxInstances[index].connect(for: instance, in: &eventContext)
-        case .ip(let index): storage!.ipInstances[index].connect(for: instance, in: &eventContext)
-        case .bridgeDatagram(let index):
-            storage!.bridgeDatagramInstances[index].connect(for: instance, in: &eventContext)
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            storage!.socketDatagramInstances[index].connect(for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box): box.instance.connect(for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): external.connect(for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept connect call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept connect call") }
+        implementation.connect(for: instance, in: &eventContext)
     }
 
     public func disconnect(
@@ -505,89 +214,22 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        switch protocolType {
-        case .udp(let index): storage!.udpInstances[index].disconnect(error: error, for: instance, in: &eventContext)
-        case .demux(let index):
-            storage!.demuxInstances[index].disconnect(error: error, for: instance, in: &eventContext)
-        case .ip(let index): storage!.ipInstances[index].disconnect(error: error, for: instance, in: &eventContext)
-        case .bridgeDatagram(let index):
-            storage!.bridgeDatagramInstances[index].disconnect(error: error, for: instance, in: &eventContext)
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            storage!.socketDatagramInstances[index].disconnect(error: error, for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box): box.instance.disconnect(error: error, for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept disconnect call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept disconnect call") }
+        implementation.disconnect(error: error, for: instance, in: &eventContext)
     }
 
     public func detach(
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        switch protocolType {
-        case .udp(let index):
-            try storage!.udpInstances[index].detach(for: instance, in: &eventContext)
-        case .demux(let index):
-            try storage!.demuxInstances[index].detach(for: instance, in: &eventContext)
-        case .ip(let index):
-            try storage!.ipInstances[index].detach(for: instance, in: &eventContext)
-        case .bridgeDatagram(let index):
-            try storage!.bridgeDatagramInstances[index].detach(for: instance, in: &eventContext)
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            try storage!.socketDatagramInstances[index].detach(for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            var protocolInstance = box.instance
-            try protocolInstance.detach(for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.detach(for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept detach call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept detach call") }
+        try implementation.detach(for: instance, in: &eventContext)
     }
 
     public func teardown(in eventContext: inout NetworkContext.EventContext) {
-        switch protocolType {
-        case .udp(let index):
-            storage!.udpInstances[index].unregisterEventManager(in: &eventContext)
-            storage!.udpInstances.remove(index: index)
-        case .demux(let index):
-            // A demux instance is shared by its default upper and one upper per pattern set,
-            // which detach separately. Only release the storage once the last one has gone.
-            guard storage!.demuxInstances[index].isFullyDetached else { return }
-            storage!.demuxInstances[index].unregisterEventManager(in: &eventContext)
-            storage!.demuxInstances.remove(index: index)
-        case .ip(let index):
-            storage!.ipInstances[index].unregisterEventManager(in: &eventContext)
-            storage!.ipInstances.remove(index: index)
-        case .bridgeDatagram(let index):
-            storage!.bridgeDatagramInstances[index].unregisterEventManager(in: &eventContext)
-            storage!.bridgeDatagramInstances.remove(index: index)
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            storage!.socketDatagramInstances[index].unregisterEventManager(in: &eventContext)
-            storage!.socketDatagramInstances.remove(index: index)
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            box.instance.unregisterEventManager(in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.teardown(in: &eventContext)
-        #endif
-        case .unknown: break
-        }
+        // A detached linkage has nothing to release, which is why this one tolerates `nil`
+        // where the calls above trap: `invokeDetach` always tears down afterwards.
+        implementation?.teardown(in: &eventContext)
     }
 
     public func handleApplicationEvent(
@@ -595,60 +237,16 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        switch protocolType {
-        case .udp(let index):
-            storage!.udpInstances[index].handleApplicationEvent(event: event, for: instance, in: &eventContext)
-        case .demux(let index):
-            storage!.demuxInstances[index].handleApplicationEvent(event: event, for: instance, in: &eventContext)
-        case .ip(let index):
-            storage!.ipInstances[index].handleApplicationEvent(event: event, for: instance, in: &eventContext)
-        case .bridgeDatagram(let index):
-            storage!.bridgeDatagramInstances[index].handleApplicationEvent(
-                event: event,
-                for: instance,
-                in: &eventContext
-            )
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            storage!.socketDatagramInstances[index].handleApplicationEvent(
-                event: event,
-                for: instance,
-                in: &eventContext
-            )
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            box.instance.handleApplicationEvent(event: event, for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept handleApplicationEvent call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept handleApplicationEvent call") }
+        implementation.handleApplicationEvent(event: event, for: instance, in: &eventContext)
     }
 
     public func getMetadata<P: NetworkProtocol>(
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) -> ProtocolMetadata<P>? {
-        switch protocolType {
-        case .udp(let index): return storage!.udpInstances[index].getMetadata(for: instance, in: &eventContext)
-        case .demux(let index): return storage!.demuxInstances[index].getMetadata(for: instance, in: &eventContext)
-        case .ip(let index): return storage!.ipInstances[index].getMetadata(for: instance, in: &eventContext)
-        case .bridgeDatagram(let index):
-            return storage!.bridgeDatagramInstances[index].getMetadata(for: instance, in: &eventContext)
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            return storage!.socketDatagramInstances[index].getMetadata(for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box): return box.instance.getMetadata(for: instance, in: &eventContext)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept getMetadata call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept getMetadata call") }
+        return implementation.getMetadata(for: instance, in: &eventContext)
     }
 
     public func getMetrics(
@@ -656,53 +254,12 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) -> NetworkMetrics? {
-        switch protocolType {
-        case .udp(let index):
-            return storage!.udpInstances[index].getMetrics(
-                requestedNetworkMetric: requestedNetworkMetric,
-                for: instance,
-                in: &eventContext
-            )
-        case .demux(let index):
-            return storage!.demuxInstances[index].getMetrics(
-                requestedNetworkMetric: requestedNetworkMetric,
-                for: instance,
-                in: &eventContext
-            )
-        case .ip(let index):
-            return storage!.ipInstances[index].getMetrics(
-                requestedNetworkMetric: requestedNetworkMetric,
-                for: instance,
-                in: &eventContext
-            )
-        case .bridgeDatagram(let index):
-            return storage!.bridgeDatagramInstances[index].getMetrics(
-                requestedNetworkMetric: requestedNetworkMetric,
-                for: instance,
-                in: &eventContext
-            )
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            return storage!.socketDatagramInstances[index].getMetrics(
-                requestedNetworkMetric: requestedNetworkMetric,
-                for: instance,
-                in: &eventContext
-            )
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            return box.instance.getMetrics(
-                requestedNetworkMetric: requestedNetworkMetric,
-                for: instance,
-                in: &eventContext
-            )
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return external.getMetrics(requestedNetworkMetric: requestedNetworkMetric, for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept getMetrics call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept getMetrics call") }
+        return implementation.getMetrics(
+            requestedNetworkMetric: requestedNetworkMetric,
+            for: instance,
+            in: &eventContext
+        )
     }
 
     public func invokeAttachUpperProtocol(
@@ -712,100 +269,34 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         parameters: Parameters?,
         path: PathProperties?
     ) throws(NetworkError) {
-        switch protocolType {
-        case .udp(let index):
-            try storage!.udpInstances[index].attachUpperProtocol(
-                upperProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-        case .demux(let index):
-            try storage!.demuxInstances[index].attachUpperProtocol(
-                upperProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-        case .ip(let index):
-            try storage!.ipInstances[index].attachUpperProtocol(
-                upperProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-        case .bridgeDatagram(let index):
-            try storage!.bridgeDatagramInstances[index].attachUpperProtocol(
-                upperProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-        #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
-        case .socketDatagram(let index):
-            try storage!.socketDatagramInstances[index].attachUpperProtocol(
-                upperProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-        #endif
-        #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            var instance = box.instance
-            try instance.attachUpperProtocol(
-                upperProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.invokeAttachUpperProtocol(
-                upperProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-        #endif
-        case .unknown: fatalError("Protocol cannot accept attachUpperProtocol call")
-        }
+        guard let implementation else { fatalError("Protocol cannot accept attachUpperProtocol call") }
+        try implementation.invokeAttachUpperProtocol(
+            upperProtocol,
+            remote: remote,
+            local: local,
+            parameters: parameters,
+            path: path
+        )
     }
 
     public typealias PairedUpperLinkage = BaseInboundDatagramLinkage
 
     public init() {
-        self.identifier = .init()
-        self.storage = nil
-        self.protocolType = .unknown
+        self.implementation = nil
     }
 
     #if !NETWORK_EMBEDDED
     /// Wraps a protocol from outside the framework; see `BaseInboundDatagramLinkage.init(external:)`.
     public init(external: any ExternalOutboundDatagramLinkage) {
-        self.identifier = external.identifier
-        self.storage = nil
-        self.protocolType = .external(external)
+        self.implementation = external
     }
     #endif
 
-    init(identifier: InstanceIdentifier, storage: BaseNetworkProtocolStorage?, protocolType: ProtocolType) {
-        self.identifier = identifier
-        self.storage = storage
-        self.protocolType = protocolType
+    init(implementation: any OutboundDatagramLinkageImplementation) {
+        self.implementation = implementation
     }
 
-    public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
-    let protocolType: ProtocolType
+    public var identifier: InstanceIdentifier { implementation?.identifier ?? .init() }
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
         lhs.identifier == rhs.identifier
@@ -2638,16 +2129,20 @@ open class BaseNetworkProtocolStorage {
 
         let instanceIndex = udpInstances.insert(instance)
 
-        let identifier = udpInstances[instanceIndex].identifier
+        let eventStateIndex = Self.datagramEventStateIndex(of: udpInstances[instanceIndex].identifier)
         let inbound = BaseInboundDatagramLinkage(
-            identifier: identifier,
-            storage: self,
-            protocolType: .udp(instanceIndex)
+            implementation: UDPInboundLinkage(
+                storage: self,
+                eventStateIndex: eventStateIndex,
+                index: instanceIndex
+            )
         )
         let outbound = BaseOutboundDatagramLinkage(
-            identifier: identifier,
-            storage: self,
-            protocolType: .udp(instanceIndex)
+            implementation: UDPOutboundLinkage(
+                storage: self,
+                eventStateIndex: eventStateIndex,
+                index: instanceIndex
+            )
         )
 
         return (inbound, outbound)
@@ -2660,16 +2155,20 @@ open class BaseNetworkProtocolStorage {
 
         let instanceIndex = demuxInstances.insert(instance)
 
-        let identifier = demuxInstances[instanceIndex].identifier
+        let eventStateIndex = Self.datagramEventStateIndex(of: demuxInstances[instanceIndex].identifier)
         let inbound = BaseInboundDatagramLinkage(
-            identifier: identifier,
-            storage: self,
-            protocolType: .demux(instanceIndex)
+            implementation: DemuxInboundLinkage(
+                storage: self,
+                eventStateIndex: eventStateIndex,
+                index: instanceIndex
+            )
         )
         let outbound = BaseOutboundDatagramLinkage(
-            identifier: identifier,
-            storage: self,
-            protocolType: .demux(instanceIndex)
+            implementation: DemuxOutboundLinkage(
+                storage: self,
+                eventStateIndex: eventStateIndex,
+                index: instanceIndex
+            )
         )
 
         return (inbound, outbound)
@@ -2688,16 +2187,20 @@ open class BaseNetworkProtocolStorage {
 
         let instanceIndex = ipInstances.insert(instance)
 
-        let identifier = ipInstances[instanceIndex].identifier
+        let eventStateIndex = Self.datagramEventStateIndex(of: ipInstances[instanceIndex].identifier)
         let inbound = BaseInboundDatagramLinkage(
-            identifier: identifier,
-            storage: self,
-            protocolType: .ip(instanceIndex)
+            implementation: IPInboundLinkage(
+                storage: self,
+                eventStateIndex: eventStateIndex,
+                index: instanceIndex
+            )
         )
         let outbound = BaseOutboundDatagramLinkage(
-            identifier: identifier,
-            storage: self,
-            protocolType: .ip(instanceIndex)
+            implementation: IPOutboundLinkage(
+                storage: self,
+                eventStateIndex: eventStateIndex,
+                index: instanceIndex
+            )
         )
 
         return (inbound, outbound)
@@ -2710,9 +2213,13 @@ open class BaseNetworkProtocolStorage {
         let instance = SocketDatagramProtocol(context: context)
         let instanceIndex = socketDatagramInstances.insert(instance)
         return BaseOutboundDatagramLinkage(
-            identifier: socketDatagramInstances[instanceIndex].identifier,
-            storage: self,
-            protocolType: .socketDatagram(instanceIndex)
+            implementation: SocketDatagramOutboundLinkage(
+                storage: self,
+                eventStateIndex: Self.datagramEventStateIndex(
+                    of: socketDatagramInstances[instanceIndex].identifier
+                ),
+                index: instanceIndex
+            )
         )
     }
     #endif
@@ -2724,10 +2231,26 @@ open class BaseNetworkProtocolStorage {
         let instanceIndex = bridgeDatagramInstances.insert(instance)
 
         return BaseOutboundDatagramLinkage(
-            identifier: instance.identifier,
-            storage: self,
-            protocolType: .bridgeDatagram(instanceIndex)
+            implementation: BridgeDatagramOutboundLinkage(
+                storage: self,
+                eventStateIndex: Self.datagramEventStateIndex(of: instance.identifier),
+                index: instanceIndex
+            )
         )
+    }
+
+    // The storage-backed datagram linkages keep only the instance's own event state index, so that
+    // they fit in an existential's inline buffer, and rebuild the identifier from it. That loses
+    // the parent index, so a protocol reached this way must not have one -- see
+    // `InstanceIdentifier.init(eventStateIndex:)`. Multiplexed protocols (QUIC, TLS) are the ones
+    // that set a parent, and they use the class-backed implementations instead, which hold the
+    // whole identifier.
+    private static func datagramEventStateIndex(of identifier: InstanceIdentifier) -> NetworkStateIndex {
+        precondition(
+            identifier.parentEventStateIndex.isNone,
+            "A protocol with a parent instance cannot use a storage-backed datagram linkage"
+        )
+        return identifier.eventStateIndex
     }
 
     // Endpoint flows are referenced directly by the linkage rather than stored here: the
@@ -2735,11 +2258,7 @@ open class BaseNetworkProtocolStorage {
     internal static func linkage(
         for flow: DatagramEndpointFlowProtocol
     ) -> BaseInboundDatagramLinkage {
-        BaseInboundDatagramLinkage(
-            identifier: flow.identifier,
-            storage: nil,
-            protocolType: .datagramEndpointFlow(.init(flow))
-        )
+        BaseInboundDatagramLinkage(implementation: DatagramEndpointFlowInboundLinkage(flow: flow))
     }
 
     // MARK: - Stream Protocol Instances
@@ -2757,9 +2276,11 @@ open class BaseNetworkProtocolStorage {
 
         let identifier = tcpInstances[instanceIndex].identifier
         let inbound = BaseInboundDatagramLinkage(
-            identifier: identifier,
-            storage: self,
-            protocolType: .tcp(instanceIndex)
+            implementation: TCPInboundDatagramLinkage(
+                storage: self,
+                eventStateIndex: Self.datagramEventStateIndex(of: identifier),
+                index: instanceIndex
+            )
         )
         let outbound = BaseOutboundStreamLinkage(
             identifier: identifier,
@@ -2934,11 +2455,7 @@ extension BaseOutboundStreamLinkage {
 @available(Network 0.1.0, *)
 extension BaseOutboundDatagramLinkage {
     public init(quicDatagramFlow: QUICDatagramFlow) {
-        self.init(
-            identifier: quicDatagramFlow.identifier,
-            storage: nil,
-            protocolType: .quicDatagramFlow(.init(quicDatagramFlow))
-        )
+        self.init(implementation: QUICDatagramFlowOutboundLinkage(flow: quicDatagramFlow))
     }
 }
 
@@ -2946,7 +2463,7 @@ extension BaseOutboundDatagramLinkage {
 @available(Network 0.1.0, *)
 extension BaseInboundDatagramLinkage {
     public init(quicPath: QUICPath) {
-        self.init(identifier: quicPath.identifier, storage: nil, protocolType: .quicPath(.init(quicPath)))
+        self.init(implementation: QUICPathInboundLinkage(path: quicPath))
     }
 }
 #endif

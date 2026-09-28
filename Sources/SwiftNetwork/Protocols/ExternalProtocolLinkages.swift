@@ -81,9 +81,13 @@ public protocol ExternalInboundDataLinkage: ExternalUpperProtocolLinkage {
     )
 }
 
+// A foreign datagram protocol is an inbound linkage implementation like any framework protocol: the
+// requirements below are exactly `InboundDatagramLinkageImplementation`'s, so refining it lets
+// `BaseInboundDatagramLinkage.init(external:)` put the object straight into its existential instead
+// of routing through a dedicated case.
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol ExternalInboundDatagramLinkage: ExternalInboundDataLinkage {
+public protocol ExternalInboundDatagramLinkage: ExternalInboundDataLinkage, InboundDatagramLinkageImplementation {
     func invokeAttachLowerProtocol(
         _ lowerProtocol: BaseOutboundDatagramLinkage,
         remote: Endpoint?,
@@ -186,9 +190,12 @@ public protocol ExternalLowerProtocolLinkage: ExternalProtocolLinkage {
     ) -> NetworkMetrics?
 }
 
+// The outbound counterpart, refining `OutboundDatagramLinkageImplementation` for the same reason.
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol ExternalOutboundDatagramLinkage: ExternalLowerProtocolLinkage {
+public protocol ExternalOutboundDatagramLinkage: ExternalLowerProtocolLinkage,
+    OutboundDatagramLinkageImplementation
+{
     func invokeAttachUpperProtocol(
         _ upperProtocol: BaseInboundDatagramLinkage,
         remote: Endpoint?,
