@@ -27,11 +27,6 @@ internal import Logging
 internal import os
 #endif
 
-#if canImport(SwiftNetwork)
-@_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetwork
-#elseif canImport(Network)
-@_spi(Essentials) @_spi(ProtocolProvider) import Network
-#endif
 
 #if !NETWORK_NO_TESTING_HARNESS
 

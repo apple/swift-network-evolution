@@ -12,13 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if canImport(SwiftNetwork)
 #if !NETWORK_EMBEDDED
-
-@_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetwork
-#elseif canImport(Network)
-@_spi(Essentials) @_spi(ProtocolProvider) import Network
-#endif
 
 #if canImport(Glibc)
 import Glibc
@@ -32,23 +26,23 @@ internal import os
 
 @_spi(TestHarness)
 @available(Network 0.1.0, *)
-public final class TestDatagramFlow: MultiplexedDatagramFlow<TestMultiplexingProtocol, TestDatagramLinkageFamily.Upper>
+public final class TestDatagramFlow: MultiplexedDatagramFlow<TestMultiplexingProtocol, BaseDatagramLinkageFamily.Upper>
 {
     // Hands back a linkage that routes to this flow, so its upper protocol can reach it. The
     // default implementation returns an empty linkage.
-    public override func asLowerLinkage() -> TestOutboundDatagramLinkage {
-        TestOutboundDatagramLinkage(flow: self)
+    public override func asLowerLinkage() -> BaseOutboundDatagramLinkage {
+        BaseOutboundDatagramLinkage(flow: self)
     }
 }
 
 @_spi(TestHarness)
 @available(Network 0.1.0, *)
-public final class TestDatagramPath: MultiplexingDatagramPath<TestMultiplexingProtocol, TestDatagramLinkageFamily.Lower>
+public final class TestDatagramPath: MultiplexingDatagramPath<TestMultiplexingProtocol, BaseDatagramLinkageFamily.Lower>
 {
     // Hands back a linkage that routes to this path, so its lower protocol can deliver events to
     // it. The default implementation returns an empty linkage.
-    public override func asUpperLinkage() -> TestInboundDatagramLinkage {
-        TestInboundDatagramLinkage(path: self)
+    public override func asUpperLinkage() -> BaseInboundDatagramLinkage {
+        BaseInboundDatagramLinkage(path: self)
     }
 }
 
@@ -57,10 +51,10 @@ public final class TestDatagramPath: MultiplexingDatagramPath<TestMultiplexingPr
 public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtocol, ManyToManyOutboundDatagramProtocol,
     DatagramListenerHandler, HomogeneousManyToManyProtocolHandler
 {
-    public typealias UpperProtocol = TestDatagramLinkageFamily.InboundFlow
+    public typealias UpperProtocol = BaseDatagramLinkageFamily.InboundFlow
 
     public var inboundFlowLinkage = UpperProtocol()
-    public var asListener: TestDatagramLinkageFamily.Listener { .init(multiplexing: self) }
+    public var asListener: BaseDatagramLinkageFamily.Listener { .init(multiplexing: self) }
 
     public var delayConnected = false
 

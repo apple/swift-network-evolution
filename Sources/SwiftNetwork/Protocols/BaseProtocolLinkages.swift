@@ -14,11 +14,11 @@
 
 // The linkages the framework's stack is built from.
 //
-// These are concrete: each one names the framework's protocols in an enum and switches on it, so a
-// call from one protocol to the next resolves to a direct call on a known type no matter which
-// module the stack was assembled from. A protocol the framework does not know about appears as the
-// `external` case, holding a class that speaks these same concrete types -- see
-// `ExternalProtocolLinkages.swift`.
+// These are concrete: each one names every protocol that can appear in a stack in an enum and
+// switches on it, so a call from one protocol to the next resolves to a direct call on a known
+// type. There is no extension point: a protocol that wants to take part gets a case of its own,
+// which is why the test harnesses and the test multiplexing protocol are compiled into this module
+// rather than layered on top of it.
 
 #if canImport(Glibc)
 import Glibc
@@ -63,7 +63,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         #endif
         // A protocol from outside the framework, reached through one class call.
         #if !NETWORK_EMBEDDED
-        case external(any ExternalInboundDatagramLinkage)
+        case datagramUpperHarness(DatagramUpperHarness<BaseDatagramLinkageFamily>)
+        case multiplexingPath(TestDatagramPath)
         #endif
     }
 
@@ -90,16 +91,21 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             overrideUpperLinkage = try path.attachLowerProtocol(lowerProtocol)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            // The foreign protocol owns the pairing: it knows which of its own linkages to hand
-            // back, so it completes the attach itself rather than reporting an override here.
-            try external.invokeAttachLowerProtocol(
-                lowerProtocol,
+        case .datagramUpperHarness(let harness):
+            // The harness owns the pairing: it knows which of its own linkages to hand back, so it
+            // completes the attach itself rather than reporting an override here.
+            var harness = harness
+            let overrideUpper = try harness.attachLowerProtocol(lowerProtocol)
+            try lowerProtocol.invokeAttachUpperProtocol(
+                overrideUpper ?? self,
                 remote: remote,
                 local: local,
                 parameters: parameters,
                 path: path
             )
+            return
+        case .multiplexingPath:
+            // The path's lower is bound when the path is created, so there is nothing more to do.
             return
         #endif
         case .unknown: fatalError("Protocol cannot accept attachLowerProtocol call")
@@ -130,7 +136,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             box.instance.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
+        case .datagramUpperHarness(let harness): harness.handleConnectedEvent(for: instance, in: &eventContext)
+        case .multiplexingPath(let path): path.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleConnectedEvent call")
         }
@@ -157,8 +164,10 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             box.instance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        case .datagramUpperHarness(let harness):
+            harness.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        case .multiplexingPath(let path):
+            path.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleDisconnectedEvent call")
         }
@@ -186,8 +195,11 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             protocolInstance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        case .datagramUpperHarness(let harness):
+            harness.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        case .multiplexingPath(let path):
+            var path = path
+            path.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleNetworkProtocolEvent call")
         }
@@ -214,8 +226,11 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             protocolInstance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+        case .datagramUpperHarness(let harness):
+            harness.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+        case .multiplexingPath(let path):
+            var path = path
+            path.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleInboundDataAvailableEvent call")
         }
@@ -242,8 +257,11 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             protocolInstance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+        case .datagramUpperHarness(let harness):
+            harness.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+        case .multiplexingPath(let path):
+            var path = path
+            path.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleOutboundRoomAvailableEvent call")
         }
@@ -258,12 +276,18 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
     }
 
     #if !NETWORK_EMBEDDED
-    /// Wraps a protocol from outside the framework, so framework protocols can reach it without
-    /// knowing what it is.
-    public init(external: any ExternalInboundDatagramLinkage) {
-        self.identifier = external.identifier
+    /// Reaches a test harness acting as the application on top of a stack.
+    public init(harness: DatagramUpperHarness<BaseDatagramLinkageFamily>) {
+        self.identifier = harness.identifier
         self.storage = nil
-        self.protocolType = .external(external)
+        self.protocolType = .datagramUpperHarness(harness)
+    }
+
+    /// Reaches a path on the test multiplexing protocol, so its lower protocol can deliver events.
+    public init(path: TestDatagramPath) {
+        self.identifier = path.identifier
+        self.storage = nil
+        self.protocolType = .multiplexingPath(path)
     }
     #endif
 
@@ -302,7 +326,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         case quicDatagramFlow(ProtocolInstanceBox<QUICDatagramFlow>)
         #endif
         #if !NETWORK_EMBEDDED
-        case external(any ExternalOutboundDatagramLinkage)
+        case datagramLowerHarness(DatagramLowerHarness<BaseDatagramLinkageFamily>)
+        case multiplexedFlow(TestDatagramFlow)
         #endif
     }
 
@@ -354,8 +379,16 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return try external.receiveDatagrams(
+        case .multiplexedFlow(let flow):
+            var flow = flow
+            return try flow.receiveDatagrams(
+                maximumDatagramCount: maximumDatagramCount,
+                for: instance,
+                in: &eventContext
+            )
+        case .datagramLowerHarness(let harness):
+            var harness = harness
+            return try harness.receiveDatagrams(
                 maximumDatagramCount: maximumDatagramCount,
                 for: instance,
                 in: &eventContext
@@ -420,8 +453,16 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return try external.getDatagramsToSend(
+        case .multiplexedFlow(let flow):
+            return try flow.getDatagramsToSend(
+                maximumDatagramCount: maximumDatagramCount,
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
+        case .datagramLowerHarness(let harness):
+            var harness = harness
+            return try harness.getDatagramsToSend(
                 maximumDatagramCount: maximumDatagramCount,
                 minimumDatagramSize: minimumDatagramSize,
                 for: instance,
@@ -457,8 +498,12 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             try protocolInstance.sendDatagrams(datagrams, from: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.sendDatagrams(datagrams, from: instance, in: &eventContext)
+        case .multiplexedFlow(let flow):
+            var flow = flow
+            try flow.sendDatagrams(datagrams, from: instance, in: &eventContext)
+        case .datagramLowerHarness(let harness):
+            var harness = harness
+            try harness.sendDatagrams(datagrams, from: instance, in: &eventContext)
         #endif
         case .unknown:
             datagrams.finalizeAllFramesAsFailed()
@@ -473,7 +518,7 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
     public func protocolIsConnected(in eventContext: inout NetworkContext.EventContext) -> Bool {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external): return external.protocolIsConnected(in: &eventContext)
+        case .datagramLowerHarness, .multiplexedFlow: return identifier.isConnected(in: &eventContext)
         #endif
         default: return identifier.isConnected(in: &eventContext)
         }
@@ -494,7 +539,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         case .quicDatagramFlow(let box): box.instance.connect(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.connect(for: instance, in: &eventContext)
+        case .multiplexedFlow(let flow): flow.connect(for: instance, in: &eventContext)
+        case .datagramLowerHarness(let harness): harness.connect(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept connect call")
         }
@@ -520,7 +566,9 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         case .quicDatagramFlow(let box): box.instance.disconnect(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
+        case .multiplexedFlow(let flow): flow.disconnect(error: error, for: instance, in: &eventContext)
+        case .datagramLowerHarness(let harness):
+            harness.disconnect(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept disconnect call")
         }
@@ -549,8 +597,12 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             try protocolInstance.detach(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.detach(for: instance, in: &eventContext)
+        case .multiplexedFlow(let flow):
+            var flow = flow
+            try flow.detach(for: instance, in: &eventContext)
+        case .datagramLowerHarness(let harness):
+            var harness = harness
+            try harness.detach(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept detach call")
         }
@@ -583,8 +635,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             box.instance.unregisterEventManager(in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.teardown(in: &eventContext)
+        case .multiplexedFlow(let flow): flow.unregisterEventManager(in: &eventContext)
+        case .datagramLowerHarness(let harness): harness.unregisterEventManager(in: &eventContext)
         #endif
         case .unknown: break
         }
@@ -621,7 +673,10 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             box.instance.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        case .multiplexedFlow(let flow):
+            flow.handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        case .datagramLowerHarness(let harness):
+            harness.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleApplicationEvent call")
         }
@@ -645,7 +700,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         case .quicDatagramFlow(let box): return box.instance.getMetadata(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
+        case .multiplexedFlow(let flow): return flow.getMetadata(for: instance, in: &eventContext)
+        case .datagramLowerHarness(let harness): return harness.getMetadata(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept getMetadata call")
         }
@@ -698,8 +754,9 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return external.getMetrics(requestedNetworkMetric: requestedNetworkMetric, for: instance, in: &eventContext)
+        // Neither the harness nor a multiplexed flow holds an instance in the storage, so these
+        // must not fall through to the storage lookup below.
+        case .datagramLowerHarness, .multiplexedFlow: return nil
         #endif
         case .unknown: fatalError("Protocol cannot accept getMetrics call")
         }
@@ -767,8 +824,13 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.invokeAttachUpperProtocol(
+        case .multiplexedFlow:
+            // `attachUpperProtocolToNewFlow` binds the upper when it creates the flow, so there
+            // is nothing more to do here.
+            break
+        case .datagramLowerHarness(let harness):
+            var harness = harness
+            try harness.attachUpperProtocol(
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -789,11 +851,18 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
     }
 
     #if !NETWORK_EMBEDDED
-    /// Wraps a protocol from outside the framework; see `BaseInboundDatagramLinkage.init(external:)`.
-    public init(external: any ExternalOutboundDatagramLinkage) {
-        self.identifier = external.identifier
+    /// Reaches a test harness acting as the bottom of a stack.
+    public init(harness: DatagramLowerHarness<BaseDatagramLinkageFamily>) {
+        self.identifier = harness.identifier
         self.storage = nil
-        self.protocolType = .external(external)
+        self.protocolType = .datagramLowerHarness(harness)
+    }
+
+    /// Reaches a flow on the test multiplexing protocol, so its upper protocol can talk to it.
+    public init(flow: TestDatagramFlow) {
+        self.identifier = flow.identifier
+        self.storage = nil
+        self.protocolType = .multiplexedFlow(flow)
     }
     #endif
 
@@ -825,7 +894,7 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
         case quic(NetworkStateIndex)
         #endif
         #if !NETWORK_EMBEDDED
-        case external(any ExternalDatagramListenerLinkage)
+        case multiplexing(TestMultiplexingProtocol)
         #endif
     }
 
@@ -836,11 +905,11 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
     }
 
     #if !NETWORK_EMBEDDED
-    /// Wraps a protocol from outside the framework; see `BaseInboundDatagramLinkage.init(external:)`.
-    public init(external: any ExternalDatagramListenerLinkage) {
-        self.identifier = external.identifier
+    /// Reaches the test multiplexing protocol acting as a listener.
+    public init(multiplexing instance: TestMultiplexingProtocol) {
+        self.identifier = instance.identifier
         self.storage = nil
-        self.protocolType = .external(external)
+        self.protocolType = .multiplexing(instance)
     }
     #endif
 
@@ -871,8 +940,9 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.invokeAttachUpperProtocol(
+        case .multiplexing(let multiplexing):
+            var multiplexing = multiplexing
+            try multiplexing.attachUpperProtocol(
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -908,10 +978,18 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            // The foreign listener creates the flow and completes the pairing itself.
-            try external.invokeAttachUpperProtocolToNewFlow(
+        case .multiplexing(let multiplexing):
+            // The multiplexing protocol creates the flow and completes the pairing itself.
+            var multiplexing = multiplexing
+            let flowLower = try multiplexing.attachUpperProtocolToNewFlow(
                 upperProtocol,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+            try upperProtocol.invokeAttachLowerProtocol(
+                flowLower,
                 remote: remote,
                 local: local,
                 parameters: parameters,
@@ -945,8 +1023,9 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return try external.invokeAttachUpperProtocolToExistingFlow(
+        case .multiplexing(let multiplexing):
+            var multiplexing = multiplexing
+            return try multiplexing.attachUpperProtocolToExistingFlow(
                 upperProtocol,
                 existingFlowInstance: existingFlowInstance
             )
@@ -958,7 +1037,7 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
     public func protocolIsConnected(in eventContext: inout NetworkContext.EventContext) -> Bool {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external): return external.protocolIsConnected(in: &eventContext)
+        case .multiplexing(let multiplexing): return multiplexing.isConnected(in: &eventContext)
         #endif
         default: return identifier.isConnected(in: &eventContext)
         }
@@ -970,7 +1049,7 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
         case .quic(let index): storage!.quicInstances[index].connect(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.connect(for: instance, in: &eventContext)
+        case .multiplexing(let multiplexing): multiplexing.connect(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept connect call")
         }
@@ -986,7 +1065,8 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
         case .quic(let index): storage!.quicInstances[index].disconnect(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
+        case .multiplexing(let multiplexing):
+            multiplexing.disconnect(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept disconnect call")
         }
@@ -1001,7 +1081,9 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
         case .quic(let index): try storage!.quicInstances[index].detach(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): try external.detach(for: instance, in: &eventContext)
+        case .multiplexing(let multiplexing):
+            var multiplexing = multiplexing
+            try multiplexing.detach(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept detach call")
         }
@@ -1016,7 +1098,8 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
             storage!.quicInstances.remove(index: index)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.teardown(in: &eventContext)
+        // The multiplexing protocol outlives its listener linkage; its owner tears it down.
+        case .multiplexing: break
         #endif
         case .unknown: break
         }
@@ -1033,7 +1116,8 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
             storage!.quicInstances[index].handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        case .multiplexing(let multiplexing):
+            multiplexing.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleApplicationEvent call")
         }
@@ -1048,7 +1132,7 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
         case .quic(let index): return storage!.quicInstances[index].getMetadata(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
+        case .multiplexing(let multiplexing): return multiplexing.getMetadata(for: instance, in: &eventContext)
         #endif
         case .unknown: return nil
         }
@@ -1069,8 +1153,7 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return external.getMetrics(requestedNetworkMetric: requestedNetworkMetric, for: instance, in: &eventContext)
+        case .multiplexing: return nil
         #endif
         case .unknown: return nil
         }
@@ -1095,7 +1178,7 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     enum ProtocolType {
         case unknown
         #if !NETWORK_EMBEDDED
-        case external(any ExternalInboundDatagramFlowLinkage)
+        case newDatagramFlowHarness(NewDatagramFlowHarness<BaseDatagramLinkageFamily>)
         #endif
     }
 
@@ -1106,11 +1189,11 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     }
 
     #if !NETWORK_EMBEDDED
-    /// Wraps a protocol from outside the framework; see `BaseInboundDatagramLinkage.init(external:)`.
-    public init(external: any ExternalInboundDatagramFlowLinkage) {
-        self.identifier = external.identifier
+    /// Reaches a test harness accepting new inbound datagram flows.
+    public init(harness: NewDatagramFlowHarness<BaseDatagramLinkageFamily>) {
+        self.identifier = harness.identifier
         self.storage = nil
-        self.protocolType = .external(external)
+        self.protocolType = .newDatagramFlowHarness(harness)
     }
     #endif
 
@@ -1132,9 +1215,11 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     ) throws(NetworkError) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.invokeAttachLowerProtocol(
-                lowerProtocol,
+        case .newDatagramFlowHarness(let harness):
+            _ = try harness.attachLowerProtocol(lowerProtocol)
+            // The listener binds the other direction itself, so this is the ordinary pairing call.
+            try lowerProtocol.invokeAttachUpperProtocol(
+                self,
                 remote: remote,
                 local: local,
                 parameters: parameters,
@@ -1158,7 +1243,7 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
+        case .newDatagramFlowHarness(let harness): harness.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleConnectedEvent call")
         }
@@ -1171,7 +1256,8 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        case .newDatagramFlowHarness(let harness):
+            harness.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleDisconnectedEvent call")
         }
@@ -1184,8 +1270,8 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        case .newDatagramFlowHarness(let harness):
+            harness.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleNetworkProtocolEvent call")
         }
@@ -1199,8 +1285,8 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleNewInboundFlowEvent(
+        case .newDatagramFlowHarness(let harness):
+            harness.handleNewInboundFlowEvent(
                 flowInstance: flowInstance,
                 flowMetadata: flowMetadata,
                 for: instance,
@@ -1233,7 +1319,7 @@ public struct BaseDatagramMultipathLinkage: DatagramMultipathLinkage {
         case quic(NetworkStateIndex)
         #endif
         #if !NETWORK_EMBEDDED
-        case external(any ExternalDatagramMultipathLinkage)
+        case multiplexing(TestMultiplexingProtocol)
         #endif
     }
 
@@ -1246,11 +1332,11 @@ public struct BaseDatagramMultipathLinkage: DatagramMultipathLinkage {
     }
 
     #if !NETWORK_EMBEDDED
-    /// Wraps a protocol from outside the framework; see `BaseInboundDatagramLinkage.init(external:)`.
-    public init(external: any ExternalDatagramMultipathLinkage) {
-        self.identifier = external.identifier
+    /// Reaches the test multiplexing protocol as the owner of multiple paths.
+    public init(multiplexing instance: TestMultiplexingProtocol) {
+        self.identifier = instance.identifier
         self.storage = nil
-        self.protocolType = .external(external)
+        self.protocolType = .multiplexing(instance)
     }
     #endif
 
@@ -1280,16 +1366,21 @@ public struct BaseDatagramMultipathLinkage: DatagramMultipathLinkage {
         path: PathProperties?
     ) throws(NetworkError) {
         #if !NETWORK_EMBEDDED
-        // A foreign protocol enters its own stack, so hand the whole call over before acquiring
-        // anything here.
-        if case .external(let external) = protocolType {
-            try external.invokeAttachLowerProtocolForNewPath(
-                lowerProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
+        // The multiplexing protocol enters its own stack, so hand the whole call over before
+        // acquiring anything here.
+        if case .multiplexing(let multiplexing) = protocolType {
+            var multiplexing = multiplexing
+            // `attachLowerProtocolForNewPath` binds both directions before it announces the path.
+            _ = try multiplexing.fromExternal { eventContext throws(NetworkError) in
+                try multiplexing.attachLowerProtocolForNewPath(
+                    lowerProtocol,
+                    remote: remote,
+                    local: local,
+                    parameters: parameters,
+                    path: path,
+                    in: &eventContext
+                )
+            }
             return
         }
         #endif
@@ -1331,7 +1422,7 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
         )
         #endif
         #if !NETWORK_EMBEDDED
-        case external(any ExternalInboundStreamLinkage)
+        case streamUpperHarness(StreamUpperHarness<BaseStreamLinkageFamily>)
         #endif
     }
 
@@ -1353,9 +1444,11 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             overrideUpperLinkage = try protocolInstance.attachLowerProtocol(lowerProtocol)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.invokeAttachLowerProtocol(
-                lowerProtocol,
+        case .streamUpperHarness(let harness):
+            var harness = harness
+            let overrideUpper = try harness.attachLowerProtocol(lowerProtocol)
+            try lowerProtocol.invokeAttachUpperProtocol(
+                overrideUpper ?? self,
                 remote: remote,
                 local: local,
                 parameters: parameters,
@@ -1388,7 +1481,7 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
+        case .streamUpperHarness(let harness): harness.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleConnectedEvent call")
         }
@@ -1408,7 +1501,8 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        case .streamUpperHarness(let harness):
+            harness.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleDisconnectedEvent call")
         }
@@ -1428,8 +1522,8 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        case .streamUpperHarness(let harness):
+            harness.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleNetworkProtocolEvent call")
         }
@@ -1448,7 +1542,8 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+        case .streamUpperHarness(let harness):
+            harness.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleInboundDataAvailableEvent call")
         }
@@ -1467,7 +1562,8 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+        case .streamUpperHarness(let harness):
+            harness.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleOutboundRoomAvailableEvent call")
         }
@@ -1487,7 +1583,8 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
+        case .streamUpperHarness(let harness):
+            harness.handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleInboundAbortedEvent call")
         }
@@ -1507,8 +1604,8 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleOutboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleOutboundAbortedEvent(error: error, for: instance, in: &eventContext)
+        case .streamUpperHarness(let harness):
+            harness.handleOutboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleOutboundAbortedEvent call")
         }
@@ -1523,11 +1620,11 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
     }
 
     #if !NETWORK_EMBEDDED
-    /// Wraps a protocol from outside the framework; see `BaseInboundDatagramLinkage.init(external:)`.
-    public init(external: any ExternalInboundStreamLinkage) {
-        self.identifier = external.identifier
+    /// Reaches a test harness acting as the application on top of a stream stack.
+    public init(harness: StreamUpperHarness<BaseStreamLinkageFamily>) {
+        self.identifier = harness.identifier
         self.storage = nil
-        self.protocolType = .external(external)
+        self.protocolType = .streamUpperHarness(harness)
     }
     #endif
 
@@ -1572,7 +1669,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
         )
         #endif
         #if !NETWORK_EMBEDDED
-        case external(any ExternalOutboundStreamLinkage)
+        case streamLowerHarness(StreamLowerHarness<BaseStreamLinkageFamily>)
         #endif
     }
 
@@ -1634,8 +1731,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return try external.receiveStreamData(
+        case .streamLowerHarness(let harness):
+            var harness = harness
+            return try harness.receiveStreamData(
                 minimumBytes: minimumBytes,
                 maximumBytes: maximumBytes,
                 for: instance,
@@ -1684,8 +1782,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return try external.getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
+        case .streamLowerHarness(let harness):
+            var harness = harness
+            return try harness.getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
         #endif
         case .unknown:
             return 0
@@ -1719,8 +1818,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             try protocolInstance.sendStreamData(streamData, from: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.sendStreamData(streamData, from: instance, in: &eventContext)
+        case .streamLowerHarness(let harness):
+            var harness = harness
+            try harness.sendStreamData(streamData, from: instance, in: &eventContext)
         #endif
         case .unknown:
             var streamData = streamData
@@ -1741,8 +1841,11 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             try protocolInstance.sendEarlyStreamData(streamData, from: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.sendEarlyStreamData(streamData, from: instance, in: &eventContext)
+        case .streamLowerHarness:
+            // The harness has no early-data path, matching what this linkage reports for every
+            // other non-QUIC protocol.
+            streamData.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(ENOTSUP)
         #endif
         default:
             // Only QUIC supports sending data before the handshake completes.
@@ -1763,8 +1866,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             box.instance.abortInbound(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.abortInbound(error: error, for: instance, in: &eventContext)
+        case .streamLowerHarness: throw NetworkError.posix(ENOTSUP)
         #endif
         default:
             throw NetworkError.posix(ENOTSUP)
@@ -1782,8 +1884,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             box.instance.abortOutbound(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.abortOutbound(error: error, for: instance, in: &eventContext)
+        case .streamLowerHarness: throw NetworkError.posix(ENOTSUP)
         #endif
         default:
             throw NetworkError.posix(ENOTSUP)
@@ -1797,7 +1898,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
     public func protocolIsConnected(in eventContext: inout NetworkContext.EventContext) -> Bool {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external): return external.protocolIsConnected(in: &eventContext)
+        case .streamLowerHarness: return identifier.isConnected(in: &eventContext)
         #endif
         default: return identifier.isConnected(in: &eventContext)
         }
@@ -1820,7 +1921,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             protocolInstance.connect(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.connect(for: instance, in: &eventContext)
+        case .streamLowerHarness(let harness): harness.connect(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept connect call")
         }
@@ -1851,7 +1952,8 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             protocolInstance.disconnect(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
+        case .streamLowerHarness(let harness):
+            harness.disconnect(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept disconnect call")
         }
@@ -1883,8 +1985,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             try protocolInstance.detach(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.detach(for: instance, in: &eventContext)
+        case .streamLowerHarness(let harness):
+            var harness = harness
+            try harness.detach(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept detach call")
         }
@@ -1915,8 +2018,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             box.instance.unregisterEventManager(in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.teardown(in: &eventContext)
+        case .streamLowerHarness(let harness): harness.unregisterEventManager(in: &eventContext)
         #endif
         case .unknown: break
         }
@@ -1948,7 +2050,8 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             protocolInstance.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        case .streamLowerHarness(let harness):
+            harness.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleApplicationEvent call")
         }
@@ -1977,7 +2080,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             return box.instance.getMetadata(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
+        case .streamLowerHarness(let harness): return harness.getMetadata(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept getMetadata call")
         }
@@ -2032,8 +2135,8 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return external.getMetrics(requestedNetworkMetric: requestedNetworkMetric, for: instance, in: &eventContext)
+        // The harness holds no instance in the storage, so it must not fall through.
+        case .streamLowerHarness: return nil
         #endif
         case .unknown: fatalError("Protocol cannot accept getMetrics call")
         }
@@ -2104,8 +2207,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.invokeAttachUpperProtocol(
+        case .streamLowerHarness(let harness):
+            var harness = harness
+            try harness.attachUpperProtocol(
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -2126,11 +2230,11 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
     }
 
     #if !NETWORK_EMBEDDED
-    /// Wraps a protocol from outside the framework; see `BaseInboundDatagramLinkage.init(external:)`.
-    public init(external: any ExternalOutboundStreamLinkage) {
-        self.identifier = external.identifier
+    /// Reaches a test harness acting as the bottom of a stream stack.
+    public init(harness: StreamLowerHarness<BaseStreamLinkageFamily>) {
+        self.identifier = harness.identifier
         self.storage = nil
-        self.protocolType = .external(external)
+        self.protocolType = .streamLowerHarness(harness)
     }
     #endif
 
@@ -2161,9 +2265,6 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         #if !NETWORK_NO_SWIFT_QUIC
         case quic(NetworkStateIndex)
         #endif
-        #if !NETWORK_EMBEDDED
-        case external(any ExternalStreamListenerLinkage)
-        #endif
     }
 
     public typealias PairedUpperLinkage = BaseInboundStreamFlowLinkage
@@ -2174,14 +2275,6 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         self.protocolType = .unknown
     }
 
-    #if !NETWORK_EMBEDDED
-    /// Wraps a protocol from outside the framework; see `BaseInboundDatagramLinkage.init(external:)`.
-    public init(external: any ExternalStreamListenerLinkage) {
-        self.identifier = external.identifier
-        self.storage = nil
-        self.protocolType = .external(external)
-    }
-    #endif
 
     init(identifier: InstanceIdentifier, storage: BaseNetworkProtocolStorage, protocolType: ProtocolType) {
         self.identifier = identifier
@@ -2207,17 +2300,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
                 path: path
             )
         #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.invokeAttachUpperProtocol(
-                upperProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-        #endif
-        case .unknown: fatalError("Protocol cannot accept attachUpperProtocol call")
+        default: fatalError("Protocol cannot accept attachUpperProtocol call")
         }
     }
 
@@ -2244,18 +2327,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
                 path: path
             )
         #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.invokeAttachUpperProtocolToNewFlow(
-                upperProtocol,
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-            return
-        #endif
-        case .unknown: fatalError("Protocol cannot accept invokeAttachUpperProtocolToNewFlow call")
+        default: fatalError("Protocol cannot accept invokeAttachUpperProtocolToNewFlow call")
         }
         #if !NETWORK_NO_SWIFT_QUIC
         try upperProtocol.invokeAttachLowerProtocol(
@@ -2280,22 +2352,12 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
                 existingFlowInstance: existingFlowInstance
             )
         #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return try external.invokeAttachUpperProtocolToExistingFlow(
-                upperProtocol,
-                existingFlowInstance: existingFlowInstance
-            )
-        #endif
-        case .unknown: fatalError("Protocol cannot accept invokeAttachUpperProtocolToExistingFlow call")
+        default: fatalError("Protocol cannot accept invokeAttachUpperProtocolToExistingFlow call")
         }
     }
 
     public func protocolIsConnected(in eventContext: inout NetworkContext.EventContext) -> Bool {
         switch protocolType {
-        #if !NETWORK_EMBEDDED
-        case .external(let external): return external.protocolIsConnected(in: &eventContext)
-        #endif
         default: return identifier.isConnected(in: &eventContext)
         }
     }
@@ -2305,10 +2367,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index): storage!.quicInstances[index].connect(for: instance, in: &eventContext)
         #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): external.connect(for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept connect call")
+        default: fatalError("Protocol cannot accept connect call")
         }
     }
 
@@ -2321,10 +2380,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index): storage!.quicInstances[index].disconnect(error: error, for: instance, in: &eventContext)
         #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept disconnect call")
+        default: fatalError("Protocol cannot accept disconnect call")
         }
     }
 
@@ -2336,10 +2392,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index): try storage!.quicInstances[index].detach(for: instance, in: &eventContext)
         #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): try external.detach(for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept detach call")
+        default: fatalError("Protocol cannot accept detach call")
         }
     }
 
@@ -2350,9 +2403,6 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
             guard storage!.quicInstances[index].isFullyDetached else { return }
             storage!.quicInstances[index].unregisterEventManager(in: &eventContext)
             storage!.quicInstances.remove(index: index)
-        #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): external.teardown(in: &eventContext)
         #endif
         case .unknown: break
         }
@@ -2368,10 +2418,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         case .quic(let index):
             storage!.quicInstances[index].handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
-        #endif
-        case .unknown: fatalError("Protocol cannot accept handleApplicationEvent call")
+        default: fatalError("Protocol cannot accept handleApplicationEvent call")
         }
     }
 
@@ -2383,10 +2430,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index): return storage!.quicInstances[index].getMetadata(for: instance, in: &eventContext)
         #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
-        #endif
-        case .unknown: return nil
+        default: return nil
         }
     }
 
@@ -2404,11 +2448,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
                 in: &eventContext
             )
         #endif
-        #if !NETWORK_EMBEDDED
-        case .external(let external):
-            return external.getMetrics(requestedNetworkMetric: requestedNetworkMetric, for: instance, in: &eventContext)
-        #endif
-        case .unknown: return nil
+        default: return nil
         }
     }
 
@@ -2431,7 +2471,7 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     enum ProtocolType {
         case unknown
         #if !NETWORK_EMBEDDED
-        case external(any ExternalInboundStreamFlowLinkage)
+        case newStreamFlowHarness(NewStreamFlowHarness<BaseStreamLinkageFamily>)
         #endif
     }
 
@@ -2445,11 +2485,11 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     }
 
     #if !NETWORK_EMBEDDED
-    /// Wraps a protocol from outside the framework; see `BaseInboundDatagramLinkage.init(external:)`.
-    public init(external: any ExternalInboundStreamFlowLinkage) {
-        self.identifier = external.identifier
+    /// Reaches a test harness accepting new inbound stream flows.
+    public init(harness: NewStreamFlowHarness<BaseStreamLinkageFamily>) {
+        self.identifier = harness.identifier
         self.storage = nil
-        self.protocolType = .external(external)
+        self.protocolType = .newStreamFlowHarness(harness)
     }
     #endif
 
@@ -2468,9 +2508,11 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     ) throws(NetworkError) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            try external.invokeAttachLowerProtocol(
-                lowerProtocol,
+        case .newStreamFlowHarness(let harness):
+            _ = try harness.attachLowerProtocol(lowerProtocol)
+            // The listener binds the other direction itself, so this is the ordinary pairing call.
+            try lowerProtocol.invokeAttachUpperProtocol(
+                self,
                 remote: remote,
                 local: local,
                 parameters: parameters,
@@ -2494,7 +2536,7 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
+        case .newStreamFlowHarness(let harness): harness.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleConnectedEvent call")
         }
@@ -2507,7 +2549,8 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external): external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        case .newStreamFlowHarness(let harness):
+            harness.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleDisconnectedEvent call")
         }
@@ -2520,8 +2563,8 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        case .newStreamFlowHarness(let harness):
+            harness.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleNetworkProtocolEvent call")
         }
@@ -2535,8 +2578,8 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
-        case .external(let external):
-            external.handleNewInboundFlowEvent(
+        case .newStreamFlowHarness(let harness):
+            harness.handleNewInboundFlowEvent(
                 flowInstance: flowInstance,
                 flowMetadata: flowMetadata,
                 for: instance,
@@ -2569,10 +2612,8 @@ typealias SwiftTLSRecordStreamInstance = SwiftTLSProtocol.SwiftTLSRecordInstance
 >
 
 // The record-layer TLS instance sits between two framework protocols, so both of its neighbours
-// reach it through an ordinary base linkage. It cannot take the `external` extension point the
-// other internal protocols use, because the stacks that need it -- RTKit and the exclaves -- are
-// embedded builds, where `any` existentials do not exist. So it has its own case in the base
-// stream linkages instead, and these are the accessors that name it.
+// reach it through an ordinary base linkage. It has its own case in the base stream linkages, and
+// these are the accessors that name it.
 @available(Network 0.1.0, *)
 extension SwiftTLSRecordStreamInstance {
     /// The linkage the protocol below holds in order to reach this one.
@@ -2622,6 +2663,11 @@ open class BaseNetworkProtocolStorage {
     public init(context: NetworkContext) {
         self.context = context
     }
+
+    #if !NETWORK_EMBEDDED
+    /// The test harnesses this storage is keeping alive; see `HarnessStorage.swift`.
+    var heldHarnesses = HeldHarnesses()
+    #endif
 
     // MARK: - Datagram Protocol Instances
 
