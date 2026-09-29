@@ -158,6 +158,7 @@ class QUICTestHarness {
         serverLinkDelay: NetworkDuration = .zero,
         clientDrops: DatagramDrops? = nil,
         serverDrops: DatagramDrops? = nil,
+        waitForServerConnected: Bool = true,  // false: return once the client alone is connected
         timeout: TimeInterval = 5.0,
         clientOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
@@ -438,7 +439,7 @@ class QUICTestHarness {
             serverHarness.start { connected in
                 if connected {
                     serverConnected = true
-                    if expectHandshakeError == nil {
+                    if expectHandshakeError == nil, waitForServerConnected {
                         handshakeExpectation.fulfill()  // server transitions to connected last, wait for it
                     }
                 }
@@ -446,6 +447,9 @@ class QUICTestHarness {
             clientHarness.start { connected in
                 if connected {
                     clientConnected = true
+                    if expectHandshakeError == nil, !waitForServerConnected {
+                        handshakeExpectation.fulfill()
+                    }
                 }
             }
         }
@@ -465,9 +469,9 @@ class QUICTestHarness {
         }
 
         XCTAssertTrue(clientConnected, "QUIC client failed to become connected")
-        XCTAssertTrue(serverConnected, "QUIC server failed to become connected")
+        XCTAssertTrue(serverConnected || !waitForServerConnected, "QUIC server failed to become connected")
         XCTAssertNotNil(state, "Result cannot be nil here for the tests to proceed")
-        guard clientConnected, serverConnected else {
+        guard clientConnected, serverConnected || !waitForServerConnected else {
             XCTFail("This test cannot continue without both client and server being connected")
             throw NetworkError.posix(EINVAL)
         }
@@ -1056,6 +1060,7 @@ class QUICTestHarness {
         serverLinkDelay: NetworkDuration = .zero,
         clientDrops: DatagramDrops? = nil,
         serverDrops: DatagramDrops? = nil,
+        waitForServerConnected: Bool = true,
         clientReadChunkSize: Int = Int.max,
         timeout: TimeInterval = 5.0,
         applicationError: UInt64? = nil,
@@ -1094,6 +1099,7 @@ class QUICTestHarness {
                 serverLinkDelay: serverLinkDelay,
                 clientDrops: clientDrops,
                 serverDrops: serverDrops,
+                waitForServerConnected: waitForServerConnected,
                 timeout: timeout,
                 clientOptions: clientOptions,
                 serverOptions: serverOptions,
