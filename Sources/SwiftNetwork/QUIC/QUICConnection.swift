@@ -1833,6 +1833,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             )
             if !continueProcessing {
                 frame.finalize(success: true)
+                // close(with:) only records the error while deferClosing is set, so close here
+                if closeError != nil {
+                    close(in: &eventContext)
+                }
                 break
             }
 
