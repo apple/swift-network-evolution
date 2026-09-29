@@ -1841,11 +1841,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 packetParser: &packetParser,
                 in: &eventContext
             )
-            if !continueProcessing {
-                frame.finalize(success: true)
-                break
-            }
 
+            // Check the errors first and close the connection in that case.
             if closeError != nil || state.isTerminal {
                 // Besides a locally-detected error (closeError), the peer may
                 // have gracefully closed the connection (CONNECTION_CLOSE
@@ -1857,6 +1854,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 // datagram to that torn-down state.
                 frame.finalize(success: false)
                 close(in: &eventContext)
+                return
+            }
+
+            if !continueProcessing {
+                frame.finalize(success: true)
                 return
             }
 
