@@ -156,8 +156,7 @@ public final class QUICBenchmarkUtility {
         logger: LoggingHandle
     ) throws -> QUICClientEndpointResult? {
         // Set context on parameters to activate the context before asyncing
-        var parameters = Parameters()
-        parameters.context = context
+        var parameters = Parameters(context: context)
         parameters.isServer = false
 
         parameters.defaultStack.transport = .quic(options)
@@ -226,8 +225,7 @@ public final class QUICBenchmarkUtility {
         remoteEndpoint: Endpoint,
         logger: LoggingHandle
     ) throws -> QUICServerEndpointResult? {
-        var serverParameters = Parameters()
-        serverParameters.context = context
+        var serverParameters = Parameters(context: context)
         serverParameters.defaultStack.transport = .quic(options)
         serverParameters.isServer = true
         let serverPath = PathProperties(parameters: serverParameters)
