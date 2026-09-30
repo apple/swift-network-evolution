@@ -381,7 +381,7 @@ final class QUICStreamIDTests: XCTestCase {
 
     func testQUICStreamIDPendingBidirectionalStreams() {
         var streamsState = QUICStreamIDState(.bidirectional)
-        let connection = QUICConnection(context: NetworkContext.implicitContext)
+        let connection = QUICConnection(context: quicInlineTestContext)
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let logPrefixer = LogPrefixer("[testQUICStreamIDPendingStreams]")
         connection.context.onQueue {

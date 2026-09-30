@@ -2211,7 +2211,7 @@ extension NetworkChannel where ApplicationProtocol: MessageProtocol {
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 extension NetworkChannel where ApplicationProtocol: StreamProtocol {
-    public struct StreamMessage {
+    public struct StreamMessage: Sendable {
         public static func message(content: [UInt8]? = nil, isComplete: Bool = false) -> StreamMessage {
             StreamMessage(content: content, isComplete: isComplete)
         }
@@ -2318,7 +2318,7 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
-    public struct DatagramMessage {
+    public struct DatagramMessage: Sendable {
         public static func message(content: [UInt8]? = nil) -> DatagramMessage {
             DatagramMessage(content: content)
         }

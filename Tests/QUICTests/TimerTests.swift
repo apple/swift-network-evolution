@@ -42,14 +42,14 @@ final class TimerTests: XCTestCase {
             description: "one",
             fromNow: .milliseconds(1000),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
         timer.timerFired(
             at: .init(milliseconds: 1000),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(1)),
@@ -64,7 +64,7 @@ final class TimerTests: XCTestCase {
         let oneId = timer.insert(
             description: "one-reschedule",
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
@@ -73,12 +73,12 @@ final class TimerTests: XCTestCase {
             identifier: oneId,
             fromNow: .milliseconds(1000),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
         timer.timerFired(
             at: .init(milliseconds: 1000),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(1)),
@@ -94,7 +94,7 @@ final class TimerTests: XCTestCase {
             description: "one",
             fromNow: .milliseconds(1000),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
@@ -102,14 +102,14 @@ final class TimerTests: XCTestCase {
             description: "two",
             fromNow: .milliseconds(1000),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
         timer.timerFired(
             at: .init(milliseconds: 1000),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertNotEqual(oneId, twoId)
         XCTAssertEqual(
@@ -131,7 +131,7 @@ final class TimerTests: XCTestCase {
             description: "one",
             fromNow: .milliseconds(2000),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
@@ -140,19 +140,19 @@ final class TimerTests: XCTestCase {
             description: "two",
             fromNow: .milliseconds(1000),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1000))
         timer.timerFired(
             at: .init(milliseconds: 1000),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 2000))
         timer.timerFired(
             at: .init(milliseconds: 2000),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertNotEqual(oneId, twoId)
         XCTAssertEqual(
@@ -174,7 +174,7 @@ final class TimerTests: XCTestCase {
             description: "one",
             fromNow: .milliseconds(1000),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
@@ -183,19 +183,19 @@ final class TimerTests: XCTestCase {
             description: "two",
             fromNow: .milliseconds(1000),
             timerNow: .init(milliseconds: 1500),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 1500))
         timer.timerFired(
             at: .init(milliseconds: 1500),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertEqual(timer.nextDeadline, .init(milliseconds: 2500))
         timer.timerFired(
             at: .init(milliseconds: 2500),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertNotEqual(oneId, twoId)
         XCTAssertEqual(
@@ -218,7 +218,7 @@ final class TimerTests: XCTestCase {
             description: "one",
             fromNow: .microseconds(1_000_000),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
@@ -229,7 +229,7 @@ final class TimerTests: XCTestCase {
             description: "two",
             fromNow: .microseconds(1_000_000),
             timerNow: .init(microseconds: 2),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
@@ -238,7 +238,7 @@ final class TimerTests: XCTestCase {
         XCTAssertEqual(timer.nextDeadline, .init(microseconds: 1_000_000))
         timer.timerFired(
             at: .init(microseconds: 1_000_000),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertNotEqual(oneId, twoId)
         XCTAssertEqual(
@@ -266,7 +266,7 @@ final class TimerTests: XCTestCase {
             description: "A",
             fromNow: .seconds(2),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             XCTFail("A was disabled and must not fire")
         }
@@ -277,7 +277,7 @@ final class TimerTests: XCTestCase {
             description: "B",
             fromNow: .seconds(2) + .microseconds(999),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
@@ -290,7 +290,7 @@ final class TimerTests: XCTestCase {
             identifier: idA,
             fromNow: .zero,
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertEqual(timer.nextDeadline, .init(.seconds(2)))
 
@@ -299,7 +299,7 @@ final class TimerTests: XCTestCase {
         // deadline (2s + 999us), so B doesn't fire and the spurious path runs.
         timer.timerFired(
             at: .init(.seconds(2) - .microseconds(500)),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
 
         // timerFired needs to rearm the wakeup.
@@ -308,7 +308,7 @@ final class TimerTests: XCTestCase {
         // Make sure B fires.
         timer.timerFired(
             at: .init(.seconds(2) + .microseconds(999)),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(1)),
@@ -327,7 +327,7 @@ final class TimerTests: XCTestCase {
             description: "A",
             fromNow: .seconds(2),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             XCTFail("A was cancelled and must not fire")
         }
@@ -338,7 +338,7 @@ final class TimerTests: XCTestCase {
             identifier: idA,
             fromNow: .zero,
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
 
         // Schedule a new timer.
@@ -346,14 +346,14 @@ final class TimerTests: XCTestCase {
             description: "B",
             fromNow: .seconds(2) + .microseconds(500),
             timerNow: .zero,
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         ) { _, _ in
             semaphore.signal()
         }
         XCTAssertEqual(timer.nextDeadline, .init(.seconds(2) + .microseconds(500)))
         timer.timerFired(
             at: .init(.seconds(2) + .microseconds(500)),
-            in: &NetworkContext.implicitContext.eventContext
+            in: &quicInlineTestContext.enteredEventContext
         )
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(1)),

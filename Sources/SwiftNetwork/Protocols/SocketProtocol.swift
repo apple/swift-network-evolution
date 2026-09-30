@@ -254,7 +254,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
         sourceFDRefCount += 1
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: context.queue)
         source.setEventHandler {
-            self.handleSocketReadEvent()
+            self.context.runOnContext { self.handleSocketReadEvent() }
         }
         source.setCancelHandler {
             self.releaseSharedSourceFD(fd)
@@ -311,8 +311,10 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
         sourceFDRefCount += 1
         let source = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: context.queue)
         source.setEventHandler {
-            self.serviceWrites()
-            self.triggerOutboundRoomAvailable()
+            self.context.runOnContext {
+                self.serviceWrites()
+                self.triggerOutboundRoomAvailable()
+            }
         }
         source.setCancelHandler {
             self.releaseSharedSourceFD(fd)
@@ -723,7 +725,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         sourceFDRefCount += 1
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: context.queue)
         source.setEventHandler {
-            self.handleSocketReadEvent()
+            self.context.runOnContext { self.handleSocketReadEvent() }
         }
         source.setCancelHandler {
             self.releaseSharedSourceFD(fd)
@@ -847,7 +849,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         sourceFDRefCount += 1
         let source = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: context.queue)
         source.setEventHandler {
-            self.handleSocketWriteEvent()
+            self.context.runOnContext { self.handleSocketWriteEvent() }
         }
         source.setCancelHandler {
             self.releaseSharedSourceFD(fd)

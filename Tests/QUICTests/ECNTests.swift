@@ -39,7 +39,7 @@ final class ECNTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        conn = QUICConnection(context: NetworkContext.implicitContext)
+        conn = QUICConnection(context: quicInlineTestContext)
         stats = Statistics()
     }
 
@@ -425,7 +425,7 @@ final class ECNValidateTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        conn = QUICConnection(context: NetworkContext.implicitContext)
+        conn = QUICConnection(context: quicInlineTestContext)
         stats = Statistics()
     }
 
@@ -864,7 +864,7 @@ final class ECNValidateTests: XCTestCase {
     }
 
     func testValidateAckReturnsCorrectCECount() async throws {
-        let connection = QUICConnection(context: NetworkContext.implicitContext)
+        let connection = QUICConnection(context: quicInlineTestContext)
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let ecn = ECN(
             echoEnabled: true,
@@ -903,7 +903,7 @@ final class ECNValidateTests: XCTestCase {
     }
 
     func testValidateAckLargestCECount() throws {
-        let context = NetworkContext(identifier: #function)
+        let context = makeInlineTestContext(#function)
         context.activate()
 
         let connection = QUICConnection(context: context)

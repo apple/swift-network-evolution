@@ -109,7 +109,7 @@ public struct UDPProtocol: NetworkProtocol {
 
         private(set) var context: NetworkContext
         init(context: NetworkContext) {
-            self.init(context: context, in: &context.eventContext)
+            self.init(context: context, in: &context.enteredEventContext)
         }
 
         init(context: NetworkContext, in eventContext: inout NetworkContext.EventContext) {

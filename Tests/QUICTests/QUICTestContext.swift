@@ -80,4 +80,36 @@ extension NetworkContext {
     }
 }
 
+/// A scheduler that runs everything inline on the calling thread.
+///
+/// Most QUIC tests are single-threaded: they build protocol state and drive it directly rather
+/// than handing work to a queue. An inline scheduler makes that honest -- the calling thread
+/// really is this scheduler's execution, so `runningInScheduler` is true and reaching the event
+/// context passes its check rather than needing a bypass. Timers are not armed; the tests that
+/// care drive `QUICTimer` by hand with an explicit `timerNow`.
+@available(Network 0.1.0, *)
+final class InlineScheduler: NetworkContext.Scheduler {
+    func runImmediate(_ task: @escaping (() -> Void)) {
+        task()
+    }
+    func schedule(_ task: @escaping (() -> Void), after delay: NetworkDuration, reference: TimerReference) {}
+    func unschedule(reference: TimerReference) {}
+    var runningInScheduler: Bool { true }
+    var now: NetworkClock.Instant { .systemNow }
+    var nowAbsolute: NetworkClock.Instant { .systemNowAbsolute }
+}
+
+/// The context the single-threaded tests use in place of `NetworkContext.implicitContext`.
+///
+/// `implicitContext` is backed by the default Dispatch scheduler, so a test thread genuinely is
+/// not on it and reaching the event context from there traps.
+@available(Network 0.1.0, *)
+let quicInlineTestContext = NetworkContext(identifier: "QUICTests", externalScheduler: InlineScheduler())
+
+/// A fresh inline-scheduled context, for tests that want their own rather than the shared one.
+@available(Network 0.1.0, *)
+func makeInlineTestContext(_ identifier: String = "QUICTests") -> NetworkContext {
+    NetworkContext(identifier: identifier, externalScheduler: InlineScheduler())
+}
+
 #endif

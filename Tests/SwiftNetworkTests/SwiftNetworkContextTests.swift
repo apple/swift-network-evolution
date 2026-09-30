@@ -152,7 +152,7 @@ final class SwiftNetworkContextTests: NetTestCase {
 
     /// A scheduler whose clock a test moves by hand.
     /// **NOTE:** Arms nothing: the tests that use it assert on the time the context reports, not on anything firing.
-    private final class AdvancingScheduler: NetworkContext.Scheduler {
+    private final class AdvancingScheduler: NetworkContext.Scheduler, @unchecked Sendable {
         /// The two clocks start apart, so a context that reports one in place of the other fails
         /// the equality check instead of matching by coincidence.
         private(set) var now = NetworkClock.Instant(milliseconds: 1000)
@@ -178,7 +178,7 @@ final class SwiftNetworkContextTests: NetTestCase {
 
     /// Records what it was asked to schedule instead of arming anything, so a test can assert on
     /// the delay a caller asked for rather than on time passing.
-    private final class RecordingScheduler: NetworkContext.Scheduler {
+    private final class RecordingScheduler: NetworkContext.Scheduler, @unchecked Sendable {
         var scheduledDelays: [NetworkDuration] = []
         var unscheduledReferences: [TimerReference] = []
 

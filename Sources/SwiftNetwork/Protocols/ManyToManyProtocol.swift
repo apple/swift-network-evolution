@@ -1827,20 +1827,8 @@ extension MultiplexingPath {
         return nil
     }
 
-    fileprivate func invokeConnect() {
-        lower.invokeConnect(for: self.identifier, in: &context.eventContext)
-    }
-
     fileprivate func invokeConnect(in eventContext: inout NetworkContext.EventContext) {
         lower.invokeConnect(for: self.identifier, in: &eventContext)
-    }
-
-    fileprivate func invokeDisconnect(error: NetworkError?) {
-        lower.invokeDisconnect(error: error, for: self.identifier, in: &context.eventContext)
-    }
-
-    fileprivate func invokeDetach() {
-        try? lower.invokeDetach(for: self.identifier, in: &context.eventContext)
     }
 
     fileprivate func invokeDetach(in eventContext: inout NetworkContext.EventContext) {
@@ -1947,9 +1935,9 @@ extension ManyToManyProtocolHandler {
         path.lower.invokeConnect(for: path.identifier, in: &eventContext)
     }
 
-    public func invokeDisconnect(path pathID: MultiplexingPathIdentifier, error: NetworkError? = nil) {
+    public func invokeDisconnect(path pathID: MultiplexingPathIdentifier, error: NetworkError? = nil, in eventContext: inout NetworkContext.EventContext) {
         guard let path = self.path(for: pathID) else { return }
-        path.lower.invokeDisconnect(error: error, for: path.identifier, in: &context.eventContext)
+        path.lower.invokeDisconnect(error: error, for: path.identifier, in: &eventContext)
     }
 
     public func invokeEstablish(
@@ -2056,26 +2044,6 @@ extension HeterogeneousManyToManyProtocolHandler {
         }
     }
 
-    public func deliverDisconnectedEvent(flow flowID: MultiplexedFlowIdentifier, error: NetworkError?) {
-        switch flowID {
-        case .allFlows:
-            inboundFlowLinkage.deliverDisconnectedEvent(error: error, from: identifier, in: &context.eventContext)
-            applyToAllFlows { flow in
-                flow.deliverDisconnectedEvent(error: error)
-            }
-            applyToAllSecondaryFlows { flow in
-                flow.deliverDisconnectedEvent(error: error)
-            }
-        default:
-            if let flow = self.flow(for: flowID) {
-                flow.deliverDisconnectedEvent(error: error)
-            }
-            if let flow = self.secondaryFlow(for: flowID) {
-                flow.deliverDisconnectedEvent(error: error)
-            }
-        }
-    }
-
     public func deliverDisconnectedEvent(
         flow flowID: MultiplexedFlowIdentifier,
         error: NetworkError?,
@@ -2153,9 +2121,9 @@ extension HeterogeneousManyToManyProtocolHandler {
 
 @available(Network 0.1.0, *)
 extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramProcessing {
-    public mutating func resumeReadingInboundDatagrams(path pathID: MultiplexingPathIdentifier) {
+    public mutating func resumeReadingInboundDatagrams(path pathID: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext) {
         guard var path = self.path(for: pathID) else { return }
-        path.resumeReadingInboundDatagrams(in: &context.eventContext)
+        path.resumeReadingInboundDatagrams(in: &eventContext)
     }
 
     public func getDatagramsToSend(
@@ -2198,11 +2166,6 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
             throw NetworkError.posix(EINVAL)
         }
         return try path.addToLowerSendQueue(datagrams)
-    }
-
-    public func sendEnqueuedOutboundDatagrams(path pathID: MultiplexingPathIdentifier) throws(NetworkError) {
-        guard var path = self.path(for: pathID) else { throw NetworkError.posix(EINVAL) }
-        path.serviceLowerSendQueue(in: &context.eventContext)
     }
 
     /// Services a path's send queue using an event context the caller already holds.

@@ -1298,20 +1298,22 @@ public struct BaseDatagramMultipathLinkage: DatagramMultipathLinkage {
         // into the protocol below.
         // `attachLowerProtocolForNewPath` binds the lower protocol's upper side itself, before it
         // announces the path, so there is nothing left to wire up here.
-        try identifier.fromExternal(in: &storage!.context.eventContext) { eventContext throws(NetworkError) in
-            switch protocolType {
-            #if !NETWORK_NO_SWIFT_QUIC
-            case .quic(let index):
-                _ = try storage!.quicInstances[index].attachLowerProtocolForNewPath(
-                    lowerProtocol,
-                    remote: remote,
-                    local: local,
-                    parameters: parameters,
-                    path: path,
-                    in: &eventContext
-                )
-            #endif
-            default: fatalError("Protocol cannot accept attachLowerProtocolForNewPath call")
+        try storage!.context.entered { (contextEventContext) throws(NetworkError) in
+            try identifier.fromExternal(in: &contextEventContext) { eventContext throws(NetworkError) in
+                switch protocolType {
+                #if !NETWORK_NO_SWIFT_QUIC
+                case .quic(let index):
+                    _ = try storage!.quicInstances[index].attachLowerProtocolForNewPath(
+                        lowerProtocol,
+                        remote: remote,
+                        local: local,
+                        parameters: parameters,
+                        path: path,
+                        in: &eventContext
+                    )
+                #endif
+                default: fatalError("Protocol cannot accept attachLowerProtocolForNewPath call")
+                }
             }
         }
     }
@@ -2628,7 +2630,7 @@ open class BaseNetworkProtocolStorage {
     internal var udpInstances = NetworkGappyArray<UDPProtocol.UDPInstance>()
 
     public func createUDPInstance() -> (BaseInboundDatagramLinkage, BaseOutboundDatagramLinkage) {
-        createUDPInstance(in: &context.eventContext)
+        context.entered { createUDPInstance(in: &$0) }
     }
 
     public func createUDPInstance(
@@ -2678,7 +2680,7 @@ open class BaseNetworkProtocolStorage {
     internal var ipInstances = NetworkGappyArray<IPProtocol.IPInstance>()
 
     public func createIPInstance() -> (BaseInboundDatagramLinkage, BaseOutboundDatagramLinkage) {
-        createIPInstance(in: &context.eventContext)
+        context.entered { createIPInstance(in: &$0) }
     }
 
     public func createIPInstance(
@@ -2840,7 +2842,7 @@ open class BaseNetworkProtocolStorage {
     public func createQUICInstance() -> (
         BaseStreamListenerLinkage, BaseDatagramListenerLinkage, BaseDatagramMultipathLinkage
     ) {
-        createQUICInstance(in: &context.eventContext)
+        context.entered { createQUICInstance(in: &$0) }
     }
 
     public func createQUICInstance(

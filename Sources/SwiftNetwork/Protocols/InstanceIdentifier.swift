@@ -41,7 +41,7 @@ public struct InstanceIdentifier: Hashable {
     }
 
     public init(context: NetworkContext, eventManager: inout ProtocolEventManager) {
-        self.eventStateIndex = eventManager.register(in: &context.eventContext)
+        self.eventStateIndex = context.entered { eventManager.register(in: &$0) }
     }
 
     /// Registers using an event context the caller already holds.

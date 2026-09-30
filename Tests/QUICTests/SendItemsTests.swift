@@ -62,7 +62,7 @@ final class SendItemsTests: XCTestCase {
     ) {
         var frame = Frame(count: 1200)
         defer { frame.finalize(success: true) }
-        let context = NetworkContext(identifier: "SendItemsTests")
+        let context = makeInlineTestContext("SendItemsTests")
         let connection = QUICConnection(context: context)
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         var shorthandFrames: [QUICShorthandFrame]? = nil

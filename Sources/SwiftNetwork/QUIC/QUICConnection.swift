@@ -453,7 +453,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     public convenience init(context: NetworkContext) {
-        self.init(context: context, in: &context.eventContext)
+        self.init(context: context, in: &context.enteredEventContext)
     }
 
     public init(context: NetworkContext, in eventContext: inout NetworkContext.EventContext) {

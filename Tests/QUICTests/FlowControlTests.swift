@@ -31,7 +31,7 @@ final class FlowControlTests: XCTestCase {
     func testOutboundFlowControl() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let connection = QUICConnection(
-            context: NetworkContext(identifier: "test context")
+            context: makeInlineTestContext("test context")
         )
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         connection.context.onQueue {
@@ -71,7 +71,7 @@ final class FlowControlTests: XCTestCase {
     func testInboundFlowControl() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let connection = QUICConnection(
-            context: NetworkContext(identifier: "test context")
+            context: makeInlineTestContext("test context")
         )
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         connection.context.onQueue {
@@ -112,7 +112,7 @@ final class FlowControlTests: XCTestCase {
 
     func testSendPermitReopensAfterDrainWithoutMaxStreamData() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
-        let context = NetworkContext(identifier: "test context")
+        let context = makeInlineTestContext("test context")
         context.activate()
 
         // Run on the context queue: reopening the permit delivers an upper-layer
@@ -161,7 +161,7 @@ final class FlowControlTests: XCTestCase {
     func testDuplicateResetStreamOverflow() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let connection = QUICConnection(
-            context: NetworkContext(identifier: "test context")
+            context: makeInlineTestContext("test context")
         )
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         connection.context.onQueue {
@@ -252,7 +252,7 @@ final class FlowControlTests: XCTestCase {
     func testInboundCreditReturnedWhenApplicationReadsBytes() {
         let byteCount = 4000
         let window: UInt64 = 100_000
-        let context = NetworkContext(identifier: "test context")
+        let context = makeInlineTestContext("test context")
         context.activate()
 
         let done = XCTestExpectation(description: "read-all accounting complete")
@@ -298,7 +298,7 @@ final class FlowControlTests: XCTestCase {
     func testInboundCreditReturnedWhenUnreadBytesDroppedOnClose() {
         let byteCount = 4000
         let window: UInt64 = 100_000
-        let context = NetworkContext(identifier: "test context")
+        let context = makeInlineTestContext("test context")
         context.activate()
 
         let done = XCTestExpectation(description: "drop accounting complete")
@@ -362,7 +362,7 @@ final class FlowControlTests: XCTestCase {
     // the final size finally arrives, the bytes that were in flight but never
     // read must be credited at the connection level.
     func testInboundCreditReturnedForZombieStreamFinalSize() {
-        let context = NetworkContext(identifier: "test context")
+        let context = makeInlineTestContext("test context")
         context.activate()
 
         let done = XCTestExpectation(description: "zombie accounting complete")

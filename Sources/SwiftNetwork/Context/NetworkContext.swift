@@ -67,6 +67,15 @@ public protocol NetworkContextProtocol: AnyObject, Hashable {
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
+public actor NetworkContextActor {
+    var context: NetworkContext
+    init() {
+        self.context = .implicitContext
+    }
+}
+
+@_spi(Essentials)
+@available(Network 0.1.0, *)
 public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
     public func hash(into hasher: inout Hasher) {
         #if !NETWORK_EMBEDDED
@@ -79,7 +88,11 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         #endif
     }
 
-    public protocol Scheduler: AnyObject {
+    // `Sendable` documents what was already true: `NetworkContext` is `@unchecked Sendable` and
+    // holds a scheduler, and `runImmediate`/`runningInScheduler` are already called from whatever
+    // thread an entry point arrives on. Requiring it lets the isolation actor's initializer accept
+    // one without `sending`.
+    public protocol Scheduler: AnyObject, Sendable {
         /// Runs an immediate task. This task must not be run directly on the caller's stack, but otherwise
         /// no assumptions are made about how the task is run.
         func runImmediate(_ task: @escaping (() -> Void))
@@ -155,7 +168,9 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
             protocolEventStates.remove(index: index)
         }
     }
-    var eventContext: EventContext
+    /// Owns the event context. The only ways in are `entered(_:)` and `enter(_:)`; there is no
+    /// longer a stored `eventContext` to reach directly. See `NetworkContextIsolation`.
+    internal let isolation: NetworkContextIsolation
 
     internal init(
         identifier: String,
@@ -166,7 +181,11 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         self.scheduler = scheduler
         self.globals = globals
         self.identifier = identifier
-        eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
+        self.isolation = NetworkContextIsolation(
+            globals: globals,
+            scheduler: scheduler,
+            schedulerIsDefault: schedulerIsDefault
+        )
     }
 
     public static let implicitContext: NetworkContext = NetworkContext(identifier: "context")
@@ -205,7 +224,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         self.scheduler = scheduler
         self.globals = globals
         self.identifier = identifier
-        eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: true)
+        self.isolation = NetworkContextIsolation(globals: globals, scheduler: scheduler, schedulerIsDefault: true)
     }
 
     public init(identifier: String, externalScheduler: any Scheduler) {
@@ -213,7 +232,11 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         self.scheduler = externalScheduler
         self.globals = globals
         self.identifier = identifier
-        eventContext = .init(globals: globals, scheduler: externalScheduler, schedulerIsDefault: false)
+        self.isolation = NetworkContextIsolation(
+            globals: globals,
+            scheduler: externalScheduler,
+            schedulerIsDefault: false
+        )
     }
     #endif
 
@@ -260,7 +283,9 @@ extension NetworkContext {
         }
     }
 
-    final class Globals {
+    // `@unchecked Sendable` for the same reason `NetworkContext` is: the queue and timer list
+    // below are confined to that queue, which every path funnels through.
+    final class Globals: @unchecked Sendable {
         final class TimerList {
             var entries = NetworkPriorityQueue<TimerEntry>()
             var queue: DispatchQueue
@@ -350,9 +375,23 @@ extension NetworkContext {
         var timerList: TimerList
         var queue: DispatchQueue
 
+        /// Identifies a context's queue so `runningInScheduler` can answer as a Boolean.
+        ///
+        /// `dispatchPrecondition` can only assert and trap, which is no use to a caller that
+        /// wants to branch on whether it is already inside the context. A queue-specific value
+        /// can be read instead, and is set to the owning `Globals` so two contexts never see
+        /// each other's queue as their own.
+        private static let queueIdentity = DispatchSpecificKey<ObjectIdentifier>()
+
         init(label: String) {
             queue = DispatchQueue(label: "networking context")
             timerList = TimerList(queue: queue)
+            queue.setSpecific(key: Globals.queueIdentity, value: ObjectIdentifier(self))
+        }
+
+        /// Whether the caller is running on this context's queue.
+        var runningOnQueue: Bool {
+            DispatchQueue.getSpecific(key: Globals.queueIdentity) == ObjectIdentifier(self)
         }
     }
 
@@ -387,8 +426,7 @@ extension NetworkContext {
         }
         /// A Boolean value that indicates whether the current code is running in the scheduler.
         var runningInScheduler: Bool {
-            // TODO: Not supported by DispatchQueue
-            fatalError("Unsupported")
+            globals.runningOnQueue
         }
         /// The system clock, read straight from the OS.
         ///
@@ -427,8 +465,29 @@ extension NetworkContext {
         scheduler.runningInScheduler
     }
 
+    /// Runs `body` on the context's serial execution, inline when the caller is already there.
+    ///
+    /// Dispatch sources are created on `globals.queue`, which is the context's serial execution
+    /// only while the default scheduler is in use. With an external scheduler the two are
+    /// different queues, so a source handler has to hand its work over instead of running it
+    /// where it fired -- otherwise the stack is entered from two queues at once, which
+    /// `EventContext.assert()` catches. Running inline in the default case keeps the datapath
+    /// free of an extra hop.
+    public func runOnContext(_ body: @escaping () -> Void) {
+        if runningInContext {
+            body()
+        } else {
+            scheduler.runImmediate(body)
+        }
+    }
+
+    /// Asserts the caller is on the context's scheduler.
+    ///
+    /// Checks the scheduler directly rather than acquiring the event context to ask it: this is
+    /// called from places that only want the check, and acquiring the context would be both
+    /// wasteful and, now that acquisition goes through a door, circular.
     func assert() {
-        eventContext.assert()
+        precondition(runningInContext, "Not running on context scheduler")
     }
 }
 

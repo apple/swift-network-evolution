@@ -29,8 +29,17 @@ import XCTest
 @available(Network 0.1.0, *)
 final class QUICConnectionTests: XCTestCase {
     var connection: QUICConnection!
+
+    /// A real queue-backed context, not an inline-scheduled one: the asynchronous handshake tests
+    /// below depend on `async(_:)` actually deferring to a later turn, which is the whole point of
+    /// the exclusivity they guard against.
+    let quicConnectionTestContext = NetworkContext(identifier: "QUICConnectionTests")
+
     override func setUp() {
-        connection = QUICConnection(context: NetworkContext.implicitContext)
+        // Creating the connection registers event state, so it has to happen on the context.
+        connection = quicConnectionTestContext.onQueue {
+            QUICConnection(context: self.quicConnectionTestContext)
+        }
     }
 
     override func tearDown() {
@@ -76,7 +85,7 @@ final class QUICConnectionTests: XCTestCase {
     func testCreateInboundStreams() throws {
         self.connection.context.onQueue {
             let zeroStreamID: QUICStreamID = QUICStreamID(0)
-            NetworkContext.implicitContext.async {
+            quicConnectionTestContext.async {
                 self.connection.fromExternal { eventContext in
                     let _ = self.connection.createInboundStreams(
                         streamID: zeroStreamID,
@@ -292,8 +301,11 @@ final class QUICConnectionTests: XCTestCase {
     /// connection ID of the path they arrived on; a client would also check the original destination
     /// connection ID it generated, which it keeps to itself.
     private func makeAsynchronousHandshakeStack() -> AsynchronousHandshakeStack? {
-        let storage = TestNetworkProtocolStorage(context: .implicitContext)
-        let (streamListener, _, _) = storage.createTestQUICInstance()
+        // Creating protocol instances registers event state, so it has to happen on the context.
+        let storage = quicConnectionTestContext.onQueue {
+            TestNetworkProtocolStorage(context: self.quicConnectionTestContext)
+        }
+        let (streamListener, _, _) = quicConnectionTestContext.onQueue { storage.createTestQUICInstance() }
         guard let connection = storage.quicInstance(for: streamListener.base) else {
             XCTFail("Failed to create a QUIC connection")
             return nil
@@ -347,7 +359,7 @@ final class QUICConnectionTests: XCTestCase {
 
             let (lower, lowerLinkage) = storage.createDatagramLowerHarness(
                 identifier: "Lower",
-                context: .implicitContext
+                context: self.quicConnectionTestContext
             )
             lower.fromExternal { eventContext in
                 lower.connect(in: &eventContext)
@@ -374,7 +386,7 @@ final class QUICConnectionTests: XCTestCase {
                 remote: remote,
                 parameters: parameters,
                 path: path,
-                context: .implicitContext
+                context: self.quicConnectionTestContext
             )
             upperHarness = harness
             do {

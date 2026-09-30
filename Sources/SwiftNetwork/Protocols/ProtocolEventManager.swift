@@ -851,7 +851,7 @@ extension NetworkContext.EventContext {
         // The queued block holds `index` until it runs, so keep the event state alive until then.
         protocolEventStates[index].addOutstandingHolder()
         self.async {
-            context.eventContext.runAsync(index: index, block)
+            context.entered { $0.runAsync(index: index, block) }
         }
     }
 
@@ -872,7 +872,7 @@ extension NetworkContext.EventContext {
                 {
                     // The scheduler hands back no state, so this is where the timer re-enters
                     // the stack: acquire the state once and thread it into `wakeup`.
-                    context.eventContext.runTimerWakeup(index: index, wakeup)
+                    context.entered { $0.runTimerWakeup(index: index, wakeup) }
                 }
             )
         )
@@ -893,9 +893,9 @@ extension NetworkContext {
         _ block: @escaping (inout NetworkContext.EventContext) -> Void
     ) {
         softAssert()
-        self.eventContext.protocolEventStates[index].addOutstandingHolder()
+        entered { $0.protocolEventStates[index].addOutstandingHolder() }
         self.async {
-            self.eventContext.runAsync(index: index, block)
+            self.entered { $0.runAsync(index: index, block) }
         }
     }
 
@@ -906,13 +906,13 @@ extension NetworkContext {
         _ wakeup: @escaping (inout NetworkContext.EventContext) -> Void
     ) {
         softAssert()
-        self.eventContext.protocolEventStates[index].addScheduledTimer()
+        entered { $0.protocolEventStates[index].addScheduledTimer() }
         resetTimer(
             for: timerReference,
             to: .after(
                 delay,
                 {
-                    self.eventContext.runTimerWakeup(index: index, wakeup)
+                    self.entered { $0.runTimerWakeup(index: index, wakeup) }
                 }
             )
         )

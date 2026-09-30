@@ -98,7 +98,7 @@ extension ProtocolInstance where Self: ~Copyable {
     /// already hold the event context, call the `in:`-taking variant instead so the state
     /// isn't re-derived from the context.
     public func async(_ block: @escaping (inout NetworkContext.EventContext) -> Void) {
-        identifier.async(context: context, in: &context.eventContext, block)
+        identifier.async(context: context, in: &context.enteredEventContext, block)
     }
 
     /// Schedules an asynchronous block, using an already-acquired event context.
@@ -119,18 +119,18 @@ extension ProtocolInstance where Self: ~Copyable {
     public func fromExternal<R, E: Error>(
         _ block: (inout NetworkContext.EventContext) throws(E) -> R
     ) throws(E) -> R {
-        try identifier.fromExternal(in: &context.eventContext, block)
+        try identifier.fromExternal(in: &context.enteredEventContext, block)
     }
     public func fromExternal<R: ~Copyable, E: Error>(
         _ block: (inout NetworkContext.EventContext) throws(E) -> R
     ) throws(E) -> R {
-        try identifier.fromExternal(in: &context.eventContext, block)
+        try identifier.fromExternal(in: &context.enteredEventContext, block)
     }
     public func fromExternal<R, T: ~Copyable, E: Error>(
         _ value: consuming T,
         _ block: (inout NetworkContext.EventContext, consuming T) throws(E) -> R
     ) throws(E) -> R {
-        try identifier.fromExternal(value, in: &context.eventContext, block)
+        try identifier.fromExternal(value, in: &context.enteredEventContext, block)
     }
 }
 
@@ -177,7 +177,7 @@ extension TimerSchedulable {
     ///
     /// This is an external entry point; see `async(_:)`.
     public func unscheduleWakeup() {
-        identifier.unscheduleWakeup(timerReference: timerReference, in: &context.eventContext)
+        identifier.unscheduleWakeup(timerReference: timerReference, in: &context.enteredEventContext)
     }
 
     /// Unschedules a timer wakeup, using an already-acquired event context.

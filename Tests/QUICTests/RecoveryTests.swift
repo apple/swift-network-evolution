@@ -36,11 +36,11 @@ let recoveryTestsLogPrefixer: LogPrefixer = LogPrefixer("[RecoveryTests]")
 
 @available(Network 0.1.0, *)
 final class RecoveryTests: XCTestCase {
-    var connection = QUICConnection(context: .implicitContext)
+    var connection = QUICConnection(context: quicInlineTestContext)
     var path: QUICPath! = nil
     // The base linkages are storage-backed, so lower harnesses have to come from storage
     // rather than being wrapped in a bare linkage.
-    let storage = TestNetworkProtocolStorage(context: .implicitContext)
+    let storage = TestNetworkProtocolStorage(context: quicInlineTestContext)
 
     override func setUp() {
         let expectation = XCTestExpectation()
@@ -50,7 +50,7 @@ final class RecoveryTests: XCTestCase {
             self.connection.recovery.connection = self.connection
             let (lowerHarness, lowerHarnessLinkage) = self.storage.createDatagramLowerHarness(
                 identifier: "Client",
-                context: .implicitContext
+                context: quicInlineTestContext
             )
             lowerHarness.fromExternal { eventContext in
                 lowerHarness.connect(in: &eventContext)
@@ -97,7 +97,7 @@ final class RecoveryTests: XCTestCase {
         connection.recovery.recordSentPackets(
             &packets,
             connection: connection,
-            in: &connection.context.eventContext
+            in: &connection.context.enteredEventContext
         )
     }
 
@@ -401,7 +401,7 @@ final class RecoveryTests: XCTestCase {
             ack: ackFrame,
             ackedPath: connection.currentPath!,
             connection: connection,
-            in: &connection.context.eventContext
+            in: &connection.context.enteredEventContext
         )
 
         // Validate that the congestion window has grown after the packet is acked
@@ -459,7 +459,7 @@ final class RecoveryTests: XCTestCase {
             ack: makeAckFrame(),
             ackedPath: connection.currentPath!,
             connection: connection,
-            in: &connection.context.eventContext
+            in: &connection.context.enteredEventContext
         )
 
         XCTAssertEqual(

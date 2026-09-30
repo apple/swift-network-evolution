@@ -31,10 +31,10 @@ let migrationTestsLogPrefixer: LogPrefixer = LogPrefixer("[MigrationTests]")
 
 @available(Network 0.1.0, *)
 final class MigrationTests: XCTestCase {
-    var connection = QUICConnection(context: .implicitContext)
+    var connection = QUICConnection(context: quicInlineTestContext)
     // The base linkages are storage-backed, so lower harnesses have to come from storage
     // rather than being wrapped in a bare linkage.
-    let storage = TestNetworkProtocolStorage(context: .implicitContext)
+    let storage = TestNetworkProtocolStorage(context: quicInlineTestContext)
 
     static let oldCID = QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!
     static let newCID = QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!
@@ -68,7 +68,7 @@ final class MigrationTests: XCTestCase {
     private func makePath(dcid: QUICConnectionID, sequenceNumber: UInt64, validated: Bool) -> QUICPath {
         let (lower, lowerLinkage) = storage.createDatagramLowerHarness(
             identifier: "\(sequenceNumber)",
-            context: .implicitContext
+            context: quicInlineTestContext
         )
         lower.fromExternal { eventContext in
             lower.connect(in: &eventContext)

@@ -31,8 +31,8 @@ final class QUICStreamZombieListTests: XCTestCase {
     var zombieList = QUICStreamZombieList()
 
     func testAppend() {
-        NetworkContext.implicitContext.async {
-            let connection = QUICConnection(context: NetworkContext.implicitContext)
+        quicInlineTestContext.async {
+            let connection = QUICConnection(context: quicInlineTestContext)
             defer { connection.destroyFromExternalTest() }
             connection.fromExternal { eventContext in
                 let streamID: QUICStreamID = QUICStreamID(0)
