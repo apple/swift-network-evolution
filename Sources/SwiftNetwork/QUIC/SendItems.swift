@@ -3110,19 +3110,51 @@ struct TransmittedItems: ~Copyable {
     var sentCrypto = NetworkUniqueArray<SentCrypto>()
 
     // Minimal information about a send on a stream
-    struct SentStream: ~Copyable {
+    struct SentStream {
         let flowID: MultiplexedFlowIdentifier
         let streamID: QUICStreamID
         let offset: UInt64
         let length: UInt64
         let isFinal: Bool
 
-        func matches(_ other: borrowing SentStream) -> Bool {
+        func matches(_ other: SentStream) -> Bool {
             flowID == other.flowID && streamID == other.streamID && offset == other.offset && length == other.length
                 && isFinal == other.isFinal
         }
     }
-    var sentStreams = NetworkUniqueArray<SentStream>()
+
+    /// The stream sends a packet carried.
+    ///
+    /// A packet almost always carries a single stream, and every sent packet keeps its record until it is
+    /// acknowledged or lost, so the first send is stored inline and only the rest need storage of their own.
+    struct SentStreams: ~Copyable {
+        private var first: SentStream?
+        private var rest = NetworkUniqueArray<SentStream>()
+
+        var isEmpty: Bool {
+            first == nil
+        }
+
+        var count: Int {
+            first == nil ? 0 : 1 + rest.count
+        }
+
+        subscript(index: Int) -> SentStream {
+            if index == 0, let first {
+                return first
+            }
+            return rest[index - 1]
+        }
+
+        mutating func append(_ sentStream: SentStream) {
+            if first == nil {
+                first = sentStream
+            } else {
+                rest.append(sentStream)
+            }
+        }
+    }
+    var sentStreams = SentStreams()
 
     var maxStreamDataFlows = Deque<MultiplexedFlowIdentifier>()
     var streamDataBlockedFlows = Deque<MultiplexedFlowIdentifier>()
