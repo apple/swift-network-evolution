@@ -1868,7 +1868,7 @@ public class NetworkChannelBase: EndpointFlowParent {
     /// flow protocol and the call already running drains them on its way out.
     private var flowIsBorrowed = false
 
-    func withFlow<R>(_ body: (inout EndpointFlow) -> R) -> R? {
+    final func withFlow<R>(_ body: (inout EndpointFlow) -> R) -> R? {
         guard !flowIsBorrowed else { return nil }
         flowIsBorrowed = true
         defer { flowIsBorrowed = false }
@@ -1991,7 +1991,7 @@ public class NetworkChannel<ApplicationProtocol: NetworkProtocolOptions>: Networ
 
     @discardableResult public func start() -> Self {
         context.async {
-            self.withFlow { flow in flow.start(self) }
+            self.withFlow { flow in flow.start(self as NetworkChannelBase) }
         }
         return self
     }
