@@ -433,6 +433,48 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         }
     }
 
+    public func getDatagramToSend(
+        minimumDatagramSize: Int,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Frame? {
+        switch protocolType {
+        case .udp(let index):
+            return try storage!.udpInstances[index].getDatagramToSend(
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
+        case .ip(let index):
+            return try storage!.ipInstances[index].getDatagramToSend(
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
+        case .bridgeDatagram(let index):
+            return try storage!.bridgeDatagramInstances[index].getDatagramToSend(
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
+        #if NETWORK_RTKIT
+        case .netif(let box):
+            var protocolInstance = box.instance
+            return try protocolInstance.getDatagramToSend(
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
+        #endif
+        default:
+            return try getDatagramToSendFromBatch(
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
+        }
+    }
+
     public func sendDatagrams(
         _ datagrams: consuming FrameArray,
         from instance: InstanceIdentifier,

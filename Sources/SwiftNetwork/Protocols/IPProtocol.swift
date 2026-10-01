@@ -986,9 +986,13 @@ public struct IPProtocol: NetworkProtocol {
                 inboundFrames.add(frames: processedFrames)
             }
 
+            func prepareOutboundFrame(_ outboundFrame: inout Frame) {
+                _ = outboundFrame.claim(fromStart: IPv4Instance.headerLength)
+            }
+
             func prepareOutboundFrames(_ outboundFrames: inout FrameArray) {
                 outboundFrames.iterateMutableFrames { frame in
-                    _ = frame.claim(fromStart: IPv4Instance.headerLength)
+                    prepareOutboundFrame(&frame)
                     return true
                 }
             }
@@ -1832,18 +1836,22 @@ public struct IPProtocol: NetworkProtocol {
                 inboundFrames.add(frames: processedFrames)
             }
 
+            func prepareOutboundFrame(_ outboundFrame: inout Frame) {
+                if flags.useMinimumMTU {
+                    var trailerClaim = 0
+                    let frameLength = outboundFrame.unclaimedLength
+                    if frameLength > IPv6Instance.minimalMTU {
+                        trailerClaim = frameLength - IPv6Instance.minimalMTU
+                    }
+                    _ = outboundFrame.claim(fromStart: IPv6Instance.headerLength, fromEnd: trailerClaim)
+                } else {
+                    _ = outboundFrame.claim(fromStart: IPv6Instance.headerLength)
+                }
+            }
+
             func prepareOutboundFrames(_ outboundFrames: inout FrameArray) {
                 outboundFrames.iterateMutableFrames { frame in
-                    if flags.useMinimumMTU {
-                        var trailerClaim = 0
-                        let frameLength = frame.unclaimedLength
-                        if frameLength > IPv6Instance.minimalMTU {
-                            trailerClaim = frameLength - IPv6Instance.minimalMTU
-                        }
-                        _ = frame.claim(fromStart: IPv6Instance.headerLength, fromEnd: trailerClaim)
-                    } else {
-                        _ = frame.claim(fromStart: IPv6Instance.headerLength)
-                    }
+                    prepareOutboundFrame(&frame)
                     return true
                 }
             }
@@ -2229,6 +2237,30 @@ public struct IPProtocol: NetworkProtocol {
                 guard var outboundFrames else { return nil }
                 instance.prepareOutboundFrames(&outboundFrames)
                 return outboundFrames
+            }
+        }
+
+        func getDatagramToSend(
+            minimumDatagramSize: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> Frame? {
+            switch self.instanceType {
+            case .ipv4(let instance):
+                let outboundFrame = try invokeGetDatagramToSend(
+                    minimumDatagramSize: instance.incrementByHeaderLength(minimumDatagramSize),
+                    in: &eventContext
+                )
+                guard var outboundFrame else { return nil }
+                instance.prepareOutboundFrame(&outboundFrame)
+                return outboundFrame
+            case .ipv6(let instance):
+                let outboundFrame = try invokeGetDatagramToSend(
+                    minimumDatagramSize: instance.incrementByHeaderLength(minimumDatagramSize),
+                    in: &eventContext
+                )
+                guard var outboundFrame else { return nil }
+                instance.prepareOutboundFrame(&outboundFrame)
+                return outboundFrame
             }
         }
 

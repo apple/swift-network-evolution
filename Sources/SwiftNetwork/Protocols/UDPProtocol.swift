@@ -424,6 +424,30 @@ public struct UDPProtocol: NetworkProtocol {
             return outputFrames
         }
 
+        mutating func getDatagramToSend(
+            minimumDatagramSize: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> Frame? {
+            if self.flags.contains(.flowControlled) {
+                // Wait until UDP flow is allowed
+                self.flags.insert(.outputPending)
+                return nil
+            }
+
+            guard
+                var outputFrame = try invokeGetDatagramToSend(
+                    minimumDatagramSize: incrementByUDPHeaderLength(minimumDatagramSize),
+                    in: &eventContext
+                )
+            else {
+                return nil
+            }
+            // The lower protocol can hand back a frame too short for the header; the caller
+            // reads the remaining length and adapts, as it does for a batch.
+            _ = outputFrame.claim(fromStart: UDPProtocol.headerLength)
+            return outputFrame
+        }
+
         mutating func sendDatagrams(
             _ datagrams: consuming FrameArray,
             in eventContext: inout NetworkContext.EventContext

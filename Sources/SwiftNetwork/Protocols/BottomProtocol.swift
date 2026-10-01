@@ -234,6 +234,15 @@ where LinkageType: OutboundDatagramLinkage, LinkageType.PairedUpperLinkage == Up
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray?
 
+    /// Returns a single datagram frame the upper protocol can use to send.
+    ///
+    /// Protocols can implement this function to customize behavior; the default implementation
+    /// asks `getDatagramsToSend` for a batch of one.
+    mutating func getDatagramToSend(
+        minimumDatagramSize: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Frame?
+
     /// Sends datagrams created by the upper protocol.
     ///
     /// Protocols can implement this function to customize behavior.
@@ -412,6 +421,34 @@ extension BottomDatagramProtocol where Self: ~Copyable {
             minimumDatagramSize: minimumDatagramSize,
             in: &eventContext
         )
+    }
+    public mutating func getDatagramToSend(
+        minimumDatagramSize: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Frame? {
+        guard
+            var datagrams = try self.getDatagramsToSend(
+                maximumDatagramCount: 1,
+                minimumDatagramSize: minimumDatagramSize,
+                in: &eventContext
+            )
+        else {
+            return nil
+        }
+        let datagram = datagrams.popFirst()
+        // A batch of one must hold at most one frame; anything left here would trap in
+        // `Frame.deinit` instead of reaching the driver.
+        precondition(datagrams.isEmpty)
+        return datagram
+    }
+    public mutating func getDatagramToSend(
+        minimumDatagramSize: Int,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Frame? {
+        do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
+        guard isConnected(in: &eventContext) else { throw NetworkError.posix(ENOTCONN) }
+        return try self.getDatagramToSend(minimumDatagramSize: minimumDatagramSize, in: &eventContext)
     }
     public mutating func sendDatagrams(
         _ datagrams: consuming FrameArray,
