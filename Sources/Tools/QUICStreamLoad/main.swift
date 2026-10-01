@@ -425,6 +425,16 @@ final class QUICStreamLoad {
 
         group.enter()
         context.async {
+            if let clientConnection = storage.quicInstance(for: clientQUICStreamListenerLinkage!.base) {
+                if let jsonString = clientConnection.getDiagnosticsSnapshot().jsonString() {
+                    print("Client Telemetry:\n\(jsonString)")
+                }
+            }
+            if let serverConnection = storage.quicInstance(for: serverQUICStreamListener.base) {
+                if let jsonString = serverConnection.getDiagnosticsSnapshot().jsonString() {
+                    print("Server Telemetry:\n\(jsonString)")
+                }
+            }
             clientInput.stop()
             clientInput.teardown()
             serverInput.stop()

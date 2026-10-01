@@ -59,6 +59,23 @@ struct QUICPreferences: ~Copyable, Sendable {
     let maxSentPacketsCapacity: Int
     let maxReceivedFramesCapacity: Int
 
+    var defaultCongestionControlPolicy: CongestionControlPolicy {
+        if forceLEDBAT {
+            #if !NETWORK_EMBEDDED
+            return CongestionControlPolicy(algorithm: .ledbat)
+            #else
+            return CongestionControlPolicy(algorithm: .cubic)
+            #endif
+        } else if disableCubic {
+            #if !NETWORK_EMBEDDED
+            return CongestionControlPolicy(algorithm: .ledbat)
+            #else
+            return CongestionControlPolicy(algorithm: .cubic)
+            #endif
+        }
+        return CongestionControlPolicy(algorithm: .cubic)
+    }
+
     // Flow Control
     let initialStreamReceiveSpace: Int?
     let initialConnectionReceiveSpace: Int?

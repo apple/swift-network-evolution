@@ -14,14 +14,14 @@
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public enum RequestedNetworkMetrics {
+public enum RequestedNetworkMetrics: Sendable {
     case protocolEstablishmentReports
     case dataTransferSnapshot
 }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public enum NetworkMetrics {
+public enum NetworkMetrics: Sendable {
     case protocolEstablishmentReports([ProtocolEstablishmentReport])
     case dataTransferSnapshot(DataTransferSnapshot)
 }

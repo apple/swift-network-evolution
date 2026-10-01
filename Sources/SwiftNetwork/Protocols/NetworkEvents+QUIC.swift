@@ -79,3 +79,14 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
         }
     }
 }
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+public enum DiagnosticEvent: Sendable {
+    case pathChanged(info: QUICPathInfo)
+    case migrationDecision(info: QUICPathInfo, reason: String)
+    case cidLifecycle(id: String, state: String)
+    case congestionStateChanged(old: String, new: String, trigger: String)
+    case connectionClosed(reason: String)
+}
+

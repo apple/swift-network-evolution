@@ -14,8 +14,10 @@
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public struct DataTransferSnapshot: Equatable {
+public struct DataTransferSnapshot: Equatable, Sendable {
+    var snapshotTimestamp: NetworkClock.Instant = .zero
     var interfaceIndex: UInt64?
+    var pathIdentifier: UInt64?
 
     var receivedIPPacketCount: UInt64 = 0
     var receivedIPEct1PacketCount: UInt64 = 0
@@ -28,6 +30,9 @@ public struct DataTransferSnapshot: Equatable {
     var receivedTransportOutOfOrderByteCount: UInt64 = 0
     var sentTransportByteCount: UInt64 = 0
     var sentTransportRetransmittedByteCount: UInt64 = 0
+    var sentTransportRetransmittedPacketCount: UInt64 = 0
+    var sentTransportLostByteCount: UInt64 = 0
+    var sentTransportLostPacketCount: UInt64 = 0
     var sentTransportECNCapablePacketCount: UInt64 = 0
     var sentTransportECNCapableAckedPacketCount: UInt64 = 0
     var sentTransportECNCapableMarkedPacketCount: UInt64 = 0
@@ -40,6 +45,7 @@ public struct DataTransferSnapshot: Equatable {
 
     var transportCongestionWindow: UInt64 = 0
     var transportSlowStartThreshold: UInt64 = 0
+    var transportBytesInFlight: UInt64 = 0
 
     var receivedApplicationByteCount: UInt64 = 0
     var sentApplicationByteCount: UInt64 = 0
@@ -49,4 +55,47 @@ public struct DataTransferSnapshot: Equatable {
     var migrationToWiredCount: UInt64 = 0
     var migrationToOtherCount: UInt64 = 0
     var migrationToFallbackCount: UInt64 = 0
+    var pathsValidated: UInt64 = 0
+    var successfulMigrations: UInt64 = 0
+
+    var pmtudSuccessfulProbes: UInt64 = 0
+    var pmtudFailedProbes: UInt64 = 0
+
+    var receivedStreamFrameCount: UInt64 = 0
+    var sentStreamFrameCount: UInt64 = 0
+    var receivedStreamResetFrameCount: UInt64 = 0
+    var sentStreamResetFrameCount: UInt64 = 0
+
+    var receivedDatagramFrameCount: UInt64 = 0
+    var sentDatagramFrameCount: UInt64 = 0
+
+    public func jsonString() -> String? {
+        #if canImport(Foundation)
+        let dict: [String: Any] = [
+            "snapshotTimestamp": snapshotTimestamp.milliseconds,
+            "pathIdentifier": pathIdentifier ?? 0,
+            "receivedIPPacketCount": receivedIPPacketCount,
+            "sentIPPacketCount": sentIPPacketCount,
+            "receivedTransportByteCount": receivedTransportByteCount,
+            "sentTransportByteCount": sentTransportByteCount,
+            "transportSmoothedRTT": transportSmoothedRTT.milliseconds,
+            "transportMinimumRTT": transportMinimumRTT.milliseconds,
+            "transportCongestionWindow": transportCongestionWindow,
+            "transportBytesInFlight": transportBytesInFlight,
+            "sentTransportLostByteCount": sentTransportLostByteCount,
+            "sentTransportRetransmittedByteCount": sentTransportRetransmittedByteCount,
+            "sentTransportECNCapableMarkedPacketCount": sentTransportECNCapableMarkedPacketCount,
+            "sentTransportECNCapableLostPacketCount": sentTransportECNCapableLostPacketCount,
+            "pathsValidated": pathsValidated,
+            "successfulMigrations": successfulMigrations,
+            "pmtudSuccessfulProbes": pmtudSuccessfulProbes,
+            "pmtudFailedProbes": pmtudFailedProbes
+        ]
+        if let data = try? Foundation.JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted) {
+            return String(data: data, encoding: .utf8)
+        }
+        #endif
+        return nil
+    }
 }
+

@@ -214,7 +214,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
                 let sentLength = entry.packet.totalLength
                 connection?.log.datapath("Discarding packet of length \(sentLength)")
-                path.congestionControlPacketDiscarded(bytesSent: sentLength, qlog: connection?.qLog)
+                path.congestionControl.packetDiscarded(bytesSent: sentLength, qlog: connection?.qLog)
                 return true
             }
             outstandingPackets.removeAll()
@@ -256,11 +256,13 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             log.datapath(
                 "In-flight bytes declared lost on path \(pathID), largest lost packet \(largestLostPacketNumber) was sent at \(largestLostSentTime)"
             )
-            reducedCongestionWindow = path.congestionControlPacketsLost(
+            reducedCongestionWindow = path.congestionControl.packetsLost(
+                path: nil,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: path.mss,
-                smoothedRTT: path.rtt.smoothedRTT
+                smoothedRTT: path.rtt.smoothedRTT,
+                now: connection.now
             )
             if reducedCongestionWindow {
                 log.datapath(
@@ -310,9 +312,9 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 log.datapath(
                     "Persistent congestion detected on path \(path.pathIdentifier), setting congestion window to minimum"
                 )
-                path.congestionControlPersistentCongestion(mss: path.mss, qlog: nil)
+                path.congestionControl.persistentCongestion(mss: path.mss, qlog: nil)
                 log.datapath(
-                    "Congestion window of path \(path.pathIdentifier) is now \(path.congestionControlWindow)"
+                    "Congestion window of path \(path.pathIdentifier) is now \(path.congestionControl.congestionWindow)"
                 )
                 if path.pacer.enabled {
                     path.resetPacer()
@@ -427,7 +429,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
                     log.datapath("Non-Ack eliciting packet \(number) acked")
                 }
-                sentPath.congestionControlPacketsAcked(
+                sentPath.congestionControl.packetsAcked(
                     bytesAcked: sentEntry.packet.isInFlightEligible ? sentEntry.packet.totalLength : 0,
                     sentTime: sentEntry.sentTime
                 )
@@ -561,7 +563,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                         connection: connection
                     )
                     if ackedEntry.reducedCongestionWindow {
-                        path.congestionControlSpuriousRetransmit(qlog: connection.qLog)
+                        path.congestionControl.spuriousRetransmit(qlog: connection.qLog)
                     }
                 }
 
@@ -606,14 +608,17 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 // Process ECN only if there are any newly ACKed ECT packets
                 if newlyECTAcked > 0 {
                     let sRTT = path.rtt.smoothedRTT
-                    path.congestionControlProcessECN(
+                    path.congestionControl.processECN(
+                        path: nil,
                         ceCount: ceCount,
                         packetsAcked: totalEctAcked,
                         largestSentPN: largestSentPacketNumber.value,
                         largestAckedPN: largestAckedPacketNumber.value,
                         largestAckedSentTime: largestAckedPNSentTime,
                         mss: path.mss,
-                        smoothedRTT: sRTT
+                        smoothedRTT: sRTT,
+                        now: connection.now,
+                        qlog: connection.qLog
                     )
                 }
             }
@@ -694,7 +699,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     log.datapath("Non-Ack eliciting packet \(packetNumber) sent")
 
                 }
-                sentPath.congestionControlPacketsSent(bytesSent: sentLength, qlog: connection.qLog)
+                sentPath.congestionControl.packetSent(bytesSent: sentLength, qlog: connection.qLog)
                 Recovery.logAckElicitingPacketsInFlight(
                     packetCount: ackElicitingPacketsInFlight,
                     connection: connection
@@ -1440,7 +1445,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             connection.withCurrentPath { path in
                 guard path.isValidated else { return }
                 var bytesInFlight: UInt64 = 0
-                bytesInFlight = path.congestionControlBytesInFlight
+                bytesInFlight = path.congestionControl.bytesInFlight
 
                 // We process non-ack eliciting packets in loss_recovery for
                 // L4S as we want to do CE processing and loss recovery on
@@ -1551,7 +1556,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         } else if packetNumberSpace == PacketNumberSpace.applicationData {
             received1RTTAck = true
         }
-        ackedPath.congestionControlAckBegin()
+        ackedPath.congestionControl.ackBegin()
 
         let timeNow = connection.now
         var foundNewlyAckedPackets = false
@@ -1629,11 +1634,12 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         if !foundNewlyAckedPackets {
             log.datapath("No newly acked packets, returning")
             // Update the congestion window based on the previously saved per ACK receive state
-            ackedPath.congestionControlAckEnd(
+            ackedPath.congestionControl.ackEnd(
                 rtt: ackedPath.rtt,
                 path: ackedPath,
                 mss: ackedPath.mss,
                 packetsLost: false,
+                now: connection.now,
                 qlog: connection.qLog
             )
             return
@@ -1664,11 +1670,12 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             )
         }
         // Update the congestion window based on the previously saved per ACK received state
-        ackedPath.congestionControlAckEnd(
+        ackedPath.congestionControl.ackEnd(
             rtt: ackedPath.rtt,
             path: ackedPath,
             mss: ackedPath.mss,
             packetsLost: packetsLost,
+            now: connection.now,
             qlog: connection.qLog
         )
         removeLostPackets(ackedPath: ackedPath, now: timeNow)

@@ -629,7 +629,7 @@ extension QUICStreamInstance {
                 minMSS = UInt64(pathMSS)
             }
 
-            allowedCCWindow += path.congestionControlAvailableCongestionWindow
+            allowedCCWindow += path.congestionControl.availableCongestionWindow
             return
         }
 

@@ -512,6 +512,22 @@ final class QUICConnectionTests: XCTestCase {
             )
         }
     }
+
+    func testTelemetrySnapshotPopulatesCorrectly() {
+        connection.context.onQueue {
+            self.connection.statistics[.rxPackets] = 42
+            self.connection.statistics[.txPackets] = 24
+            self.connection.statistics[.rxBytes] = 1000
+            self.connection.statistics[.txBytes] = 2000
+            
+            let snapshot = self.connection.getDiagnosticsSnapshot()
+            XCTAssertEqual(snapshot.receivedIPPacketCount, 42)
+            XCTAssertEqual(snapshot.sentIPPacketCount, 24)
+            XCTAssertEqual(snapshot.receivedTransportByteCount, 1000)
+            XCTAssertEqual(snapshot.sentTransportByteCount, 2000)
+        }
+    }
 }
+
 
 #endif

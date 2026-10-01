@@ -26,123 +26,123 @@ internal import os
 
 @available(Network 0.1.0, *)
 enum QUICStatistic: Int, CaseIterable {
-    case connectionAttempts
-    case connectionsEstablished
-    case keepAliveFramesSent
-    case keepAliveFramesAcknowledged
-    case pathsValidated
-    case successfulMigrations
+    case connectionAttempts = 0
+    case connectionsEstablished = 1
+    case keepAliveFramesSent = 2
+    case keepAliveFramesAcknowledged = 3
+    case pathsValidated = 4
+    case successfulMigrations = 5
 
-    case retransmitTimeOut
-    case keepAliveTimeOuts
-    case probeTimeOuts
+    case retransmitTimeOut = 6
+    case keepAliveTimeOuts = 7
+    case probeTimeOuts = 8
 
-    case rxPackets
-    case rxBytes
-    case txPackets
-    case txBytes
+    case rxPackets = 9
+    case rxBytes = 10
+    case txPackets = 11
+    case txBytes = 12
 
-    case rxStreamFrames
-    case rxStreamBytes
-    case rxStreamBlockedFrames
-    case rxStreamDataBlockedFrames
-    case rxStreamResetFrames
-    case rxStreamStopSendingFrames
+    case rxStreamFrames = 13
+    case rxStreamBytes = 14
+    case rxStreamBlockedFrames = 15
+    case rxStreamDataBlockedFrames = 16
+    case rxStreamResetFrames = 17
+    case rxStreamStopSendingFrames = 18
 
-    case txStreamFrames
-    case txStreamBytes
-    case txStreamBlockedFrames
-    case txStreamDataBlockedFrames
-    case txStreamResetFrames
-    case txStreamStopSendingFrames
+    case txStreamFrames = 19
+    case txStreamBytes = 20
+    case txStreamBlockedFrames = 21
+    case txStreamDataBlockedFrames = 22
+    case txStreamResetFrames = 23
+    case txStreamStopSendingFrames = 24
 
-    case rxInitialCryptoFrames
-    case rxInitialCryptoBytes
-    case rxHandshakeCryptoFrames
-    case rxHandshakeCryptoBytes
-    case rx0RTTCryptoFrames
-    case rx0RTTCryptoBytes
-    case rx1RTTCryptoFrames
-    case rx1RTTCryptoBytes
+    case rxInitialCryptoFrames = 25
+    case rxInitialCryptoBytes = 26
+    case rxHandshakeCryptoFrames = 27
+    case rxHandshakeCryptoBytes = 28
+    case rx0RTTCryptoFrames = 29
+    case rx0RTTCryptoBytes = 30
+    case rx1RTTCryptoFrames = 31
+    case rx1RTTCryptoBytes = 32
 
-    case txInitialCryptoFrames
-    case txInitialCryptoBytes
-    case txHandshakeCryptoFrames
-    case txHandshakeCryptoBytes
-    case tx0RTTCryptoFrames
-    case tx0RTTCryptoBytes
-    case tx1RTTCryptoFrames
-    case tx1RTTCryptoBytes
-    case txRetransmittedCryptoFrames
-    case txRetransmittedCryptoBytes
+    case txInitialCryptoFrames = 33
+    case txInitialCryptoBytes = 34
+    case txHandshakeCryptoFrames = 35
+    case txHandshakeCryptoBytes = 36
+    case tx0RTTCryptoFrames = 37
+    case tx0RTTCryptoBytes = 38
+    case tx1RTTCryptoFrames = 39
+    case tx1RTTCryptoBytes = 40
+    case txRetransmittedCryptoFrames = 41
+    case txRetransmittedCryptoBytes = 42
 
-    case rxDataBlockedFrames
-    case rxDuplicateBytes
-    case rxOutOfOrderBytes
-    case rxReorderedBytes
-    case rxReorderedPackets
+    case rxDataBlockedFrames = 43
+    case rxDuplicateBytes = 44
+    case rxOutOfOrderBytes = 45
+    case rxReorderedBytes = 46
+    case rxReorderedPackets = 47
 
-    case txDataBlockedFrames
-    case txRetransmittedBytes
-    case txRetransmittedPackets
-    case txLostBytes
-    case txLostPackets
+    case txDataBlockedFrames = 48
+    case txRetransmittedBytes = 49
+    case txRetransmittedPackets = 50
+    case txLostBytes = 51
+    case txLostPackets = 52
 
-    case rxApplicationCloseError
-    case txApplicationCloseError
+    case rxApplicationCloseError = 53
+    case txApplicationCloseError = 54
 
-    case rxConnectionCloseReasonInternalError
-    case rxConnectionCloseReasonServerBusy
-    case rxConnectionCloseReasonFlowControlError
-    case rxConnectionCloseReasonStreamLimitError
-    case rxConnectionCloseReasonStreamStateError
-    case rxConnectionCloseReasonFinalSizeError
-    case rxConnectionCloseReasonFrameEncodingError
-    case rxConnectionCloseReasonTransportParameterError
-    case rxConnectionCloseReasonProtocolViolation
-    case rxConnectionCloseReasonCryptoError
+    case rxConnectionCloseReasonInternalError = 55
+    case rxConnectionCloseReasonServerBusy = 56
+    case rxConnectionCloseReasonFlowControlError = 57
+    case rxConnectionCloseReasonStreamLimitError = 58
+    case rxConnectionCloseReasonStreamStateError = 59
+    case rxConnectionCloseReasonFinalSizeError = 60
+    case rxConnectionCloseReasonFrameEncodingError = 61
+    case rxConnectionCloseReasonTransportParameterError = 62
+    case rxConnectionCloseReasonProtocolViolation = 63
+    case rxConnectionCloseReasonCryptoError = 64
 
-    case txConnectionCloseReasonInternalError
-    case txConnectionCloseReasonServerBusy
-    case txConnectionCloseReasonFlowControlError
-    case txConnectionCloseReasonStreamLimitError
-    case txConnectionCloseReasonStreamStateError
-    case txConnectionCloseReasonFinalSizeError
-    case txConnectionCloseReasonFrameEncodingError
-    case txConnectionCloseReasonTransportParameterError
-    case txConnectionCloseReasonProtocolViolation
-    case txConnectionCloseReasonCryptoError
+    case txConnectionCloseReasonInternalError = 65
+    case txConnectionCloseReasonServerBusy = 66
+    case txConnectionCloseReasonFlowControlError = 67
+    case txConnectionCloseReasonStreamLimitError = 68
+    case txConnectionCloseReasonStreamStateError = 69
+    case txConnectionCloseReasonFinalSizeError = 70
+    case txConnectionCloseReasonFrameEncodingError = 71
+    case txConnectionCloseReasonTransportParameterError = 72
+    case txConnectionCloseReasonProtocolViolation = 73
+    case txConnectionCloseReasonCryptoError = 74
 
-    case rxECT0
-    case rxECT1
-    case rxECTCE
+    case rxECT0 = 75
+    case rxECT1 = 76
+    case rxECTCE = 77
 
-    case txECT0
-    case txECT1
-    case txECTCE
+    case txECT0 = 78
+    case txECT1 = 79
+    case txECTCE = 80
 
-    case inboundUnidirectionalStreams
-    case inboundBidirectionalStreams
-    case outboundUnidirectionalStreams
-    case outboundBidirectionalStreams
+    case inboundUnidirectionalStreams = 81
+    case inboundBidirectionalStreams = 82
+    case outboundUnidirectionalStreams = 83
+    case outboundBidirectionalStreams = 84
 
-    case ecnCapablePacketsSent
-    case ecnCapablePacketsAcknowledged
-    case ecnCapablePacketsMarked
-    case ecnCapablePacketsLost
+    case ecnCapablePacketsSent = 85
+    case ecnCapablePacketsAcknowledged = 86
+    case ecnCapablePacketsMarked = 87
+    case ecnCapablePacketsLost = 88
 
-    case txDatagramFrameWithLength
-    case rxDatagramFrameWithLength
-    case txDatagramFrameWithOutLength
-    case rxDatagramFrameWithOutLength
+    case txDatagramFrameWithLength = 89
+    case rxDatagramFrameWithLength = 90
+    case txDatagramFrameWithOutLength = 91
+    case rxDatagramFrameWithOutLength = 92
 
-    case txNewToken
-    case rxNewToken
+    case txNewToken = 93
+    case rxNewToken = 94
 
-    case txDepartureTimestamp
+    case txDepartureTimestamp = 95
 
-    case statelessResetReceived
-    case statelessResetDuringPathProbe
+    case statelessResetReceived = 96
+    case statelessResetDuringPathProbe = 97
 }
 
 // Availability due to Swift's inline array type (`[96 of Int]`)

@@ -584,19 +584,27 @@ struct EventCongestionStateUpdated: EventProtocol {
 }
 
 @available(Network 0.1.0, *)
+@available(Network 0.1.0, *)
+protocol DiagnosticsSink: Sendable {
+    func receive(event: Event)
+}
+
 final class QLog {
     private var eventsList: [Event]
     private var topLevelObject: [String: Any]
+    private var maxEvents: Int
+    public var sink: DiagnosticsSink?
     private var disableTimestamps: Bool = false
     private let context: NetworkContext
     private let startTime: NetworkClock.Instant
     var configuration: QLogConfiguration?
 
-    public init(configuration: QLogConfiguration? = nil, context: NetworkContext) {
+    public init(configuration: QLogConfiguration? = nil, context: NetworkContext, maxEvents: Int = 1024) {
         self.configuration = configuration
         self.context = context
         self.startTime = context.now
         self.eventsList = []
+        self.maxEvents = maxEvents
         self.topLevelObject = [:]
         self.topLevelObject["qlog_version"] = "draft-01"
         if let title = configuration?.logTitle {
@@ -648,7 +656,7 @@ final class QLog {
             trigger: .sentReceivedTrigger(.unknown)
         )
         let event = Event.packetSent(packetEvent, timestamp: calculateTimestamp(timestamp))
-        eventsList.append(event)
+        appendEvent(event)
     }
 
     func packetReceived(
@@ -664,7 +672,7 @@ final class QLog {
             trigger: .sentReceivedTrigger(.unknown)
         )
         let event = Event.packetReceived(packetEvent, timestamp: calculateTimestamp(timestamp))
-        eventsList.append(event)
+        appendEvent(event)
     }
 
     func packetLost(
@@ -680,7 +688,7 @@ final class QLog {
             trigger: .lostTrigger(trigger)
         )
         let event = Event.packetLost(packetEvent, timestamp: calculateTimestamp(timestamp))
-        eventsList.append(event)
+        appendEvent(event)
     }
 
     func metricsUpdated(
@@ -709,7 +717,7 @@ final class QLog {
             inRecovery: inRecovery
         )
         let event = Event.metricsUpdated(metricEvent, timestamp: calculateTimestamp(timestamp))
-        eventsList.append(event)
+        appendEvent(event)
     }
 
     public func recoveryUpdated(
@@ -796,7 +804,7 @@ final class QLog {
                 streamEvent,
                 timestamp: calculateTimestamp(timestamp)
             )
-            eventsList.append(event)
+            appendEvent(event)
         }
     }
 
@@ -816,7 +824,7 @@ final class QLog {
             congestionEvent,
             timestamp: calculateTimestamp(timestamp)
         )
-        eventsList.append(event)
+        appendEvent(event)
     }
 
     func logStreamTypeSet(
@@ -836,7 +844,7 @@ final class QLog {
             streamTypeSetEvent,
             timestamp: calculateTimestamp(timestamp)
         )
-        eventsList.append(event)
+        appendEvent(event)
     }
 
     public func parametersSet(
@@ -885,7 +893,7 @@ final class QLog {
             preferredAddress: preferredAddress
         )
         let event = Event.parametersSet(parametersEvent, timestamp: calculateTimestamp(timestamp))
-        eventsList.append(event)
+        appendEvent(event)
     }
 
     public func parametersSet(
@@ -940,6 +948,17 @@ final class QLog {
 
     func disableTimestamps(disableTimestamps: Bool) {
         self.disableTimestamps = disableTimestamps
+    }
+
+    private func appendEvent(_ event: Event) {
+        if let sink = sink {
+            sink.receive(event: event)
+        } else {
+            eventsList.append(event)
+            if eventsList.count > maxEvents {
+                eventsList.removeFirst(eventsList.count - maxEvents)
+            }
+        }
     }
 
     func dumpData(forFlowType flowType: QLogFlowType?) -> Data? {

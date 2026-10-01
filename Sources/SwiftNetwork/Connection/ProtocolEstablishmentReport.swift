@@ -14,7 +14,7 @@
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public enum ClientAccurateECNState: UInt32, Equatable {
+public enum ClientAccurateECNState: UInt32, Equatable, Sendable {
     case ecnInvalid = 0
     case ecnFeatureDisabled = 1
     case ecnFeatureEnabled = 2
@@ -29,7 +29,7 @@ public enum ClientAccurateECNState: UInt32, Equatable {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public enum ServerAccurateECNState: UInt32, Equatable {
+public enum ServerAccurateECNState: UInt32, Equatable, Sendable {
     case ecnInvalid = 0
     case ecnFeatureDisabled = 1
     case ecnFeatureEnabled = 2
@@ -45,7 +45,7 @@ public enum ServerAccurateECNState: UInt32, Equatable {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public struct ProtocolEstablishmentReport: Equatable {
+public struct ProtocolEstablishmentReport: Equatable, Sendable {
     let handshakeMilliseconds: NetworkDuration
     let handshakeRTTMilliseconds: NetworkDuration
     let protocolIdentifier: ProtocolIdentifier

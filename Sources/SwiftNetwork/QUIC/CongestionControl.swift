@@ -25,12 +25,91 @@ internal import os
 #endif
 
 @available(Network 0.1.0, *)
-enum CongestionControl {
+public enum CongestionControlAlgorithm: CustomStringConvertible, Sendable {
+    case cubic
+    #if !NETWORK_EMBEDDED
+    case ledbat
+    case prague
+    #endif
+
+    public var description: String {
+        switch self {
+        case .cubic: return "cubic"
+        #if !NETWORK_EMBEDDED
+        case .ledbat: return "ledbat"
+        case .prague: return "prague"
+        #endif
+        }
+    }
+}
+
+@available(Network 0.1.0, *)
+public struct CongestionControlPolicy: CustomStringConvertible, Sendable {
+    public var algorithm: CongestionControlAlgorithm
+
+    public init(algorithm: CongestionControlAlgorithm = .cubic) {
+        self.algorithm = algorithm
+    }
+
+    public var description: String {
+        algorithm.description
+    }
+}
+
+@available(Network 0.1.0, *)
+enum CongestionControlEngine {
     case cubic(algorithm: Cubic)
     #if !NETWORK_EMBEDDED
     case ledbat(algorithm: Ledbat)
     case prague(algorithm: Prague)
     #endif
+
+    init(
+        policy: CongestionControlPolicy,
+        mss: Int,
+        pacer: inout Pacer,
+        qlog: QLog?,
+        log: LogPrefixer
+    ) {
+        switch policy.algorithm {
+        case .cubic:
+            self = .cubic(algorithm: Cubic(pacer: &pacer, mss: mss, qlog: qlog, logPrefixer: log))
+        #if !NETWORK_EMBEDDED
+        case .ledbat:
+            self = .ledbat(algorithm: Ledbat(mss: mss, qlog: qlog, logPrefixer: log))
+        case .prague:
+            self = .prague(algorithm: Prague(pacer: &pacer, mss: mss, qlog: qlog, logPrefixer: log))
+        #endif
+        }
+    }
+
+    mutating func apply(
+        policy: CongestionControlPolicy,
+        mss: Int,
+        pacer: inout Pacer,
+        qlog: QLog?,
+        log: LogPrefixer
+    ) {
+        switch policy.algorithm {
+        case .cubic:
+            if case .cubic = self { return }
+            var cubic = Cubic(pacer: &pacer, mss: mss, qlog: qlog, logPrefixer: log)
+            cubic.inherit(from: self, mss: mss, qlog: qlog)
+            self = .cubic(algorithm: cubic)
+        #if !NETWORK_EMBEDDED
+        case .ledbat:
+            if case .ledbat = self { return }
+            var ledbat = Ledbat(mss: mss, qlog: qlog, logPrefixer: log)
+            ledbat.inherit(from: self, mss: mss, qlog: qlog)
+            self = .ledbat(algorithm: ledbat)
+        case .prague:
+            if case .prague = self { return }
+            var prague = Prague(pacer: &pacer, mss: mss, qlog: qlog, logPrefixer: log)
+            prague.inherit(from: self, mss: mss, qlog: qlog)
+            self = .prague(algorithm: prague)
+        #endif
+        }
+    }
 
     var congestionWindow: UInt64 {
         switch self {
@@ -205,6 +284,66 @@ enum CongestionControl {
         }
     }
 
+    mutating func processECN(
+        path: QUICPath?,
+        ceCount: Int,
+        packetsAcked: Int,
+        largestSentPN: Int64,
+        largestAckedPN: Int64,
+        largestAckedSentTime: NetworkClock.Instant,
+        mss: Int,
+        smoothedRTT: NetworkDuration,
+        now: NetworkClock.Instant,
+        qlog: QLog? = nil
+    ) {
+        switch self {
+        case .cubic(var cubic):
+            cubic.processECN(
+                path: path,
+                ceCount: ceCount,
+                packetsAcked: packetsAcked,
+                largestSentPN: largestSentPN,
+                largestAckedPN: largestAckedPN,
+                largestAckedSentTime: largestAckedSentTime,
+                mss: mss,
+                smoothedRTT: smoothedRTT,
+                now: now,
+                qlog: qlog
+            )
+            self = .cubic(algorithm: cubic)
+        #if !NETWORK_EMBEDDED
+        case .ledbat(var ledbat):
+            ledbat.processECN(
+                path: path,
+                ceCount: ceCount,
+                packetsAcked: packetsAcked,
+                largestSentPN: largestSentPN,
+                largestAckedPN: largestAckedPN,
+                largestAckedSentTime: largestAckedSentTime,
+                mss: mss,
+                smoothedRTT: smoothedRTT,
+                now: now,
+                qlog: qlog
+            )
+            self = .ledbat(algorithm: ledbat)
+        case .prague(var prague):
+            prague.processECN(
+                path: path,
+                ceCount: ceCount,
+                packetsAcked: packetsAcked,
+                largestSentPN: largestSentPN,
+                largestAckedPN: largestAckedPN,
+                largestAckedSentTime: largestAckedSentTime,
+                mss: mss,
+                smoothedRTT: smoothedRTT,
+                now: now,
+                qlog: qlog
+            )
+            self = .prague(algorithm: prague)
+        #endif
+        }
+    }
+
     mutating func ackBegin() {
         switch self {
         case .cubic(algorithm: var cubic):
@@ -328,7 +467,7 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     var pipeAckIndex: Int { get set }
 
     mutating func inherit(
-        from: CongestionControl,
+        from: CongestionControlEngine,
         mss: Int,
         qlog: QLog?
     )

@@ -716,7 +716,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } else {
             path.mss = newMSS
         }
-        path.congestionControlMSSChanged(mss: path.mss)
+        path.congestionControl.mssChanged(mss: path.mss)
         if path == currentPath {
             applyToAllSecondaryFlows { datagramFlow in
                 datagramFlow.updateUsableDatagramFrameSize(connection: self, path: path)
@@ -2773,6 +2773,21 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     #endif
 
     public func updateDataTransferSnapshot(flow: MultiplexedFlowIdentifier, _ snapshot: inout DataTransferSnapshot) {
+        snapshot.snapshotTimestamp = self.now
+        snapshot.receivedIPPacketCount = UInt64(clamping: self.stats[.rxPackets])
+        snapshot.sentIPPacketCount = UInt64(clamping: self.stats[.txPackets])
+        snapshot.sentTransportLostByteCount = UInt64(clamping: self.stats[.txLostBytes])
+        snapshot.sentTransportLostPacketCount = UInt64(clamping: self.stats[.txLostPackets])
+        snapshot.sentTransportRetransmittedPacketCount = UInt64(clamping: self.stats[.txRetransmittedPackets])
+        snapshot.pathsValidated = UInt64(clamping: self.stats[.pathsValidated])
+        snapshot.successfulMigrations = UInt64(clamping: self.stats[.successfulMigrations])
+        snapshot.receivedStreamFrameCount = UInt64(clamping: self.stats[.rxStreamFrames])
+        snapshot.sentStreamFrameCount = UInt64(clamping: self.stats[.txStreamFrames])
+        snapshot.receivedStreamResetFrameCount = UInt64(clamping: self.stats[.rxStreamResetFrames])
+        snapshot.sentStreamResetFrameCount = UInt64(clamping: self.stats[.txStreamResetFrames])
+        snapshot.receivedDatagramFrameCount = UInt64(clamping: self.stats[.rxDatagramFrameWithLength]) + UInt64(clamping: self.stats[.rxDatagramFrameWithOutLength])
+        snapshot.sentDatagramFrameCount = UInt64(clamping: self.stats[.txDatagramFrameWithLength]) + UInt64(clamping: self.stats[.txDatagramFrameWithOutLength])
+
         snapshot.receivedTransportOutOfOrderByteCount = UInt64(clamping: self.stats[.rxOutOfOrderBytes])
         snapshot.sentTransportRetransmittedByteCount = UInt64(clamping: self.stats[.txRetransmittedBytes])
         snapshot.sentTransportECNCapablePacketCount = UInt64(clamping: self.stats[.ecnCapablePacketsSent])
@@ -2780,12 +2795,49 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         snapshot.sentTransportECNCapableMarkedPacketCount = UInt64(clamping: self.stats[.ecnCapablePacketsMarked])
         snapshot.sentTransportECNCapableLostPacketCount = UInt64(clamping: self.stats[.ecnCapablePacketsLost])
         if let path = currentPath {
+            snapshot.pathIdentifier = path.pathIdentifier
             snapshot.transportMinimumRTT = path.rtt.minRTT
             snapshot.transportSmoothedRTT = path.rtt.smoothedRTT
             snapshot.transportCurrentRTT = path.rtt.adjustedRTT
             snapshot.transportRTTVariance = path.rtt.RTTVariance
-            path.congestionControlFilloutDataTransferSnapshot(snapshot: &snapshot)
+            snapshot.transportBytesInFlight = path.congestionControl.bytesInFlight
+            path.congestionControl.filloutDataTransferSnapshot(dataTransferSnapshot: &snapshot)
         }
+    }
+
+    public func getDiagnosticsSnapshot() -> DataTransferSnapshot {
+        var snapshot = DataTransferSnapshot()
+        snapshot.snapshotTimestamp = self.now
+        snapshot.receivedIPPacketCount = UInt64(clamping: self.stats[.rxPackets])
+        snapshot.sentIPPacketCount = UInt64(clamping: self.stats[.txPackets])
+        snapshot.sentTransportLostByteCount = UInt64(clamping: self.stats[.txLostBytes])
+        snapshot.sentTransportLostPacketCount = UInt64(clamping: self.stats[.txLostPackets])
+        snapshot.sentTransportRetransmittedPacketCount = UInt64(clamping: self.stats[.txRetransmittedPackets])
+        snapshot.pathsValidated = UInt64(clamping: self.stats[.pathsValidated])
+        snapshot.successfulMigrations = UInt64(clamping: self.stats[.successfulMigrations])
+        snapshot.receivedStreamFrameCount = UInt64(clamping: self.stats[.rxStreamFrames])
+        snapshot.sentStreamFrameCount = UInt64(clamping: self.stats[.txStreamFrames])
+        snapshot.receivedStreamResetFrameCount = UInt64(clamping: self.stats[.rxStreamResetFrames])
+        snapshot.sentStreamResetFrameCount = UInt64(clamping: self.stats[.txStreamResetFrames])
+        snapshot.receivedDatagramFrameCount = UInt64(clamping: self.stats[.rxDatagramFrameWithLength]) + UInt64(clamping: self.stats[.rxDatagramFrameWithOutLength])
+        snapshot.sentDatagramFrameCount = UInt64(clamping: self.stats[.txDatagramFrameWithLength]) + UInt64(clamping: self.stats[.txDatagramFrameWithOutLength])
+
+        snapshot.receivedTransportOutOfOrderByteCount = UInt64(clamping: self.stats[.rxOutOfOrderBytes])
+        snapshot.sentTransportRetransmittedByteCount = UInt64(clamping: self.stats[.txRetransmittedBytes])
+        snapshot.sentTransportECNCapablePacketCount = UInt64(clamping: self.stats[.ecnCapablePacketsSent])
+        snapshot.sentTransportECNCapableAckedPacketCount = UInt64(clamping: self.stats[.ecnCapablePacketsAcknowledged])
+        snapshot.sentTransportECNCapableMarkedPacketCount = UInt64(clamping: self.stats[.ecnCapablePacketsMarked])
+        snapshot.sentTransportECNCapableLostPacketCount = UInt64(clamping: self.stats[.ecnCapablePacketsLost])
+        if let path = currentPath {
+            snapshot.pathIdentifier = path.pathIdentifier
+            snapshot.transportMinimumRTT = path.rtt.minRTT
+            snapshot.transportSmoothedRTT = path.rtt.smoothedRTT
+            snapshot.transportCurrentRTT = path.rtt.adjustedRTT
+            snapshot.transportRTTVariance = path.rtt.RTTVariance
+            snapshot.transportBytesInFlight = path.congestionControl.bytesInFlight
+            path.congestionControl.filloutDataTransferSnapshot(dataTransferSnapshot: &snapshot)
+        }
+        return snapshot
     }
 
     public var protocolEstablishmentReport: ProtocolEstablishmentReport? {
@@ -3754,7 +3806,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Ignoring is equivalent to an infinite window
         var availableCongestionWindow = UInt64.max
         if !ignoreCongestionWindow {
-            availableCongestionWindow = path.congestionControlAvailableCongestionWindow
+            availableCongestionWindow = path.congestionControl.availableCongestionWindow
         }
 
         let startSendingTimestamp = self.now
@@ -3836,7 +3888,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Ignoring is equivalent to an infinite window
         var availableCongestionWindow = UInt64.max
         if !ignoreCongestionWindow {
-            availableCongestionWindow = path.congestionControlAvailableCongestionWindow
+            availableCongestionWindow = path.congestionControl.availableCongestionWindow
         }
 
         let startSendingTimestamp = self.now
