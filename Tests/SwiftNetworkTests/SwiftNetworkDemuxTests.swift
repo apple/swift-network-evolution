@@ -122,8 +122,7 @@ final class SwiftNetworkDemuxTests: NetTestCase {
         context.async {
             defer { expectation.fulfill() }
 
-            var parameters = Parameters()
-            parameters.context = context
+            let parameters = Parameters(context: context)
 
             let localEndpoint = Endpoint(address: IPv4Address(Self.localIPv4Address)!, port: 1234)
             let remoteEndpoint = Endpoint(address: IPv4Address(Self.remoteIPv4Address)!, port: 8080)
@@ -204,8 +203,7 @@ final class SwiftNetworkDemuxTests: NetTestCase {
                 [(harness: DatagramUpperHarness<TestDatagramLinkageFamily>, patterns: [DemuxPatternInput])] = []
 
             for demuxedFlow in demuxedFlows {
-                var demuxParameters = Parameters()
-                demuxParameters.context = context
+                let demuxParameters = Parameters(context: context)
 
                 guard !demuxedFlow.isEmpty else { continue }
 

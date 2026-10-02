@@ -165,11 +165,9 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
             serverIPOptions.setLogID(prefix: "L", parent: identifier, protocolLogIDNumber: 3)
             serverIPOptions.setProtocolInstance(serverIPLower.identifier)
 
-            var clientParameters = Parameters()
-            clientParameters.context = context
+            let clientParameters = Parameters(context: context)
 
-            var serverParameters = Parameters()
-            serverParameters.context = context
+            let serverParameters = Parameters(context: context)
 
             let clientPath = PathProperties(parameters: clientParameters)
             let serverPath = PathProperties(parameters: serverParameters)
