@@ -3123,38 +3123,8 @@ struct TransmittedItems: ~Copyable {
         }
     }
 
-    /// The stream sends a packet carried.
-    ///
-    /// A packet almost always carries a single stream, and every sent packet keeps its record until it is
-    /// acknowledged or lost, so the first send is stored inline and only the rest need storage of their own.
-    struct SentStreams: ~Copyable {
-        private var first: SentStream?
-        private var rest = NetworkUniqueArray<SentStream>()
-
-        var isEmpty: Bool {
-            first == nil
-        }
-
-        var count: Int {
-            first == nil ? 0 : 1 + rest.count
-        }
-
-        subscript(index: Int) -> SentStream {
-            if index == 0, let first {
-                return first
-            }
-            return rest[index - 1]
-        }
-
-        mutating func append(_ sentStream: SentStream) {
-            if first == nil {
-                first = sentStream
-            } else {
-                rest.append(sentStream)
-            }
-        }
-    }
-    var sentStreams = SentStreams()
+    /// The stream sends a packet carried. A packet almost always carries one, so it is stored inline.
+    var sentStreams = NetworkSmallUniqueArray<SentStream, 1>()
 
     var maxStreamDataFlows = Deque<MultiplexedFlowIdentifier>()
     var streamDataBlockedFlows = Deque<MultiplexedFlowIdentifier>()
@@ -3248,4 +3218,9 @@ struct TransmittedItems: ~Copyable {
     }
 }
 
+/// `SentStream` is 33 bytes, 40 to its stride.
+@available(Network 0.1.0, *)
+extension TransmittedItems.SentStream: NetworkInlineStorable {
+    typealias InlineSlot = InlineArray<5, UInt64>
+}
 #endif
