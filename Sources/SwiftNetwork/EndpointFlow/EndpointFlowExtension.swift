@@ -91,8 +91,9 @@ extension EndpointFlow {
 
                 switch transport {
                 case .tcp(let options):
-                    // In bridged (test-harness) mode drive a raw TCP instance over the bridge;
-                    // otherwise use a real kernel socket. The flow wiring is identical.
+                    // In bridged (test-harness) mode drive the user TCP stack
+                    // (TCP -> IP -> Bridge); otherwise use a real kernel socket. The
+                    // flow wiring above TCP is identical.
                     let bridged: Bool
                     if case .custom(let linkOptions) = stack.link,
                         linkOptions.identifier == BridgeDatagramProtocol.identifier
@@ -106,8 +107,16 @@ extension EndpointFlow {
                     if bridged {
                         let (tcpUpper, tcpLower) = self.storage.createTCPInstance()
                         transportLower = tcpLower
-                        let bridge = self.storage.createBridgeDatagramInstance()
+                        let (ipUpper, ipLower) = self.storage.createIPInstance()
                         try tcpUpper.invokeAttachLowerProtocol(
+                            ipLower,
+                            remote: effectiveRemoteEndpoint,
+                            local: effectiveLocalEndpoint,
+                            parameters: self.parameters,
+                            path: path
+                        )
+                        let bridge = self.storage.createBridgeDatagramInstance()
+                        try ipUpper.invokeAttachLowerProtocol(
                             bridge,
                             remote: effectiveRemoteEndpoint,
                             local: effectiveLocalEndpoint,
