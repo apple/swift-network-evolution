@@ -1601,8 +1601,8 @@ extension FrameDatagram: SendableItem {
             }
             var datagramsListIsEmpty = false
             connection.accessDatagramsToSend(flow: datagramFlow) { datagrams in
-                while var datagramFrame = datagrams.popFirst() {
-                    let dataLength = datagramFrame.unclaimedLength
+                while !datagrams.isEmpty {
+                    let dataLength = datagrams.peekFirstFrame { $0.unclaimedLength }
                     connection.log.datapath(
                         "Handle output datagram for flow \(firstFlowID.debugDescription) (size \(dataLength))"
                     )
@@ -1610,32 +1610,39 @@ extension FrameDatagram: SendableItem {
                         connection.log.error(
                             "Unable to send datagram frame, length \(dataLength) exceeds usable size \(datagramFlow.usableDatagramSize)"
                         )
+                        var datagramFrame = datagrams.popFirst()!
                         datagramFrame.finalize(success: false)
                         continue
                     }
 
-                    do throws(QUICError) {
-                        try FrameDatagram.write(
-                            frame: &frame,
-                            hasLength: true,
-                            flowID: datagramFlow.flowID,
-                            contextID: datagramFlow.contextID,
-                            data: datagramFrame,
-                            stats: &stats
-                        )
-                        sentDatagram = true
-                        shorthandFrames?.append(
-                            toShorthandLogEntry(
+                    // Write it from the queue and only remove it once it is written, so one that
+                    // doesn't fit in the rest of this packet stays queued for the next one
+                    writeError = datagrams.peekFirstFrame { datagramFrame in
+                        do throws(QUICError) {
+                            try FrameDatagram.write(
+                                frame: &frame,
+                                hasLength: true,
                                 flowID: datagramFlow.flowID,
-                                length: UInt64(dataLength)
+                                contextID: datagramFlow.contextID,
+                                data: datagramFrame,
+                                stats: &stats
                             )
-                        )
-                    } catch {
-                        // It doesn't fit in the rest of this packet, keep it for the next one
-                        datagrams.prepend(frame: datagramFrame)
-                        writeError = error
+                            return nil
+                        } catch {
+                            return error
+                        }
+                    }
+                    if writeError != nil {
                         break
                     }
+                    sentDatagram = true
+                    shorthandFrames?.append(
+                        toShorthandLogEntry(
+                            flowID: datagramFlow.flowID,
+                            length: UInt64(dataLength)
+                        )
+                    )
+                    var datagramFrame = datagrams.popFirst()!
                     datagramFrame.finalize(success: true)
                     break
                 }
