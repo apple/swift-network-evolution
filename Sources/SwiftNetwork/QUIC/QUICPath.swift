@@ -156,7 +156,7 @@ public final class QUICPath: MultiplexingDatagramPath<
 
     var bdp = BandwidthDelayProduct()
 
-    private var congestionControl: CongestionControl?
+    private var congestionControl = CongestionControl()
 
     var pacer: Pacer
 
@@ -371,13 +371,12 @@ public final class QUICPath: MultiplexingDatagramPath<
 
         let pacerEnabled = (pacePackets || QUICPreferences.shared.pacePackets)
         self.pacer = Pacer(enabled: pacerEnabled)
-        self.congestionControl = .cubic(
-            algorithm: Cubic(
-                pacer: &self.pacer,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog,
-                logPrefixer: self.log
-            )
+        self.congestionControl = CongestionControl(
+            algorithm: .cubic,
+            pacer: &self.pacer,
+            mss: self.initialMSS,
+            qlog: parentProtocol.qLog,
+            logPrefixer: self.log
         )
 
         self.spinValue = parentProtocol.initialSpinValue
@@ -422,42 +421,16 @@ public final class QUICPath: MultiplexingDatagramPath<
     }
 
     func resetCongestionControl() {
-        switch self.congestionControl {
-        case .cubic:
-            self.congestionControl = .cubic(
-                algorithm: Cubic(
-                    pacer: &self.pacer,
-                    mss: self.initialMSS,
-                    qlog: parentProtocol.qLog,
-                    logPrefixer: self.log
-                )
-            )
-        #if !NETWORK_EMBEDDED
-        case .ledbat:
-            self.congestionControl = .ledbat(
-                algorithm: Ledbat(
-                    mss: self.initialMSS,
-                    qlog: parentProtocol.qLog,
-                    logPrefixer: self.log
-                )
-            )
-        case .prague:
-            self.congestionControl = .prague(
-                algorithm: Prague(
-                    pacer: &self.pacer,
-                    mss: self.initialMSS,
-                    qlog: parentProtocol.qLog,
-                    logPrefixer: self.log
-                )
-            )
-        #endif
-        case .none:
-            break
-        }
+        congestionControl.reset(
+            pacer: &pacer,
+            mss: initialMSS,
+            qlog: parentProtocol.qLog,
+            logPrefixer: log
+        )
     }
 
     func idleTimeoutCongestionControl() {
-        self.congestionControl?.idleTimeout(mss: mss)
+        self.congestionControl.idleTimeout(mss: mss)
     }
 
     func setupL4SState(l4sEnabled: Bool?) {
@@ -478,51 +451,22 @@ public final class QUICPath: MultiplexingDatagramPath<
     func markAsBackground(_ background: Bool) {
         #if !NETWORK_EMBEDDED
         // Use LEDBAT for background cases
-        switch self.congestionControl {
-        case .cubic:
-            if !background { return }  // Nothing to do, already not background
-            var ledbat = Ledbat(
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog,
-                logPrefixer: self.log
-            )
-            ledbat.inherit(
-                from: self.congestionControl!,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog
-            )
-            self.congestionControl = .ledbat(algorithm: ledbat)
-        case .ledbat:
-            if background { return }  // Nothing to do, already background
-            // Inherit from the current LEDBAT so bytes in flight (and the window) carry over.
-            var cubic = Cubic(
-                pacer: &self.pacer,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog,
-                logPrefixer: self.log
-            )
-            cubic.inherit(
-                from: self.congestionControl!,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog
-            )
-            self.congestionControl = .cubic(algorithm: cubic)
-        case .prague:
-            if !background { return }  // Nothing to do, already not background
-            var ledbat = Ledbat(
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog,
-                logPrefixer: self.log
-            )
-            ledbat.inherit(
-                from: self.congestionControl!,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog
-            )
-            self.congestionControl = .ledbat(algorithm: ledbat)
-        case .none:
-            break
+        let target: CongestionControl.Algorithm
+        if background {
+            target = .ledbat
+        } else if congestionControl.algorithm == .ledbat {
+            target = .cubic
+        } else {
+            return  // Nothing to do, already not background
         }
+        // The new controller inherits bytes in flight (and, by its own rule, the window).
+        congestionControl.switchTo(
+            target,
+            pacer: &pacer,
+            mss: initialMSS,
+            qlog: parentProtocol.qLog,
+            logPrefixer: log
+        )
         #endif
     }
 
@@ -702,22 +646,22 @@ public final class QUICPath: MultiplexingDatagramPath<
 extension QUICPath {
     @inline(always)
     var congestionControlWindow: UInt64 {
-        congestionControl?.congestionWindow ?? 0
+        congestionControl.congestionWindow
     }
 
     @inline(always)
     var congestionControlAvailableCongestionWindow: UInt64 {
-        congestionControl?.availableCongestionWindow ?? 0
+        congestionControl.availableCongestionWindow
     }
 
     @inline(always)
     func congestionControlCanSend(packetLength: Int) -> Bool {
-        congestionControl?.canSend(packetLength: packetLength) ?? false
+        congestionControl.canSend(packetLength: packetLength)
     }
 
     @inline(always)
     func congestionControlPersistentCongestion(mss: Int, qlog: QLog? = nil) {
-        congestionControl?.persistentCongestion(mss: mss, qlog: qlog)
+        congestionControl.persistentCongestion(mss: mss, qlog: qlog)
     }
 
     @inline(always)
@@ -728,7 +672,7 @@ extension QUICPath {
         packetsLost: Bool,
         qlog: QLog? = nil
     ) {
-        congestionControl?.ackEnd(
+        congestionControl.ackEnd(
             rtt: rtt,
             path: self,
             mss: mss,
@@ -740,12 +684,12 @@ extension QUICPath {
 
     @inline(always)
     func congestionControlPacketsSent(bytesSent: Int, qlog: QLog? = nil) {
-        congestionControl?.packetSent(bytesSent: bytesSent, qlog: qlog)
+        congestionControl.packetSent(bytesSent: bytesSent, qlog: qlog)
     }
 
     @inline(always)
     func congestionControlPacketsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant) {
-        congestionControl?.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
+        congestionControl.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
     }
 
     @inline(always)
@@ -757,49 +701,49 @@ extension QUICPath {
     ) -> Bool {
         // Loss accounting doesn't repace this path, so there is no path to hand down.
         let unpacedPath: QUICPath? = nil
-        return congestionControl?.packetsLost(
+        return congestionControl.packetsLost(
             path: unpacedPath,
             bytesLost: bytesLost,
             largestLostSentTime: largestLostSentTime,
             mss: mss,
             smoothedRTT: smoothedRTT,
             now: parentProtocol.now
-        ) ?? false
+        )
     }
 
     @inline(always)
     func congestionControlPacketDiscarded(bytesSent: Int, qlog: QLog? = nil) {
-        congestionControl?.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
+        congestionControl.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
     }
 
     @inline(always)
     func congestionControlAckBegin() {
-        congestionControl?.ackBegin()
+        congestionControl.ackBegin()
     }
 
     @inline(always)
     var congestionControlBytesInFlight: UInt64 {
-        congestionControl?.bytesInFlight ?? 0
+        congestionControl.bytesInFlight
     }
 
     @inline(always)
     var congestionControlName: String {
-        congestionControl?.name ?? "none"
+        congestionControl.name
     }
 
     @inline(always)
     func congestionControlSpuriousRetransmit(qlog: QLog? = nil) {
-        congestionControl?.spuriousRetransmit(qlog: qlog)
+        congestionControl.spuriousRetransmit(qlog: qlog)
     }
 
     @inline(always)
     func congestionControlMSSChanged(mss: Int) {
-        congestionControl?.mssChanged(mss: mss)
+        congestionControl.mssChanged(mss: mss)
     }
 
     @inline(always)
     func congestionControlIdleTimeout(mss: Int) {
-        congestionControl?.idleTimeout(mss: mss)
+        congestionControl.idleTimeout(mss: mss)
     }
 
     @inline(always)
@@ -815,7 +759,7 @@ extension QUICPath {
     ) {
         // ECN accounting doesn't repace this path, so there is no path to hand down.
         let unpacedPath: QUICPath? = nil
-        congestionControl?.processECN(
+        congestionControl.processECN(
             path: unpacedPath,
             ceCount: ceCount,
             packetsAcked: packetsAcked,
@@ -831,7 +775,7 @@ extension QUICPath {
 
     @inline(always)
     func congestionControlFilloutDataTransferSnapshot(snapshot: inout DataTransferSnapshot) {
-        congestionControl?.filloutDataTransferSnapshot(dataTransferSnapshot: &snapshot)
+        congestionControl.filloutDataTransferSnapshot(dataTransferSnapshot: &snapshot)
     }
 }
 
