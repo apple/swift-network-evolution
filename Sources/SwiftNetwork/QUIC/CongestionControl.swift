@@ -24,69 +24,179 @@ internal import Logging
 internal import os
 #endif
 
+// An operation on whichever congestion controller is active.
 @available(Network 0.1.0, *)
-enum CongestionControl {
-    case cubic(algorithm: Cubic)
+protocol CongestionControlOperation {
+    associatedtype Result
+    func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) -> Result
+}
+
+// A read of whichever congestion controller is active.
+@available(Network 0.1.0, *)
+protocol CongestionControlQuery {
+    associatedtype Result
+    func callAsFunction<Controller: CongestionControlProtocol>(_ controller: Controller) -> Result
+}
+
+@available(Network 0.1.0, *)
+struct CongestionControl {
+    enum Algorithm: UInt8 {
+        case cubic
+        #if !NETWORK_EMBEDDED
+        case ledbat
+        case prague
+        #endif
+
+        var name: String {
+            switch self {
+            case .cubic: return "CUBIC"
+            #if !NETWORK_EMBEDDED
+            case .ledbat: return "LEDBAT"
+            case .prague: return "PRAGUE"
+            #endif
+            }
+        }
+    }
+
+    private(set) var algorithm: Algorithm
+    private var cubic: Cubic
     #if !NETWORK_EMBEDDED
-    case ledbat(algorithm: Ledbat)
-    case prague(algorithm: Prague)
+    private var ledbat: Ledbat
+    private var prague: Prague
     #endif
 
-    var congestionWindow: UInt64 {
-        switch self {
-        case .cubic(let cubic):
-            return cubic.congestionWindow
+    // Placeholder initializer to allow non-Optional types.
+    // CongestionControl is supposed to be initialized later.
+    init() {
+        let logPrefixer = LogPrefixer()
+        self.algorithm = .cubic
+        self.cubic = Cubic(placeholder: logPrefixer)
         #if !NETWORK_EMBEDDED
-        case .ledbat(let ledbat):
-            return ledbat.congestionWindow
-        case .prague(let prague):
-            return prague.congestionWindow
+        self.ledbat = Ledbat(placeholder: logPrefixer)
+        self.prague = Prague(placeholder: logPrefixer)
+        #endif
+    }
+
+    init(
+        algorithm: Algorithm,
+        pacer: inout Pacer,
+        mss: Int,
+        qlog: QLog? = nil,
+        logPrefixer: LogPrefixer
+    ) {
+        self.algorithm = algorithm
+        self.cubic = Cubic(placeholder: logPrefixer)
+        #if !NETWORK_EMBEDDED
+        self.ledbat = Ledbat(placeholder: logPrefixer)
+        self.prague = Prague(placeholder: logPrefixer)
+        #endif
+        // Reset and properly initialize the algorithm.
+        reset(pacer: &pacer, mss: mss, qlog: qlog, logPrefixer: logPrefixer)
+    }
+
+    // Re-creates the active controller from scratch.
+    mutating func reset(pacer: inout Pacer, mss: Int, qlog: QLog?, logPrefixer: LogPrefixer) {
+        switch algorithm {
+        case .cubic:
+            cubic = Cubic(pacer: &pacer, mss: mss, qlog: qlog, logPrefixer: logPrefixer)
+        #if !NETWORK_EMBEDDED
+        case .ledbat:
+            ledbat = Ledbat(mss: mss, qlog: qlog, logPrefixer: logPrefixer)
+        case .prague:
+            prague = Prague(pacer: &pacer, mss: mss, qlog: qlog, logPrefixer: logPrefixer)
         #endif
         }
     }
 
-    var availableCongestionWindow: UInt64 {
-        switch self {
-        case .cubic(let cubic):
-            return cubic.availableCongestionWindow
+    #if !NETWORK_EMBEDDED
+    private func handOff<Next: CongestionControlProtocol>(to next: inout Next, mss: Int, qlog: QLog?) {
+        switch algorithm {
+        case .cubic: next.inherit(from: cubic, mss: mss, qlog: qlog)
+        case .ledbat: next.inherit(from: ledbat, mss: mss, qlog: qlog)
+        case .prague: next.inherit(from: prague, mss: mss, qlog: qlog)
+        }
+    }
+
+    // Switches to another algorithm, handing it the outgoing controller's state.
+    mutating func switchTo(
+        _ newAlgorithm: Algorithm,
+        pacer: inout Pacer,
+        mss: Int,
+        qlog: QLog?,
+        logPrefixer: LogPrefixer
+    ) {
+        guard newAlgorithm != algorithm else { return }
+        switch newAlgorithm {
+        case .cubic:
+            var next = Cubic(pacer: &pacer, mss: mss, qlog: qlog, logPrefixer: logPrefixer)
+            handOff(to: &next, mss: mss, qlog: qlog)
+            cubic = next
+        case .ledbat:
+            var next = Ledbat(mss: mss, qlog: qlog, logPrefixer: logPrefixer)
+            handOff(to: &next, mss: mss, qlog: qlog)
+            ledbat = next
+        case .prague:
+            var next = Prague(pacer: &pacer, mss: mss, qlog: qlog, logPrefixer: logPrefixer)
+            handOff(to: &next, mss: mss, qlog: qlog)
+            prague = next
+        }
+        algorithm = newAlgorithm
+    }
+    #endif
+
+    // Dispatches a mutating operation on the algorithm.
+    @inline(always)
+    private mutating func perform<Operation: CongestionControlOperation>(
+        _ operation: Operation
+    ) -> Operation.Result {
+        switch algorithm {
+        case .cubic: return operation(&cubic)
         #if !NETWORK_EMBEDDED
-        case .ledbat(let ledbat):
-            return ledbat.availableCongestionWindow
-        case .prague(let prague):
-            return prague.availableCongestionWindow
+        case .ledbat: return operation(&ledbat)
+        case .prague: return operation(&prague)
         #endif
         }
     }
 
-    func canSend(packetLength: Int) -> Bool {
-        switch self {
-        case .cubic(let cubic):
-            return cubic.canSend(packetLength: packetLength)
+    // Dispatches a query operation on the algorithm.
+    @inline(always)
+    private func inspect<Query: CongestionControlQuery>(_ query: Query) -> Query.Result {
+        switch algorithm {
+        case .cubic: return query(cubic)
         #if !NETWORK_EMBEDDED
-        case .ledbat(let ledbat):
-            return ledbat.canSend(packetLength: packetLength)
-        case .prague(let prague):
-            return prague.canSend(packetLength: packetLength)
+        case .ledbat: return query(ledbat)
+        case .prague: return query(prague)
         #endif
         }
     }
 
+    var name: String { algorithm.name }
+
+    var congestionWindow: UInt64 { inspect(Read.CongestionWindow()) }
+    var availableCongestionWindow: UInt64 { inspect(Read.AvailableCongestionWindow()) }
+    var bytesInFlight: UInt64 { inspect(Read.BytesInFlight()) }
+    func canSend(packetLength: Int) -> Bool { inspect(Read.CanSend(packetLength: packetLength)) }
+
+    // `inout` arguments can't be stored in a query, so this one dispatches by hand.
+    func filloutDataTransferSnapshot(dataTransferSnapshot: inout DataTransferSnapshot) {
+        switch algorithm {
+        case .cubic:
+            cubic.filloutDataTransferSnapshot(dataTransferSnapshot: &dataTransferSnapshot)
+        #if !NETWORK_EMBEDDED
+        case .ledbat:
+            ledbat.filloutDataTransferSnapshot(dataTransferSnapshot: &dataTransferSnapshot)
+        case .prague:
+            prague.filloutDataTransferSnapshot(dataTransferSnapshot: &dataTransferSnapshot)
+        #endif
+        }
+    }
+
+    @inline(always)
     mutating func persistentCongestion(mss: Int, qlog: QLog? = nil) {
-        switch self {
-        case .cubic(var cubic):
-            cubic.persistentCongestion(mss: mss, qlog: qlog)
-            self = .cubic(algorithm: cubic)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(var ledbat):
-            ledbat.persistentCongestion(mss: mss, qlog: qlog)
-            self = .ledbat(algorithm: ledbat)
-        case .prague(var prague):
-            prague.persistentCongestion(mss: mss, qlog: qlog)
-            self = .prague(algorithm: prague)
-        #endif
-        }
+        perform(Op.PersistentCongestion(mss: mss, qlog: qlog))
     }
 
+    // `RTT` is `~Copyable`, so it can't be stored in an operation; this one dispatches by hand.
     mutating func ackEnd(
         rtt: borrowing RTT,
         path: QUICPath?,
@@ -95,53 +205,29 @@ enum CongestionControl {
         now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
-        switch self {
-        case .cubic(algorithm: var cubic):
+        switch algorithm {
+        case .cubic:
             cubic.ackEnd(rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
-            self = .cubic(algorithm: cubic)
         #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: var ledbat):
+        case .ledbat:
             ledbat.ackEnd(rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
-            self = .ledbat(algorithm: ledbat)
-        case .prague(algorithm: var prague):
+        case .prague:
             prague.ackEnd(rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
-            self = .prague(algorithm: prague)
         #endif
         }
     }
 
+    @inline(always)
     mutating func packetSent(bytesSent: Int, qlog: QLog? = nil) {
-        switch self {
-        case .cubic(algorithm: var cubic):
-            cubic.packetSent(bytesSent: bytesSent, qlog: qlog)
-            self = .cubic(algorithm: cubic)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: var ledbat):
-            ledbat.packetSent(bytesSent: bytesSent, qlog: qlog)
-            self = .ledbat(algorithm: ledbat)
-        case .prague(algorithm: var prague):
-            prague.packetSent(bytesSent: bytesSent, qlog: qlog)
-            self = .prague(algorithm: prague)
-        #endif
-        }
+        perform(Op.PacketSent(bytesSent: bytesSent, qlog: qlog))
     }
 
+    @inline(always)
     mutating func packetsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant) {
-        switch self {
-        case .cubic(algorithm: var cubic):
-            cubic.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
-            self = .cubic(algorithm: cubic)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: var ledbat):
-            ledbat.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
-            self = .ledbat(algorithm: ledbat)
-        case .prague(algorithm: var prague):
-            prague.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
-            self = .prague(algorithm: prague)
-        #endif
-        }
+        perform(Op.PacketsAcked(bytesAcked: bytesAcked, sentTime: sentTime))
     }
 
+    @inline(always)
     mutating func packetsLost(
         path: QUICPath?,
         bytesLost: Int,
@@ -150,9 +236,8 @@ enum CongestionControl {
         smoothedRTT: NetworkDuration,
         now: NetworkClock.Instant
     ) -> Bool {
-        switch self {
-        case .cubic(algorithm: var cubic):
-            let reducedCongestionWindow = cubic.packetLost(
+        perform(
+            Op.PacketsLost(
                 path: path,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
@@ -160,35 +245,10 @@ enum CongestionControl {
                 smoothedRTT: smoothedRTT,
                 now: now
             )
-            self = .cubic(algorithm: cubic)
-            return reducedCongestionWindow
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: var ledbat):
-            let reducedCongestionWindow = ledbat.packetLost(
-                path: path,
-                bytesLost: bytesLost,
-                largestLostSentTime: largestLostSentTime,
-                mss: mss,
-                smoothedRTT: smoothedRTT,
-                now: now
-            )
-            self = .ledbat(algorithm: ledbat)
-            return reducedCongestionWindow
-        case .prague(algorithm: var prague):
-            let reducedCongestionWindow = prague.packetLost(
-                path: path,
-                bytesLost: bytesLost,
-                largestLostSentTime: largestLostSentTime,
-                mss: mss,
-                smoothedRTT: smoothedRTT,
-                now: now
-            )
-            self = .prague(algorithm: prague)
-            return reducedCongestionWindow
-        #endif
-        }
+        )
     }
 
+    @inline(always)
     mutating func processECN(
         path: QUICPath?,
         ceCount: Int,
@@ -201,9 +261,8 @@ enum CongestionControl {
         now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
-        switch self {
-        case .cubic(algorithm: var cubic):
-            cubic.processECN(
+        perform(
+            Op.ProcessECN(
                 path: path,
                 ceCount: ceCount,
                 packetsAcked: packetsAcked,
@@ -215,156 +274,181 @@ enum CongestionControl {
                 now: now,
                 qlog: qlog
             )
-            self = .cubic(algorithm: cubic)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: var ledbat):
-            ledbat.processECN(
-                path: path,
-                ceCount: ceCount,
-                packetsAcked: packetsAcked,
-                largestSentPN: largestSentPN,
-                largestAckedPN: largestAckedPN,
-                largestAckedSentTime: largestAckedSentTime,
-                mss: mss,
-                smoothedRTT: smoothedRTT,
-                now: now,
-                qlog: qlog
-            )
-            self = .ledbat(algorithm: ledbat)
-        case .prague(algorithm: var prague):
-            prague.processECN(
-                path: path,
-                ceCount: ceCount,
-                packetsAcked: packetsAcked,
-                largestSentPN: largestSentPN,
-                largestAckedPN: largestAckedPN,
-                largestAckedSentTime: largestAckedSentTime,
-                mss: mss,
-                smoothedRTT: smoothedRTT,
-                now: now,
-                qlog: qlog
-            )
-            self = .prague(algorithm: prague)
-        #endif
-        }
+        )
     }
 
+    @inline(always)
     mutating func packetDiscarded(bytesSent: Int, qlog: QLog? = nil) {
-        switch self {
-        case .cubic(var cubic):
-            cubic.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
-            self = .cubic(algorithm: cubic)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(var ledbat):
-            ledbat.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
-            self = .ledbat(algorithm: ledbat)
-        case .prague(var prague):
-            prague.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
-            self = .prague(algorithm: prague)
-        #endif
-        }
+        perform(Op.PacketDiscarded(bytesSent: bytesSent, qlog: qlog))
     }
 
+    @inline(always)
     mutating func ackBegin() {
-        switch self {
-        case .cubic(algorithm: var cubic):
-            cubic.ackBegin()
-            self = .cubic(algorithm: cubic)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: var ledbat):
-            ledbat.ackBegin()
-            self = .ledbat(algorithm: ledbat)
-        case .prague(algorithm: var prague):
-            prague.ackBegin()
-            self = .prague(algorithm: prague)
-        #endif
-        }
+        perform(Op.AckBegin())
     }
 
-    var bytesInFlight: UInt64 {
-        switch self {
-        case .cubic(algorithm: let cubic):
-            return cubic.bytesInFlight
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: let ledbat):
-            return ledbat.bytesInFlight
-        case .prague(algorithm: let prague):
-            return prague.bytesInFlight
-        #endif
-        }
-    }
-
-    var name: String {
-        switch self {
-        case .cubic(algorithm: _):
-            return "CUBIC"
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: _):
-            return "LEDBAT"
-        case .prague(algorithm: _):
-            return "PRAGUE"
-        #endif
-        }
-    }
-
+    @inline(always)
     mutating func spuriousRetransmit(qlog: QLog? = nil) {
-        switch self {
-        case .cubic(algorithm: var cubic):
-            cubic.spuriousRetransmit(qlog: qlog)
-            self = .cubic(algorithm: cubic)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: var ledbat):
-            ledbat.spuriousRetransmit(qlog: qlog)
-            self = .ledbat(algorithm: ledbat)
-        case .prague(algorithm: var prague):
-            prague.spuriousRetransmit(qlog: qlog)
-            self = .prague(algorithm: prague)
-        #endif
-        }
+        perform(Op.SpuriousRetransmit(qlog: qlog))
     }
 
+    @inline(always)
     mutating func mssChanged(mss: Int) {
-        switch self {
-        case .cubic(algorithm: var cubic):
-            cubic.mssChanged(mss: mss, qlog: nil)
-            self = .cubic(algorithm: cubic)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: var ledbat):
-            ledbat.mssChanged(mss: mss, qlog: nil)
-            self = .ledbat(algorithm: ledbat)
-        case .prague(algorithm: var prague):
-            prague.mssChanged(mss: mss, qlog: nil)
-            self = .prague(algorithm: prague)
-        #endif
-        }
+        perform(Op.MSSChanged(mss: mss))
     }
 
+    @inline(always)
     mutating func idleTimeout(mss: Int) {
-        switch self {
-        case .cubic(algorithm: var cubic):
-            cubic.idleTimeout(mss: mss, qlog: nil)
-            self = .cubic(algorithm: cubic)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: var ledbat):
-            ledbat.idleTimeout(mss: mss, qlog: nil)
-            self = .ledbat(algorithm: ledbat)
-        case .prague(algorithm: var prague):
-            prague.idleTimeout(mss: mss, qlog: nil)
-            self = .prague(algorithm: prague)
-        #endif
+        perform(Op.IdleTimeout(mss: mss))
+    }
+}
+
+// MARK: - Operations and queries
+
+@available(Network 0.1.0, *)
+extension CongestionControl {
+    fileprivate enum Read {
+        struct CongestionWindow: CongestionControlQuery {
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: Controller) -> UInt64 {
+                controller.congestionWindow
+            }
+        }
+
+        struct AvailableCongestionWindow: CongestionControlQuery {
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: Controller) -> UInt64 {
+                controller.availableCongestionWindow
+            }
+        }
+
+        struct BytesInFlight: CongestionControlQuery {
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: Controller) -> UInt64 {
+                controller.bytesInFlight
+            }
+        }
+
+        struct CanSend: CongestionControlQuery {
+            let packetLength: Int
+
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: Controller) -> Bool {
+                controller.canSend(packetLength: packetLength)
+            }
         }
     }
 
-    func filloutDataTransferSnapshot(dataTransferSnapshot: inout DataTransferSnapshot) {
-        switch self {
-        case .cubic(algorithm: let cubic):
-            cubic.filloutDataTransferSnapshot(dataTransferSnapshot: &dataTransferSnapshot)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(algorithm: let ledbat):
-            ledbat.filloutDataTransferSnapshot(dataTransferSnapshot: &dataTransferSnapshot)
-        case .prague(algorithm: let prague):
-            prague.filloutDataTransferSnapshot(dataTransferSnapshot: &dataTransferSnapshot)
-        #endif
+    fileprivate enum Op {
+        struct PersistentCongestion: CongestionControlOperation {
+            let mss: Int
+            let qlog: QLog?
+
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) {
+                controller.persistentCongestion(mss: mss, qlog: qlog)
+            }
+        }
+
+        struct PacketSent: CongestionControlOperation {
+            let bytesSent: Int
+            let qlog: QLog?
+
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) {
+                controller.packetSent(bytesSent: bytesSent, qlog: qlog)
+            }
+        }
+
+        struct PacketsAcked: CongestionControlOperation {
+            let bytesAcked: Int
+            let sentTime: NetworkClock.Instant
+
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) {
+                controller.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
+            }
+        }
+
+        struct PacketsLost: CongestionControlOperation {
+            let path: QUICPath?
+            let bytesLost: Int
+            let largestLostSentTime: NetworkClock.Instant
+            let mss: Int
+            let smoothedRTT: NetworkDuration
+            let now: NetworkClock.Instant
+
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) -> Bool {
+                controller.packetLost(
+                    path: path,
+                    bytesLost: bytesLost,
+                    largestLostSentTime: largestLostSentTime,
+                    mss: mss,
+                    smoothedRTT: smoothedRTT,
+                    now: now,
+                    qlog: nil
+                )
+            }
+        }
+
+        struct ProcessECN: CongestionControlOperation {
+            let path: QUICPath?
+            let ceCount: Int
+            let packetsAcked: Int
+            let largestSentPN: Int64
+            let largestAckedPN: Int64
+            let largestAckedSentTime: NetworkClock.Instant
+            let mss: Int
+            let smoothedRTT: NetworkDuration
+            let now: NetworkClock.Instant
+            let qlog: QLog?
+
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) {
+                controller.processECN(
+                    path: path,
+                    ceCount: ceCount,
+                    packetsAcked: packetsAcked,
+                    largestSentPN: largestSentPN,
+                    largestAckedPN: largestAckedPN,
+                    largestAckedSentTime: largestAckedSentTime,
+                    mss: mss,
+                    smoothedRTT: smoothedRTT,
+                    now: now,
+                    qlog: qlog
+                )
+            }
+        }
+
+        struct PacketDiscarded: CongestionControlOperation {
+            let bytesSent: Int
+            let qlog: QLog?
+
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) {
+                controller.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
+            }
+        }
+
+        struct AckBegin: CongestionControlOperation {
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) {
+                controller.ackBegin()
+            }
+        }
+
+        struct SpuriousRetransmit: CongestionControlOperation {
+            let qlog: QLog?
+
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) {
+                controller.spuriousRetransmit(qlog: qlog)
+            }
+        }
+
+        struct MSSChanged: CongestionControlOperation {
+            let mss: Int
+
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) {
+                controller.mssChanged(mss: mss, qlog: nil)
+            }
+        }
+
+        struct IdleTimeout: CongestionControlOperation {
+            let mss: Int
+
+            func callAsFunction<Controller: CongestionControlProtocol>(_ controller: inout Controller) {
+                controller.idleTimeout(mss: mss, qlog: nil)
+            }
         }
     }
 }
@@ -388,7 +472,7 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     var pipeAckIndex: Int { get set }
 
     mutating func inherit(
-        from: CongestionControl,
+        from other: some CongestionControlProtocol,
         mss: Int,
         qlog: QLog?
     )
@@ -403,7 +487,7 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     )
     mutating func spuriousRetransmit(qlog: QLog?)
     mutating func idleTimeout(mss: Int, qlog: QLog?)
-    /// Opens a recovery period at `now`, the time the loss was detected.
+    // Opens a recovery period at `now`, the time the loss was detected.
     mutating func enterRecovery(mss: Int, now: NetworkClock.Instant, qlog: QLog?)
     mutating func processECN(
         path: QUICPath?,
@@ -543,7 +627,7 @@ extension CongestionControlProtocol {
         sentTime <= recoveryStartTime
     }
 
-    /// `sentTime` is when the packet went out, `now` when its loss was detected.
+    // `sentTime` is when the packet went out, `now` when its loss was detected.
     @discardableResult
     mutating func congestionEvent(
         sentTime: NetworkClock.Instant,

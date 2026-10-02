@@ -140,6 +140,10 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         logState(qlog: qlog, state: .slowStart, trigger: nil)
     }
 
+    init(placeholder logPrefixer: LogPrefixer) {
+        self.log = logPrefixer
+    }
+
     /// Computes the cubic K factor for the current congestion window.
     ///
     /// `K` is the time period(s) that the `W_cubic(t)` function takes to increase
@@ -680,30 +684,13 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         logUpdate(qlog: qlog)
     }
 
-    mutating func inherit(from: CongestionControl, mss: Int, qlog: QLog?) {
+    mutating func inherit(from other: some CongestionControlProtocol, mss: Int, qlog: QLog?) {
         // For Prague, the old state will be stale and
         // as it will ramp up quickly in slow start, it
         // is best to start fresh. For congestion window
         // we can use the higher of last cwnd and INITIAL_CWND
-        switch from {
-        case .cubic(let cubic):
-            self.bytesInFlight = cubic.bytesInFlight
-            self.congestionWindow = max(cubic.congestionWindow, Prague.initialCongestionWindow(mss))
-        #if !NETWORK_EMBEDDED
-        case .ledbat(let ledbat):
-            self.bytesInFlight = ledbat.bytesInFlight
-            self.congestionWindow = max(
-                ledbat.congestionWindow,
-                Prague.initialCongestionWindow(mss)
-            )
-        case .prague(let prague):
-            self.bytesInFlight = prague.bytesInFlight
-            self.congestionWindow = max(
-                prague.congestionWindow,
-                Prague.initialCongestionWindow(mss)
-            )
-        #endif
-        }
+        self.bytesInFlight = other.bytesInFlight
+        self.congestionWindow = max(other.congestionWindow, Prague.initialCongestionWindow(mss))
         slowStartThreshold = UInt64.max
         scaledAlpha = Prague.maxAlpha << Prague.gShift
         resetInternal()

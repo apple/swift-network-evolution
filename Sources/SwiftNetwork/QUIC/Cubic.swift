@@ -110,6 +110,10 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         logState(qlog: qlog, state: .slowStart, trigger: nil)
     }
 
+    init(placeholder logPrefixer: LogPrefixer) {
+        self.log = logPrefixer
+    }
+
     private mutating func setK(mss: Int) {
         // K is the time period(s) that WCubic(t) function takes to increase
         // the current window size to WMax if there are no further
@@ -457,24 +461,13 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         logUpdate(qlog: qlog)
     }
 
-    mutating func inherit(from: CongestionControl, mss: Int, qlog: QLog?) {
+    mutating func inherit(from other: some CongestionControlProtocol, mss: Int, qlog: QLog?) {
         // For Cubic, the old state will be stale and
         // as it will ramp up quickly in slow start, it
         // is best to start fresh. For congestion window
         // we can use the higher of last congestionWindow and initialCongestionWindow
-        switch from {
-        case .cubic(let cubic):
-            self.bytesInFlight = cubic.bytesInFlight
-            self.congestionWindow = max(cubic.congestionWindow, Cubic.initialCongestionWindow(mss))
-        #if !NETWORK_EMBEDDED
-        case .ledbat(let ledbat):
-            self.bytesInFlight = ledbat.bytesInFlight
-            self.congestionWindow = max(ledbat.congestionWindow, Cubic.initialCongestionWindow(mss))
-        case .prague(let prague):
-            self.bytesInFlight = prague.bytesInFlight
-            self.congestionWindow = max(prague.congestionWindow, Cubic.initialCongestionWindow(mss))
-        #endif
-        }
+        self.bytesInFlight = other.bytesInFlight
+        self.congestionWindow = max(other.congestionWindow, Cubic.initialCongestionWindow(mss))
         slowStartThreshold = UInt64.max
         resetInternal()
         logUpdate(qlog: qlog)

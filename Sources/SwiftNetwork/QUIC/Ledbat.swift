@@ -66,6 +66,10 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         logUpdate(qlog: qlog)
     }
 
+    init(placeholder logPrefixer: LogPrefixer) {
+        self.log = logPrefixer
+    }
+
     // GAIN is proportional to the ratio of base_delay
     // and TARGET delay, i.e., GAIN is smaller for bottlenecks
     // with small queues in order to ensure that LEDBAT yields
@@ -336,24 +340,13 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         logUpdate(qlog: qlog)
     }
 
-    mutating func inherit(from: CongestionControl, mss: Int, qlog: QLog?) {
-        // LEDBAT has minimal state. We can continue using its own
-        // ssthresh from old state as it is somewhat stable.
-        // For congestion window, we can take the lower of
-        // its own cwnd and previous controller's cwnd.
-        switch from {
-        case .cubic(let cubic):
-            self.bytesInFlight = cubic.bytesInFlight
-            self.congestionWindow = min(cubic.congestionWindow, congestionWindow)
-        #if !NETWORK_EMBEDDED
-        case .ledbat(let ledbat):
-            self.bytesInFlight = ledbat.bytesInFlight
-            self.congestionWindow = min(ledbat.congestionWindow, congestionWindow)
-        case .prague(let prague):
-            self.bytesInFlight = prague.bytesInFlight
-            self.congestionWindow = min(prague.congestionWindow, congestionWindow)
-        #endif
-        }
+    mutating func inherit(from other: some CongestionControlProtocol, mss: Int, qlog: QLog?) {
+        // LEDBAT has minimal state, so `self` is expected to be freshly
+        // initialized and keeps its initial ssthresh. For the congestion
+        // window, take the lower of the initial cwnd and the previous
+        // controller's cwnd.
+        self.bytesInFlight = other.bytesInFlight
+        self.congestionWindow = min(other.congestionWindow, congestionWindow)
         logUpdate(qlog: qlog)
         resetInternal()
     }
