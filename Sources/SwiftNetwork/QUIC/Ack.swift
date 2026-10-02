@@ -1027,14 +1027,20 @@ struct AckBitstring: ~Copyable {
         // The connection will stall if these two conditions occur.
         let initialWord = initialWord
         if _slowPath(startWord < initialWord) {
-            Logger.proto.fault(
-                "Initial word \(initialWord) is lower than start \(startWord) (pn \(start))"
+            outlinedProtoLogFault(
+                "Initial word is lower than start; initial, start, packet number",
+                initialWord,
+                startWord,
+                start.value
             )
             return false
         }
         if _slowPath(stopWord < initialWord) {
-            Logger.proto.fault(
-                "Initial word \(initialWord) is lower than stop \(stopWord) (pn \(stop))"
+            outlinedProtoLogFault(
+                "Initial word is lower than stop; initial, stop, packet number",
+                initialWord,
+                stopWord,
+                stop.value
             )
             return false
         }
@@ -1053,14 +1059,20 @@ struct AckBitstring: ~Copyable {
         let bitstringCount = UInt64(bitstring.count)
         let initialWord = initialWord
         if _slowPath(startWord > initialWord + bitstringCount) {
-            Logger.proto.fault(
-                "Size \(bitstringCount + initialWord) is lower than start \(startWord) (pn \(start))"
+            outlinedProtoLogFault(
+                "Bitstring size is lower than start; size, start, packet number",
+                bitstringCount + initialWord,
+                startWord,
+                start.value
             )
             return false
         }
         if _slowPath(stopWord > initialWord + bitstringCount) {
-            Logger.proto.fault(
-                "Size \(bitstringCount + initialWord) is lower than start \(stopWord) (pn \(stop))"
+            outlinedProtoLogFault(
+                "Bitstring size is lower than stop; size, stop, packet number",
+                bitstringCount + initialWord,
+                stopWord,
+                stop.value
             )
             return false
         }
@@ -1078,7 +1090,7 @@ struct AckBitstring: ~Copyable {
 
         if stopWord >= size {
             guard _slowPath(stopWord < UInt32.max / 2) else {
-                Logger.proto.info("Refusing to grow bitstring further")
+                outlinedProtoLogInfo("Refusing to grow bitstring further")
                 return
             }
             let targetSize = Int(stopWord) + 1
@@ -1124,7 +1136,7 @@ struct AckBitstring: ~Copyable {
         guard initialWord == other.initialWord else {
             let initialWord = self.initialWord
             let otherInitialWord = other.initialWord
-            Logger.proto.fault("Bitstring initial mismatch \(initialWord) != \(otherInitialWord)")
+            outlinedProtoLogFault("Bitstring initial mismatch; self, other", initialWord, otherInitialWord)
             return AckBitstringSequence.empty
         }
         if size > other.size {

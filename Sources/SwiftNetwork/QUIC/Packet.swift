@@ -307,9 +307,7 @@ struct Packet: ~Copyable {
         get {
             if let _overrideSentNumberSize {
                 #if !DisableErrorLogging
-                Logger.proto.error(
-                    "WARNING: Reading overrideSentNumberSize only be used for unit testing!"
-                )
+                outlinedProtoLogError("WARNING: Reading overrideSentNumberSize only be used for unit testing!")
                 #endif
                 return _overrideSentNumberSize
             }
@@ -318,9 +316,7 @@ struct Packet: ~Copyable {
         set(newValue) {
             if let newValue {
                 #if !DisableErrorLogging
-                Logger.proto.error(
-                    "WARNING: Setting overrideSentNumberSize only be used for unit testing!"
-                )
+                outlinedProtoLogError("WARNING: Setting overrideSentNumberSize only be used for unit testing!")
                 #endif
                 _overrideSentNumberSize = newValue
             } else {
