@@ -3123,8 +3123,65 @@ struct TransmittedItems: ~Copyable {
         }
     }
 
-    /// The stream sends a packet carried. A packet almost always carries one, so it is stored inline.
-    var sentStreams = NetworkSmallUniqueArray<SentStream, 1>()
+    /// The stream sends a packet carried.
+    ///
+    /// A packet almost always carries a single stream, and every sent packet keeps its record until it is
+    /// acknowledged or lost, so one send is held inline and only a second one allocates storage.
+    struct SentStreams: ~Copyable {
+        private enum Storage: ~Copyable {
+            case empty
+            case one(SentStream)
+            case many(NetworkUniqueArray<SentStream>)
+        }
+
+        private var storage = Storage.empty
+
+        var isEmpty: Bool {
+            switch storage {
+            case .empty: return true
+            case .one: return false
+            case .many(let sends): return sends.isEmpty
+            }
+        }
+
+        var count: Int {
+            switch storage {
+            case .empty: return 0
+            case .one: return 1
+            case .many(let sends): return sends.count
+            }
+        }
+
+        subscript(index: Int) -> SentStream {
+            switch storage {
+            case .empty:
+                preconditionFailure("Index out of range")
+            case .one(let send):
+                precondition(index == 0, "Index out of range")
+                return send
+            case .many(let sends):
+                return sends[index]
+            }
+        }
+
+        mutating func append(_ sentStream: SentStream) {
+            var taken = Storage.empty
+            swap(&taken, &storage)
+            switch consume taken {
+            case .empty:
+                storage = .one(sentStream)
+            case .one(let first):
+                var sends = NetworkUniqueArray<SentStream>(minimumCapacity: 2)
+                sends.append(first)
+                sends.append(sentStream)
+                storage = .many(sends)
+            case .many(var sends):
+                sends.append(sentStream)
+                storage = .many(sends)
+            }
+        }
+    }
+    var sentStreams = SentStreams()
 
     var maxStreamDataFlows = Deque<MultiplexedFlowIdentifier>()
     var streamDataBlockedFlows = Deque<MultiplexedFlowIdentifier>()
@@ -3218,9 +3275,4 @@ struct TransmittedItems: ~Copyable {
     }
 }
 
-/// `SentStream` is 33 bytes, 40 to its stride.
-@available(Network 0.1.0, *)
-extension TransmittedItems.SentStream: NetworkInlineStorable {
-    typealias InlineSlot = InlineArray<5, UInt64>
-}
 #endif
