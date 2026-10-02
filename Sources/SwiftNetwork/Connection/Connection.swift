@@ -2253,6 +2253,37 @@ extension QUIC {
             super.init(kind: .quic, joining: flow, adopting: inboundFlow.instance, uuid: uuid)
         }
 
+        /// Starts the stream, taking the connection's QUIC state over first.
+        @discardableResult public override func start() -> Self {
+            context.async {
+                self.adoptConnectionState()
+                self.withFlow { flow in flow.start(self as NetworkChannelBase) }
+            }
+            return self
+        }
+
+        /// Copies the connection's QUIC listener into this stream's flow if it has none.
+        private func adoptConnectionState() {
+            #if !NETWORK_NO_SWIFT_QUIC
+            guard
+                let connectionState = parent.withFlow({ connectionFlow in
+                    (
+                        listener: connectionFlow.quicStreamListenerLinkage,
+                        instance: connectionFlow.quicConnectionInstance
+                    )
+                }),
+                let listener = connectionState.listener
+            else {
+                return
+            }
+            withFlow { flow in
+                guard flow.quicStreamListenerLinkage == nil else { return }
+                flow.quicStreamListenerLinkage = listener
+                flow.quicConnectionInstance = connectionState.instance
+            }
+            #endif
+        }
+
         /// Set a closure to be called when the connection's state changes, which may be called
         /// multiple times until the connection is cancelled.
         @discardableResult public func onStateUpdate(

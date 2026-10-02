@@ -305,6 +305,93 @@ final class SwiftNetworkConnectionTests: NetTestCase {
     #endif
     #endif
 
+    /// A stream opened before its connection is started still finds the connection's QUIC
+    /// listener when it starts.
+    func testQUICStreamOpenedBeforeConnectionStart() {
+        let serverSigningKey = P256.Signing.PrivateKey()
+        let serverPrivateKey = [UInt8](serverSigningKey.rawRepresentation)
+        let serverPublicKeys = [[UInt8](serverSigningKey.publicKey.derRepresentation)]
+        let payload = Array("Opened before start".utf8)
+
+        let ready = DispatchGroup()
+        ready.enter()
+        let client = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 8894),
+            using: .parameters {
+                QUIC(alpn: ["QUICTest"]) {
+                    UDP {
+                        IP {
+                            DatagramBridge()
+                        }
+                    }
+                }.tls.trustedRawPublicKeyCertificates(serverPublicKeys)
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 8895))
+        )
+        .onStateUpdate { _, state in
+            if case .ready = state { ready.leave() }
+        }
+
+        ready.enter()
+        let received = DispatchGroup()
+        received.enter()
+        let server = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 8895),
+            using: .parameters {
+                QUIC(alpn: ["QUICTest"]) {
+                    UDP {
+                        IP {
+                            DatagramBridge()
+                        }
+                    }
+                }.tls.rawPrivateKey(serverPrivateKey)
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 8894))
+                .serverMode(true)
+        )
+        .onStateUpdate { _, state in
+            if case .ready = state { ready.leave() }
+        }
+        server.onInboundStream { stream in
+            stream.receive(atLeast: 1, atMost: 64) { result in
+                switch result {
+                case .success(let message):
+                    XCTAssertEqual(message.content.map { Array($0) }, payload)
+                case .failure(let error):
+                    XCTFail("inbound stream receive failed with error \(error)")
+                }
+                received.leave()
+            }
+        }
+
+        // The stream is taken before either side has started, as the C bridge does.
+        var openedStream: QUIC.Stream<QUICStream>?
+        client.openStream { result in
+            switch result {
+            case .success(let stream): openedStream = stream
+            case .failure(let error): XCTFail("Couldn't create stream: \(error)")
+            }
+        }
+        guard let stream = openedStream else {
+            XCTFail("no stream")
+            return
+        }
+
+        server.start()
+        client.start()
+        XCTAssertEqual(ready.wait(timeout: .now() + .seconds(5)), DispatchTimeoutResult.success)
+
+        stream.start()
+        stream.send(.message(content: payload, isComplete: false))
+
+        XCTAssertEqual(
+            received.wait(timeout: .now() + .seconds(10)),
+            DispatchTimeoutResult.success,
+            "the stream opened before the connection started never carried data"
+        )
+
+        client.cancel()
+        server.cancel()
+    }
+
     func testQUICStateUpdates() throws {
         let semaphore = DispatchSemaphore(value: 0)
         let tunnel = NetworkConnection(to: Endpoint(address: IPv4Address.loopback, port: 7777)) {
