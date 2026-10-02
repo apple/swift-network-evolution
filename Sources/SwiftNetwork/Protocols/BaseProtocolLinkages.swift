@@ -1094,6 +1094,7 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
 public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     enum ProtocolType {
         case unknown
+        case inboundDatagramEndpointFlow(ProtocolInstanceBox<InboundDatagramEndpointFlowProtocol>)
         #if !NETWORK_EMBEDDED
         case external(any ExternalInboundDatagramFlowLinkage)
         #endif
@@ -1114,7 +1115,7 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     }
     #endif
 
-    init(identifier: InstanceIdentifier, storage: BaseNetworkProtocolStorage, protocolType: ProtocolType) {
+    init(identifier: InstanceIdentifier, storage: BaseNetworkProtocolStorage?, protocolType: ProtocolType) {
         self.identifier = identifier
         self.storage = storage
         self.protocolType = protocolType
@@ -1141,6 +1142,15 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
                 path: path
             )
         #endif
+        case .inboundDatagramEndpointFlow(let flow):
+            try lowerProtocol.invokeAttachUpperProtocol(
+                self,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+            _ = try flow.instance.attachLowerProtocol(lowerProtocol)
         case .unknown:
             try lowerProtocol.invokeAttachUpperProtocol(
                 self,
@@ -1160,6 +1170,8 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
+        case .inboundDatagramEndpointFlow(let flow):
+            flow.instance.handleConnectedEvent(for: instance, in: &eventContext)
         case .unknown: fatalError("Protocol cannot accept handleConnectedEvent call")
         }
     }
@@ -1173,6 +1185,8 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
+        case .inboundDatagramEndpointFlow(let flow):
+            flow.instance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         case .unknown: fatalError("Protocol cannot accept handleDisconnectedEvent call")
         }
     }
@@ -1187,6 +1201,8 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
         case .external(let external):
             external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
+        case .inboundDatagramEndpointFlow(let flow):
+            flow.instance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         case .unknown: fatalError("Protocol cannot accept handleNetworkProtocolEvent call")
         }
     }
@@ -1207,6 +1223,13 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
                 in: &eventContext
             )
         #endif
+        case .inboundDatagramEndpointFlow(let flow):
+            flow.instance.handleNewInboundFlowEvent(
+                flowInstance: flowInstance,
+                flowMetadata: flowMetadata,
+                for: instance,
+                in: &eventContext
+            )
         case .unknown: fatalError("Protocol cannot accept handleNewInboundFlowEvent call")
         }
     }
@@ -2430,6 +2453,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
 public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     enum ProtocolType {
         case unknown
+        case inboundStreamEndpointFlow(ProtocolInstanceBox<InboundStreamEndpointFlowProtocol>)
         #if !NETWORK_EMBEDDED
         case external(any ExternalInboundStreamFlowLinkage)
         #endif
@@ -2453,7 +2477,7 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     }
     #endif
 
-    init(identifier: InstanceIdentifier, storage: BaseNetworkProtocolStorage, protocolType: ProtocolType) {
+    init(identifier: InstanceIdentifier, storage: BaseNetworkProtocolStorage?, protocolType: ProtocolType) {
         self.identifier = identifier
         self.storage = storage
         self.protocolType = protocolType
@@ -2477,6 +2501,15 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
                 path: path
             )
         #endif
+        case .inboundStreamEndpointFlow(let flow):
+            try lowerProtocol.invokeAttachUpperProtocol(
+                self,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+            _ = try flow.instance.attachLowerProtocol(lowerProtocol)
         case .unknown:
             try lowerProtocol.invokeAttachUpperProtocol(
                 self,
@@ -2496,6 +2529,8 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
+        case .inboundStreamEndpointFlow(let flow):
+            flow.instance.handleConnectedEvent(for: instance, in: &eventContext)
         case .unknown: fatalError("Protocol cannot accept handleConnectedEvent call")
         }
     }
@@ -2509,6 +2544,8 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
+        case .inboundStreamEndpointFlow(let flow):
+            flow.instance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         case .unknown: fatalError("Protocol cannot accept handleDisconnectedEvent call")
         }
     }
@@ -2523,6 +2560,8 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
         case .external(let external):
             external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
+        case .inboundStreamEndpointFlow(let flow):
+            flow.instance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         case .unknown: fatalError("Protocol cannot accept handleNetworkProtocolEvent call")
         }
     }
@@ -2543,6 +2582,13 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
                 in: &eventContext
             )
         #endif
+        case .inboundStreamEndpointFlow(let flow):
+            flow.instance.handleNewInboundFlowEvent(
+                flowInstance: flowInstance,
+                flowMetadata: flowMetadata,
+                for: instance,
+                in: &eventContext
+            )
         case .unknown: fatalError("Protocol cannot accept handleNewInboundFlowEvent call")
         }
     }
@@ -2742,6 +2788,16 @@ open class BaseNetworkProtocolStorage {
         )
     }
 
+    internal static func linkage(
+        for flow: InboundDatagramEndpointFlowProtocol
+    ) -> BaseInboundDatagramFlowLinkage {
+        BaseInboundDatagramFlowLinkage(
+            identifier: flow.identifier,
+            storage: nil,
+            protocolType: .inboundDatagramEndpointFlow(.init(flow))
+        )
+    }
+
     // MARK: - Stream Protocol Instances
 
     internal var tcpInstances = NetworkGappyArray<TCPProtocol.TCPInstance>()
@@ -2831,6 +2887,16 @@ open class BaseNetworkProtocolStorage {
             identifier: flow.identifier,
             storage: nil,
             protocolType: .streamEndpointFlow(.init(flow))
+        )
+    }
+
+    internal static func linkage(
+        for flow: InboundStreamEndpointFlowProtocol
+    ) -> BaseInboundStreamFlowLinkage {
+        BaseInboundStreamFlowLinkage(
+            identifier: flow.identifier,
+            storage: nil,
+            protocolType: .inboundStreamEndpointFlow(.init(flow))
         )
     }
 

@@ -1225,6 +1225,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             var totalReceivedBytes = 0
             var generatedError = false
             let priorTLSState = tlsManager.state
+            let priorHandshakeComplete = tlsManager.isHandshakeComplete
 
             // Process all incoming network data
             while var frame = receivedFrames.popFirst() {
@@ -1273,7 +1274,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
                 return
             }
 
-            let justConnected = (priorTLSState == .handshake && tlsManager.state == .connected)
+            let justConnected = !priorHandshakeComplete && tlsManager.isHandshakeComplete
             if tlsManager.state == .handshake || justConnected {
                 // Send any pending handshake data
                 try? sendAllOutgoingData(in: &eventContext)
