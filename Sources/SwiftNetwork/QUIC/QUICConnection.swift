@@ -3131,7 +3131,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             // Keepalive packets ignore the congestion window.
             sendFrames(ignoreCongestionWindow: true, in: &eventContext)
-            migration.checkForKeepaliveLoss(outstandingCount: unackedKeepaliveCount)
+            migration.checkForKeepaliveLoss(outstandingCount: unackedKeepaliveCount, connection: self, in: &eventContext)
         }
     }
 
@@ -4835,6 +4835,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } else {
             migrationSupported = true
         }
+        migration.derivePolicy(hasPreferredAddress: migration.pendingPreferredAddress != nil)
 
         state.change(to: .connected, logIDString: logPrefixer.logIDString)
         if let signpostConnectInterval {
@@ -6558,12 +6559,15 @@ extension QUICConnection {
         )
     }
 
-    func acknowledgedKeepalive() {
+    func acknowledgedKeepalive(in eventContext: inout NetworkContext.EventContext) {
         if unackedKeepaliveCount > 0 {
             unackedKeepaliveCount -= 1
         }
         log.info("Keep-alive packet acknowledged with \(unackedKeepaliveCount) outstanding")
-        migration.checkForKeepaliveLoss(outstandingCount: unackedKeepaliveCount)
+        // When keepalive is acknowledged, outstandingCount drops — so we pass 0
+        // or the current residual. The actual fallback logic only fires when the
+        // count *exceeds* the threshold, so acknowledging resets the counter.
+        migration.checkForKeepaliveLoss(outstandingCount: unackedKeepaliveCount, connection: self, in: &eventContext)
     }
 
     func acknowledgedResetStream(id: UInt64, in eventContext: inout NetworkContext.EventContext) {
@@ -7080,6 +7084,8 @@ extension QUICConnection {
                 FrameRetireConnectionID(sequence: retiredCID.sequenceNumber)
             )
         }
+        stats.increment(.cidRetirements)
+        migration.retireDCID(cid)
         sendFrames(in: &eventContext)
     }
 

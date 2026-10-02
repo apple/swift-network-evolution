@@ -107,6 +107,42 @@ enum QUICPathState: CustomStringConvertible, CaseIterable {
     }
 }
 
+/// Reason a path failed and could not be used further.
+@available(Network 0.1.0, *)
+enum PathFailureReason: CustomStringConvertible {
+    case validationTimeout      // PATH_CHALLENGE attempts exhausted
+    case routeUnavailable       // OS/NIC reported the route is gone
+    case cidExhausted           // No unused DCIDs available for this path
+    case keepaliveLoss          // Consecutive keepalive probes were not acknowledged
+
+    var description: String {
+        switch self {
+        case .validationTimeout: return "validationTimeout"
+        case .routeUnavailable: return "routeUnavailable"
+        case .cidExhausted: return "cidExhausted"
+        case .keepaliveLoss: return "keepaliveLoss"
+        }
+    }
+}
+
+/// The role a path plays in the connection's multipath lifecycle.
+@available(Network 0.1.0, *)
+enum PathRole: CustomStringConvertible {
+    case primary     // The current path used for sending application data
+    case probing     // A candidate path undergoing validation
+    case standby     // A validated backup path not currently primary
+    case retired     // A path that has been torn down
+
+    var description: String {
+        switch self {
+        case .primary: return "primary"
+        case .probing: return "probing"
+        case .standby: return "standby"
+        case .retired: return "retired"
+        }
+    }
+}
+
 @available(Network 0.1.0, *)
 struct PendingChallenge {
     let data = UInt64.random(in: 0..<UInt64.max)
@@ -151,6 +187,12 @@ public final class QUICPath: MultiplexingDatagramPath<
     private(set) var challengesSent: Int = 0
     private(set) var lastChallengeSentTime: NetworkClock.Instant = .zero
     private(set) var nextChallengeDuration: NetworkDuration = .zero
+
+    // Path lifecycle tracking
+    private(set) var validationAttempts: Int = 0
+    private(set) var failureReason: PathFailureReason?
+    var lastActivityTime: NetworkClock.Instant = .zero
+    var pathRole: PathRole = .probing
 
     var rtt: RTT
 
@@ -421,6 +463,28 @@ public final class QUICPath: MultiplexingDatagramPath<
         pacer.reset()
     }
 
+    /// Resets per-path state for migration according to RFC 9000 Section 9.4.
+    ///
+    /// Congestion control and pacer are reset to initial values because the new path
+    /// may have very different characteristics. ECN state is preserved (the path may
+    /// share ECN capability with the previous one). PMTUD is restarted by the caller.
+    func resetForMigration() {
+        resetCongestionControl()
+        resetPacer()
+        bdp = BandwidthDelayProduct()
+        pathStatistics = Statistics()
+        recoveryState = Recovery.PathState()
+        // ECN state is intentionally preserved per RFC 9000 Section 9.4
+    }
+
+    func recordValidationAttempt() {
+        validationAttempts += 1
+    }
+
+    func markFailed(reason: PathFailureReason) {
+        failureReason = reason
+    }
+
     func resetCongestionControl() {
         switch self.congestionControl {
         case .cubic:
@@ -547,6 +611,7 @@ public final class QUICPath: MultiplexingDatagramPath<
             // The route is established, but needs CID allocation
             guard parentProtocol.assignNewDCID(to: self) else {
                 log.error("Failed to assign remote CID to path")
+                markFailed(reason: .cidExhausted)
                 return
             }
         }
@@ -555,10 +620,12 @@ public final class QUICPath: MultiplexingDatagramPath<
         if state == .cidAssigned || (!ifNecessary && state == .validated) {
             // The path has a CID assigned. Time to start probing.
             changeState(to: .probing)
+            pathRole = .probing
             pendingOutboundChallenges.removeAll()
             challengesSent = 0
             lastChallengeSentTime = .zero
             nextChallengeDuration = .zero
+            recordValidationAttempt()
         }
     }
 
@@ -602,11 +669,15 @@ public final class QUICPath: MultiplexingDatagramPath<
         guard challengesSent < QUICPath.maximumPendingChallenges else {
             // Exceeded limit, move to unreachable, and retire the CID
             changeState(to: .unreachable)
+            markFailed(reason: .validationTimeout)
+            pathRole = .retired
+            parentProtocol.stats.increment(.pathFailures)
             if let dcid, !hasPreAssignedCIDs {
                 if let sequenceNumber = parentProtocol.retireConnectionID(dcid, in: &eventContext) {
                     pendingItems.addRetireConnectionID(
                         FrameRetireConnectionID(sequence: sequenceNumber)
                     )
+                    parentProtocol.stats.increment(.cidRetirements)
                 }
             }
             if let localEndpoint, let remoteEndpoint,
@@ -631,6 +702,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         pendingOutboundChallenges.append(challenge)
         pendingItems.addPathChallenge(FramePathChallenge(data: challenge.data))
         lastChallengeSentTime = now
+        lastActivityTime = now
         if useSlowProbeInterval {
             nextChallengeDuration = QUICPath.slowInitialProbeInterval * (1 << challengesSent)
         } else {
@@ -676,9 +748,12 @@ public final class QUICPath: MultiplexingDatagramPath<
         challengesSent = 0
         lastChallengeSentTime = .zero
         changeState(to: .validated)
+        pathRole = .standby
+        lastActivityTime = now
         // Initialize RTT based on the PATH_RESPONSE duration so that we have a proper RTT estimate when we reset the timers.
         rtt.processNewSample(ackDuration: responseDuration, packetAckedTime: now, ackDelay: .zero)
         parentProtocol.migration.resetTimer(now: now, connection: parentProtocol, in: &eventContext)
+        parentProtocol.stats.increment(.pathsValidated)
         // Notify the stack about the path becoming validated
         if let localEndpoint, let remoteEndpoint,
             case .address(let localAddress) = localEndpoint.type,

@@ -3211,7 +3211,7 @@ struct TransmittedItems: ~Copyable {
         }
 
         if isKeepalive {
-            connection.acknowledgedKeepalive()
+            connection.acknowledgedKeepalive(in: &eventContext)
         }
     }
 }

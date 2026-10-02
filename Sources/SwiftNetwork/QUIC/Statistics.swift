@@ -143,13 +143,19 @@ enum QUICStatistic: Int, CaseIterable {
 
     case statelessResetReceived
     case statelessResetDuringPathProbe
+
+    case failedMigrations
+    case cidRetirements
+    case preferredAddressMigrations
+    case pathFailures
+    case keepaliveFallbacks
 }
 
 // Availability due to Swift's inline array type (`[96 of Int]`)
 @available(anyAppleOS 26, *)
 struct Statistics: ~Copyable {
 
-    private var statisticsArray: [98 of Int]
+    private var statisticsArray: [103 of Int]
 
     init() {
         statisticsArray = .init(repeating: 0)
