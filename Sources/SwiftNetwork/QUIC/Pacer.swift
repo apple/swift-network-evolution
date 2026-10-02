@@ -38,7 +38,7 @@ struct Pacer: ~Copyable {
         guard rate > 0 else {
             let startupRate = startupRate
             Logger.proto.fault(
-                "Pacer rate shouldn't be 0, startup rate = \(startupRate), CCA is \(path.congestionControlName) (cwnd=\(path.congestionControlWindow), smoothed rtt=\(path.smoothedRTT.milliseconds) ms)"
+                "Pacer rate shouldn't be 0, startup rate = \(startupRate), CCA is \(path.congestionControl.name) (cwnd=\(path.congestionControl.congestionWindow), smoothed rtt=\(path.smoothedRTT.milliseconds) ms)"
             )
             return Constants.maxBurstIntervalKernelPacing
         }

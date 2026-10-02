@@ -716,7 +716,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } else {
             path.mss = newMSS
         }
-        path.congestionControlMSSChanged(mss: path.mss)
+        path.congestionControl.mssChanged(mss: path.mss)
         if path == currentPath {
             applyToAllSecondaryFlows { datagramFlow in
                 datagramFlow.updateUsableDatagramFrameSize(connection: self, path: path)
@@ -2784,7 +2784,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             snapshot.transportSmoothedRTT = path.rtt.smoothedRTT
             snapshot.transportCurrentRTT = path.rtt.adjustedRTT
             snapshot.transportRTTVariance = path.rtt.RTTVariance
-            path.congestionControlFilloutDataTransferSnapshot(snapshot: &snapshot)
+            path.congestionControl.filloutDataTransferSnapshot(dataTransferSnapshot: &snapshot)
         }
     }
 
@@ -3754,7 +3754,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Ignoring is equivalent to an infinite window
         var availableCongestionWindow = UInt64.max
         if !ignoreCongestionWindow {
-            availableCongestionWindow = path.congestionControlAvailableCongestionWindow
+            availableCongestionWindow = path.congestionControl.availableCongestionWindow
         }
 
         let startSendingTimestamp = self.now
@@ -3836,7 +3836,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Ignoring is equivalent to an infinite window
         var availableCongestionWindow = UInt64.max
         if !ignoreCongestionWindow {
-            availableCongestionWindow = path.congestionControlAvailableCongestionWindow
+            availableCongestionWindow = path.congestionControl.availableCongestionWindow
         }
 
         let startSendingTimestamp = self.now

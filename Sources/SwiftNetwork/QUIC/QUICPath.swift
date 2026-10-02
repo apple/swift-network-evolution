@@ -156,7 +156,8 @@ public final class QUICPath: MultiplexingDatagramPath<
 
     var bdp = BandwidthDelayProduct()
 
-    private var congestionControl: CongestionControl?
+    var congestionControlPolicy: CongestionControlPolicy = QUICPreferences.shared.defaultCongestionControlPolicy
+    var congestionControl: CongestionControlEngine!
 
     var pacer: Pacer
 
@@ -371,13 +372,12 @@ public final class QUICPath: MultiplexingDatagramPath<
 
         let pacerEnabled = (pacePackets || QUICPreferences.shared.pacePackets)
         self.pacer = Pacer(enabled: pacerEnabled)
-        self.congestionControl = .cubic(
-            algorithm: Cubic(
-                pacer: &self.pacer,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog,
-                logPrefixer: self.log
-            )
+        self.congestionControl = CongestionControlEngine(
+            policy: self.congestionControlPolicy,
+            mss: self.initialMSS,
+            pacer: &self.pacer,
+            qlog: parentProtocol.qLog,
+            log: self.log
         )
 
         self.spinValue = parentProtocol.initialSpinValue
@@ -422,42 +422,17 @@ public final class QUICPath: MultiplexingDatagramPath<
     }
 
     func resetCongestionControl() {
-        switch self.congestionControl {
-        case .cubic:
-            self.congestionControl = .cubic(
-                algorithm: Cubic(
-                    pacer: &self.pacer,
-                    mss: self.initialMSS,
-                    qlog: parentProtocol.qLog,
-                    logPrefixer: self.log
-                )
-            )
-        #if !NETWORK_EMBEDDED
-        case .ledbat:
-            self.congestionControl = .ledbat(
-                algorithm: Ledbat(
-                    mss: self.initialMSS,
-                    qlog: parentProtocol.qLog,
-                    logPrefixer: self.log
-                )
-            )
-        case .prague:
-            self.congestionControl = .prague(
-                algorithm: Prague(
-                    pacer: &self.pacer,
-                    mss: self.initialMSS,
-                    qlog: parentProtocol.qLog,
-                    logPrefixer: self.log
-                )
-            )
-        #endif
-        case .none:
-            break
-        }
+        self.congestionControl = CongestionControlEngine(
+            policy: self.congestionControlPolicy,
+            mss: self.initialMSS,
+            pacer: &self.pacer,
+            qlog: parentProtocol.qLog,
+            log: self.log
+        )
     }
 
     func idleTimeoutCongestionControl() {
-        self.congestionControl?.idleTimeout(mss: mss)
+        self.congestionControl.idleTimeout(mss: mss)
     }
 
     func setupL4SState(l4sEnabled: Bool?) {
@@ -469,66 +444,34 @@ public final class QUICPath: MultiplexingDatagramPath<
         if l4sEnabled {
             // Setup the pacer. Prague always has pacing enabled
             pacer = Pacer(enabled: true)
-            // Add Prague congestion control for L4S
             self.resetPacer()
-            resetCongestionControl()
+            #if !NETWORK_EMBEDDED
+            self.congestionControlPolicy.algorithm = .prague
+            #endif
+            self.congestionControl.apply(
+                policy: self.congestionControlPolicy,
+                mss: self.initialMSS,
+                pacer: &self.pacer,
+                qlog: parentProtocol.qLog,
+                log: self.log
+            )
         }
     }
 
     func markAsBackground(_ background: Bool) {
         #if !NETWORK_EMBEDDED
-        // Use LEDBAT for background cases
-        switch self.congestionControl {
-        case .cubic:
-            if !background { return }  // Nothing to do, already not background
-            var ledbat = Ledbat(
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog,
-                logPrefixer: self.log
-            )
-            ledbat.inherit(
-                from: self.congestionControl!,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog
-            )
-            self.congestionControl = .ledbat(algorithm: ledbat)
-        case .ledbat:
-            if background { return }  // Nothing to do, already background
-            self.congestionControl = .ledbat(
-                algorithm: Ledbat(
-                    mss: self.initialMSS,
-                    qlog: parentProtocol.qLog,
-                    logPrefixer: self.log
-                )
-            )
-            var cubic = Cubic(
-                pacer: &self.pacer,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog,
-                logPrefixer: self.log
-            )
-            cubic.inherit(
-                from: self.congestionControl!,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog
-            )
-            self.congestionControl = .cubic(algorithm: cubic)
-        case .prague:
-            if !background { return }  // Nothing to do, already not background
-            var ledbat = Ledbat(
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog,
-                logPrefixer: self.log
-            )
-            ledbat.inherit(
-                from: self.congestionControl!,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog
-            )
-            self.congestionControl = .ledbat(algorithm: ledbat)
-        case .none:
-            break
+        if background {
+            self.congestionControlPolicy.algorithm = .ledbat
+        } else {
+            self.congestionControlPolicy.algorithm = .cubic
         }
+        self.congestionControl.apply(
+            policy: self.congestionControlPolicy,
+            mss: self.initialMSS,
+            pacer: &self.pacer,
+            qlog: parentProtocol.qLog,
+            log: self.log
+        )
         #endif
     }
 
@@ -707,170 +650,6 @@ public final class QUICPath: MultiplexingDatagramPath<
 @available(Network 0.1.0, *)
 extension QUICPath {
     @inline(always)
-    var congestionControlWindow: UInt64 {
-        congestionControl?.congestionWindow ?? 0
-    }
-
-    @inline(always)
-    var congestionControlAvailableCongestionWindow: UInt64 {
-        congestionControl?.availableCongestionWindow ?? 0
-    }
-
-    @inline(always)
-    func congestionControlCanSend(packetLength: Int) -> Bool {
-        congestionControl?.canSend(packetLength: packetLength) ?? false
-    }
-
-    @inline(always)
-    func congestionControlPersistentCongestion(mss: Int, qlog: QLog? = nil) {
-        congestionControl?.persistentCongestion(mss: mss, qlog: qlog)
-    }
-
-    @inline(always)
-    func congestionControlAckEnd(
-        rtt: borrowing RTT,
-        path: QUICPath?,
-        mss: Int,
-        packetsLost: Bool,
-        qlog: QLog? = nil
-    ) {
-        congestionControl?.ackEnd(
-            rtt: rtt,
-            path: self,
-            mss: mss,
-            packetsLost: packetsLost,
-            now: parentProtocol.now,
-            qlog: qlog
-        )
-    }
-
-    @inline(always)
-    func congestionControlPacketsSent(bytesSent: Int, qlog: QLog? = nil) {
-        congestionControl?.packetSent(bytesSent: bytesSent, qlog: qlog)
-    }
-
-    @inline(always)
-    func congestionControlPacketsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant) {
-        congestionControl?.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
-    }
-
-    @inline(always)
-    func congestionControlPacketsLost(
-        bytesLost: Int,
-        largestLostSentTime: NetworkClock.Instant,
-        mss: Int,
-        smoothedRTT: NetworkDuration
-    ) -> Bool {
-        // Loss accounting doesn't repace this path, so there is no path to hand down.
-        let unpacedPath: QUICPath? = nil
-        return congestionControl?.packetsLost(
-            path: unpacedPath,
-            bytesLost: bytesLost,
-            largestLostSentTime: largestLostSentTime,
-            mss: mss,
-            smoothedRTT: smoothedRTT,
-            now: parentProtocol.now
-        ) ?? false
-    }
-
-    @inline(always)
-    func congestionControlPacketDiscarded(bytesSent: Int, qlog: QLog? = nil) {
-        congestionControl?.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
-    }
-
-    @inline(always)
-    func congestionControlAckBegin() {
-        congestionControl?.ackBegin()
-    }
-
-    @inline(always)
-    var congestionControlBytesInFlight: UInt64 {
-        congestionControl?.bytesInFlight ?? 0
-    }
-
-    @inline(always)
-    var congestionControlName: String {
-        congestionControl?.name ?? "none"
-    }
-
-    @inline(always)
-    func congestionControlSpuriousRetransmit(qlog: QLog? = nil) {
-        congestionControl?.spuriousRetransmit()
-    }
-
-    @inline(always)
-    func congestionControlMSSChanged(mss: Int) {
-        congestionControl?.mssChanged(mss: mss)
-    }
-
-    @inline(always)
-    func congestionControlIdleTimeout(mss: Int) {
-        congestionControl?.idleTimeout(mss: mss)
-    }
-
-    @inline(always)
-    func congestionControlProcessECN(
-        ceCount: Int,
-        packetsAcked: Int,
-        largestSentPN: Int64,
-        largestAckedPN: Int64,
-        largestAckedSentTime: NetworkClock.Instant,
-        mss: Int,
-        smoothedRTT: NetworkDuration,
-        qlog: QLog? = nil
-    ) {
-        guard congestionControl != nil else { return }
-        // ECN accounting doesn't repace this path, so there is no path to hand down.
-        let unpacedPath: QUICPath? = nil
-        switch congestionControl! {
-        case .cubic(var cubic):
-            cubic.processECN(
-                path: unpacedPath,
-                ceCount: ceCount,
-                packetsAcked: packetsAcked,
-                largestSentPN: largestSentPN,
-                largestAckedPN: largestAckedPN,
-                largestAckedSentTime: largestAckedSentTime,
-                mss: mss,
-                smoothedRTT: smoothedRTT,
-                now: parentProtocol.now,
-                qlog: qlog
-            )
-        #if !NETWORK_EMBEDDED
-        case .ledbat(var ledbat):
-            ledbat.processECN(
-                path: unpacedPath,
-                ceCount: ceCount,
-                packetsAcked: packetsAcked,
-                largestSentPN: largestSentPN,
-                largestAckedPN: largestAckedPN,
-                largestAckedSentTime: largestAckedSentTime,
-                mss: mss,
-                smoothedRTT: smoothedRTT,
-                now: parentProtocol.now,
-                qlog: qlog
-            )
-        case .prague(var prague):
-            prague.processECN(
-                path: unpacedPath,
-                ceCount: ceCount,
-                packetsAcked: packetsAcked,
-                largestSentPN: largestSentPN,
-                largestAckedPN: largestAckedPN,
-                largestAckedSentTime: largestAckedSentTime,
-                mss: mss,
-                smoothedRTT: smoothedRTT,
-                now: parentProtocol.now,
-                qlog: qlog
-            )
-        #endif
-        }
-    }
-
-    @inline(always)
-    func congestionControlFilloutDataTransferSnapshot(snapshot: inout DataTransferSnapshot) {
-        congestionControl?.filloutDataTransferSnapshot(dataTransferSnapshot: &snapshot)
-    }
 }
 
 #endif

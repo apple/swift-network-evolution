@@ -233,7 +233,7 @@ struct PMTUDState: ~Copyable {
             return false
         }
 
-        guard path.congestionControlCanSend(packetLength: nextProbeMTU - ipUDPHeaderSize) else {
+        guard path.congestionControl.canSend(packetLength: nextProbeMTU - ipUDPHeaderSize) else {
             path.log.datapath("Not probing PMTUD, not allowed by congestion control")
             return false
         }
@@ -528,7 +528,7 @@ struct PMTUDState: ~Copyable {
         if connection.pmtudIgnoreCost { return true }
 
         let checkLength = PMTUDState.maxProbeCount * (nextProbeMTU - ipUDPHeaderSize)
-        guard path.congestionControlCanSend(packetLength: checkLength) else { return false }
+        guard path.congestionControl.canSend(packetLength: checkLength) else { return false }
 
         let sendQueueLength = Int(connection.flowControlState.pendingOutboundBytesToSend)
         let currentPacketsNeeded = sendQueueLength / currentPathMTU
