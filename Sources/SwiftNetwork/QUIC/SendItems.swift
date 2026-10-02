@@ -1586,8 +1586,11 @@ extension FrameDatagram: SendableItem {
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
-        // Try to send exactly one datagram, and clean up the flows to service once that flow is empty
+        // Try to send exactly one datagram, and clean up the flows to service once that flow is empty.
+        // The packet builder calls this again for the next datagram, so one that doesn't fit in the
+        // rest of this packet stays queued for the next packet.
         var sentDatagram = false
+        var writeError: QUICError?
         while !pendingItems.datagramFlowsToService.isEmpty, !sentDatagram {
             let firstFlowID = pendingItems.datagramFlowsToService.first!
 
@@ -1628,11 +1631,19 @@ extension FrameDatagram: SendableItem {
                             )
                         )
                     } catch {
-                        connection.log.error("Unable to write datagram for flow \(firstFlowID)")
+                        // It doesn't fit in the rest of this packet, keep it for the next one
+                        datagrams.prepend(frame: datagramFrame)
+                        writeError = error
+                        break
                     }
                     datagramFrame.finalize(success: true)
+                    break
                 }
                 datagramsListIsEmpty = datagrams.isEmpty
+            }
+            if let writeError {
+                // Tells the packet builder that this packet is full
+                throw writeError
             }
             if datagramsListIsEmpty {
                 // Nothing left to do on the first flow, remove it
