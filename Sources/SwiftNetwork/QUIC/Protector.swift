@@ -155,6 +155,64 @@ enum TLSCipherSuite: CaseIterable {
     }
 }
 
+#if canImport(CommonCrypto)
+/// An AES-ECB cryptor for computing header protection masks, created once per key.
+///
+/// Creating a cryptor costs several allocations, which `CCCrypt` would pay on every packet. ECB carries no state from
+/// one block to the next, so a single cryptor can encrypt every sample its key protects.
+struct HeaderProtectionCryptor: ~Copyable {
+    private let cryptor: CCCryptorRef?
+
+    /// Creates a cryptor for `key`, or one that fails every operation when `key` is `nil` or unusable.
+    @available(Network 0.1.0, *)
+    init(key: SymmetricKey?) {
+        guard let key else {
+            self.cryptor = nil
+            return
+        }
+        var cryptor: CCCryptorRef?
+        let status = key.withUnsafeBytes { keyBuffer in
+            CCCryptorCreate(
+                CCOperation(kCCEncrypt),
+                CCAlgorithm(kCCAlgorithmAES),
+                CCOptions(kCCOptionECBMode),
+                keyBuffer.baseAddress,
+                keyBuffer.count,
+                nil,
+                &cryptor
+            )
+        }
+        self.cryptor = status == kCCSuccess ? cryptor : nil
+    }
+
+    deinit {
+        if let cryptor {
+            CCCryptorRelease(cryptor)
+        }
+    }
+
+    /// Encrypts the 16-byte block at `input` into `output`.
+    func encryptBlock(_ input: UnsafeRawPointer, into output: UnsafeMutableRawPointer) -> CCCryptorStatus {
+        guard let cryptor else {
+            return CCCryptorStatus(kCCParamError)
+        }
+        var bytesEncrypted = 0
+        let status = CCCryptorUpdate(
+            cryptor,
+            input,
+            kCCBlockSizeAES128,
+            output,
+            kCCBlockSizeAES128,
+            &bytesEncrypted
+        )
+        guard status == kCCSuccess else {
+            return status
+        }
+        return bytesEncrypted == kCCBlockSizeAES128 ? status : CCCryptorStatus(kCCAlignmentError)
+    }
+}
+#endif
+
 @available(Network 0.1.0, *)
 struct SecFramerKeys: ~Copyable {
     enum KeyType: Equatable {
@@ -172,6 +230,9 @@ struct SecFramerKeys: ~Copyable {
     let type: KeyType
     let isEmpty: Bool
     let log: LogPrefixer
+    #if canImport(CommonCrypto)
+    let headerProtectionCryptor: HeaderProtectionCryptor
+    #endif
 
     init(
         key: SymmetricKey,
@@ -191,6 +252,11 @@ struct SecFramerKeys: ~Copyable {
         self.type = type
         self.log = log
         self.isEmpty = isEmpty
+        #if canImport(CommonCrypto)
+        self.headerProtectionCryptor = HeaderProtectionCryptor(
+            key: type == .aesGCM && !isEmpty ? headerProtectionKey : nil
+        )
+        #endif
     }
     var size: Int {
         key.bitCount
@@ -382,29 +448,11 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
 
         #if canImport(CommonCrypto)
         let packetBuffer = buffer.withUnsafeMutableBytes { $0 }
-        let result = keys.headerProtectionKey.withUnsafeBytes { headerKeyBuffer in
-            Swift.withUnsafeBytes(of: keys.iv) { ivBuffer in
-                mask.withUnsafeMutableBytes { maskBuffer in
-                    let operation = CCOperation(kCCEncrypt)
-                    let algorithm = CCAlgorithm(kCCAlgorithmAES)
-                    let options = CCOptions(kCCOptionECBMode)
-                    var bytesEncrypted = 0
-
-                    return CCCrypt(
-                        operation,
-                        algorithm,
-                        options,
-                        headerKeyBuffer.baseAddress!,
-                        keys.headerProtectionKey.bitCount / 8,
-                        ivBuffer.baseAddress!,
-                        packetBuffer.baseAddress! + packet.sampleRange.lowerBound,
-                        packet.sampleRange.count,
-                        maskBuffer.baseAddress!,
-                        kCCBlockSizeAES128,
-                        &bytesEncrypted
-                    )
-                }
-            }
+        let result = mask.withUnsafeMutableBytes { maskBuffer in
+            keys.headerProtectionCryptor.encryptBlock(
+                packetBuffer.baseAddress! + packet.sampleRange.lowerBound,
+                into: maskBuffer.baseAddress!
+            )
         }
         guard result == kCCSuccess else {
             keys.log.error("Unable to \(loggingOperation) header: \(result)")
