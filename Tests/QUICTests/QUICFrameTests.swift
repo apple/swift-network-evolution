@@ -106,8 +106,8 @@ class QUICFrameTests: XCTestCase {
 
     func testPaddingInitStopsAtFirstNonZeroByte() throws {
         // Offset 0 is the frame type byte, so start at 1
-        for sentinelOffset in 1..<23 {
-            var bytes = [UInt8](repeating: 0x00, count: 23)
+        for sentinelOffset in 1..<87 {
+            var bytes = [UInt8](repeating: 0x00, count: 87)
             bytes[sentinelOffset] = 0xff
 
             var frame = Frame(copyBuffer: bytes)
@@ -118,10 +118,10 @@ class QUICFrameTests: XCTestCase {
     }
 
     func testPaddingInitAllZeroes() throws {
-        let bytes = [UInt8](repeating: 0x00, count: 23)
+        let bytes = [UInt8](repeating: 0x00, count: 87)
         var frame = Frame(copyBuffer: bytes)
         let paddingFrame = try FramePadding(frame: &frame, packetNumberSpace: .applicationData)
-        XCTAssertEqual(paddingFrame.extraPadding, 22)
+        XCTAssertEqual(paddingFrame.extraPadding, 86)
         frame.finalize(success: true)
     }
 
