@@ -109,7 +109,8 @@ public struct SystemUUID: Hashable, Equatable, CustomStringConvertible, Sendable
                 continue
             }
             guard let high = SystemUUID.hexNibble(ascii[i]),
-                  let low = SystemUUID.hexNibble(ascii[i + 1]) else { return nil }
+                let low = SystemUUID.hexNibble(ascii[i + 1])
+            else { return nil }
             storage[byteIndex] = (high << 4) | low
             byteIndex += 1
             i += 2
