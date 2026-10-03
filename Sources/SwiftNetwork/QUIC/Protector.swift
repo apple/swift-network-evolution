@@ -349,8 +349,8 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
             let tag = UnsafeMutableRawBufferPointer(rebasing: buffer[packet.tagRange])
             var tagSpan = OutputRawSpan(buffer: tag, initializedCount: 0)
             let nonce = try AES.GCM.Nonce(copying: nonce.span.bytes)
-            try AES.GCM.seal(
-                inPlace: &payloadSpan,
+            try AES.GCM.sealInPlace(
+                &payloadSpan,
                 using: keys.key,
                 nonce: nonce,
                 authenticating: headerSpan,
@@ -466,8 +466,8 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
             let tag = UnsafeMutableRawBufferPointer(rebasing: buffer[packet.tagRange])
             let nonce = try AES.GCM.Nonce(copying: nonce.span.bytes)
             try AES.GCM
-                .open(
-                    inPlace: &payloadSpan,
+                .openInPlace(
+                    &payloadSpan,
                     using: keys.key,
                     nonce: nonce,
                     authenticating: header.bytes,
@@ -538,8 +538,8 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
                 var tagSpan = OutputRawSpan(buffer: tag, initializedCount: 0)
                 let nonce = try ChaChaPoly.Nonce(copying: nonce.span.bytes)
                 try ChaChaPoly
-                    .seal(
-                        inPlace: &payloadSpan,
+                    .sealInPlace(
+                        &payloadSpan,
                         using: keys.key,
                         nonce: nonce,
                         authenticating: headerSpan,
@@ -629,8 +629,8 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
             var payloadSpan = payload.mutableBytes
             let tag = UnsafeMutableRawBufferPointer(rebasing: buffer[packet.tagRange])
             let nonce = try ChaChaPoly.Nonce(copying: nonce.span.bytes)
-            try ChaChaPoly.open(
-                inPlace: &payloadSpan,
+            try ChaChaPoly.openInPlace(
+                &payloadSpan,
                 using: keys.key,
                 nonce: nonce,
                 authenticating: header,
@@ -1428,8 +1428,8 @@ struct Protector: ~Copyable, PrefixedLoggable {
         do {
             var ciphertext = MutableRawSpan()
             let nonce = try AES.GCM.Nonce(copying: retryNonceArray.span.bytes)
-            try AES.GCM.open(
-                inPlace: &ciphertext,
+            try AES.GCM.openInPlace(
+                &ciphertext,
                 using: retryKey,
                 nonce: nonce,
                 authenticating: retryPseudo,
@@ -1449,8 +1449,8 @@ struct Protector: ~Copyable, PrefixedLoggable {
             var ciphertext = MutableRawSpan()
             do throws(CryptoKitMetaError) {
                 let nonce = try AES.GCM.Nonce(copying: retryNonceArray.span.bytes)
-                try AES.GCM.seal(
-                    inPlace: &ciphertext,
+                try AES.GCM.sealInPlace(
+                    &ciphertext,
                     using: retryKey,
                     nonce: nonce,
                     authenticating: retryPseudo,
