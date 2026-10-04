@@ -72,6 +72,69 @@ final class ConnectionIDRotationTests: XCTestCase {
         return path
     }
 
+    // A RETIRE_CONNECTION_ID frame only leaves the queue once it is sent, and nothing is sent
+    // here. A peer that keeps supplying NEW_CONNECTION_ID frames below its own Retire Prior To
+    // gets one queued per frame, so the connection has to close once the queue reaches twice the
+    // active connection ID limit instead of letting it grow with the peer's frame count.
+    func testRetireConnectionIDQueueIsCapped() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let oldCID = QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!
+            let newCID = QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!
+
+            let path = self.makePath(dcid: oldCID, sequenceNumber: 0, used: true)
+            self.connection.currentPath = path
+
+            let retireLimit = 2 * self.connection.remoteCIDs.activeConnectionIDLimit
+            let frameCount = UInt64(4 * retireLimit)
+
+            let maxQueued = self.connection.fromExternal { eventContext in
+                // Raise the retire threshold above every sequence number sent below.
+                let rotation = FrameNewConnectionID(
+                    sequence: frameCount + 1,
+                    retirePriorToSequence: frameCount + 1,
+                    connectionID: newCID,
+                    statelessResetToken: QUICStatelessResetToken()
+                )
+                _ = self.connection.processNewConnectionIDFrame(rotation, in: &eventContext)
+
+                var maxQueued = 0
+                for sequence in 1...frameCount {
+                    let frame = FrameNewConnectionID(
+                        sequence: sequence,
+                        retirePriorToSequence: 0,
+                        connectionID: QUICConnectionID([0xC0, UInt8(sequence >> 8), UInt8(sequence & 0xFF)])!,
+                        statelessResetToken: QUICStatelessResetToken()
+                    )
+                    guard self.connection.processNewConnectionIDFrame(frame, in: &eventContext) else {
+                        break
+                    }
+                    maxQueued = max(
+                        maxQueued,
+                        self.connection.withPendingItemsForKeyState { $0.retireConnectionIDs.count }
+                    )
+                }
+                return maxQueued
+            }
+
+            XCTAssertEqual(
+                self.connection.closeError?.code,
+                QUICTransportError.QUICTransportErrorCode.connectionIDLimitError.rawValue,
+                "Connection should close with CONNECTION_ID_LIMIT_ERROR once the queue reaches the limit"
+            )
+            // The check runs before a frame queues anything, so the frame that arrives with the
+            // queue at the limit closes the connection instead of being queued.
+            XCTAssertEqual(
+                maxQueued,
+                retireLimit,
+                "Queue should stop growing at the limit"
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
     // The peer issues seq 1-3, but loss drops those NEW_CONNECTION_ID frames, so remoteCIDs holds
     // only the in-use seq 0 when the rotation frame (seq=4, retirePriorTo=1) arrives. Retiring
     // seq 0 leaves only the CID carried by that frame, so the path has to move to it instead of

@@ -6926,6 +6926,28 @@ extension QUICConnection {
             return false
         }
 
+        // RFC 9000 §5.1.2:
+        //
+        // An endpoint SHOULD allow for sending and tracking a number of
+        // RETIRE_CONNECTION_ID frames of at least twice the value of the
+        // active_connection_id_limit transport parameter. An endpoint MUST
+        // NOT forget a connection ID without retiring it, though it MAY choose
+        // to treat having connection IDs in need of retirement that exceed this
+        // limit as a connection error of type CONNECTION_ID_LIMIT_ERROR.
+        //
+        // Every frame that gets this far can queue RETIRE_CONNECTION_ID frames
+        // below, and those only leave the queue once they are sent.
+        let queuedRetireCount = withPendingItemsForKeyState { $0.retireConnectionIDs.count }
+        if queuedRetireCount >= 2 * remoteCIDs.activeConnectionIDLimit {
+            log.error("Received NEW_CONNECTION_ID frame with \(queuedRetireCount) RETIRE_CONNECTION_ID frames queued")
+            close(
+                with: .connectionIDLimitError,
+                "NEW_CONNECTION_ID: too many connection IDs to retire",
+                in: &eventContext
+            )
+            return false
+        }
+
         // RFC9000:
         // "Upon receipt of an increased Retire Prior To field, the peer MUST
         // stop using the corresponding connection IDs and retire them with
