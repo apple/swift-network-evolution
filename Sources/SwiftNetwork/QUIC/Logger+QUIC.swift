@@ -22,20 +22,12 @@ internal import Logging
 internal import os
 #endif
 
-// This class won't be shared across thread boundaries.
 @available(Network 0.1.0, *)
-final class LogPrefixer: @unchecked Sendable {
-    var log: NetworkLoggerState
-    var logIDString: String {
-        get {
-            log.logPrefix
-        }
-        set {
-            log.logPrefix = log.logPrefix + newValue
-        }
-    }
+struct LogPrefixer {
+    var logIDString: String
+
     init(_ logPrefix: String = "") {
-        self.log = NetworkLoggerState(logPrefix)
+        self.logIDString = logPrefix
     }
 
     #if DisableDebugLogging
@@ -53,19 +45,34 @@ final class LogPrefixer: @unchecked Sendable {
         _ message: @autoclosure () -> String,
         callingFunction: StaticString = #function
     ) {
-        log.info(message(), callingFunction: callingFunction)
+        if !Logger.swiftNetworkProtocolLoggingEnabled {
+            return
+        }
+        let logIDString = logIDString
+        let message = message()
+        Logger.proto.info("\(callingFunction) \(logIDString) \(message)")
     }
     public func debug(
         _ message: @autoclosure () -> String,
         callingFunction: StaticString = #function
     ) {
-        log.debug(message(), callingFunction: callingFunction)
+        if !Logger.swiftNetworkProtocolLoggingEnabled {
+            return
+        }
+        let logIDString = logIDString
+        let message = message()
+        Logger.proto.debug("\(callingFunction) \(logIDString) \(message)")
     }
     public func datapath(
         _ message: @autoclosure () -> String,
         callingFunction: StaticString = #function
     ) {
-        log.datapath(message(), callingFunction: callingFunction)
+        if !Logger.swiftNetworkDatapathLoggingEnabled {
+            return
+        }
+        let logIDString = logIDString
+        let message = message()
+        Logger.proto.debug("\(callingFunction) \(logIDString) \(message)")
     }
     #else
     public func info(_ message: String, callingFunction: StaticString = #function) {
@@ -95,29 +102,46 @@ final class LogPrefixer: @unchecked Sendable {
         _ message: @autoclosure () -> String,
         callingFunction: StaticString = #function
     ) {
-        log.fault(message(), callingFunction: callingFunction)
+        let logIDString = logIDString
+        let message = message()
+        Logger.proto.fault("\(callingFunction) \(logIDString) \(message)")
     }
     public func error(
         _ message: @autoclosure () -> String,
         callingFunction: StaticString = #function
     ) {
-        log.error(message(), callingFunction: callingFunction)
+        let logIDString = logIDString
+        let message = message()
+        Logger.proto.error("\(callingFunction) \(logIDString) \(message)")
     }
     public func notice(
         _ message: @autoclosure () -> String,
         callingFunction: StaticString = #function
     ) {
-        log.notice(message(), callingFunction: callingFunction)
+        let logIDString = logIDString
+        let message = message()
+        #if os(Linux)
+        Logger.proto.notice("\(callingFunction) \(logIDString) \(message)")
+        #else
+        Logger.proto.log("\(callingFunction) \(logIDString) \(message)")
+        #endif
     }
     #else
     public func fault(_ message: String, callingFunction: StaticString = #function) {
-        log.fault(message, callingFunction: callingFunction)
+        let logIDString = logIDString
+        Logger.proto.fault("\(callingFunction) \(logIDString) \(message)")
     }
     public func error(_ message: String, callingFunction: StaticString = #function) {
-        log.error(message, callingFunction: callingFunction)
+        let logIDString = logIDString
+        Logger.proto.error("\(callingFunction) \(logIDString) \(message)")
     }
     public func notice(_ message: String, callingFunction: StaticString = #function) {
-        log.notice(message, callingFunction: callingFunction)
+        let logIDString = logIDString
+        #if os(Linux)
+        Logger.proto.notice("\(callingFunction) \(logIDString) \(message)")
+        #else
+        Logger.proto.log("\(callingFunction) \(logIDString) \(message)")
+        #endif
     }
     #endif
     #endif

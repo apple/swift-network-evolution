@@ -495,9 +495,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.privateStorage.setupFlowRegistration(path)
         #endif
         self.isServer = parameters?.isServer ?? false
-        self.logPrefixer.log.logPrefix = self.log.logPrefix
+        self.logPrefixer.logIDString = self.log.logPrefix
         self.initialInterface = path?.directInterface ?? nil
-        self.logPrefixer.logIDString = ""
+
+        // Make sure the correct log prefix is known
+        self.packetParser.log.logIDString = self.logPrefixer.logIDString
+        protector.log.logIDString = self.logPrefixer.logIDString
+        self.localTransportParameters.log.logIDString = self.logPrefixer.logIDString
+        self.timer.log.logIDString = self.logPrefixer.logIDString
 
         state.change(to: .idle, logIDString: logPrefixer.logIDString)
 
