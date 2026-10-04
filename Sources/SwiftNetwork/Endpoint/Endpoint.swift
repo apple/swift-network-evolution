@@ -32,6 +32,9 @@ public class EndpointParent: Hashable, Equatable {
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
+#if !NETWORK_EMBEDDED
+@dynamicMemberLookup
+#endif
 public final class Endpoint: EndpointParent, EndpointProtocol {
     public enum EndpointType: Sendable {
         case address(AddressEndpoint)
@@ -43,12 +46,60 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
     }
 
     public var type: EndpointType
-    var alternatePort: UInt16? = nil
-    var cnames: [Endpoint]? = nil
-    public var parentEndpoint: Endpoint? = nil
+
+    /// Mutates `type` in place. This takes exclusive access to `type` for the
+    /// duration of `body`, so `body` must not read this same endpoint.
+    func modifyType(_ body: (inout EndpointType) -> Void) {
+        body(&type)
+    }
 
     #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
     var endpointPrivate = Endpoint.EndpointPrivate()
+    #endif
+
+    // MARK: -- Common state --
+
+    /// The common state shared by every endpoint type, forwarded to whichever
+    /// case `type` currently holds (unwrapped by `EndpointType.common`). All
+    /// individual common fields are reached through the `dynamicMember`
+    /// subscript below rather than through per-field switches, and writes go
+    /// through `modifyCommon` so they modify `type` in place.
+    var common: EndpointCommon {
+        get { type.common }
+        set { modifyType { $0.common = newValue } }
+    }
+
+    /// Mutates the common state in place. As with `modifyType`, `body` must not
+    /// read this same endpoint.
+    func modifyCommon(_ body: (inout EndpointCommon) -> Void) {
+        modifyType { body(&$0.common) }
+    }
+
+    #if !NETWORK_EMBEDDED
+    /// Reads and writes any ``EndpointCommon`` field directly on the endpoint,
+    /// e.g. `endpoint.alternatePort` or `endpoint.parentEndpoint`.
+    public subscript<Value>(dynamicMember keyPath: WritableKeyPath<EndpointCommon, Value>) -> Value {
+        get { common[keyPath: keyPath] }
+        set { modifyCommon { $0[keyPath: keyPath] = newValue } }
+    }
+    #else
+    // Embedded Swift has no key paths; forward the common fields explicitly.
+    var alternatePort: UInt16? {
+        get { common.alternatePort }
+        set { modifyCommon { $0.alternatePort = newValue } }
+    }
+    var cnames: [Endpoint]? {
+        get { common.cnames }
+        set { modifyCommon { $0.cnames = newValue } }
+    }
+    public var parentEndpoint: Endpoint? {
+        get { common.parentEndpoint }
+        set { modifyCommon { $0.parentEndpoint = newValue } }
+    }
+    var ethernetAddress: EthernetAddress? {
+        get { common.ethernetAddress }
+        set { modifyCommon { $0.ethernetAddress = newValue } }
+    }
     #endif
 
     // MARK: -- Initializers --
@@ -199,20 +250,6 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
 
     #if !NETWORK_PRIVATE
     func isEqual(to other: Endpoint, flags: EndpointEqualityFlags) -> Bool {
-        if flags.contains(.alternatives) {
-            let alternatePort = alternatePort ?? 0
-            let otherAlternatePort = other.alternatePort ?? 0
-            if alternatePort != otherAlternatePort {
-                return false
-            }
-        }
-
-        if flags.contains(.parent) {
-            if parentEndpoint != other.parentEndpoint {
-                return false
-            }
-        }
-
         switch self.type {
         case .address(let endpoint):
             if case let .address(otherEndpoint) = other.type {
@@ -297,45 +334,8 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
     }
 
     var interface: Interface? {
-        get {
-            switch self.type {
-            case .address(let endpoint):
-                return endpoint.interface
-            case .applicationService(let endpoint):
-                return endpoint.interface
-            case .bonjour(let endpoint):
-                return endpoint.interface
-            case .host(let endpoint):
-                return endpoint.interface
-            case .srv(let endpoint):
-                return endpoint.interface
-            case .url(let endpoint):
-                return endpoint.interface
-            }
-        }
-
-        set {
-            switch self.type {
-            case .address(var endpoint):
-                endpoint.interface = newValue
-                self.type = .address(endpoint)
-            case .applicationService(var endpoint):
-                endpoint.interface = newValue
-                self.type = .applicationService(endpoint)
-            case .bonjour(var endpoint):
-                endpoint.interface = newValue
-                self.type = .bonjour(endpoint)
-            case .host(var endpoint):
-                endpoint.interface = newValue
-                self.type = .host(endpoint)
-            case .srv(var endpoint):
-                endpoint.interface = newValue
-                self.type = .srv(endpoint)
-            case .url(var endpoint):
-                endpoint.interface = newValue
-                self.type = .url(endpoint)
-            }
-        }
+        get { common.interface }
+        set { modifyCommon { $0.interface = newValue } }
     }
 
     // MARK: -- Hashing --

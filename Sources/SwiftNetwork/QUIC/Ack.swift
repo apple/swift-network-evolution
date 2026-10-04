@@ -536,7 +536,6 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 connection.checkConnectionIdle(unackedPacketCount: unackedPacketCount, in: &eventContext)
             }
         }
-
     }
 
     @discardableResult

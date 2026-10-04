@@ -111,6 +111,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         frame: inout Frame,
         packet: inout Packet,
         connection: QUICConnection,
+        stats: inout Statistics,
         isLastPacketInFrame: Bool,
         in eventContext: inout NetworkContext.EventContext
     ) throws(QUICError) {
@@ -145,6 +146,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                 frame: &frame,
                 packet: &packet,
                 connection: connection,
+                stats: &stats,
                 isLastPacketInFrame: isLastPacketInFrame,
                 in: &eventContext
             )
@@ -215,8 +217,10 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
     mutating func parse(
         frame: inout Frame,
         connection: QUICConnection,
-        path: QUICPath,
         ecn: IPProtocol.ECN,
+        ack: inout Ack,
+        protector: inout Protector,
+        stats: inout Statistics,
         in eventContext: inout NetworkContext.EventContext
     ) -> Packet? {
         let originalLength = frame.unclaimedLength
@@ -244,7 +248,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             }
 
             var receivedLargestPacketNumber = PacketNumber.none
-            _ = connection.ack.withAckSpace(
+            _ = ack.withAckSpace(
                 packetNumberSpace: packet.numberSpace
             ) { ackSpace in
                 receivedLargestPacketNumber = ackSpace.largestPNReceived
@@ -255,7 +259,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             guard frame.unclaim(fromStart: Int(packet.headerLength), fromEnd: 0) else {
                 return nil
             }
-            let tagSize = connection.protector.getTagSize(for: packet.keyState)
+            let tagSize = protector.getTagSize(for: packet.keyState)
             let payloadAndTagSize = originalLength - Int(packet.headerLength)
             guard payloadAndTagSize >= Int(tagSize) else {
                 return nil
@@ -277,7 +281,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                 return nil
             }
             packet.tagLength = tagSize
-            guard openHeader(connection: connection, packet: &packet, frame: &frame) else {
+            guard openHeader(connection: connection, packet: &packet, frame: &frame, protector: &protector) else {
                 return nil
             }
 
@@ -315,7 +319,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                 return nil
             }
             do {
-                try openPacket(packet: &packet, frame: &frame, connection: connection)
+                try openPacket(packet: &packet, frame: &frame, connection: connection, protector: &protector)
             } catch {
                 // Only parse the tag if we have failed decryption, for performance reasons
                 // The tag should contain the stateless reset token and we don't want to parse it unnecessarily
@@ -364,6 +368,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
                     frame: &frame,
                     packet: &packet,
                     connection: connection,
+                    stats: &stats,
                     isLastPacketInFrame: extraLength == 0,
                     in: &eventContext
                 )
@@ -602,14 +607,15 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
     private func openHeader(
         connection: QUICConnection,
         packet: inout Packet,
-        frame: inout Frame
+        frame: inout Frame,
+        protector: inout Protector
     ) -> Bool {
         if connection.state == .versionSent, let dcid = packet.destinationConnectionID {
-            connection.protector.deriveInitialSecrets(destinationCID: dcid)
+            protector.deriveInitialSecrets(destinationCID: dcid)
         }
 
         if let keystate = packet.keyState,
-            !connection.protector.openKeyReady(for: keystate)
+            !protector.openKeyReady(for: keystate)
                 || (!connection.state.isConnected && (keystate == .phase0 || keystate == .phase1))
         {
             if keystate == .initial || keystate == .earlyData {
@@ -623,7 +629,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         }
 
         do {
-            try connection.protector.openHeader(&packet, frame: &frame)
+            try protector.openHeader(&packet, frame: &frame)
         } catch {
             connection.log.error("Packet number undecryptable")
             return false
@@ -635,17 +641,18 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
     private func openPacket(
         packet: inout Packet,
         frame: inout Frame,
-        connection: QUICConnection
+        connection: QUICConnection,
+        protector: inout Protector
     ) throws(QUICError) {
         if _slowPath(
             (connection.keyState == .phase0 || connection.keyState == .phase1)
                 && (packet.keyState == .phase0 || packet.keyState == .phase1)
                 && connection.keyState != packet.keyState
         ) {
-            connection.protector.trafficUpdate(previousKeyState: connection.keyState)
+            protector.trafficUpdate(previousKeyState: connection.keyState)
         }
 
-        try connection.protector.open(&packet, frame: &frame)
+        try protector.open(&packet, frame: &frame)
     }
 
     private func validateDeserializationResult(

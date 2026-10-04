@@ -531,6 +531,9 @@ extension OneToOneProtocolHandler where Self: ~Copyable {
     public func udpOptions(from parameters: Parameters) -> ProtocolOptions<UDPProtocol>? {
         parameters.udpOptions(for: self.identifier)
     }
+    public func tcpOptions(from parameters: Parameters) -> ProtocolOptions<TCPProtocol>? {
+        parameters.tcpOptions(for: self.identifier)
+    }
     public func ipOptions(from parameters: Parameters) -> ProtocolOptions<IPProtocol>? {
         parameters.ipOptions(for: self.identifier)
     }

@@ -532,6 +532,19 @@ extension Parameters {
         #endif
     }
 
+    public func tcpOptions(for instance: InstanceIdentifier) -> ProtocolOptions<TCPProtocol>? {
+        if let transportProtocol = transportOptions(for: instance),
+            case .tcp(let options) = transportProtocol
+        {
+            return options
+        }
+        #if NETWORK_EMBEDDED
+        return nil
+        #else
+        return self.protocolOptions(for: instance)
+        #endif
+    }
+
     public func customLinkOptions(for instance: InstanceIdentifier) -> ProtocolOptions<CustomLinkProtocol>? {
         if case .customLink(let options) = self.defaultStack.link {
             // The link slot holds exactly one protocol, so options that have not yet

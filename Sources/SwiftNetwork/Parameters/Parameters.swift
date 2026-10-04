@@ -553,6 +553,16 @@ public struct Parameters: Hashable, CustomStringConvertible {
         dataMode = .datagram
     }
 
+    public init(tcp: RequiredProtocolConfiguration<TCPProtocol>) {
+        self = Self.init()
+        let tcpOptions = TCPProtocol.options()
+        if case .customize(let handler) = tcp {
+            handler(tcpOptions)
+        }
+        defaultStack.transport = .tcp(tcpOptions)
+        dataMode = .stream
+    }
+
     init(quicConnection: RequiredProtocolConfiguration<QUICConnectionProtocol>) {
         self = Self.init()
         let quicOptions = QUICConnectionProtocol.options()

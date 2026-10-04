@@ -193,8 +193,16 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
     }
     #else
     var storage: NetworkContext.Storage
+
+    var _eventContext: NetworkContext.EventContext
+
     internal init(storage: consuming NetworkContext.Storage) {
         self.storage = storage
+        self._eventContext = .init()
+    }
+
+    deinit {
+        teardown()
     }
     #endif
 

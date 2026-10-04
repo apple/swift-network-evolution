@@ -57,7 +57,9 @@ final class RecoveryTests: XCTestCase {
             }
             var newPath = QUICPath.makeFromExternalTest(parent: self.connection)
             newPath.set(interface: nil, priority: 1, isInitial: true)
-            newPath.assignDCID(QUICConnectionID(0))
+            self.connection.fromExternal { eventContext in
+                newPath.assignDCID(QUICConnectionID(0), in: &eventContext)
+            }
             newPath.setSCID(QUICConnectionID(0))
             // Bind both directions: `attachLowerProtocol` only points the path at the harness,
             // so the harness also needs the path as its upper protocol or its `validate(upper:)`

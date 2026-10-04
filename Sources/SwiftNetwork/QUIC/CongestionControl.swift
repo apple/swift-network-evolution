@@ -189,6 +189,66 @@ enum CongestionControl {
         }
     }
 
+    mutating func processECN(
+        path: QUICPath?,
+        ceCount: Int,
+        packetsAcked: Int,
+        largestSentPN: Int64,
+        largestAckedPN: Int64,
+        largestAckedSentTime: NetworkClock.Instant,
+        mss: Int,
+        smoothedRTT: NetworkDuration,
+        now: NetworkClock.Instant,
+        qlog: QLog? = nil
+    ) {
+        switch self {
+        case .cubic(algorithm: var cubic):
+            cubic.processECN(
+                path: path,
+                ceCount: ceCount,
+                packetsAcked: packetsAcked,
+                largestSentPN: largestSentPN,
+                largestAckedPN: largestAckedPN,
+                largestAckedSentTime: largestAckedSentTime,
+                mss: mss,
+                smoothedRTT: smoothedRTT,
+                now: now,
+                qlog: qlog
+            )
+            self = .cubic(algorithm: cubic)
+        #if !NETWORK_EMBEDDED
+        case .ledbat(algorithm: var ledbat):
+            ledbat.processECN(
+                path: path,
+                ceCount: ceCount,
+                packetsAcked: packetsAcked,
+                largestSentPN: largestSentPN,
+                largestAckedPN: largestAckedPN,
+                largestAckedSentTime: largestAckedSentTime,
+                mss: mss,
+                smoothedRTT: smoothedRTT,
+                now: now,
+                qlog: qlog
+            )
+            self = .ledbat(algorithm: ledbat)
+        case .prague(algorithm: var prague):
+            prague.processECN(
+                path: path,
+                ceCount: ceCount,
+                packetsAcked: packetsAcked,
+                largestSentPN: largestSentPN,
+                largestAckedPN: largestAckedPN,
+                largestAckedSentTime: largestAckedSentTime,
+                mss: mss,
+                smoothedRTT: smoothedRTT,
+                now: now,
+                qlog: qlog
+            )
+            self = .prague(algorithm: prague)
+        #endif
+        }
+    }
+
     mutating func packetDiscarded(bytesSent: Int, qlog: QLog? = nil) {
         switch self {
         case .cubic(var cubic):

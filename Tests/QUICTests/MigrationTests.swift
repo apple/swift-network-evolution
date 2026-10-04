@@ -80,7 +80,9 @@ final class MigrationTests: XCTestCase {
         // Every caller builds its paths from inside `context.async`, so this runs on the context.
         var path = QUICPath.makeFromExternalTest(parent: self.connection)
         path.set(interface: nil, priority: 1, isInitial: true)  // -> .routeEstablished
-        path.assignDCID(dcid)  // -> .cidAssigned (open for sending)
+        connection.fromExternal { eventContext in
+            path.assignDCID(dcid, in: &eventContext)  // -> .cidAssigned (open for sending)
+        }
         if validated {
             path.changeState(to: .probing)
             path.changeState(to: .validated)

@@ -174,7 +174,7 @@ public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendabl
 
     public func descriptionInternal(redacted: Bool) -> String {
         var suffix = ""
-        if let interface {
+        if let interface = self.interface {
             suffix = "@" + interface.name
         }
         if redacted {

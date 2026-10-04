@@ -1,0 +1,106 @@
+name: Fuzz
+
+# Reusable fuzzing job, called by pull_request.yml (short smoke run) and
+# fuzz-nightly.yml (long run with a persisted corpus). The inputs cover
+# everything that differs between the two, so the build/run/upload steps only
+# exist here.
+
+on:
+  workflow_call:
+    inputs:
+      durations:
+        description: 'Per-target fuzz durations, as <target>=<seconds> pairs'
+        required: true
+        type: string
+      persist_corpus:
+        description: 'Carry the corpus across runs via actions/cache, so coverage accumulates'
+        required: false
+        default: false
+        type: boolean
+      timeout_minutes:
+        description: 'Job timeout in minutes; must comfortably exceed the sum of the durations'
+        required: false
+        default: 30
+        type: number
+      crash_retention_days:
+        description: 'How long to keep uploaded crash reproducers'
+        required: false
+        default: 14
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzzing
+    runs-on: ubuntu-latest
+    container:
+      image: swift:6.3
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Swift version
+        run: swift --version
+
+      # No exact-key hit on a scheduled run (the key includes github.run_id,
+      # always new), so this falls through to restore-keys and picks up the most
+      # recent previous corpus. First run, or after eviction, is simply a no-op
+      # and the fuzzers start from empty.
+      - name: Restore fuzz corpus cache
+        if: inputs.persist_corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz-corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+
+      - name: Build fuzz targets (release)
+        # Build *only* the two fuzz products. The Fuzzing trait applies the
+        # sanitizer flags package-wide, and linking the instrumented
+        # command-line tools trips an ld.gold bug ("internal error in
+        # format_file_lineno, at ../../gold/dwarf_reader.cc"). The fuzzers
+        # themselves link fine, and the tools aren't needed here anyway.
+        #
+        # DisableDebugLogging/DisableErrorLogging keep the library quiet: every
+        # rejected input otherwise logs, which buries the libFuzzer output and
+        # costs throughput. Crash diagnosis doesn't need it - the stack trace
+        # comes from libFuzzer/ASan, and a saved reproducer can be replayed
+        # locally with logging left on.
+        run: |
+          for product in FuzzQUICPackets FuzzTransportParameters; do
+            swift build --configuration release --traits Fuzzing,DisableDebugLogging,DisableErrorLogging --product "$product"
+          done
+
+      - name: Fuzz
+        # Unquoted on purpose: the spec is several space-separated arguments.
+        run: bash .github/workflows/scripts/ci-fuzz.sh ${{ inputs.durations }}
+
+      # Runs even though the Fuzz step failed (i.e. found a crash/oom/timeout),
+      # so the failing input can be downloaded and replayed locally.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ github.run_id }}
+          path: |
+            fuzz-corpus/*/crash-*
+            fuzz-corpus/*/oom-*
+            fuzz-corpus/*/timeout-*
+          if-no-files-found: ignore
+          retention-days: ${{ inputs.crash_retention_days }}
+
+      # Always re-save, even on failure, so the next run keeps this run's
+      # coverage gains and the crashing input stays in the corpus as a
+      # regression check once it's fixed.
+      - name: Save fuzz corpus cache
+        if: always() && inputs.persist_corpus
+        uses: actions/cache/save@v4
+        with:
+          path: fuzz-corpus
+          key: fuzz-corpus-${{ github.run_id }}

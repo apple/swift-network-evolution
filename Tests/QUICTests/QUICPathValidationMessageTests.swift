@@ -38,7 +38,11 @@ class QUICPathValidationMessageTests: XCTestCase {
             QUICPath.makeFromExternalTest(parent: self.connection)
         }
         path.set(interface: nil, priority: 0, isInitial: true)
-        path.assignDCID(QUICConnectionID(8))
+        connection.context.onQueue {
+            connection.fromExternal { eventContext in
+                path.assignDCID(QUICConnectionID(8), in: &eventContext)
+            }
+        }
     }
 
     override func tearDown() {
@@ -56,8 +60,11 @@ class QUICPathValidationMessageTests: XCTestCase {
         // challenge received from a path that is not validated
         let challenge = FramePathChallenge(data: 1)
         XCTAssertEqual(path.challengesSent, 0)
-        connection
-            .handlePathChallengeFrame(challenge, path: path)
+        let _ = connection.context.onQueue {
+            connection.fromExternal { eventContext in
+                connection.handlePathChallengeFrame(challenge, path: path, in: &eventContext)
+            }
+        }
         XCTAssertEqual(path.pendingInboundChallenges.count, 1)
         XCTAssertEqual(path.state, .probing)
         XCTAssertEqual(path.pendingOutboundChallenges.count, 0)
@@ -65,8 +72,11 @@ class QUICPathValidationMessageTests: XCTestCase {
         // challenge received on a path that is validated, should just generate response
         path.changeState(to: .validated)
         let challenge2 = FramePathChallenge(data: 2)
-        connection
-            .handlePathChallengeFrame(challenge2, path: path)
+        let _ = connection.context.onQueue {
+            connection.fromExternal { eventContext in
+                connection.handlePathChallengeFrame(challenge2, path: path, in: &eventContext)
+            }
+        }
         // pending challenges are not cleared until they are processed
         XCTAssertEqual(path.pendingInboundChallenges.count, 2)
         XCTAssertEqual(path.state, .validated)  // we remain validated when the peer re-probes
@@ -85,10 +95,14 @@ class QUICPathValidationMessageTests: XCTestCase {
             XCTAssertTrue(pendingItems.pathResponses.isEmpty)
 
             // Add incoming and outgoing challenges. These will produce path-specific PendingItems
-            path.beginValidation()
+            connection.fromExternal { eventContext in
+                path.beginValidation(in: &eventContext)
+            }
             XCTAssertEqual(path.state, .probing)
             XCTAssertEqual(path.pendingOutboundChallenges.count, 0)
-            path.handlePathChallenge(1)
+            connection.fromExternal { eventContext in
+                path.handlePathChallenge(1, in: &eventContext)
+            }
             XCTAssertEqual(path.pendingInboundChallenges.count, 1)
             connection.fromExternal { eventContext in
                 path.addPendingItems(&pendingItems, now: startTime, in: &eventContext)

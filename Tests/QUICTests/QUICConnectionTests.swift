@@ -354,7 +354,9 @@ final class QUICConnectionTests: XCTestCase {
             }
             var quicPath = QUICPath.makeFromExternalTest(parent: connection)
             quicPath.set(interface: nil, priority: 1, isInitial: true)
-            quicPath.assignDCID(peerConnectionID)
+            connection.fromExternal { eventContext in
+                quicPath.assignDCID(peerConnectionID, in: &eventContext)
+            }
             _ = try? quicPath.attachLowerProtocol(lowerLinkage.base)
             try? lowerLinkage.base.invokeAttachUpperProtocol(
                 quicPath.asUpperLinkage(),

@@ -2711,6 +2711,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: false,
             useContextID: false,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.flowID, nil)
@@ -2731,6 +2732,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: false,
             useContextID: false,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.flowID, nil)
@@ -2753,6 +2755,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: true,
             useContextID: false,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, nil)
@@ -2774,6 +2777,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: true,
             useContextID: false,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, nil)
@@ -2796,6 +2800,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: false,
             useContextID: true,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, 13)
@@ -2817,6 +2822,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: false,
             useContextID: true,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, 13)
@@ -2840,6 +2846,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: true,
             useContextID: true,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, 13)
@@ -2862,6 +2869,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: true,
             useContextID: true,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, 13)
@@ -2884,6 +2892,7 @@ class QUICFrameTests: XCTestCase {
                 useFlowID: true,
                 useContextID: true,
                 connection: connection,
+                stats: &connection.stats,
                 in: &connection.context.eventContext
             )
             XCTFail("Should have thrown error for frame creation")
@@ -3126,6 +3135,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: false,
             useContextID: false,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.flowID, nil)
@@ -3147,6 +3157,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: false,
             useContextID: false,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.flowID, nil)
@@ -3170,6 +3181,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: true,
             useContextID: false,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, nil)
@@ -3192,6 +3204,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: true,
             useContextID: false,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, nil)
@@ -3215,6 +3228,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: false,
             useContextID: true,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, 13)
@@ -3237,6 +3251,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: false,
             useContextID: true,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, 13)
@@ -3261,6 +3276,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: true,
             useContextID: true,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, 13)
@@ -3284,6 +3300,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: true,
             useContextID: true,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
         XCTAssertEqual(quicFrame.contextID, 13)
@@ -3307,6 +3324,7 @@ class QUICFrameTests: XCTestCase {
                 useFlowID: true,
                 useContextID: true,
                 connection: connection,
+                stats: &connection.stats,
                 in: &connection.context.eventContext
             )
             XCTFail("Should have thrown error for frame creation")
@@ -3559,6 +3577,7 @@ class QUICFrameTests: XCTestCase {
             useFlowID: true,
             useContextID: true,
             connection: connection,
+            stats: &connection.stats,
             in: &connection.context.eventContext
         )
 
@@ -3592,6 +3611,7 @@ class QUICFrameTests: XCTestCase {
                 useFlowID: true,
                 useContextID: false,
                 connection: connection,
+                stats: &connection.stats,
                 in: &connection.context.eventContext
             )
 

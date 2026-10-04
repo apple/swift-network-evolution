@@ -644,6 +644,8 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         let handshakeExpectation = XCTestExpectation(description: "QUIC handshake complete")
         let pathChangedExpectation = XCTestExpectation(description: "pathChanged event received")
         let pathValidatedExpectation = XCTestExpectation(description: "pathValidated event received")
+        let pathCIDAssignedExpectation = XCTestExpectation(description: "pathCIDAssigned event received")
+        let pathCurrentExpectation = XCTestExpectation(description: "pathCurrent event received")
 
         let storage = TestNetworkProtocolStorage(context: context)
 
@@ -655,6 +657,8 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
 
         var receivedPathChangedInfo: QUICPathInfo?
         var receivedPathValidatedInfo: QUICPathInfo?
+        var receivedpathCIDAssignedInfo: QUICPathInfo?
+        var receivedPathCurrentInfo: QUICPathInfo?
 
         context.async {
             defer { handshakeExpectation.fulfill() }
@@ -775,6 +779,16 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                 pathValidatedExpectation.fulfill()
             }
 
+            serverUpperHarness.completions.pathCIDAssigned = { pathInfo in
+                receivedpathCIDAssignedInfo = pathInfo
+                pathCIDAssignedExpectation.fulfill()
+            }
+
+            serverUpperHarness.completions.pathCurrent = { pathInfo in
+                receivedPathCurrentInfo = pathInfo
+                pathCurrentExpectation.fulfill()
+            }
+
             var serverConnected = false
             serverUpperHarness.start { connected in
                 serverConnected = true
@@ -839,7 +853,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         }
 
         wait(for: [migrationExpectation], timeout: 10.0)
-        wait(for: [pathChangedExpectation, pathValidatedExpectation], timeout: 10.0)
+        wait(for: [pathChangedExpectation, pathValidatedExpectation, pathCurrentExpectation], timeout: 10.0)
 
         XCTAssertNotNil(receivedPathChangedInfo, "Expected pathChanged event")
         XCTAssertNotNil(receivedPathValidatedInfo, "Expected pathValidated event")
@@ -851,6 +865,15 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             XCTAssertTrue(pathInfo.remote == AddressEndpoint(address: newClientAddress, port: newCLientPort))
         }
         if let pathInfo = receivedPathChangedInfo {
+            XCTAssertTrue(pathInfo.local == AddressEndpoint(address: serverAddress, port: serverPort))
+            XCTAssertTrue(pathInfo.remote == AddressEndpoint(address: newClientAddress, port: newCLientPort))
+        }
+        if let pathInfo = receivedpathCIDAssignedInfo {
+            XCTAssertTrue(pathInfo.local == AddressEndpoint(address: serverAddress, port: serverPort))
+            XCTAssertTrue(pathInfo.remote == AddressEndpoint(address: newClientAddress, port: newCLientPort))
+        }
+        XCTAssertNotNil(receivedPathCurrentInfo, "Expected pathCurrent event")
+        if let pathInfo = receivedPathCurrentInfo {
             XCTAssertTrue(pathInfo.local == AddressEndpoint(address: serverAddress, port: serverPort))
             XCTAssertTrue(pathInfo.remote == AddressEndpoint(address: newClientAddress, port: newCLientPort))
         }

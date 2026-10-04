@@ -60,6 +60,37 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
         // A connection that still owes the peer an ACK is not idle.
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
+            afterHandshake: { harness in
+                // The test relies on the client still owing a delayed ACK for the echoed
+                // data when the idle state is evaluated, and sends that ACK explicitly.
+                // Stretch the delayed ACK timer so it cannot fire on its own before then;
+                // with the default 25ms delay, slow CI machines can lose that race.
+                let expectation = XCTestExpectation(description: "Wait for delayed ACK timer to be extended")
+                harness.context.async {
+                    if let client = harness.state?.clientInstance {
+                        client.fromExternal { eventContext in
+                            client.ack.maxDelay = .seconds(30)
+                            // The handshake may have already armed the timer with the default
+                            // delay, and scheduling a delayed ACK keeps an armed deadline, so
+                            // re-arm it with the extended delay.
+                            if client.ack.timerScheduled, let timerID = client.ack.timerID {
+                                client.timer.reschedule(
+                                    identifier: timerID,
+                                    fromNow: client.ack.maxDelay,
+                                    timerNow: client.now,
+                                    in: &eventContext
+                                )
+                            }
+                        }
+                    }
+                    // Keep the server's view of the client's ACK delay consistent, otherwise
+                    // its PTO fires while the ACK is held and the probe forces an immediate ACK.
+                    harness.state?.serverInstance.currentPath?.rtt.remoteMaxAckDelay = .seconds(30)
+                    expectation.fulfill()
+                }
+                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
+                XCTAssertEqual(waitResult, .completed, "Delayed ACK timer should be extended")
+            },
             afterData: { harness in
                 // Verify the reported idle state follows the transmit obligations
                 let expectation = XCTestExpectation(description: "Wait for idle state to be evaluated")

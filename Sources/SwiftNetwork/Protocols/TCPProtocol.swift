@@ -50,6 +50,11 @@ public struct TCPProtocol: NetworkProtocol {
         // Urgent Pointer: UInt16
     }
 
+    // Byte offset of checksum within the TCP header.
+    static public var checksumFieldOffset: Int {
+        16
+    }
+
     public struct TCPOptions: PerProtocolOptions {
 
         internal var _maximumSegmentSize: UInt32 = 0

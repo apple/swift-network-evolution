@@ -861,6 +861,8 @@ where
         public var pathChanged: ((QUICPathInfo) -> Void)?
         public var pathValidated: ((QUICPathInfo) -> Void)?
         public var pathUnreachable: ((QUICPathInfo) -> Void)?
+        public var pathCIDAssigned: ((QUICPathInfo) -> Void)?
+        public var pathCurrent: ((QUICPathInfo) -> Void)?
         public init() {}
     }
     public var completions: Completions = .init()
@@ -979,6 +981,14 @@ where
                 }
             case .pathUnreachable(let info):
                 if let completion = completions.pathUnreachable {
+                    completion(info)
+                }
+            case .pathCIDAssigned(let info):
+                if let completion = completions.pathCIDAssigned {
+                    completion(info)
+                }
+            case .pathCurrent(let info):
+                if let completion = completions.pathCurrent {
                     completion(info)
                 }
             default: break
