@@ -76,13 +76,13 @@ struct LogPrefixer {
     }
     #else
     public func info(_ message: String, callingFunction: StaticString = #function) {
-        log.info(message, callingFunction: callingFunction)
+        Logger.proto.info(message, callingFunction: callingFunction)
     }
     public func debug(_ message: String, callingFunction: StaticString = #function) {
-        log.debug(message, callingFunction: callingFunction)
+        Logger.proto.debug(message, callingFunction: callingFunction)
     }
     public func datapath(_ message: String, callingFunction: StaticString = #function) {
-        log.datapath(message, callingFunction: callingFunction)
+        Logger.proto.debug(message, callingFunction: callingFunction)
     }
     #endif
     #endif
