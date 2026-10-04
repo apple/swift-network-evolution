@@ -120,6 +120,50 @@ final class ConnectionIDRotationTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 5.0)
     }
+
+    // RFC 9000 5.1.1: a NEW_CONNECTION_ID frame that takes the active CID count past the advertised
+    // active_connection_id_limit, without retiring anything, must close the connection with
+    // CONNECTION_ID_LIMIT_ERROR. Filling the pool to the limit, or repeating a frame, must not.
+    func testNewConnectionIDOverLimitClosesConnection() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let path = self.makePath(dcid: QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!, sequenceNumber: 0, used: true)
+            self.connection.currentPath = path
+            self.connection.remoteCIDs.activeConnectionIDLimit = 2
+
+            let atLimit = FrameNewConnectionID(
+                sequence: 1,
+                retirePriorToSequence: 0,
+                connectionID: QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+            let overLimit = FrameNewConnectionID(
+                sequence: 2,
+                retirePriorToSequence: 0,
+                connectionID: QUICConnectionID([0xC1, 0xC2, 0xC3, 0xC4])!,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+
+            self.connection.fromExternal { eventContext in
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(atLimit, in: &eventContext))
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(atLimit, in: &eventContext))
+            }
+            XCTAssertNil(self.connection.closeError, "Reaching the limit, or a repeated frame, is not an error")
+            XCTAssertEqual(self.connection.remoteCIDs.count, 2)
+
+            self.connection.fromExternal { eventContext in
+                XCTAssertFalse(self.connection.processNewConnectionIDFrame(overLimit, in: &eventContext))
+            }
+            XCTAssertEqual(
+                self.connection.closeError?.code,
+                QUICTransportError.QUICTransportErrorCode.connectionIDLimitError.rawValue,
+                "Exceeding the limit should close with CONNECTION_ID_LIMIT_ERROR"
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
 }
 
 #endif

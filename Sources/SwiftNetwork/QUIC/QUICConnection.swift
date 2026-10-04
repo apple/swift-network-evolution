@@ -7011,7 +7011,14 @@ extension QUICConnection {
                 )
             }
         } else {
-            log.info("Attempt to add new CID that exceeds the configured cid limit (\(cidLimit))")
+            // RFC 9000: 5.1.1:
+            // After processing a NEW_CONNECTION_ID frame and adding and retiring active connection IDs, if the
+            // number of active connection IDs exceeds the value advertised in its active_connection_id_limit
+            // transport parameter, an endpoint MUST close the connection with an error of type
+            // CONNECTION_ID_LIMIT_ERROR.
+            log.error("Attempt to add new CID that exceeds the configured cid limit (\(cidLimit))")
+            close(with: .connectionIDLimitError, "NEW_CONNECTION_ID: CID limit exceeded", in: &eventContext)
+            return false
         }
 
         // Re-point the path only after the insert above: the CID this frame supplies may be
