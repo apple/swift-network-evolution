@@ -213,6 +213,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var packetParser: PacketParser
 
     private(set) var keyState = PacketKeyState.initial
+    // Set from initiating a key update until the peer responds in the new key phase
+    private(set) var keyUpdatePending = false
+    // Packets that failed authentication, across all keys (RFC 9001, Section 6.6)
+    private(set) var failedDecryptionCount: UInt64 = 0
     var remoteMaxDatagramFrameSize = 0
     var remoteMaximumUDPPayloadSize = 0
 
@@ -1941,6 +1945,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     transferredPacket,
                     path: path,
                     ack: &ack,
+                    protector: &protector,
                     in: &eventContext
                 )
             }
@@ -2547,15 +2552,28 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         _ packet: borrowing Packet,
         path: QUICPath,
         ack: inout Ack,
+        protector: inout Protector,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         guard let packetKeyState = packet.keyState else {
             log.error("Received short header without keystate set")
             return false
         }
-        if packetKeyState != keyState {
+        if packetKeyState == keyState {
+            keyUpdatePending = false
+            // RFC 9001, Section 6.6: initiate a key update before the AEAD confidentiality limit
+            if _slowPath(isHandshakeConfirmed && protector.keyUpdateNeeded(for: keyState)) {
+                log.notice("Initiating key update from \(keyState)")
+                protector.trafficUpdate(previousKeyState: keyState)
+                keyState = keyState == .phase0 ? .phase1 : .phase0
+                keyUpdatePending = true
+            }
+        } else if !keyUpdatePending {
             log.notice("Switching to keystate \(packetKeyState)")
             keyState = packetKeyState
+        } else if protector.keyUpdateNeeded(for: keyState) {
+            close(with: .aeadLimitReached, "peer did not respond to key update", in: &eventContext)
+            return false
         }
 
         ack.append(
@@ -4635,6 +4653,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         _ packet: borrowing Packet,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        failedDecryptionCount += 1
+        if let keyState = packet.keyState, failedDecryptionCount > protector.integrityLimit(for: keyState) {
+            closeError = QUICTransportError(.aeadLimitReached, "AEAD integrity limit reached")
+            close(in: &eventContext)
+            return
+        }
         if packet.tagLength == Constants.statelessResetTokenSize,
             let packetToken = packet.tag,
             let statelessToken = QUICStatelessResetToken(packetToken)

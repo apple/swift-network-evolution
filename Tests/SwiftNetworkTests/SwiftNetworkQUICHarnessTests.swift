@@ -517,6 +517,43 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         )
     }
 
+    // RFC 9001, Section 6.6: with a lowered AEAD confidentiality limit the client has to
+    // initiate key updates during the transfer.
+    func testQUICEchoWithKeyUpdates() {
+        QUICTestHarness().runQUICTest(
+            blockSize: 10240,
+            blockCount: 32,
+            afterHandshake: { harness in
+                let expectation = XCTestExpectation(description: "Wait to lower the AEAD limit")
+                harness.context.async {
+                    harness.state?.clientInstance.protector.aesGCMConfidentialityLimit = 128
+                    expectation.fulfill()
+                }
+                self.wait(for: [expectation], timeout: 5.0)
+            },
+            afterData: { harness in
+                let expectation = XCTestExpectation(description: "Wait to validate key updates")
+                harness.context.async {
+                    defer { expectation.fulfill() }
+                    guard let clientInstance = harness.state?.clientInstance,
+                        let serverInstance = harness.state?.serverInstance
+                    else {
+                        XCTFail("State needs to be present to proceed")
+                        return
+                    }
+                    // Phase 1 keys only exist once a key update has happened
+                    XCTAssertTrue(clientInstance.protector.sealKeyReady(for: .phase1))
+                    XCTAssertTrue(serverInstance.protector.sealKeyReady(for: .phase1))
+                    XCTAssertEqual(clientInstance.failedDecryptionCount, 0)
+                    XCTAssertEqual(serverInstance.failedDecryptionCount, 0)
+                    XCTAssertNil(clientInstance.closeError)
+                    XCTAssertNil(serverInstance.closeError)
+                }
+                self.wait(for: [expectation], timeout: 5.0)
+            }
+        )
+    }
+
     func testQUICEcho40KiBMultistream() {
         QUICTestHarness().runQUICTest(streamCount: 4, blockSize: 10240, blockCount: 4)
     }

@@ -648,6 +648,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             (connection.keyState == .phase0 || connection.keyState == .phase1)
                 && (packet.keyState == .phase0 || packet.keyState == .phase1)
                 && connection.keyState != packet.keyState
+                // While a locally-initiated key update is pending, the other phase is the peer's previous one
+                && !connection.keyUpdatePending
         ) {
             protector.trafficUpdate(previousKeyState: connection.keyState)
         }

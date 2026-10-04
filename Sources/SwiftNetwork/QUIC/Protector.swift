@@ -172,6 +172,8 @@ struct SecFramerKeys: ~Copyable {
     let type: KeyType
     let isEmpty: Bool
     let log: LogPrefixer
+    // Number of packets sealed with this key (RFC 9001, Section 6.6)
+    var sealCount: UInt64 = 0
 
     init(
         key: SymmetricKey,
@@ -688,6 +690,9 @@ struct Protector: ~Copyable, PrefixedLoggable {
         repeating: PacketNumber.initial,
         count: PacketNumberSpace.allCases.count
     )
+    // RFC 9001, Section 6.6: an AES-GCM key must not seal more than 2^23 packets.
+    // ChaCha20-Poly1305 has no reachable confidentiality limit.
+    var aesGCMConfidentialityLimit: UInt64 = 1 << 23
 
     init(isClient: Bool, destinationCID: QUICConnectionID, logPrefixer: LogPrefixer) {
         self.isClient = isClient
@@ -984,7 +989,12 @@ struct Protector: ~Copyable, PrefixedLoggable {
         guard let keyStateIndex: Int = packet.keyState?.rawValue else {
             throw QUICError.protector(SecFramerError.noFramerFound)
         }
+        guard !sealLimitReached(keys: writeFramer[keyStateIndex], limit: aesGCMConfidentialityLimit) else {
+            log.error("AEAD confidentiality limit reached for \(packet.keyState!.description)")
+            throw QUICError.protector(SecFramerError.sealingFailed)
+        }
         try Self.sealInner(&packet, frame: &frame, keys: writeFramer[keyStateIndex])
+        writeFramer[keyStateIndex].sealCount += 1
         QUICSignpost.sealEnd(signpostInterval)
         // Upon success, increment the sequence number all the way to the
         // the last recently used one because there could be gaps.
@@ -1350,6 +1360,23 @@ struct Protector: ~Copyable, PrefixedLoggable {
     }
 
     @inline(always)
+    private func sealLimitReached(keys: borrowing SecFramerKeys, limit: UInt64) -> Bool {
+        keys.type == .aesGCM && keys.sealCount >= limit
+    }
+
+    /// Whether the write key has used up half of its confidentiality limit, so
+    /// that a key update can complete before the limit is reached.
+    @inline(always)
+    func keyUpdateNeeded(for keyState: PacketKeyState) -> Bool {
+        sealLimitReached(keys: writeFramer[keyState.rawValue], limit: aesGCMConfidentialityLimit / 2)
+    }
+
+    /// The number of packets that may fail authentication (RFC 9001, Section 6.6).
+    func integrityLimit(for keyState: PacketKeyState) -> UInt64 {
+        keyType(keys: readFramer[keyState.rawValue]) == .chaChaPoly ? 1 << 36 : 1 << 52
+    }
+
+    @inline(always)
     func getPacketNumber(
         for packetNumberSpace: PacketNumberSpace
     ) -> PacketNumber {
@@ -1511,6 +1538,14 @@ struct Protector: ~Copyable, PrefixedLoggable {
     }
 
     func trafficUpdate(previousKeyState: PacketKeyState) {
+    }
+
+    func keyUpdateNeeded(for keyState: PacketKeyState) -> Bool {
+        false
+    }
+
+    func integrityLimit(for keyState: PacketKeyState) -> UInt64 {
+        .max
     }
 
     func open(_ packet: inout Packet, frame: inout Frame) throws(QUICError) {
