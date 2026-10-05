@@ -544,8 +544,8 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
                     // Phase 1 keys only exist once a key update has happened
                     XCTAssertTrue(clientInstance.protector.sealKeyReady(for: .phase1))
                     XCTAssertTrue(serverInstance.protector.sealKeyReady(for: .phase1))
-                    XCTAssertEqual(clientInstance.failedDecryptionCount, 0)
-                    XCTAssertEqual(serverInstance.failedDecryptionCount, 0)
+                    XCTAssertEqual(clientInstance.protector.failedDecryptionCount, 0)
+                    XCTAssertEqual(serverInstance.protector.failedDecryptionCount, 0)
                     XCTAssertNil(clientInstance.closeError)
                     XCTAssertNil(serverInstance.closeError)
                 }

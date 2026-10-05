@@ -215,8 +215,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var keyState = PacketKeyState.initial
     // Set from initiating a key update until the peer responds in the new key phase
     private(set) var keyUpdatePending = false
-    // Packets that failed authentication, across all keys (RFC 9001, Section 6.6)
-    private(set) var failedDecryptionCount: UInt64 = 0
     var remoteMaxDatagramFrameSize = 0
     var remoteMaximumUDPPayloadSize = 0
 
@@ -4653,8 +4651,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         _ packet: borrowing Packet,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        failedDecryptionCount += 1
-        if let keyState = packet.keyState, failedDecryptionCount > protector.integrityLimit(for: keyState) {
+        if let keyState = packet.keyState, protector.failedDecryption(for: keyState) {
             closeError = QUICTransportError(.aeadLimitReached, "AEAD integrity limit reached")
             close(in: &eventContext)
             return

@@ -693,6 +693,8 @@ struct Protector: ~Copyable, PrefixedLoggable {
     // RFC 9001, Section 6.6: an AES-GCM key must not seal more than 2^23 packets.
     // ChaCha20-Poly1305 has no reachable confidentiality limit.
     var aesGCMConfidentialityLimit: UInt64 = 1 << 23
+    // Packets that failed authentication, across all keys (RFC 9001, Section 6.6)
+    private(set) var failedDecryptionCount: UInt64 = 0
 
     init(isClient: Bool, destinationCID: QUICConnectionID, logPrefixer: LogPrefixer) {
         self.isClient = isClient
@@ -1376,6 +1378,12 @@ struct Protector: ~Copyable, PrefixedLoggable {
         keyType(keys: readFramer[keyState.rawValue]) == .chaChaPoly ? 1 << 36 : 1 << 52
     }
 
+    /// Counts a packet that failed authentication and returns whether the integrity limit is exceeded.
+    mutating func failedDecryption(for keyState: PacketKeyState) -> Bool {
+        failedDecryptionCount += 1
+        return failedDecryptionCount > integrityLimit(for: keyState)
+    }
+
     @inline(always)
     func getPacketNumber(
         for packetNumberSpace: PacketNumberSpace
@@ -1546,6 +1554,10 @@ struct Protector: ~Copyable, PrefixedLoggable {
 
     func integrityLimit(for keyState: PacketKeyState) -> UInt64 {
         .max
+    }
+
+    func failedDecryption(for keyState: PacketKeyState) -> Bool {
+        false
     }
 
     func open(_ packet: inout Packet, frame: inout Frame) throws(QUICError) {
