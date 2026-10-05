@@ -2022,7 +2022,7 @@ public class NetworkChannel<ApplicationProtocol: NetworkProtocolOptions>: Networ
     /// Calls to cancel after the first one are ignored.
     public func cancel() {
         context.async {
-            self.withFlow { flow in flow.cancel(self) }
+            self.withFlow { flow in flow.cancel(self as NetworkChannelBase) }
         }
     }
 
@@ -2030,7 +2030,7 @@ public class NetworkChannel<ApplicationProtocol: NetworkProtocolOptions>: Networ
     /// `error`, if provided, is signalled to the peer
     public func forceCancel(error: NetworkError? = nil) {
         context.async {
-            self.withFlow { flow in flow.cancel(force: true, error: error, self) }
+            self.withFlow { flow in flow.cancel(force: true, error: error, self as NetworkChannelBase) }
         }
     }
 
@@ -2052,7 +2052,7 @@ public class NetworkChannel<ApplicationProtocol: NetworkProtocolOptions>: Networ
 
     public func invokeApplicationEvent(_ event: ApplicationEvent) {
         context.async {
-            self.withFlow { flow in flow.invokeApplicationEvent(event, self) }
+            self.withFlow { flow in flow.invokeApplicationEvent(event, self as NetworkChannelBase) }
         }
     }
 }
@@ -2188,7 +2188,7 @@ extension NetworkConnection where ApplicationProtocol: MultiplexProtocol {
     /// Start should only be called once on a connection, and multiple calls to start will be ignored.
     @discardableResult public func start() -> Self {
         context.async {
-            self.withFlow { flow in flow.start(self) }
+            self.withFlow { flow in flow.start(self as NetworkChannelBase) }
         }
         return self
     }
@@ -2477,7 +2477,7 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
                 completion: completion
             )
             self.withFlow(writeRequest) { flow, writeRequest in
-                flow.addWriteRequestOnContext(writeRequest, self)
+                flow.addWriteRequestOnContext(writeRequest, self as NetworkChannelBase)
             }
         }
     }
@@ -2496,7 +2496,7 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
                 completion: completion
             )
             self.withFlow(writeRequest) { flow, writeRequest in
-                flow.addWriteRequestOnContext(writeRequest, self)
+                flow.addWriteRequestOnContext(writeRequest, self as NetworkChannelBase)
             }
         }
     }
@@ -2516,7 +2516,7 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
                 }
             }
             self.withFlow(readRequest) { flow, readRequest in
-                flow.addReadRequestOnContext(readRequest, self)
+                flow.addReadRequestOnContext(readRequest, self as NetworkChannelBase)
             }
         }
     }
@@ -2547,7 +2547,7 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
                 }
             }
             self.withFlow(readRequest) { flow, readRequest in
-                flow.addReadRequestOnContext(readRequest, self)
+                flow.addReadRequestOnContext(readRequest, self as NetworkChannelBase)
             }
         }
     }
@@ -2568,7 +2568,7 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
         context.async {
             let writeRequest = WriteRequest(content: message.content, isComplete: true, completion: completion)
             self.withFlow(writeRequest) { flow, writeRequest in
-                flow.addWriteRequestOnContext(writeRequest, self)
+                flow.addWriteRequestOnContext(writeRequest, self as NetworkChannelBase)
             }
         }
     }
@@ -2587,7 +2587,7 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
                 completion: completion
             )
             self.withFlow(writeRequest) { flow, writeRequest in
-                flow.addWriteRequestOnContext(writeRequest, self)
+                flow.addWriteRequestOnContext(writeRequest, self as NetworkChannelBase)
             }
         }
     }
@@ -2603,7 +2603,7 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
                 }
             }
             self.withFlow(readRequest) { flow, readRequest in
-                flow.addReadRequestOnContext(readRequest, self)
+                flow.addReadRequestOnContext(readRequest, self as NetworkChannelBase)
             }
         }
     }
