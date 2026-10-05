@@ -121,7 +121,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
 
                         // Once the delayed ACK has been sent there are no obligations left.
                         client.fromExternal { eventContext in
-                            client.ack.timerFired(at: .systemNow, in: &eventContext)
+                            client.fireDelayedAckTimer(at: .systemNow, in: &eventContext)
                         }
                         XCTAssertEqual(
                             client.ack.unackedPacketCount,
@@ -146,6 +146,67 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                 let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
                 XCTAssertEqual(waitResult, .completed, "Idle state evaluation should complete")
             }
+        )
+    }
+
+    func testDelayedAckTimerCanSendPMTUDProbe() {
+        // Sending a delayed ACK can also send a PMTUD probe, and sending the probe reads
+        // the connection's ACK state, so the timer must not still hold that state when it
+        // sends.
+        let clientOptions = QUICProtocol.options()
+        clientOptions.connectionOptions.pmtudIgnoreCost = true
+        let serverOptions = QUICProtocol.options()
+        serverOptions.connectionOptions.pmtudIgnoreCost = true
+
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello World!".utf8),
+            clientOptions: clientOptions,
+            serverOptions: serverOptions,
+            afterData: { harness in
+                let expectation = XCTestExpectation(description: "Wait for the delayed ACK timer to fire")
+                harness.context.async {
+                    let client = harness.state?.clientInstance
+                    XCTAssertNotNil(client, "Client instance needs to be present to proceed")
+                    if let client, let path = client.currentPath {
+                        XCTAssertGreaterThan(
+                            client.ack.unackedPacketCount,
+                            0,
+                            "Client should still owe the peer a delayed ACK"
+                        )
+
+                        // Acknowledge a probe short of the path maximum, which leaves the
+                        // next probe due on the next transmission.
+                        let ipUDPHeaderSize = path.pmtudState.currentPathMTU - path.mss
+                        client.fromExternal { eventContext in
+                            client.acknowledgedPMTUDProbe(
+                                on: path,
+                                packetNumber: client.protector.getPacketNumber(for: .applicationData),
+                                mss: 1492 - ipUDPHeaderSize,
+                                in: &eventContext
+                            )
+                        }
+                        let canSendProbe = path.pmtudState.canSendProbe(on: path, hasPendingItems: false)
+                        XCTAssertTrue(
+                            canSendProbe,
+                            "Client should have a PMTUD probe ready to send alongside the delayed ACK"
+                        )
+
+                        client.fromExternal { eventContext in
+                            client.fireDelayedAckTimer(at: .systemNow, in: &eventContext)
+                        }
+
+                        XCTAssertEqual(
+                            client.ack.unackedPacketCount,
+                            0,
+                            "Client should not owe the peer an ACK once the delayed ACK has been sent"
+                        )
+                    }
+                    expectation.fulfill()
+                }
+                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
+                XCTAssertEqual(waitResult, .completed, "Delayed ACK timer should complete")
+            },
+            clientMTU: 1550
         )
     }
 }

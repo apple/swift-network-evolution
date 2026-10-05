@@ -391,16 +391,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     private var pendOutboundData = false  // Don't immediately process application sends
 
-    // Set while `recovery` is exclusively borrowed for ACK processing.
-    //
-    // Acknowledging a packet can close a stream (a fully-ACKed RESET_STREAM or
-    // FIN), and closing a stream wants to flush frames. The no-argument
-    // `sendFrames()` passes `&recovery` inout, so doing that from inside the ACK
-    // walk would be a second overlapping modification of `recovery` and traps
-    // under exclusivity enforcement. While this is set, `sendFrames()` records
-    // the request instead of performing it, and the ACK path flushes once the
-    // borrow ends.
-    private var isProcessingAcks = false
+    // Set while Recovery or Ack is exclusively borrowed for ACK-related work: either
+    // processing a received ACK frame  or firing the delayed-ACK timers
+    private var isBorrowingRecoveryAckState = false
     private var deferredSendFramesRequested = false
 
     // false == IPv6, true == IPv4
@@ -514,7 +507,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 timerNow: self.now,
                 in: &eventContext
             ) { firedAt, timerState in
-                self.ack.timerFired(at: firedAt, in: &timerState)
+                self.fireDelayedAckTimer(at: firedAt, in: &timerState)
             }
             self.ack = Ack(connection: self, timerID: ackTimerID, logPrefixer: logPrefixer)
 
@@ -3325,6 +3318,26 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
+    // Safe-guard Ack and Recovery overlapping access with isBorrowingRecoveryAckState
+    func fireDelayedAckTimer(
+        at firedAt: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        let wasBorrowing = isBorrowingRecoveryAckState
+        isBorrowingRecoveryAckState = true
+        ack.timerFired(at: firedAt, in: &eventContext)
+        isBorrowingRecoveryAckState = wasBorrowing
+        if !wasBorrowing, deferredSendFramesRequested {
+            deferredSendFramesRequested = false
+            sendFrames(delayedACK: true, in: &eventContext)
+
+            // `timerFired`'s own idle check ran before this deferred flush, while the ACK
+            // frame was still scheduled but not yet sent, so it couldn't observe idleness.
+            // Check again now that the flush has actually cleared the pending ACK.
+            checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
+        }
+    }
+
     // Adds recovery and applicationPendingItems to avoid extra begin/end acccess checking overhead
     @discardableResult
     /// Sends pending frames using an event context the caller already holds.
@@ -3333,11 +3346,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         delayedACK: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        // ACK processing holds `recovery` exclusively, and acknowledging a packet
-        // can close a stream, which in turn wants to flush frames. Passing
-        // `&recovery` again here would overlap that borrow and trap, so record
-        // the request and let the ACK path flush once its borrow has ended.
-        if isProcessingAcks {
+        // Guard with isBorrowingRecoveryAckState because Recovery and Ack to prevent overlapping access
+        if isBorrowingRecoveryAckState {
             deferredSendFramesRequested = true
             return false
         }
@@ -5705,7 +5715,8 @@ extension QUICConnection {
         // to flush frames. Suppress those nested flushes for the duration of the
         // `recovery` borrow below, then perform one flush afterwards if any were
         // requested.
-        isProcessingAcks = true
+        let wasBorrowing = isBorrowingRecoveryAckState
+        isBorrowingRecoveryAckState = true
         recovery.receivedAck(
             ack: frame,
             ackedPath: path,
@@ -5719,8 +5730,8 @@ extension QUICConnection {
         recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
 
         // The borrow of `recovery` has ended, so it is safe to flush again.
-        isProcessingAcks = false
-        if deferredSendFramesRequested {
+        isBorrowingRecoveryAckState = wasBorrowing
+        if !wasBorrowing, deferredSendFramesRequested {
             deferredSendFramesRequested = false
             sendFrames(in: &eventContext)
         }

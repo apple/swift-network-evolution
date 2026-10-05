@@ -162,7 +162,9 @@ class QUICTestHarness {
         clientOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
-        bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil
+        bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil,
+        clientMTU: Int = 1500,
+        serverMTU: Int = 1500
     ) throws(NetworkError) {
         var clientConnected = false
         var serverConnected = false
@@ -207,7 +209,21 @@ class QUICTestHarness {
             clientParameters.defaultStack.link = .custom(clientBridgeOptions)
 
             var clientPath = PathProperties(parameters: clientParameters)
-            clientPath.effectiveMTU = 1500
+            if clientMTU == 1500 {
+                clientPath.effectiveMTU = 1500
+            } else {
+                #if !NETWORK_PRIVATE
+                // Note that this reaches cross module on an internal property
+                clientPath.directInterface = Interface(
+                    index: 1,
+                    name: "lo0",
+                    type: .loopback,
+                    subtype: .other,
+                    mtu: clientMTU
+                )
+                #endif
+                clientPath.effectiveMTU = UInt32(clientMTU)
+            }
 
             // Setup server parameters
             var serverParameters = Parameters()
@@ -241,7 +257,21 @@ class QUICTestHarness {
             serverParameters.defaultStack.link = .custom(serverBridgeOptions)
 
             var serverPath = PathProperties(parameters: serverParameters)
-            serverPath.effectiveMTU = 1500
+            if serverMTU == 1500 {
+                serverPath.effectiveMTU = 1500
+            } else {
+                #if !NETWORK_PRIVATE
+                // Note that this reaches cross module on an internal property
+                serverPath.directInterface = Interface(
+                    index: 1,
+                    name: "lo0",
+                    type: .loopback,
+                    subtype: .other,
+                    mtu: serverMTU
+                )
+                #endif
+                serverPath.effectiveMTU = UInt32(serverMTU)
+            }
 
             // Attach client
             let (clientHarness, clientHarnessLinkage) = self.storage.createNewStreamFlowHarness(
@@ -1044,7 +1074,9 @@ class QUICTestHarness {
         afterHandshake: ((QUICTestHarness) -> Void)? = nil,  // Block to run after handshake is complete
         afterData: ((QUICTestHarness) -> Void)? = nil,  // Block to run after handshake is complete
         bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
-        bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil
+        bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil,
+        clientMTU: Int = 1500,
+        serverMTU: Int = 1500
     ) {
         // Start with the handshake
         Logger.test.debug("Test phase: Handshake")
@@ -1066,7 +1098,9 @@ class QUICTestHarness {
                 clientOptions: clientOptions,
                 serverOptions: serverOptions,
                 bridgeObserveFirstByteHandler: bridgeObserveFirstByteHandler,
-                bridgeObserveFrameHandler: bridgeObserveFrameHandler
+                bridgeObserveFrameHandler: bridgeObserveFrameHandler,
+                clientMTU: clientMTU,
+                serverMTU: serverMTU
             )
         } catch {
             if expectHandshakeError == nil {

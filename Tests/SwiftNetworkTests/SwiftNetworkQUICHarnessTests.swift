@@ -605,6 +605,36 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 100)
     }
 
+    // ACKs should be bundled on outgoing STREAM frames rather than going out in their own
+    // packet as much as possible, this test tracks that.
+    func testQUICEcho1MiBAckBundling() {
+        var packetSizes: [Int] = []
+        let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
+            // Identify short header packet to accumulate the total sizes at the end
+            guard (firstByte & 0xC0) == 0x40 else { return }
+            packetSizes.append(byteCount)
+        }
+
+        QUICTestHarness().runQUICTest(
+            blockSize: 10240,
+            blockCount: 100,
+            bridgeObserveFrameHandler: observeFrameHandler
+        )
+
+        XCTAssertFalse(packetSizes.isEmpty, "packetSizes should not be empty")
+
+        // A standalone ACK (no STREAM data) fits comfortably under 100 bytes, but a
+        // packet carrying STREAM data is padded out much closer to the path's MTU.
+        let ackOnlySizeThreshold = 100
+        let ackOnlyPacketCount = packetSizes.filter { $0 < ackOnlySizeThreshold }.count
+        print("ackOnlyPacketCount: \(ackOnlyPacketCount), packetSizes: \(packetSizes.count)")
+        XCTAssertLessThan(
+            ackOnlyPacketCount,
+            10,  // Use 10 as an arbitrary threshold here
+            "Most packets should bundle an ACK with STREAM data rather than going out alone"
+        )
+    }
+
     #if !NETWORK_PRIVATE
     // Note: These tests takes too long to in for automation
     // Changed to 30 seconds to give it leeway to run locally

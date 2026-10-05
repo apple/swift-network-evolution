@@ -194,7 +194,7 @@ public struct QUICConnectionUtilities {
         // An endpoint MUST ensure that every Stateless Reset that it sends is smaller than the packet that triggered it
         let totalLength = triggeringPacketLength
         var unpredictableBytesOverride: Int = 22  // Default unpredictable Bytes (Total size 38 bytes)
-        if QUICStatelessResetPacket.unpredictableBytes + token.token.count > totalLength {
+        if QUICStatelessResetPacket.unpredictableBytes + token.token.count >= totalLength {
             // Make sure the new Stateless Reset packet is smaller by adjusting unpredictableBytes stored after the short header.
             // For example, if the received packet was of size 36, the Stateless Reset packet needs to be size 35 (or smaller).
             let overLength =
