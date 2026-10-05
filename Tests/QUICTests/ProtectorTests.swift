@@ -1842,6 +1842,47 @@ final class ProtectorTests: XCTestCase {
         XCTAssertFalse(chachaProtector.keyUpdateNeeded(for: .phase0))
     }
 
+    func testIntegrityLimit() throws {
+        let cid = QUICConnectionID([0x59, 0x26, 0xf7, 0x05, 0xd0, 0xe0, 0x97, 0x98])!
+        let secret = SymmetricKey(data: [UInt8](repeating: 0x2a, count: 32))
+        let limits: [(TLSCipherSuite, UInt64)] = [
+            (.aesGCM128SHA256, 1 << 52),
+            (.chacha20Poly1350SHA256, 1 << 36),
+        ]
+        for (cipherSuite, limit) in limits {
+            var protector = Protector(
+                isClient: true,
+                destinationCID: cid,
+                logPrefixer: protectorTestsLogPrefixer
+            )
+            for isWrite in [true, false] {
+                protector.keyUpdate(
+                    for: .application,
+                    cipherSuite: cipherSuite,
+                    secret: secret,
+                    isWrite: isWrite
+                )
+            }
+            XCTAssertEqual(protector.integrityLimit(for: .phase0), limit)
+            XCTAssertEqual(protector.failedDecryptionCount, 0)
+
+            XCTAssertFalse(protector.failedDecryption(for: .phase0))
+            XCTAssertEqual(protector.failedDecryptionCount, 1)
+
+            // The count covers all keys, so a key update does not reset it
+            protector.trafficUpdate(previousKeyState: .phase0)
+            XCTAssertFalse(protector.failedDecryption(for: .phase1))
+            XCTAssertEqual(protector.failedDecryptionCount, 2)
+
+            // Reaching the limit is allowed, exceeding it is not
+            protector.failedDecryptionCount = limit - 1
+            XCTAssertFalse(protector.failedDecryption(for: .phase1))
+            XCTAssertEqual(protector.failedDecryptionCount, limit)
+            XCTAssertTrue(protector.failedDecryption(for: .phase1))
+            XCTAssertEqual(protector.failedDecryptionCount, limit + 1)
+        }
+    }
+
     func testRetryProtectionOpen() throws {
         // RFC 9001 Appendix A.4 Retry
         let retryPacket: [UInt8] = [

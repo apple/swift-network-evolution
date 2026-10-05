@@ -694,7 +694,7 @@ struct Protector: ~Copyable, PrefixedLoggable {
     // ChaCha20-Poly1305 has no reachable confidentiality limit.
     var aesGCMConfidentialityLimit: UInt64 = 1 << 23
     // Packets that failed authentication, across all keys (RFC 9001, Section 6.6)
-    private(set) var failedDecryptionCount: UInt64 = 0
+    var failedDecryptionCount: UInt64 = 0
 
     init(isClient: Bool, destinationCID: QUICConnectionID, logPrefixer: LogPrefixer) {
         self.isClient = isClient
