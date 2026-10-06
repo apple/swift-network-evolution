@@ -266,6 +266,54 @@ class QUICConnectionIDListTests: XCTestCase {
         XCTAssertEqual(list.count, 0)
     }
 
+    func testHasHeldAfterRetire() {
+        let c1 = QUICConnectionID(5)
+        XCTAssertNoThrow(
+            try list.insertInitialConnectionID(QUICConnectionID(5))
+        )
+        XCTAssertNoThrow(
+            try list.insert(sequenceNumber: 2, connectionID: c1, token: QUICStatelessResetToken())
+        )
+        XCTAssertTrue(list.hasHeld(sequenceNumber: 0))
+        XCTAssertFalse(list.hasHeld(sequenceNumber: 1))
+        XCTAssertTrue(list.hasHeld(sequenceNumber: 2))
+        XCTAssertFalse(list.hasHeld(sequenceNumber: 3))
+
+        list.retire(connectionID: c1)
+        _ = list.retire(priorTo: 1)
+        XCTAssertTrue(list.isEmpty)
+        XCTAssertTrue(list.hasHeld(sequenceNumber: 0))
+        XCTAssertFalse(list.hasHeld(sequenceNumber: 1))
+        XCTAssertTrue(list.hasHeld(sequenceNumber: 2))
+    }
+
+    // Sequence numbers that never arrive must not make the list remember gaps without bound.
+    func testHasHeldClosesOldestGap() {
+        list.activeConnectionIDLimit = 2
+        XCTAssertNoThrow(
+            try list.insertInitialConnectionID(QUICConnectionID(5))
+        )
+        // Seq 1, 3, 5 and 7 are missing, which leaves four gaps, twice the limit.
+        for sequenceNumber: UInt64 in [2, 4, 6, 8] {
+            XCTAssertNoThrow(
+                try list.insert(
+                    sequenceNumber: sequenceNumber,
+                    connectionID: QUICConnectionID(5),
+                    token: QUICStatelessResetToken()
+                )
+            )
+        }
+        XCTAssertFalse(list.hasHeld(sequenceNumber: 1))
+
+        // A fifth gap closes the oldest one, so seq 1 now reads as held and seq 3 still does not.
+        XCTAssertNoThrow(
+            try list.insert(sequenceNumber: 10, connectionID: QUICConnectionID(5), token: QUICStatelessResetToken())
+        )
+        XCTAssertTrue(list.hasHeld(sequenceNumber: 1))
+        XCTAssertFalse(list.hasHeld(sequenceNumber: 3))
+        XCTAssertTrue(list.hasHeld(sequenceNumber: 10))
+    }
+
     func verifyInitialState() {
         XCTAssertTrue(list.isEmpty)
         XCTAssertEqual(list.count, 0)

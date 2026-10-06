@@ -6981,7 +6981,12 @@ extension QUICConnection {
         // If we have not seen this frame before and haven't reached the
         // active CID limit, add it to the CID table.
         let cidLimit = remoteCIDs.activeConnectionIDLimit
-        if remoteCIDs.count < cidLimit {
+        if remoteCIDs.hasHeld(sequenceNumber: frame.sequence) {
+            // The lookup by connection ID above misses a connection ID that we have retired ourselves,
+            // so a repeat of its frame is recognized by sequence number. It must not be added again,
+            // and must not count against the limit.
+            log.debug("Ignoring NEW_CONNECTION_ID with already seen sequence \(frame.sequence)")
+        } else if remoteCIDs.count < cidLimit {
             do {
                 try remoteCIDs.insert(
                     sequenceNumber: frame.sequence,

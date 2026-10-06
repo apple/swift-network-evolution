@@ -253,6 +253,25 @@ struct QUICConnectionIDList: Sequence, IteratorProtocol {
         forType: .activeConnectionIDLimit
     )!
 
+    // Sequence numbers this list has held, remembered after they are retired so that a repeated
+    // NEW_CONNECTION_ID frame for a retired connection ID is not taken for a new one.
+    private var heldSequenceNumbers = RangeSet<UInt64>()
+
+    func hasHeld(sequenceNumber: UInt64) -> Bool {
+        heldSequenceNumbers.contains(sequenceNumber)
+    }
+
+    private mutating func recordHeld(sequenceNumber: UInt64) {
+        heldSequenceNumbers.insert(contentsOf: sequenceNumber..<sequenceNumber + 1)
+        // Sequence numbers are issued in order, so a gap only lasts until a reordered or lost frame
+        // arrives. Close the oldest gap once there are more gaps than twice the limit, so that the
+        // set stays bounded.
+        let ranges = heldSequenceNumbers.ranges
+        if ranges.count - 1 > 2 * activeConnectionIDLimit {
+            heldSequenceNumbers.insert(contentsOf: ranges[0].upperBound..<ranges[1].lowerBound)
+        }
+    }
+
     // The initial connection ID is valid without a Stateless Reset Token (see RFC9000, Section 18.2).
     // If peer's transport parameters include a stateless reset token, use the normal `insert()` call.
     // NOTE: This API may only be called once for this instance of QUICConnectionIDList
@@ -270,6 +289,7 @@ struct QUICConnectionIDList: Sequence, IteratorProtocol {
             used: true
         )
         managedConnectionIDs.append(newCID)
+        recordHeld(sequenceNumber: 0)
     }
 
     static let preferredAddressSequenceNumber: UInt64 = 1
@@ -317,6 +337,7 @@ struct QUICConnectionIDList: Sequence, IteratorProtocol {
         )
         managedConnectionID.preferredAddress = preferredAddress
         managedConnectionIDs.append(managedConnectionID)
+        recordHeld(sequenceNumber: sequenceNumber)
     }
 
     @discardableResult
