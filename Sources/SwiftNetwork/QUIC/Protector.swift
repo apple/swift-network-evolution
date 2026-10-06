@@ -740,13 +740,19 @@ struct Protector: ~Copyable, PrefixedLoggable {
     )
     // RFC 9001, Section 6.6: an AES-GCM key must not seal more than 2^23 packets.
     // ChaCha20-Poly1305 has no reachable confidentiality limit.
-    var aesGCMConfidentialityLimit: UInt64 = 1 << 23
+    let aesGCMConfidentialityLimit: UInt64
     // Packets that failed authentication, across all keys (RFC 9001, Section 6.6)
     var failedDecryptionCount: UInt64 = 0
 
-    init(isClient: Bool, destinationCID: QUICConnectionID, logPrefixer: LogPrefixer) {
+    init(
+        isClient: Bool,
+        destinationCID: QUICConnectionID,
+        logPrefixer: LogPrefixer,
+        aesGCMConfidentialityLimit: UInt64 = 1 << 23
+    ) {
         self.isClient = isClient
         self.log = logPrefixer
+        self.aesGCMConfidentialityLimit = aesGCMConfidentialityLimit
         // N.B. right now the Protector only supports AESGCM
         for _ in 0..<5 {
             writeFramer.append(SecFramerKeys.empty(type: .aesGCM))

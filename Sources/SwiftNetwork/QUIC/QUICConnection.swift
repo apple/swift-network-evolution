@@ -415,7 +415,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var maximumConcurrentBidirectionalStreams: Int?
     private(set) var maximumConcurrentUnidirectionalStreams: Int?
 
-    private var originalDCID: QUICConnectionID
+    private(set) var originalDCID: QUICConnectionID
     var initialDCID: QUICConnectionID?
     var initialToken: [UInt8]?
     var newToken: [UInt8]?

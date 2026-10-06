@@ -523,13 +523,13 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICTest(
             blockSize: 10240,
             blockCount: 32,
-            afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait to lower the AEAD limit")
-                harness.context.async {
-                    harness.state?.clientInstance.protector.aesGCMConfidentialityLimit = 128
-                    expectation.fulfill()
-                }
-                self.wait(for: [expectation], timeout: 5.0)
+            beforeHandshake: { clientInstance in
+                clientInstance.protector = Protector(
+                    isClient: true,
+                    destinationCID: clientInstance.originalDCID,
+                    logPrefixer: clientInstance.logPrefixer,
+                    aesGCMConfidentialityLimit: 128
+                )
             },
             afterData: { harness in
                 let expectation = XCTestExpectation(description: "Wait to validate key updates")

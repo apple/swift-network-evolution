@@ -161,6 +161,7 @@ class QUICTestHarness {
         timeout: TimeInterval = 5.0,
         clientOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
+        beforeHandshake: ((QUICConnection) -> Void)? = nil,  // Block to run on the client before the handshake starts
         bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
         bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil,
         clientMTU: Int = 1500,
@@ -189,6 +190,7 @@ class QUICTestHarness {
                 handshakeExpectation.fulfill()
                 return
             }
+            beforeHandshake?(clientInstance)
             let clientInstanceIdentifier = clientQUICStreamListener.identifier
             self.updateQUICOptions(clientOptions, server: false, datagram: datagram)
             clientOptions.setLogID(
@@ -1071,6 +1073,7 @@ class QUICTestHarness {
         sendMaxStreamUpdate: Bool = false,
         validateMetrics: Bool = false,
         extraServerCIDs: [(QUICConnectionID, QUICStatelessResetToken)] = .init(),
+        beforeHandshake: ((QUICConnection) -> Void)? = nil,  // Block to run on the client before the handshake starts
         afterHandshake: ((QUICTestHarness) -> Void)? = nil,  // Block to run after handshake is complete
         afterData: ((QUICTestHarness) -> Void)? = nil,  // Block to run after handshake is complete
         bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
@@ -1097,6 +1100,7 @@ class QUICTestHarness {
                 timeout: timeout,
                 clientOptions: clientOptions,
                 serverOptions: serverOptions,
+                beforeHandshake: beforeHandshake,
                 bridgeObserveFirstByteHandler: bridgeObserveFirstByteHandler,
                 bridgeObserveFrameHandler: bridgeObserveFrameHandler,
                 clientMTU: clientMTU,

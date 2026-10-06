@@ -1789,10 +1789,18 @@ final class ProtectorTests: XCTestCase {
     func testConfidentialityLimit() throws {
         let cid = QUICConnectionID([0x59, 0x26, 0xf7, 0x05, 0xd0, 0xe0, 0x97, 0x98])!
         let secret = SymmetricKey(data: [UInt8](repeating: 0x2a, count: 32))
-        var protector = Protector(
+        let defaultProtector = Protector(
             isClient: true,
             destinationCID: cid,
             logPrefixer: protectorTestsLogPrefixer
+        )
+        XCTAssertEqual(defaultProtector.aesGCMConfidentialityLimit, 1 << 23)
+
+        var protector = Protector(
+            isClient: true,
+            destinationCID: cid,
+            logPrefixer: protectorTestsLogPrefixer,
+            aesGCMConfidentialityLimit: 4
         )
         for isWrite in [true, false] {
             protector.keyUpdate(
@@ -1802,9 +1810,7 @@ final class ProtectorTests: XCTestCase {
                 isWrite: isWrite
             )
         }
-        XCTAssertEqual(protector.aesGCMConfidentialityLimit, 1 << 23)
         XCTAssertEqual(protector.integrityLimit(for: .phase0), 1 << 52)
-        protector.aesGCMConfidentialityLimit = 4
 
         try sealOne(&protector, number: 0, keyState: .phase0)
         XCTAssertFalse(protector.keyUpdateNeeded(for: .phase0))
@@ -1824,7 +1830,8 @@ final class ProtectorTests: XCTestCase {
         var chachaProtector = Protector(
             isClient: true,
             destinationCID: cid,
-            logPrefixer: protectorTestsLogPrefixer
+            logPrefixer: protectorTestsLogPrefixer,
+            aesGCMConfidentialityLimit: 4
         )
         for isWrite in [true, false] {
             chachaProtector.keyUpdate(
@@ -1835,7 +1842,6 @@ final class ProtectorTests: XCTestCase {
             )
         }
         XCTAssertEqual(chachaProtector.integrityLimit(for: .phase0), 1 << 36)
-        chachaProtector.aesGCMConfidentialityLimit = 4
         for number: Int64 in 0..<5 {
             try sealOne(&chachaProtector, number: number, keyState: .phase0)
         }
