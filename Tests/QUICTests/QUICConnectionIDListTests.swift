@@ -266,7 +266,16 @@ class QUICConnectionIDListTests: XCTestCase {
         XCTAssertEqual(list.count, 0)
     }
 
+    // The list of our own connection IDs does not pay for remembering sequence numbers.
+    func testDoesNotRememberHeldByDefault() {
+        XCTAssertNoThrow(
+            try list.insertInitialConnectionID(QUICConnectionID(5))
+        )
+        XCTAssertFalse(list.hasHeld(sequenceNumber: 0))
+    }
+
     func testHasHeldAfterRetire() {
+        list = QUICConnectionIDList(remembersHeldSequenceNumbers: true)
         let c1 = QUICConnectionID(5)
         XCTAssertNoThrow(
             try list.insertInitialConnectionID(QUICConnectionID(5))
@@ -289,6 +298,7 @@ class QUICConnectionIDListTests: XCTestCase {
 
     // Sequence numbers that never arrive must not make the list remember gaps without bound.
     func testHasHeldClosesOldestGap() {
+        list = QUICConnectionIDList(remembersHeldSequenceNumbers: true)
         list.activeConnectionIDLimit = 2
         XCTAssertNoThrow(
             try list.insertInitialConnectionID(QUICConnectionID(5))

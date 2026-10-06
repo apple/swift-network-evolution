@@ -200,7 +200,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private var largestSentLocalCIDSequenceNumber: UInt64 = 1
 
     // All the CIDs advertised by the peer
-    var remoteCIDs = QUICConnectionIDList()
+    var remoteCIDs = QUICConnectionIDList(remembersHeldSequenceNumbers: true)
 
     // The largest "retire prior to" value received
     private var retiredRemoteCIDSequenceNumberThreshold: UInt64 = 0

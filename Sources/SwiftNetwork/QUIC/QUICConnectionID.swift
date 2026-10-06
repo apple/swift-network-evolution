@@ -254,15 +254,23 @@ struct QUICConnectionIDList: Sequence, IteratorProtocol {
     )!
 
     // Sequence numbers this list has held, remembered after they are retired so that a repeated
-    // NEW_CONNECTION_ID frame for a retired connection ID is not taken for a new one.
+    // NEW_CONNECTION_ID frame for a retired connection ID is not taken for a new one. Only the
+    // list of the peer's connection IDs needs this, so it is off unless asked for.
+    private let remembersHeldSequenceNumbers: Bool
     private var heldSequenceNumbers = RangeSet<UInt64>()
+
+    init(remembersHeldSequenceNumbers: Bool = false) {
+        self.remembersHeldSequenceNumbers = remembersHeldSequenceNumbers
+    }
 
     func hasHeld(sequenceNumber: UInt64) -> Bool {
         heldSequenceNumbers.contains(sequenceNumber)
     }
 
     private mutating func recordHeld(sequenceNumber: UInt64) {
-        heldSequenceNumbers.insert(contentsOf: sequenceNumber..<sequenceNumber + 1)
+        guard remembersHeldSequenceNumbers else { return }
+        // Sequence numbers are variable-length integers, so at most 2^62 - 1, and cannot overflow.
+        heldSequenceNumbers.insert(contentsOf: sequenceNumber..<sequenceNumber &+ 1)
         // Sequence numbers are issued in order, so a gap only lasts until a reordered or lost frame
         // arrives. Close the oldest gap once there are more gaps than twice the limit, so that the
         // set stays bounded.
