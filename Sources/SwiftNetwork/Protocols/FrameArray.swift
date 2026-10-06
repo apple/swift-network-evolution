@@ -68,7 +68,7 @@ public struct FrameArray: ~Copyable {
     #if !NETWORK_EMBEDDED
     @_lifetime(borrow self)
     func bytes(at index: Int) -> RawSpan? {
-        frames[index].bytes
+        frames[index].bytes(borrowing: self)
     }
     #endif
 
@@ -298,6 +298,17 @@ public struct FrameArray: ~Copyable {
         return connectionComplete
     }
 }
+
+#if !NETWORK_EMBEDDED
+@available(Network 0.1.0, *)
+private extension Frame {
+    // Only use when this frame is borrowed from `owner`.
+    @_lifetime(borrow owner)
+    func bytes(borrowing owner: borrowing FrameArray) -> RawSpan? {
+        _overrideLifetime(self.bytes, borrowing: owner)
+    }
+}
+#endif
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)

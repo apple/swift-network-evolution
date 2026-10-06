@@ -88,7 +88,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         // A packet stuffed with single byte frames can grow the deque a long way; a peer
         // shouldn't be able to pin that storage for the lifetime of the connection.
         if self.framesReceived.capacity > QUICPreferences.shared.maxReceivedFramesCapacity {
-            self.framesReceived.reallocate(capacity: Self.framesReceivedCapacity)
+            self.framesReceived.setCapacity(Self.framesReceivedCapacity)
         }
     }
 
