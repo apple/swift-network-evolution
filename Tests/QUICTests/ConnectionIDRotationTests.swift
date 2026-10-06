@@ -165,6 +165,41 @@ final class ConnectionIDRotationTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
+    // RFC 9000 section 5.1.1: a peer may send a connection ID that temporarily exceeds the limit if the
+    // frame's Retire Prior To retires the excess. Retirement must be counted before the limit is.
+    func testNewConnectionIDAtLimitWithRetirePriorToIsAccepted() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let path = self.makePath(dcid: QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!, sequenceNumber: 0, used: true)
+            self.connection.currentPath = path
+            self.connection.remoteCIDs.activeConnectionIDLimit = 2
+
+            let atLimit = FrameNewConnectionID(
+                sequence: 1,
+                retirePriorToSequence: 0,
+                connectionID: QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+            let replacesAll = FrameNewConnectionID(
+                sequence: 2,
+                retirePriorToSequence: 2,
+                connectionID: QUICConnectionID([0xC1, 0xC2, 0xC3, 0xC4])!,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+
+            self.connection.fromExternal { eventContext in
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(atLimit, in: &eventContext))
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(replacesAll, in: &eventContext))
+            }
+            XCTAssertNil(self.connection.closeError, "Retiring the excess in the same frame is not an error")
+            XCTAssertEqual(self.connection.remoteCIDs.count, 1)
+            XCTAssertNotNil(self.connection.remoteCIDs.find(sequenceNumber: 2))
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
     // RFC 9000 19.15: receiving the same NEW_CONNECTION_ID frame more than once must not be treated
     // as a connection error. A CID we retired ourselves is gone from remoteCIDs, so a late
     // retransmission of its frame has to be recognized by sequence number. It must not be added
