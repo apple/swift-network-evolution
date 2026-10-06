@@ -116,6 +116,9 @@ final class MigrationTests: XCTestCase {
                 self.connection.migration.migrate(
                     to: newPath,
                     connection: self.connection,
+                    stats: &self.connection.stats,
+                    ecn: &self.connection.ecn,
+                    ack: &self.connection.ack,
                     in: &eventContext
                 )
             }

@@ -267,11 +267,11 @@ final class QUICCrypto {
     // Notify pending items that there are crypto bytes to get!
     private func markSendPending(_ level: PacketNumberSpace, on parentConnection: QUICConnection) {
         if level == .initial {
-            parentConnection.initialPendingItems.sendCrypto = true
+            parentConnection.scheduler.state.initialPendingItems.sendCrypto = true
         } else if level == .handshake {
-            parentConnection.handshakePendingItems.sendCrypto = true
+            parentConnection.scheduler.state.handshakePendingItems.sendCrypto = true
         } else {
-            parentConnection.applicationPendingItems.sendCrypto = true
+            parentConnection.scheduler.state.applicationPendingItems.sendCrypto = true
         }
     }
 }
@@ -549,7 +549,8 @@ extension QUICCrypto: TopStreamProtocol {
         guard let parentConnection else { return }
         inScope(of: parentConnection, in: &eventContext) { eventContext in
             parentConnection.log.info("Connected: TLS finished")
-            parentConnection.reportReady(in: &eventContext)
+            // Route report ready through the scheduler to ensure the previous stack in unwound first
+            parentConnection.scheduleReportReady(in: &eventContext)
         }
     }
 

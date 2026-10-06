@@ -623,7 +623,12 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     }
 
     func close(errorCode: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
-        self.sendBuffer.empty()
+        // Only clean the buffer when an error has been reached or RESET was sent.
+        // Likewise empty the buffer if all data has been ACK'd
+        let sendSideHasUnacknowledgedData = sendState == .send || sendState == .dataSent
+        if errorCode != nil || resetSent || !sendSideHasUnacknowledgedData {
+            self.sendBuffer.empty()
+        }
         parentProtocol.handleStreamClose(stream: self, error: errorCode, in: &eventContext)
     }
 
@@ -1018,8 +1023,8 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
         // This notification is delivered from the application's read, which runs after the
         // inbound batch has already been serviced and flushed. If the read opened up the
         // receive window, we should send the credit here.
-        if parentProtocol.applicationPendingItems.maxData
-            || parentProtocol.applicationPendingItems.maxStreamData
+        if parentProtocol.scheduler.state.applicationPendingItems.maxData
+            || parentProtocol.scheduler.state.applicationPendingItems.maxStreamData
         {
             parentProtocol.sendFrames(in: &eventContext)
         }

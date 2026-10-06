@@ -111,6 +111,9 @@ struct Migration: ~Copyable {
     func migrate(
         to path: QUICPath,
         connection: QUICConnection,
+        stats: inout Statistics,
+        ecn: inout ECN,
+        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         guard connection.currentPath != path else {
@@ -142,9 +145,11 @@ struct Migration: ~Copyable {
             )
         }
         path.spinValue = connection.initialSpinValue
-        connection.recovery.resetTimer(now: connection.now, connection: connection, in: &eventContext)
+        connection.withSendPathBorrow(in: &eventContext) { eventContext in
+            connection.recovery.resetTimer(now: connection.now, connection: connection, in: &eventContext)
+        }
         path.resetPacer()
-        path.pmtudState.start(on: path, in: &eventContext)
+        path.pmtudState.start(on: path, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
         connection.applyToAllPaths { otherPath in
             if otherPath != path {
                 otherPath.pmtudState.stop(on: otherPath)
@@ -152,18 +157,18 @@ struct Migration: ~Copyable {
         }
         if !connection.isServer {
             // Insert a PING frame if we have no ack eliciting frames to send.
-            if !connection.applicationPendingItems.hasAckElicitingPendingItems {
+            if !connection.scheduler.state.applicationPendingItems.hasAckElicitingPendingItems {
                 connection.withPendingItems(for: .applicationData) {
                     $0.ping = true
                 }
             }
-            connection.sendFrames(in: &eventContext)
+            connection.sendFrames(stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
         }
         // TODO: Handle preferred address migration
 
         // Remove the path we just migrated away from.
         if let oldPath, oldPath != path {
-            connection.tearDownMigratedPath(oldPath, in: &eventContext)
+            connection.tearDownMigratedPath(oldPath, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
         }
     }
 
@@ -282,7 +287,7 @@ extension QUICConnection {
 
         // This is a new primary path. Migrate to it if we are the client.
         if !isServer, path != currentPath, isPrimary, path.isRouteEstablished {
-            migration.migrate(to: path, connection: self, in: &eventContext)
+            migration.migrate(to: path, connection: self, stats: &self.stats, ecn: &self.ecn, ack: &self.ack, in: &eventContext)
             // Send packets if necessary
             sendFrames(on: path, in: &eventContext)
         }
@@ -303,6 +308,9 @@ extension QUICConnection {
     // Removes a path we migrated away from.
     func tearDownMigratedPath(
         _ oldPath: QUICPath,
+        stats: inout Statistics,
+        ecn: inout ECN,
+        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         var oldPath = oldPath
@@ -319,7 +327,7 @@ extension QUICConnection {
         }
         oldPath.destroy(in: &eventContext)
         multiplexingPaths.removeValue(forKey: oldPath.pathIdentifier)
-        sendFrames(in: &eventContext)
+        sendFrames(stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
     }
 }
 #endif

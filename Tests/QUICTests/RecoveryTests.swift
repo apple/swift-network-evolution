@@ -403,6 +403,9 @@ final class RecoveryTests: XCTestCase {
             ack: ackFrame,
             ackedPath: connection.currentPath!,
             connection: connection,
+            stats: &connection.stats,
+            ecn: &connection.ecn,
+            ackState: &connection.ack,
             in: &connection.context.eventContext
         )
 
@@ -461,6 +464,9 @@ final class RecoveryTests: XCTestCase {
             ack: makeAckFrame(),
             ackedPath: connection.currentPath!,
             connection: connection,
+            stats: &connection.stats,
+            ecn: &connection.ecn,
+            ackState: &connection.ack,
             in: &connection.context.eventContext
         )
 

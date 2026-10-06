@@ -692,9 +692,10 @@ extension FrameStreamSendMetadata: SendableItem {
             let retransmitStreamIsFinal = pendingItems.retransmitStreams[0].isFinal
             let retransmitStreamStreamID = pendingItems.retransmitStreams[0].streamID
 
-            guard stream.isOpen else {
+            // Make sure not to retransmit a write if a RESET_STREAM is sent
+            guard !stream.resetSent else {
                 connection.log.info(
-                    "Not retransmitting data for closed flow \(retransmitStreamFlowID)"
+                    "Not retransmitting data for reset flow \(retransmitStreamFlowID)"
                 )
                 _ = pendingItems.retransmitStreams.popFirst()
                 continue
@@ -3169,6 +3170,7 @@ struct TransmittedItems: ~Copyable {
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
         sentPath: QUICPath,
+        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         if let ackFrame {
@@ -3176,7 +3178,8 @@ struct TransmittedItems: ~Copyable {
                 frame: ackFrame,
                 packetNumber: packetNumber,
                 packetNumberSpace: packetNumberSpace,
-                sentPath: sentPath
+                sentPath: sentPath,
+                ack: &ack
             )
         }
 
