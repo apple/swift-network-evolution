@@ -587,7 +587,7 @@ public struct Parameters: Hashable, CustomStringConvertible {
             let quicConnectionOptions = QUICConnectionProtocol.options()
             handler(quicConnectionOptions)
             if let innerOptions = quicConnectionOptions.perProtocolOptions {
-                quicOptions.perProtocolOptions?.quicConnectionOptions = innerOptions
+                quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions = innerOptions }
             }
         }
         defaultStack.transport = .quic(quicOptions)
@@ -623,7 +623,7 @@ public struct Parameters: Hashable, CustomStringConvertible {
 
         let quicOptions = QUICConnectionProtocol.options()
         quicOptions.prohibitJoining = true
-        quicOptions.perProtocolOptions?.tlsOptions = tlsOptions
+        quicOptions.modifyPerProtocolOptions { $0.tlsOptions = tlsOptions }
         if case .customize(let handler) = quicConnection {
             handler(quicOptions)
         }
@@ -676,12 +676,12 @@ public struct Parameters: Hashable, CustomStringConvertible {
             let quicConnectionOptions = QUICConnectionProtocol.options()
             handler(quicConnectionOptions)
             if let innerOptions = quicConnectionOptions.perProtocolOptions {
-                quicOptions.perProtocolOptions?.quicConnectionOptions = innerOptions
+                quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions = innerOptions }
             }
         }
 
         quicOptions.prohibitJoining = true
-        quicOptions.perProtocolOptions?.quicConnectionOptions.tlsOptions = tlsOptions
+        quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions.tlsOptions = tlsOptions }
 
         let tcpOptions = TCPProtocol.options()
         if case .customize(let handler) = tcpFallback {

@@ -331,7 +331,7 @@ final class QUICConnectionTests: XCTestCase {
             var tlsPerProtocolOptions = SwiftTLSProtocol.Options()
             tlsPerProtocolOptions.quicTransportParameters =
                 (try? connection.localTransportParameters.serialize()) ?? []
-            tlsOptions.perProtocolOptions = tlsPerProtocolOptions
+            tlsOptions.replacePerProtocolOptions(tlsPerProtocolOptions)
             tlsParameters.defaultStack.append(applicationProtocol: .swiftTLS(tlsOptions))
             do {
                 try crypto.invokeAttachLowerProtocol(

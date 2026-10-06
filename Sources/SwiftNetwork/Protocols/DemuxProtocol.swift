@@ -610,6 +610,13 @@ public struct DemuxProtocol: NetworkProtocol {
 @available(Network 0.1.0, *)
 extension ProtocolOptions<DemuxProtocol> {
     public func addPattern(_ pattern: RawSpan, at offset: Int, mask: RawSpan? = nil) throws(DemuxError) {
-        try perProtocolOptions!.addPattern(pattern, at: offset, mask: mask)
+        let added: Void? = try modifyPerProtocolOptions { perProtocolOptions throws(DemuxError) in
+            try perProtocolOptions.addPattern(pattern, at: offset, mask: mask)
+        }
+        // Options without per-protocol options have nowhere to keep the pattern. Returning normally would tell the
+        // caller it was added when it was not.
+        if added == nil {
+            preconditionFailure("addPattern requires options with per-protocol Demux options")
+        }
     }
 }

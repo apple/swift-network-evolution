@@ -967,7 +967,7 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                 // `clientAuthRequired` has no dedicated modifier; it is reachable only
                 // through the `customOptions` escape hatch.
                 .customOptions { options in
-                    options.perProtocolOptions?.clientAuthRequired = false
+                    options.modifyPerProtocolOptions { $0.clientAuthRequired = false }
                 }
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7778))
                 .serverMode(true)

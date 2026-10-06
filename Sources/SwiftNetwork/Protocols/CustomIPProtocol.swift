@@ -89,6 +89,6 @@ public struct CustomIPProtocol: NetworkProtocol {
 extension ProtocolOptions<CustomIPProtocol> {
     var ipProtocolNumber: UInt8 {
         get { perProtocolOptions!.ipProtocolNumber }
-        set { perProtocolOptions!.ipProtocolNumber = newValue }
+        set { modifyPerProtocolOptions { $0.ipProtocolNumber = newValue } }
     }
 }
