@@ -123,7 +123,7 @@ class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtoco
         let disconnectError = error ?? .posix(ENOTCONN)
         recordEvent(in: &eventContext) {
             // A disconnect before the connect completed is reported as a failed connect, and it
-            // also wakes any outstanding read so it can finish rather than hang.
+            // also wakes any outstanding read.
             $0.connected = .some(disconnectError)
             $0.inboundDataAvailable = false
             $0.disconnected = disconnectError
