@@ -3148,6 +3148,21 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         keepaliveSendPingFrame(timeSinceLastReceived: timeSinceLastReceived, now: now, in: &eventContext)
     }
 
+    /// Records the keep-alive interval and arms its timer.
+    ///
+    /// Call this with the event context already held. ``QUICConnectionMetadata/setKeepalive(keepAlive:)``
+    /// enters the stack on its own and cannot be used from inside a delivery.
+    public func configureKeepalive(
+        seconds: UInt16,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        if seconds == Constants.defaultKeepaliveValue {
+            keepaliveConfigure(duration: Constants.defaultKeepaliveDuration, in: &eventContext)
+        } else {
+            keepaliveConfigure(duration: .seconds(seconds), in: &eventContext)
+        }
+    }
+
     func keepaliveConfigure(
         duration: NetworkDuration,
         in eventContext: inout NetworkContext.EventContext

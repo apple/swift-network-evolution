@@ -34,7 +34,7 @@ final class SwiftNetworkInterfaceTests: NetTestCase {
     func testCreateInterfaceByValidIndex() throws {
         var name = "lo0"
         var mtu = 16384
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         name = "lo"
         mtu = 65536
         #endif
@@ -49,7 +49,7 @@ final class SwiftNetworkInterfaceTests: NetTestCase {
 
     func testCreateInterfaceByValidIndexAndName() throws {
         var name = "lo0"
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         name = "lo"
         #endif
         let interface = try Interface(index: 1, name: name)
@@ -117,7 +117,7 @@ final class SwiftNetworkInterfaceTests: NetTestCase {
     }
 
     private static var loopbackInterfaceName: String {
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         "lo"
         #else
         "lo0"
@@ -126,7 +126,7 @@ final class SwiftNetworkInterfaceTests: NetTestCase {
 
     func testCompareTwoInterfaces() throws {
         var name = "lo0"
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         name = "lo"
         #endif
         let interfaceByIndex = try Interface(index: 1)
@@ -151,7 +151,7 @@ final class SwiftNetworkInterfaceTests: NetTestCase {
     }
 
     func testRouteGetInterfaceIndex() throws {
-        #if os(Linux) && !NETLINK_ENABLED
+        #if (os(Linux) || os(Android)) && !NETLINK_ENABLED
         try XCTSkipIf(true)
         #else
         // Very basic localhost test

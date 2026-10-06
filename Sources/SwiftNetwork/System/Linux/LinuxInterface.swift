@@ -64,6 +64,18 @@ internal enum SystemInterface {
         }.result
     }
 
+    /// The flags `SIOCGIFFLAGS` wrote at the start of `ifr_ifru`.
+    ///
+    /// The kernel lays `ifr_flags` over the first bytes of that union. Reading the imported
+    /// `ifru_flags` member misses them where the union is not overlaid, which is what Android's
+    /// imported `ifreq` does, so the flags are taken from the bytes the ioctl wrote.
+    private static func interfaceFlags(of ifr: inout ifreq) -> UInt32 {
+        withUnsafeBytes(of: &ifr) { raw in
+            let offset = MemoryLayout<ifreq>.offset(of: \.ifr_ifru) ?? Int(Constants.IFNAMSIZ)
+            return UInt32(raw.loadUnaligned(fromByteOffset: offset, as: CUnsignedShort.self))
+        }
+    }
+
     /// Gets the MTU from the interface.
     ///
     /// Uses `ioctl` to fetch the value.
@@ -104,7 +116,7 @@ internal enum SystemInterface {
                 dstPtr.copyMemory(from: bytes)
             }
             try System.ioctl(fd: socket, request: CUnsignedLong(Constants.SIOCGIFFLAGS), ptr: &ifr)
-            if (UInt32(ifr.ifr_ifru.ifru_flags) & UInt32(comparisonFlag)) != 0 {
+            if (interfaceFlags(of: &ifr) & UInt32(comparisonFlag)) != 0 {
                 return true
             }
             return false
@@ -123,7 +135,7 @@ internal enum SystemInterface {
                 dstPtr.copyMemory(from: bytes)
             }
             try System.ioctl(fd: socket, request: CUnsignedLong(Constants.SIOCGIFFLAGS), ptr: &ifr)
-            if (UInt32(ifr.ifr_ifru.ifru_flags) & UInt32(Constants.IFF_LOOPBACK)) != 0 {
+            if (interfaceFlags(of: &ifr) & UInt32(Constants.IFF_LOOPBACK)) != 0 {
                 return true
             }
             return false
@@ -181,7 +193,7 @@ internal enum SystemInterface {
                 dstPtr.copyMemory(from: bytes)
             }
             try System.ioctl(fd: socket, request: CUnsignedLong(Constants.SIOCGIFFLAGS), ptr: &ifr)
-            return UInt32(ifr.ifr_ifru.ifru_flags)
+            return interfaceFlags(of: &ifr)
         }
     }
 

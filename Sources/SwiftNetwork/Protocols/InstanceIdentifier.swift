@@ -58,4 +58,30 @@ public struct InstanceIdentifier: Hashable {
     public var isNone: Bool {
         eventStateIndex.isNone
     }
+
+    /// Enters this instance's execution state from outside the stack.
+    ///
+    /// Use this from a protocol implemented outside the framework when it holds its identifier
+    /// and context but no event context. The block receives the event context, which must be
+    /// threaded into any calls made to other protocols. If you already hold the event context,
+    /// call the `in:`-taking variant instead so the state isn't re-derived from the context.
+    public func fromExternal<R, E: Error>(
+        context: NetworkContext,
+        _ body: (inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R {
+        try fromExternal(in: &context.eventContext, body)
+    }
+
+    /// Enters this instance's execution state from outside the stack.
+    ///
+    /// Use this from a protocol implemented outside the framework when it holds its identifier
+    /// and context but no event context. The block receives the event context, which must be
+    /// threaded into any calls made to other protocols. If you already hold the event context,
+    /// call the `in:`-taking variant instead so the state isn't re-derived from the context.
+    public func fromExternal<R: ~Copyable, E: Error>(
+        context: NetworkContext,
+        _ body: (inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R {
+        try fromExternal(in: &context.eventContext, body)
+    }
 }
