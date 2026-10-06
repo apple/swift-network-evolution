@@ -6935,11 +6935,22 @@ extension QUICConnection {
         // to treat having connection IDs in need of retirement that exceed this
         // limit as a connection error of type CONNECTION_ID_LIMIT_ERROR.
         //
-        // Every frame that gets this far can queue RETIRE_CONNECTION_ID frames
-        // below, and those only leave the queue once they are sent.
+        // RETIRE_CONNECTION_ID frames only leave the queue once they are sent.
+        // Count what this frame would queue below before queueing any of it:
+        // one for each connection ID under its Retire Prior To, and one for
+        // its own connection ID if an earlier frame already retired that
+        // sequence number. A frame that queues nothing is always accepted.
         let queuedRetireCount = withPendingItemsForKeyState { $0.retireConnectionIDs.count }
-        if queuedRetireCount >= 2 * remoteCIDs.activeConnectionIDLimit {
-            log.error("Received NEW_CONNECTION_ID frame with \(queuedRetireCount) RETIRE_CONNECTION_ID frames queued")
+        var newRetireCount = remoteCIDs.managedConnectionIDs.count(where: {
+            $0.sequenceNumber < frame.retirePriorToSequence
+        })
+        if frame.sequence < retiredRemoteCIDSequenceNumberThreshold {
+            newRetireCount += 1
+        }
+        if newRetireCount > 0 && queuedRetireCount + newRetireCount > 2 * remoteCIDs.activeConnectionIDLimit {
+            log.error(
+                "Received NEW_CONNECTION_ID frame retiring \(newRetireCount) connection IDs with \(queuedRetireCount) RETIRE_CONNECTION_ID frames queued"
+            )
             close(
                 with: .connectionIDLimitError,
                 "NEW_CONNECTION_ID: too many connection IDs to retire",

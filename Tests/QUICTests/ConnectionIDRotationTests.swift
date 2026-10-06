@@ -135,6 +135,116 @@ final class ConnectionIDRotationTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
+    // Queues `count` RETIRE_CONNECTION_ID frames: one for the DCID in use, retired by a frame that
+    // raises Retire Prior To to `threshold`, and one for each later frame below `threshold`.
+    private func queueRetireConnectionIDs(
+        count: Int,
+        threshold: UInt64,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        let rotation = FrameNewConnectionID(
+            sequence: threshold,
+            retirePriorToSequence: threshold,
+            connectionID: QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!,
+            statelessResetToken: QUICStatelessResetToken()
+        )
+        _ = connection.processNewConnectionIDFrame(rotation, in: &eventContext)
+        for sequence in 1..<UInt64(count) {
+            let frame = FrameNewConnectionID(
+                sequence: sequence,
+                retirePriorToSequence: 0,
+                connectionID: QUICConnectionID([0xC0, UInt8(sequence)])!,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+            _ = connection.processNewConnectionIDFrame(frame, in: &eventContext)
+        }
+    }
+
+    // With the queue at the limit, a NEW_CONNECTION_ID frame that retires nothing adds nothing
+    // to it, so it has to be accepted instead of closing the connection.
+    func testFrameRetiringNothingIsAcceptedAtRetireLimit() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let oldCID = QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!
+            let path = self.makePath(dcid: oldCID, sequenceNumber: 0, used: true)
+            self.connection.currentPath = path
+
+            let retireLimit = 2 * self.connection.remoteCIDs.activeConnectionIDLimit
+            let threshold = UInt64(retireLimit) + 1
+
+            let accepted = self.connection.fromExternal { eventContext in
+                self.queueRetireConnectionIDs(count: retireLimit, threshold: threshold, in: &eventContext)
+                let frame = FrameNewConnectionID(
+                    sequence: threshold + 1,
+                    retirePriorToSequence: threshold,
+                    connectionID: QUICConnectionID([0xD1, 0xD2, 0xD3, 0xD4])!,
+                    statelessResetToken: QUICStatelessResetToken()
+                )
+                return self.connection.processNewConnectionIDFrame(frame, in: &eventContext)
+            }
+
+            XCTAssertTrue(accepted, "A frame that retires nothing should be accepted")
+            XCTAssertNil(self.connection.closeError, "Connection should stay open")
+            XCTAssertEqual(
+                self.connection.withPendingItemsForKeyState { $0.retireConnectionIDs.count },
+                retireLimit,
+                "Queue should stay at the limit"
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // With the queue one below the limit, a NEW_CONNECTION_ID frame that retires two connection
+    // IDs would take it past the limit, so the connection has to close before queueing either.
+    func testFrameRetiringSeveralCannotOvershootRetireLimit() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let oldCID = QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!
+            let path = self.makePath(dcid: oldCID, sequenceNumber: 0, used: true)
+            self.connection.currentPath = path
+
+            let retireLimit = 2 * self.connection.remoteCIDs.activeConnectionIDLimit
+            let threshold = UInt64(retireLimit) + 1
+
+            let accepted = self.connection.fromExternal { eventContext in
+                self.queueRetireConnectionIDs(count: retireLimit - 1, threshold: threshold, in: &eventContext)
+                // A second active connection ID, next to the one the rotation frame supplied.
+                let second = FrameNewConnectionID(
+                    sequence: threshold + 1,
+                    retirePriorToSequence: threshold,
+                    connectionID: QUICConnectionID([0xD1, 0xD2, 0xD3, 0xD4])!,
+                    statelessResetToken: QUICStatelessResetToken()
+                )
+                _ = self.connection.processNewConnectionIDFrame(second, in: &eventContext)
+                let retiringBoth = FrameNewConnectionID(
+                    sequence: threshold + 3,
+                    retirePriorToSequence: threshold + 2,
+                    connectionID: QUICConnectionID([0xE1, 0xE2, 0xE3, 0xE4])!,
+                    statelessResetToken: QUICStatelessResetToken()
+                )
+                return self.connection.processNewConnectionIDFrame(retiringBoth, in: &eventContext)
+            }
+
+            XCTAssertFalse(accepted, "A frame that would take the queue past the limit should be rejected")
+            XCTAssertEqual(
+                self.connection.closeError?.code,
+                QUICTransportError.QUICTransportErrorCode.connectionIDLimitError.rawValue,
+                "Connection should close with CONNECTION_ID_LIMIT_ERROR"
+            )
+            // Closing drops the queue, so check the connection IDs the frame would have retired.
+            XCTAssertEqual(
+                self.connection.remoteCIDs.count,
+                2,
+                "Connection should close before retiring any connection ID"
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
     // The peer issues seq 1-3, but loss drops those NEW_CONNECTION_ID frames, so remoteCIDs holds
     // only the in-use seq 0 when the rotation frame (seq=4, retirePriorTo=1) arrives. Retiring
     // seq 0 leaves only the CID carried by that frame, so the path has to move to it instead of
