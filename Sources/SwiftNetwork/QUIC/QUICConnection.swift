@@ -1947,10 +1947,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             } else {
                 log.info("Unable to parse packet (decryption keys may not be ready)")
             }
-            if self.closeError != nil {
-                close(in: &eventContext)
-                return false
-            }
             return false
         }
 
