@@ -14,7 +14,10 @@
 
 #if !NETWORK_NO_SWIFT_QUIC
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+internal import Logging
+#elseif canImport(Glibc)
 import Glibc
 internal import Logging
 #elseif canImport(Musl)
@@ -35,7 +38,7 @@ extension System {
 		 * a high memory system a device that holds more than 3GB of usable memory.
 		 */
         var memsize: UInt64 = 0
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         memsize = 0xffff_ffff + 1
         #elseif !NETWORK_STANDALONE
         var len = Int.bitWidth

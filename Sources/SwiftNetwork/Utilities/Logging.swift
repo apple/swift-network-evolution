@@ -12,7 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+internal import Logging
+#elseif canImport(Glibc)
 import Glibc
 internal import Logging
 #elseif canImport(Musl)
@@ -22,7 +25,7 @@ internal import Logging
 internal import os
 #endif
 
-#if os(Linux) || (NETWORK_EMBEDDED && !NETWORK_DRIVERKIT)
+#if os(Linux) || os(Android) || (NETWORK_EMBEDDED && !NETWORK_DRIVERKIT)
 extension Logger {
 
     #if DisableDebugLogging

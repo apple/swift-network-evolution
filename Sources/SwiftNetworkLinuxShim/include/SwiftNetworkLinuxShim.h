@@ -26,9 +26,10 @@
 #endif
 #include <arpa/inet.h>
 
-// Not exposed in Glibc.swiftmodule
-char * SwiftNetworkLinuxShim_if_indextoname(int index, char * name);
+// Not exposed in Glibc.swiftmodule. Bionic's ioctl is variadic and unavailable from Swift.
+char * _Nullable SwiftNetworkLinuxShim_if_indextoname(int index, char * _Nullable name);
 uint64_t SwiftNetworkLinuxShim_getFDLimit();
+int SwiftNetworkLinuxShim_ioctl(int fd, unsigned long request, void * _Nonnull arg);
 
 #endif // __linux__
 #endif // SWIFTNETWORKLINIXSHIM

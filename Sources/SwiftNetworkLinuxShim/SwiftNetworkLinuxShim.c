@@ -20,6 +20,7 @@
 
 #include <SwiftNetworkLinuxShim.h>
 #include <net/if.h>
+#include <sys/ioctl.h>
 #include <sys/resource.h>
 
 char * SwiftNetworkLinuxShim_if_indextoname(int index, char * name)
@@ -38,6 +39,15 @@ uint64_t SwiftNetworkLinuxShim_getFDLimit()
         return (uint64_t)existing_limit.rlim_cur;
     }
     return 0;
+}
+
+int SwiftNetworkLinuxShim_ioctl(int fd, unsigned long request, void * arg)
+{
+#if defined(__ANDROID__)
+    return ioctl(fd, (unsigned)request, arg);
+#else
+    return ioctl(fd, request, arg);
+#endif
 }
 
 #endif

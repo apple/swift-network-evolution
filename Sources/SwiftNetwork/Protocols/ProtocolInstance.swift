@@ -17,7 +17,10 @@ import BasicContainers
 internal import DequeModule
 #endif
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+internal import Logging
+#elseif canImport(Glibc)
 import Glibc
 internal import Logging
 #elseif canImport(Musl)
@@ -303,7 +306,7 @@ public struct NetworkLoggerState: ~Copyable {
     public func notice(_ message: @autoclosure () -> String, callingFunction: StaticString = #function) {
         let logPrefix = logPrefix
         let message = message()
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         Logger.proto.notice("\(callingFunction) \(logPrefix) \(message)")
         #else
         Logger.proto.log("\(callingFunction) \(logPrefix) \(message)")
@@ -322,7 +325,7 @@ public struct NetworkLoggerState: ~Copyable {
 
     public func notice(_ message: String, callingFunction: StaticString = #function) {
         let logPrefix = logPrefix
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         Logger.proto.notice("\(callingFunction) \(logPrefix) \(message)")
         #else
         Logger.proto.log("\(callingFunction) \(logPrefix) \(message)")

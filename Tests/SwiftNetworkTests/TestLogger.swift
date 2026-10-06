@@ -12,7 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+internal import Logging
+#elseif canImport(Glibc)
 import Glibc
 internal import Logging
 #elseif canImport(Musl)
@@ -23,7 +26,7 @@ internal import os
 #endif
 
 extension Logger {
-    #if os(Linux) || NETWORK_EMBEDDED
+    #if os(Linux) || os(Android) || NETWORK_EMBEDDED
     // Logging for Linux
     static let test = Logger(label: "com.apple.network.test")
     #else

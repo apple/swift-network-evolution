@@ -15,7 +15,10 @@
 #if !NETWORK_NO_SWIFT_QUIC
 #if IMPORT_CRYPTO || IMPORT_SWIFTTLS
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+internal import Logging
+#elseif canImport(Glibc)
 import Glibc
 internal import Logging
 #elseif canImport(Musl)

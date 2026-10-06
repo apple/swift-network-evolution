@@ -12,9 +12,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if os(Linux) && NETLINK_ENABLED
+#if (os(Linux) || os(Android)) && NETLINK_ENABLED
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+#elseif canImport(Glibc)
 import Glibc
 #elseif canImport(Musl)
 import Musl
@@ -542,7 +544,7 @@ internal enum SystemRoute {
         }
     }
 }
-#elseif os(Linux)
+#elseif os(Linux) || os(Android)
 internal enum SystemRoute {
     static func routeGetInterfaceIndex(dst: any IPAddress, scopedIndex: UInt32 = 0) throws -> UInt32 {
         0

@@ -12,8 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if os(Linux)
-#if canImport(Glibc)
+#if os(Linux) || os(Android)
+#if canImport(Android)
+import Android
+#elseif canImport(Glibc)
 import Glibc
 #elseif canImport(Musl)
 import Musl

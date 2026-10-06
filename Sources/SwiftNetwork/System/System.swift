@@ -16,7 +16,10 @@
 import Dispatch
 #endif
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+internal import Logging
+#elseif canImport(Glibc)
 import Glibc
 internal import Logging
 #elseif canImport(Musl)
@@ -48,7 +51,7 @@ internal struct System {
             Duration.milliseconds(1) / Duration.microseconds(1)
         ) /* microseconds per millisecond */
 
-        #if os(Linux) || (NETWORK_STANDALONE && !NETWORK_DRIVERKIT)
+        #if os(Linux) || os(Android) || (NETWORK_STANDALONE && !NETWORK_DRIVERKIT)
         private static let timebaseNumerator: UInt64 = 0
         private static let timebaseDenominator: UInt64 = 0
         #else
@@ -62,7 +65,7 @@ internal struct System {
         #endif
 
         static func now() -> UInt64 {
-            #if os(Linux)
+            #if os(Linux) || os(Android)
             return DispatchTime.now().uptimeNanoseconds / Time.NSEC_PER_USEC
             #elseif NETWORK_STANDALONE && !NETWORK_DRIVERKIT
             return 0
@@ -80,7 +83,7 @@ internal struct System {
         }
 
         static func nowAbsoluteNanoseconds() -> UInt64 {
-            #if os(Linux)
+            #if os(Linux) || os(Android)
             return DispatchTime.now().uptimeNanoseconds
             #elseif NETWORK_STANDALONE && !NETWORK_DRIVERKIT
             return 0

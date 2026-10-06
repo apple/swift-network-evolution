@@ -20,7 +20,10 @@
 // `external` case, holding a class that speaks these same concrete types -- see
 // `ExternalProtocolLinkages.swift`.
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+internal import Logging
+#elseif canImport(Glibc)
 import Glibc
 internal import Logging
 #elseif canImport(Musl)

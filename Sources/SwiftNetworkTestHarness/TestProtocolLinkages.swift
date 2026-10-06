@@ -20,7 +20,9 @@
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+#elseif canImport(Glibc)
 import Glibc
 #elseif canImport(Musl)
 import Musl

@@ -15,7 +15,9 @@
 import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+#elseif canImport(Glibc)
 import Glibc
 #elseif canImport(Musl)
 import Musl

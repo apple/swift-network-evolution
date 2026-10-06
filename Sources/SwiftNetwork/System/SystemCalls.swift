@@ -12,8 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if os(Linux)
-#if canImport(Glibc)
+#if os(Linux) || os(Android)
+#if canImport(Android)
+import Android
+#elseif canImport(Glibc)
 import Glibc
 #elseif canImport(Musl)
 import Musl
@@ -29,7 +31,11 @@ import Darwin
 
 #if !NETWORK_STANDALONE || NETWORK_DRIVERKIT
 #if !NETWORK_DRIVERKIT
+#if os(Android)
+let sysIoctl: @convention(c) (CInt, CUnsignedLong, UnsafeMutableRawPointer) -> CInt = SwiftNetworkLinuxShim_ioctl
+#else
 let sysIoctl: @convention(c) (CInt, CUnsignedLong, UnsafeMutableRawPointer) -> CInt = ioctl
+#endif
 #endif
 let sysSocket: @convention(c) (CInt, CInt, CInt) -> CInt = socket
 #if !NETWORK_DRIVERKIT
@@ -42,12 +48,19 @@ let sysConnectx = connectx
 let sysWrite = write
 let sysRead = read
 let sysBind = bind
+#if os(Android)
+// Bionic marks these pointers _Nonnull.
+let sysRecvMsg: @convention(c) (CInt, UnsafeMutablePointer<msghdr>, CInt) -> ssize_t = recvmsg
+let sysSendMsg: @convention(c) (CInt, UnsafePointer<msghdr>, CInt) -> ssize_t = sendmsg
+let sysIfNameToIndex: @convention(c) (UnsafePointer<CChar>) -> CUnsignedInt = if_nametoindex
+#else
 let sysRecvMsg: @convention(c) (CInt, UnsafeMutablePointer<msghdr>?, CInt) -> ssize_t = recvmsg
 let sysSendMsg: @convention(c) (CInt, UnsafePointer<msghdr>?, CInt) -> ssize_t = sendmsg
 let sysIfNameToIndex: @convention(c) (UnsafePointer<CChar>?) -> CUnsignedInt = if_nametoindex
 #endif
+#endif
 
-#if os(Linux)
+#if os(Linux) || os(Android)
 // if_indextoname is not in the Glibc Swift interface so it's bridged from c
 let sysIfIndexToName: @convention(c) (CInt, UnsafeMutablePointer<CChar>?) -> UnsafeMutablePointer<CChar>? =
     SwiftNetworkLinuxShim_if_indextoname

@@ -14,7 +14,9 @@
 
 import XCTest
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+#elseif canImport(Glibc)
 import Glibc
 #elseif canImport(Darwin)
 internal import Darwin

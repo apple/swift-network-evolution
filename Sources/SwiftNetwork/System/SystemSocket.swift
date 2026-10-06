@@ -12,7 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+internal import Logging
+#elseif canImport(Glibc)
 import Glibc
 internal import Logging
 #elseif canImport(Musl)
@@ -93,7 +96,7 @@ class SystemSocket {
         sockType: SocketType,
         protocolSubType: Int32
     ) throws(NetworkError) -> CInt {
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         return try System.syscall(blocking: false) {
             sysSocket(CInt(protocolFamily.rawValue), sockType.socketType, protocolSubType)
         }.result
@@ -298,7 +301,11 @@ class SystemSocket {
     public func availableBytesToRead() -> Int {
         guard self.sockfd > 0 else { return 0 }
         var value: CInt = 0
+        #if os(Android)
+        let result = sysIoctl(self.sockfd, CUnsignedLong(FIONREAD), &value)
+        #else
         let result = ioctl(self.sockfd, UInt(FIONREAD), &value)
+        #endif
         return result == 0 ? Int(value) : 0
     }
     #endif
@@ -443,6 +450,8 @@ extension IPAddress {
                 sockaddr6.sin6_addr.__in6_u.__u6_addr32 = v6Address.address
                 #elseif canImport(Musl)
                 sockaddr6.sin6_addr.__in6_union.__s6_addr32 = v6Address.address
+                #elseif canImport(Android)
+                sockaddr6.sin6_addr.in6_u.u6_addr32 = v6Address.address
                 #elseif canImport(Darwin)
                 sockaddr6.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
                 sockaddr6.sin6_addr.__u6_addr.__u6_addr32 = v6Address.address

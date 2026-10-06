@@ -12,7 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+internal import Logging
+#elseif canImport(Glibc)
 import Glibc
 internal import Logging
 #elseif canImport(Musl)
@@ -142,7 +145,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         public var sourceConnectionID: [UInt8]? = nil
         public var destinationConnectionID: [UInt8]? = nil
         // NOTE: sessionUpdateBlock is not supported in Embedded
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         var sessionStateUpdateBlock: (@Sendable @convention(block) ([UInt8]?, [UInt8]?) -> Void)?
         #elseif !NETWORK_STANDALONE && canImport(Darwin)
         var sessionStateUpdateBlock: (@Sendable @convention(block) (DispatchData?, DispatchData?) -> Void)? = nil
@@ -662,7 +665,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         }
         #endif
 
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         func setSessionStateUpdateBlock(
             _ sessionStateUpdateBlock: (@Sendable @convention(block) ([UInt8]?, [UInt8]?) -> Void)?,
             queue: DispatchQueue
@@ -688,7 +691,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
                 return false
             }
             // NOTE: sessionUpdateBlock is not supported in Embedded
-            #if os(Linux)
+            #if os(Linux) || os(Android)
             let tlsBytes = Array(tlsState[tlsState.startIndex..<tlsState.endIndex])
             let quicStateBytes = Array(quicState[quicState.startIndex..<quicState.endIndex])
             sessionQueue.async {

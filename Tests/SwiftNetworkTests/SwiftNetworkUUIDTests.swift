@@ -28,7 +28,10 @@ import XCTest
 import Foundation
 #endif
 
-#if canImport(Glibc)
+#if canImport(Android)
+import Android
+internal import SwiftNetworkLinuxShim
+#elseif canImport(Glibc)
 import Glibc
 internal import SwiftNetworkLinuxShim
 #elseif canImport(Musl)
