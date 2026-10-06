@@ -1165,7 +1165,11 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         } else {
             // RESET_STREAM may be the first frame the peer sends on a stream
             // createInboundStreams will register it.
-            let inboundStreamResult = connection.createInboundStreams(streamID: streamID, stats: &stats, in: &eventContext)
+            let inboundStreamResult = connection.createInboundStreams(
+                streamID: streamID,
+                stats: &stats,
+                in: &eventContext
+            )
             if inboundStreamResult.checkZombie {
                 connection.zombieStreamListFinalSizeReceived(
                     streamID: streamID,
@@ -1359,7 +1363,11 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
                 connection.close(with: .streamStateError, "STOP_SENDING: non-existent stream", in: &eventContext)
                 return false
             }
-            let inboundStreamResult = connection.createInboundStreams(streamID: streamID, stats: &stats, in: &eventContext)
+            let inboundStreamResult = connection.createInboundStreams(
+                streamID: streamID,
+                stats: &stats,
+                in: &eventContext
+            )
             // If we are ignoring the stream
             if !inboundStreamResult.created {
                 return true

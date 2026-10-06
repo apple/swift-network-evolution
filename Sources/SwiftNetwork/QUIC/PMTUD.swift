@@ -277,7 +277,14 @@ struct PMTUDState: ~Copyable {
             packetTooBigMTU = (packetTooBigMTU == 0) ? nextMTU : min(packetTooBigMTU, nextMTU)
             path.parentProtocol.recordSentPackets(in: &eventContext) { sentPackets, blockState in
                 let connection = path.parentProtocol
-                enterBlackholeDetection(on: path, sentPackets: &sentPackets, stats: &connection.stats, ecn: &connection.ecn, ack: &connection.ack, in: &blockState)
+                enterBlackholeDetection(
+                    on: path,
+                    sentPackets: &sentPackets,
+                    stats: &connection.stats,
+                    ecn: &connection.ecn,
+                    ack: &connection.ack,
+                    in: &blockState
+                )
             }
         } else if currentPathMTU < nextMTU && nextMTU < probedMTU {
             path.log.info("Current path MTU < packet too big MTU size < probed MTU")
@@ -369,7 +376,14 @@ struct PMTUDState: ~Copyable {
             ptoCount > PMTUDState.blackholeThreshold,
             enabled
         else { return }
-        enterBlackholeDetection(on: path, sentPackets: &sentPackets, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+        enterBlackholeDetection(
+            on: path,
+            sentPackets: &sentPackets,
+            stats: &stats,
+            ecn: &ecn,
+            ack: &ack,
+            in: &eventContext
+        )
     }
 
     mutating func sendProbe(
@@ -505,7 +519,14 @@ struct PMTUDState: ~Copyable {
         self.updateProbeSize(on: path)
         let connection = path.parentProtocol
         connection.recordSentPackets(in: &eventContext) { sentPackets, blockState in
-            sendProbe(on: path, sentPackets: &sentPackets, stats: &connection.stats, ecn: &connection.ecn, ack: &connection.ack, in: &blockState)
+            sendProbe(
+                on: path,
+                sentPackets: &sentPackets,
+                stats: &connection.stats,
+                ecn: &connection.ecn,
+                ack: &connection.ack,
+                in: &blockState
+            )
         }
     }
 

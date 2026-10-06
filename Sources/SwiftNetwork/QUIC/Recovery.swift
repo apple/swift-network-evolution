@@ -1021,7 +1021,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             withMutableInnerState(packetNumberSpace: pnSpace) { innerState in
                 innerState.declarePacketLost(lostPackets, connection: connection)
             }
-            retransmitPackets(lostPackets, connection: connection, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+            retransmitPackets(
+                lostPackets,
+                connection: connection,
+                stats: &stats,
+                ecn: &ecn,
+                ack: &ack,
+                in: &eventContext
+            )
             lostPacket = true
         }
         return lostPacket
@@ -1063,7 +1070,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         // We may have lost a PMTUD probe, so check if we want to resend it
         connection.withCurrentPath { path in
             var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
-            path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+            path.pmtudState.tryToSend(
+                on: path,
+                sentPackets: &sentPackets,
+                stats: &stats,
+                ecn: &ecn,
+                ack: &ack,
+                in: &eventContext
+            )
             recordSentPackets(&sentPackets, connection: connection, in: &eventContext)
             return
         }
@@ -1132,7 +1146,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             let path = path ?? connection.currentPath
             if let path {
                 var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
-                path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+                path.pmtudState.tryToSend(
+                    on: path,
+                    sentPackets: &sentPackets,
+                    stats: &stats,
+                    ecn: &ecn,
+                    ack: &ack,
+                    in: &eventContext
+                )
                 recordSentPackets(&sentPackets, connection: connection, in: &eventContext)
             }
             connection.sendAllEnqueuedOutboundDatagrams(in: &eventContext)
@@ -1423,7 +1444,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         )
         if lossTime != .zero {
             log.datapath("Recovery timer fired, finding lost packets")
-            findLostPacket(timeNow: timeNow, connection: connection, stats: &connection.stats, ecn: &connection.ecn, ack: &connection.ack, in: &eventContext)
+            findLostPacket(
+                timeNow: timeNow,
+                connection: connection,
+                stats: &connection.stats,
+                ecn: &connection.ecn,
+                ack: &connection.ack,
+                in: &eventContext
+            )
         } else {
             log.datapath("Recovery timer fired, PTO")
             connection.withCurrentPath { path in

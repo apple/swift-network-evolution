@@ -163,13 +163,22 @@ struct QUICConnectionScheduler: ~Copyable {
     /// Operation to run on the connection's send or receive path
     enum Operation {
         // Run from just about anywhere in the stack we need to send data
-        case sendFrames(path: MultiplexingPathIdentifier?, ignoreCongestionWindow: Bool, delayedACK: Bool, retransmission: Bool)
+        case sendFrames(
+            path: MultiplexingPathIdentifier?,
+            ignoreCongestionWindow: Bool,
+            delayedACK: Bool,
+            retransmission: Bool
+        )
         // Receive path only, called typically from the protocol stack
         case receiveFrames(path: MultiplexingPathIdentifier)
         // ACK timer being fired for delayed ACK processing
         case ackTimer(firedAt: NetworkClock.Instant)
         // Recovery sending packets to be retransmitted
-        case sendFramesFromRecovery(path: MultiplexingPathIdentifier, ignoreCongestionWindow: Bool, retransmission: Bool)
+        case sendFramesFromRecovery(
+            path: MultiplexingPathIdentifier,
+            ignoreCongestionWindow: Bool,
+            retransmission: Bool
+        )
         // Crypto reporting ready to the connection
         case reportReady
         // Close connection sequence from close()
@@ -2105,15 +2114,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) -> Bool {
         var ceMarked = false
         var continueProcessing = false
-        guard var packet = packetParser.parse(
-            frame: &frame,
-            connection: self,
-            ecn: ecnFlags,
-            ack: &ack,
-            protector: &protector,
-            stats: &stats,
-            in: &eventContext
-        ) else {
+        guard
+            var packet = packetParser.parse(
+                frame: &frame,
+                connection: self,
+                ecn: ecnFlags,
+                ack: &ack,
+                protector: &protector,
+                stats: &stats,
+                in: &eventContext
+            )
+        else {
             if state == .connected {
                 log.error("Unable to parse packet")
             } else {
@@ -3631,7 +3642,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     /// Runs close() through the scheduler so it never executes nested inside an active receiveFrames  operation
     func scheduleClose(sendCloseFrame: Bool = true, in eventContext: inout NetworkContext.EventContext) {
-        schedule(.closeConnection(sendCloseFrame: sendCloseFrame), defaultResult: (), in: &eventContext) { eventContext in
+        schedule(.closeConnection(sendCloseFrame: sendCloseFrame), defaultResult: (), in: &eventContext) {
+            eventContext in
             self.close(sendCloseFrame: sendCloseFrame, in: &eventContext)
         }
     }
@@ -3671,7 +3683,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         schedule(
-            .sendFrames(path: nil, ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK, retransmission: false),
+            .sendFrames(
+                path: nil,
+                ignoreCongestionWindow: ignoreCongestionWindow,
+                delayedACK: delayedACK,
+                retransmission: false
+            ),
             defaultResult: false,
             in: &eventContext
         ) { eventContext in
@@ -3889,7 +3906,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        sentPackets.reserveCapacity(capacityForPacketNumberSpace(applicationPendingItems: &state.applicationPendingItems))
+        sentPackets.reserveCapacity(
+            capacityForPacketNumberSpace(applicationPendingItems: &state.applicationPendingItems)
+        )
         return sendFramesInternal(
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
@@ -4471,7 +4490,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Discard keys first to make sure we have room in congestion control
             if !isServer && !initialKeysDiscarded {
                 discardInitialRecoveryState = true
-                discardKeys(keyState: .initial, pendingItems: &initialPendingItems, discardRecoveryState: false, ack: &ack)
+                discardKeys(
+                    keyState: .initial,
+                    pendingItems: &initialPendingItems,
+                    discardRecoveryState: false,
+                    ack: &ack
+                )
                 initialKeysDiscarded = true
             }
 
@@ -6249,7 +6273,14 @@ extension QUICConnection {
 
         // Check if we need to send probes
         var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
-        path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+        path.pmtudState.tryToSend(
+            on: path,
+            sentPackets: &sentPackets,
+            stats: &stats,
+            ecn: &ecn,
+            ack: &ack,
+            in: &eventContext
+        )
         recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
 
         return true
@@ -7059,7 +7090,14 @@ extension QUICConnection {
         case .pathChallenge(let frame):
             return handlePathChallengeFrame(frame, path: path, in: &eventContext)
         case .pathResponse(let frame):
-            return handlePathChallengeResponseFrame(frame, path: path, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+            return handlePathChallengeResponseFrame(
+                frame,
+                path: path,
+                stats: &stats,
+                ecn: &ecn,
+                ack: &ack,
+                in: &eventContext
+            )
         case .connectionClose(let frame):
             return processConnectionCloseFrame(frame, in: &eventContext)
         case .applicationClose(let frame):

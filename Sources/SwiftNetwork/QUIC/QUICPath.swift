@@ -751,7 +751,14 @@ public final class QUICPath: MultiplexingDatagramPath<
         }
         if migrationPending {
             migrationPending = false
-            parentProtocol.migration.migrate(to: self, connection: parentProtocol, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+            parentProtocol.migration.migrate(
+                to: self,
+                connection: parentProtocol,
+                stats: &stats,
+                ecn: &ecn,
+                ack: &ack,
+                in: &eventContext
+            )
         }
     }
 

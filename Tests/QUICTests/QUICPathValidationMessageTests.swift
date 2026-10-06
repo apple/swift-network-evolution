@@ -135,7 +135,13 @@ class QUICPathValidationMessageTests: XCTestCase {
             XCTAssertTrue(pendingItems.pathResponses.isEmpty)
 
             connection.fromExternal { eventContext in
-                path.handlePathChallengeResponse(outboundChallenge, stats: &connection.stats, ecn: &connection.ecn, ack: &connection.ack, in: &eventContext)
+                path.handlePathChallengeResponse(
+                    outboundChallenge,
+                    stats: &connection.stats,
+                    ecn: &connection.ecn,
+                    ack: &connection.ack,
+                    in: &eventContext
+                )
             }
             XCTAssertEqual(path.state, .validated)
             XCTAssertEqual(path.pendingOutboundChallenges.count, 0)

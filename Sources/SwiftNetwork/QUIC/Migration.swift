@@ -287,7 +287,14 @@ extension QUICConnection {
 
         // This is a new primary path. Migrate to it if we are the client.
         if !isServer, path != currentPath, isPrimary, path.isRouteEstablished {
-            migration.migrate(to: path, connection: self, stats: &self.stats, ecn: &self.ecn, ack: &self.ack, in: &eventContext)
+            migration.migrate(
+                to: path,
+                connection: self,
+                stats: &self.stats,
+                ecn: &self.ecn,
+                ack: &self.ack,
+                in: &eventContext
+            )
             // Send packets if necessary
             sendFrames(on: path, in: &eventContext)
         }
