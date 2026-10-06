@@ -14,7 +14,7 @@
 
 import XCTest
 
-#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux))
+#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux) || os(Android))
 
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
@@ -47,6 +47,9 @@ import Dispatch
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -70,7 +73,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
         )
     }
 
-    #if !os(Linux) && canImport(Dispatch)
+    #if !os(Linux) && !os(Android) && canImport(Dispatch)
     func testQUICConcurrentClientConnectionTimeouts() throws {
         // Drop 100% of packets from the client to make the server unreachable
         // Times out 100 clients connection close to the same time

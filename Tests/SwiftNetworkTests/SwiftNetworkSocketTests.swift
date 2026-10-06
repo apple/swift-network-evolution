@@ -16,6 +16,8 @@ import XCTest
 
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Android)
+import Android
 #elseif canImport(Darwin)
 internal import Darwin
 #endif
@@ -725,7 +727,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
 
     private static func processCPUSeconds() -> Double {
         var usage = rusage()
-        #if canImport(Darwin)
+        #if canImport(Darwin) || canImport(Android)
         getrusage(RUSAGE_SELF, &usage)
         #else
         getrusage(RUSAGE_SELF.rawValue, &usage)

@@ -12,9 +12,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if os(Linux)
+#if os(Linux) || os(Android)
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Android)
+import Android
 #elseif canImport(Musl)
 import Musl
 #endif
@@ -51,7 +53,7 @@ extension System {
         name: String,
         interfaceType: InterfaceType
     ) throws -> InterfaceSubtype {
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         return SystemInterface.interfaceGetInterfaceSubType(interfaceType: interfaceType)
         #else
         return try SystemInterface.interfaceGetInterfaceSubType(socket: socket, name: name)
@@ -68,7 +70,7 @@ extension System {
         #if os(Linux)
         return try SystemInterface.if_nametoindex(name)
         #elseif !NETWORK_STANDALONE || NETWORK_DRIVERKIT
-        // Darwin just has if_nametoindex exposed
+        // Darwin and Android just have if_nametoindex exposed.
         let index = if_nametoindex(name)
         guard index > 0 else {
             throw NetworkError.posix(ENOENT)

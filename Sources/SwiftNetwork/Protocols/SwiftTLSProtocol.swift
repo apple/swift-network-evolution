@@ -27,6 +27,9 @@ import Foundation
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -57,7 +60,7 @@ let SwiftTLSRecordProtocolMaxOutstandingReadBytes: Int = (8 * 1024 * 1024)  // 8
 #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
 // The record layer is generic over its instance's linkages, so this cannot be a static stored
 // property on it.
-#if !os(Linux) && !NETWORK_STANDALONE
+#if !os(Linux) && !os(Android) && !NETWORK_STANDALONE
 private let swiftTLSRecordSuccessErrorCode = errSecSuccess
 #else
 private let swiftTLSRecordSuccessErrorCode = 0
