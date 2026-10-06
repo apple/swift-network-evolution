@@ -1816,7 +1816,10 @@ final class ProtectorTests: XCTestCase {
         XCTAssertFalse(protector.keyUpdateNeeded(for: .phase0))
         try sealOne(&protector, number: 1, keyState: .phase0)
         XCTAssertTrue(protector.keyUpdateNeeded(for: .phase0))
+        XCTAssertFalse(protector.sealLimitImminent(for: .phase0))
         try sealOne(&protector, number: 2, keyState: .phase0)
+        // Only the packet kept for a CONNECTION_CLOSE is left
+        XCTAssertTrue(protector.sealLimitImminent(for: .phase0))
         try sealOne(&protector, number: 3, keyState: .phase0)
         // The key has reached its limit and must not seal another packet
         XCTAssertThrowsError(try sealOne(&protector, number: 4, keyState: .phase0))

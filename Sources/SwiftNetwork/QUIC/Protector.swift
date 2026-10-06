@@ -1445,6 +1445,13 @@ struct Protector: ~Copyable, PrefixedLoggable {
         sealLimitReached(keys: writeFramer[keyState.rawValue], limit: aesGCMConfidentialityLimit / 2)
     }
 
+    /// Whether the write key has a single packet left before its confidentiality limit.
+    /// That packet is kept for a CONNECTION_CLOSE.
+    @inline(always)
+    func sealLimitImminent(for keyState: PacketKeyState) -> Bool {
+        sealLimitReached(keys: writeFramer[keyState.rawValue], limit: aesGCMConfidentialityLimit - 1)
+    }
+
     /// The number of packets that may fail authentication (RFC 9001, Section 6.6).
     func integrityLimit(for keyState: PacketKeyState) -> UInt64 {
         keyType(keys: readFramer[keyState.rawValue]) == .chaChaPoly ? 1 << 36 : 1 << 52
@@ -1621,6 +1628,10 @@ struct Protector: ~Copyable, PrefixedLoggable {
     }
 
     func keyUpdateNeeded(for keyState: PacketKeyState) -> Bool {
+        false
+    }
+
+    func sealLimitImminent(for keyState: PacketKeyState) -> Bool {
         false
     }
 

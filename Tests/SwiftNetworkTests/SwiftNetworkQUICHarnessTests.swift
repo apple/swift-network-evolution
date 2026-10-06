@@ -554,6 +554,114 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         )
     }
 
+    // RFC 9001, Section 6.6: the client's packets are still on the delayed link when the
+    // server's arrive, so the server has acknowledged nothing that would let the client
+    // update its key before the lowered AEAD confidentiality limit runs out. The client has
+    // to close with AEAD_LIMIT_REACHED, and its key must still protect that CONNECTION_CLOSE.
+    func testQUICAEADLimitReachedClosesConnection() {
+        let harness = QUICTestHarness()
+        do {
+            try harness.quicHandshake(
+                // Delays what the server receives
+                serverLinkDelay: .milliseconds(100),
+                beforeHandshake: { clientInstance in
+                    clientInstance.protector = Protector(
+                        isClient: true,
+                        destinationCID: clientInstance.originalDCID,
+                        logPrefixer: clientInstance.logPrefixer,
+                        aesGCMConfidentialityLimit: 8
+                    )
+                }
+            )
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+        guard let clientStream = harness.createNewStream(identifier: "C1"),
+            let serverStream = harness.createNewStream(identifier: "S1", serverInitiated: true)
+        else {
+            XCTFail("Failed to create the streams")
+            return
+        }
+        harness.context.async {
+            XCTAssertTrue(clientStream.write([UInt8](repeating: 0x41, count: 32768)))
+            // Every write is a packet for the client to process
+            for _ in 0..<8 {
+                harness.context.async {
+                    XCTAssertTrue(serverStream.write([0x42]))
+                }
+            }
+        }
+
+        var clientError: QUICTransportError?
+        var serverError: QUICTransportError?
+        var serverReceivedConnectionClose = false
+        for _ in 0..<50 where !serverReceivedConnectionClose {
+            _ = XCTWaiter.wait(for: [XCTestExpectation(description: "Let the transfer run")], timeout: 0.1)
+            let expectation = XCTestExpectation(description: "Wait to read the close errors")
+            harness.context.async {
+                clientError = harness.state?.clientInstance.closeError
+                serverError = harness.state?.serverInstance.closeError
+                serverReceivedConnectionClose = harness.state?.serverInstance.receivedConnectionClose ?? false
+                expectation.fulfill()
+            }
+            self.wait(for: [expectation], timeout: 5.0)
+        }
+        let aeadLimitReached = QUICTransportError(.aeadLimitReached).code
+        XCTAssertEqual(clientError?.code, aeadLimitReached)
+        // The server only learns the error from the client's CONNECTION_CLOSE
+        XCTAssertTrue(serverReceivedConnectionClose)
+        XCTAssertEqual(serverError?.code, aeadLimitReached)
+    }
+
+    // RFC 9001, Section 6.1: a client that only receives sends nothing the server would
+    // acknowledge, so it has to elicit an ACK before it may update its key.
+    func testQUICKeyUpdatesWhileOnlyReceiving() {
+        let harness = QUICTestHarness()
+        do {
+            try harness.quicHandshake(
+                beforeHandshake: { clientInstance in
+                    clientInstance.protector = Protector(
+                        isClient: true,
+                        destinationCID: clientInstance.originalDCID,
+                        logPrefixer: clientInstance.logPrefixer,
+                        aesGCMConfidentialityLimit: 8
+                    )
+                }
+            )
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+        guard let serverStream = harness.createNewStream(identifier: "S1", serverInitiated: true) else {
+            XCTFail("Failed to create server stream")
+            return
+        }
+        // The client never reads the stream, so all it sends are ACKs, one per write
+        for _ in 0..<24 {
+            harness.context.async {
+                XCTAssertTrue(serverStream.write([0x42]))
+            }
+            _ = XCTWaiter.wait(for: [XCTestExpectation(description: "Let the client acknowledge")], timeout: 0.04)
+        }
+
+        let expectation = XCTestExpectation(description: "Wait to validate key updates")
+        harness.context.async {
+            defer { expectation.fulfill() }
+            guard let clientInstance = harness.state?.clientInstance,
+                let serverInstance = harness.state?.serverInstance
+            else {
+                XCTFail("State needs to be present to proceed")
+                return
+            }
+            // Phase 1 keys only exist once a key update has happened
+            XCTAssertTrue(clientInstance.protector.sealKeyReady(for: .phase1))
+            XCTAssertNil(clientInstance.closeError)
+            XCTAssertNil(serverInstance.closeError)
+        }
+        self.wait(for: [expectation], timeout: 5.0)
+    }
+
     func testQUICEcho40KiBMultistream() {
         QUICTestHarness().runQUICTest(streamCount: 4, blockSize: 10240, blockCount: 4)
     }
