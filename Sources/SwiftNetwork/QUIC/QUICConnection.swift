@@ -6966,6 +6966,7 @@ extension QUICConnection {
         // connection ID, unless it has already done so for that sequence number.
         if frame.retirePriorToSequence > retiredRemoteCIDSequenceNumberThreshold {
             retiredRemoteCIDSequenceNumberThreshold = frame.retirePriorToSequence
+            remoteCIDs.markHeld(priorTo: frame.retirePriorToSequence)
         }
         if frame.sequence < retiredRemoteCIDSequenceNumberThreshold {
             // Send a frame to retire the connection ID

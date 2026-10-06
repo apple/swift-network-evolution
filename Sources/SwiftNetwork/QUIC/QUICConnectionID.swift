@@ -271,13 +271,21 @@ struct QUICConnectionIDList: Sequence, IteratorProtocol {
         guard remembersHeldSequenceNumbers else { return }
         // Sequence numbers are variable-length integers, so at most 2^62 - 1, and cannot overflow.
         heldSequenceNumbers.insert(contentsOf: sequenceNumber..<sequenceNumber &+ 1)
-        // Sequence numbers are issued in order, so a gap only lasts until a reordered or lost frame
-        // arrives. Close the oldest gap once there are more gaps than twice the limit, so that the
-        // set stays bounded.
+        // Everything below Retire Prior To is filled in by markHeld(priorTo:), so a gap is a frame
+        // above it that is lost or still in flight, and a conforming peer has at most the limit of
+        // those. Close the oldest gap once there are more gaps than twice the limit, so that the set
+        // stays bounded against a peer that is not.
         let ranges = heldSequenceNumbers.ranges
         if ranges.count - 1 > 2 * activeConnectionIDLimit {
             heldSequenceNumbers.insert(contentsOf: ranges[0].upperBound..<ranges[1].lowerBound)
         }
+    }
+
+    // Every sequence number below Retire Prior To is retired as soon as its frame arrives, without
+    // reaching this list, so count them all as held rather than leaving a gap for each late one.
+    mutating func markHeld(priorTo: UInt64) {
+        guard remembersHeldSequenceNumbers else { return }
+        heldSequenceNumbers.insert(contentsOf: 0..<priorTo)
     }
 
     // The initial connection ID is valid without a Stateless Reset Token (see RFC9000, Section 18.2).

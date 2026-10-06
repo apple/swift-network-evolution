@@ -296,6 +296,24 @@ class QUICConnectionIDListTests: XCTestCase {
         XCTAssertTrue(list.hasHeld(sequenceNumber: 2))
     }
 
+    // A sequence number below Retire Prior To is retired on arrival without reaching the list, so a
+    // lost frame below it must not leave a gap.
+    func testMarkHeldPriorToClosesGaps() {
+        list = QUICConnectionIDList(remembersHeldSequenceNumbers: true)
+        XCTAssertNoThrow(
+            try list.insertInitialConnectionID(QUICConnectionID(5))
+        )
+        XCTAssertNoThrow(
+            try list.insert(sequenceNumber: 2, connectionID: QUICConnectionID(5), token: QUICStatelessResetToken())
+        )
+        XCTAssertFalse(list.hasHeld(sequenceNumber: 1))
+
+        list.markHeld(priorTo: 3)
+        XCTAssertTrue(list.hasHeld(sequenceNumber: 1))
+        XCTAssertTrue(list.hasHeld(sequenceNumber: 2))
+        XCTAssertFalse(list.hasHeld(sequenceNumber: 3))
+    }
+
     // Sequence numbers that never arrive must not make the list remember gaps without bound.
     func testHasHeldClosesOldestGap() {
         list = QUICConnectionIDList(remembersHeldSequenceNumbers: true)
