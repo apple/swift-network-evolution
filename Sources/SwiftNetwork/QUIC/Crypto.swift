@@ -267,11 +267,11 @@ final class QUICCrypto {
     // Notify pending items that there are crypto bytes to get!
     private func markSendPending(_ level: PacketNumberSpace, on parentConnection: QUICConnection) {
         if level == .initial {
-            parentConnection.scheduler.state.initialPendingItems.sendCrypto = true
+            parentConnection.pendingItemsState.initialPendingItems.sendCrypto = true
         } else if level == .handshake {
-            parentConnection.scheduler.state.handshakePendingItems.sendCrypto = true
+            parentConnection.pendingItemsState.handshakePendingItems.sendCrypto = true
         } else {
-            parentConnection.scheduler.state.applicationPendingItems.sendCrypto = true
+            parentConnection.pendingItemsState.applicationPendingItems.sendCrypto = true
         }
     }
 }

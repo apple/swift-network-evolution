@@ -157,12 +157,12 @@ struct Migration: ~Copyable {
         }
         if !connection.isServer {
             // Insert a PING frame if we have no ack eliciting frames to send.
-            if !connection.scheduler.state.applicationPendingItems.hasAckElicitingPendingItems {
+            if !connection.pendingItemsState.applicationPendingItems.hasAckElicitingPendingItems {
                 connection.withPendingItems(for: .applicationData) {
                     $0.ping = true
                 }
             }
-            connection.sendFrames(stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+            connection.sendFramesFromMigration(stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
         }
         // TODO: Handle preferred address migration
 
@@ -334,7 +334,7 @@ extension QUICConnection {
         }
         oldPath.destroy(in: &eventContext)
         multiplexingPaths.removeValue(forKey: oldPath.pathIdentifier)
-        sendFrames(stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+        sendFramesFromMigration(stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
     }
 }
 #endif

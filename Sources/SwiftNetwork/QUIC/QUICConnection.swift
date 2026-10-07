@@ -185,11 +185,13 @@ struct QUICConnectionScheduler: ~Copyable {
         case closeConnection(sendCloseFrame: Bool)
         // Discard keys
         case discardEarlyDataKeys
+        // PMTUD blackhole-detection probe timer, building and sending a probe packet
+        case pmtudProbe(path: MultiplexingPathIdentifier, firedAt: NetworkClock.Instant)
     }
 
     // Pending items state for QUICConnection
     // This state handles whether the connection needs to send which frames for a key state
-    struct State: ~Copyable {
+    struct PendingItemsState: ~Copyable {
         var initialPendingItems = PendingItems(packetNumberSpace: .initial)
         var handshakePendingItems = PendingItems(packetNumberSpace: .handshake)
         var applicationPendingItems = PendingItems(packetNumberSpace: .applicationData)
@@ -209,6 +211,7 @@ struct QUICConnectionScheduler: ~Copyable {
         static let reportReadyActive = Flags(rawValue: 1 << 3)
         static let closeConnectionActive = Flags(rawValue: 1 << 4)
         static let discardEarlyDataKeysActive = Flags(rawValue: 1 << 5)
+        static let pmtudProbeActive = Flags(rawValue: 1 << 6)
     }
     private var flags = Flags()
 
@@ -259,7 +262,10 @@ struct QUICConnectionScheduler: ~Copyable {
             }
         }
     }
-    var state = State()
+    private var isPMTUDProbeActive: Bool {
+        get { flags.contains(.pmtudProbeActive) }
+        set { if newValue { flags.insert(.pmtudProbeActive) } else { flags.remove(.pmtudProbeActive) } }
+    }
 
     init() {
         operationQueue.reserveCapacity(4)
@@ -301,18 +307,25 @@ struct QUICConnectionScheduler: ~Copyable {
             isDiscardEarlyDataKeysActive = true
             return true
         case .sendFramesFromRecovery:
-            guard !isSendFramesFromRecoveryActive else {
+            guard !isSendFramesFromRecoveryActive && !isPMTUDProbeActive else {
                 operationQueue.append(operation)
                 return false
             }
             isSendFramesFromRecoveryActive = true
             return true
         case .sendFrames, .ackTimer:
-            guard !isSendActive else {
+            guard !isSendActive && !isSendFramesFromRecoveryActive && !isPMTUDProbeActive else {
                 operationQueue.append(operation)
                 return false
             }
             isSendActive = true
+            return true
+        case .pmtudProbe:
+            guard !isPMTUDProbeActive && !isSendActive && !isSendFramesFromRecoveryActive else {
+                operationQueue.append(operation)
+                return false
+            }
+            isPMTUDProbeActive = true
             return true
         }
     }
@@ -328,6 +341,7 @@ struct QUICConnectionScheduler: ~Copyable {
         case .discardEarlyDataKeys: isDiscardEarlyDataKeysActive = false
         case .sendFramesFromRecovery: isSendFramesFromRecoveryActive = false
         case .sendFrames, .ackTimer: isSendActive = false
+        case .pmtudProbe: isPMTUDProbeActive = false
         }
     }
 
@@ -420,6 +434,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var crypto: QUICCrypto
 
     var scheduler = QUICConnectionScheduler()
+    var pendingItemsState = QUICConnectionScheduler.PendingItemsState()
 
     var protector: Protector
 
@@ -1887,7 +1902,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Detect if any received packet contains a QUIC Frame that unblocks
             // all streams, such as a new MAX_DATA. Includes setting
             // triggerAllStreamsUnblocked = false
-            scheduler.state.applicationPendingItems.triggerAllStreamsUnblocked = false
+            pendingItemsState.applicationPendingItems.triggerAllStreamsUnblocked = false
 
             // Tell recovery that a batch of packets is starting to be processed; suppress timer updates.
             // Ending recovery is deferred until servicing is done.
@@ -2826,7 +2841,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         // Try to send more data on all streams due to a received MAX_DATA or ACK
-        if scheduler.state.applicationPendingItems.triggerAllStreamsUnblocked {
+        if pendingItemsState.applicationPendingItems.triggerAllStreamsUnblocked {
             withPendingItems(for: .applicationData) { pendingItems in
                 applyToAllFlows { stream in
                     pendingItems.prependStreamToService(stream)
@@ -2834,7 +2849,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             sendFrames(in: &eventContext)
             // We've already processed all the unblocked streams
-            scheduler.state.applicationPendingItems.unblockedSendStreams.removeAll(connection: self)
+            pendingItemsState.applicationPendingItems.unblockedSendStreams.removeAll(connection: self)
         } else {
             while true {
                 let stream = withPendingItems(for: .applicationData) { pendingItems -> QUICStreamInstance? in
@@ -2943,7 +2958,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
 
             if !stream.sendState.dataHasAlreadyBeenSent {
-                scheduler.state.applicationPendingItems.appendStreamToService(stream)
+                pendingItemsState.applicationPendingItems.appendStreamToService(stream)
             }
             // Note: trigger sending of any frames based on this external event.
             // `self.ack` is read bare here; when this call is reached nested inside the
@@ -3462,11 +3477,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) -> T {
         switch packetNumberSpace {
         case .initial:
-            return block(&scheduler.state.initialPendingItems)
+            return block(&pendingItemsState.initialPendingItems)
         case .handshake:
-            return block(&scheduler.state.handshakePendingItems)
+            return block(&pendingItemsState.handshakePendingItems)
         case .applicationData:
-            return block(&scheduler.state.applicationPendingItems)
+            return block(&pendingItemsState.applicationPendingItems)
         }
     }
     @discardableResult
@@ -3477,11 +3492,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) -> T {
         switch packetNumberSpace {
         case .initial:
-            return block(&scheduler.state.initialPendingItems, frame)
+            return block(&pendingItemsState.initialPendingItems, frame)
         case .handshake:
-            return block(&scheduler.state.handshakePendingItems, frame)
+            return block(&pendingItemsState.handshakePendingItems, frame)
         case .applicationData:
-            return block(&scheduler.state.applicationPendingItems, frame)
+            return block(&pendingItemsState.applicationPendingItems, frame)
         }
     }
     @discardableResult
@@ -3490,20 +3505,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let packetNumberSpace = PacketNumberSpace.fromKeyState(keyState: self.keyState)
         return withPendingItems(for: packetNumberSpace) { block(&$0) }
     }
-    /// Binds all three pending-items buckets through a single `inout` access to
-    /// `scheduler.state`, for code that needs to touch more than one of them together. Prefer
-    /// `withPendingItems(for:)` when only one bucket is involved.
-    ///
-    /// `block` must never (even transitively) call back into sendFrames/serviceReceivedDatagrams/
-    /// fireDelayedAckTimer/sendFramesFromRecovery: those need their own independent access to
-    /// `scheduler` while this access is held open, and calling back into one of them here would
-    /// reintroduce the exact overlapping-access bug the scheduler exists to prevent.
+    /// Puts all three pending items into a single scoped inout block
     @discardableResult
     @inline(always)
     func withPendingItemsState<T: ~Copyable>(
-        _ block: (inout QUICConnectionScheduler.State) -> T
+        _ block: (inout QUICConnectionScheduler.PendingItemsState) -> T
     ) -> T {
-        block(&scheduler.state)
+        block(&pendingItemsState)
     }
     func isAckSet(packetNumberSpace: PacketNumberSpace) -> Bool {
         withPendingItems(for: packetNumberSpace) { $0.isAckSet }
@@ -3619,6 +3627,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
                 recovery.resetPTOCount(path: path)
             }
+        case .pmtudProbe(let pathID, let firedAt):
+            guard let path = path(for: pathID) else { return }
+            sendPMTUDProbe(on: path, firedAt: firedAt, in: &eventContext)
         }
     }
 
@@ -3674,7 +3685,20 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
     }
 
-    // Adds recovery and applicationPendingItems to avoid extra begin/end acccess checking overhead
+    func sendPMTUDProbe(
+        on path: QUICPath,
+        firedAt: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        schedule(
+            .pmtudProbe(path: path.pathIdentifier, firedAt: firedAt),
+            defaultResult: (),
+            in: &eventContext
+        ) { eventContext in
+            path.pmtudState.timerFired(at: firedAt, path: path, in: &eventContext)
+        }
+    }
+
     @discardableResult
     /// Sends pending frames using an event context the caller already holds.
     func sendFrames(
@@ -3697,7 +3721,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 delayedACK: delayedACK,
                 sentPackets: &self.sentPackets,
                 recovery: &self.recovery,
-                state: &self.scheduler.state,
+                pendingItemsState: &self.pendingItemsState,
                 stats: &self.stats,
                 ecn: &self.ecn,
                 ack: &self.ack,
@@ -3706,40 +3730,41 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    /// Sends using the caller's own already-threaded `stats`/`ack`/`ecn` bindings, bypassing the
-    /// `.sendFrames` scheduler lane entirely. Use this (never the bare `sendFrames(in:)` above)
-    /// from any function that itself takes `stats`/`ack`/`ecn` as `inout` parameters -- calling
-    /// the bare entry point from there would open a second, conflicting access to the same
-    /// storage the caller is already holding open, regardless of lane state.
+    // Called from Migration holding ECN, ACK, and Stats access, schedule the same way
     @discardableResult
-    func sendFrames(
+    func sendFramesFromMigration(
         stats: inout Statistics,
         ecn: inout ECN,
         ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        sendFrames(
-            ignoreCongestionWindow: false,
-            delayedACK: false,
-            sentPackets: &self.sentPackets,
-            recovery: &self.recovery,
-            state: &self.scheduler.state,
-            stats: &stats,
-            ecn: &ecn,
-            ack: &ack,
+        schedule(
+            .sendFrames(path: nil, ignoreCongestionWindow: false, delayedACK: false, retransmission: false),
+            defaultResult: false,
             in: &eventContext
-        )
+        ) { eventContext in
+            self.sendFrames(
+                ignoreCongestionWindow: false,
+                delayedACK: false,
+                sentPackets: &self.sentPackets,
+                recovery: &self.recovery,
+                pendingItemsState: &self.pendingItemsState,
+                stats: &stats,
+                ecn: &ecn,
+                ack: &ack,
+                in: &eventContext
+            )
+        }
     }
 
-    // Binds all three pending-items buckets through a single `inout` access to `scheduler.state`
-    // rather than three separate ones, which is what lets the compiler prove they're disjoint.
+    // Start of the send funnel
     @discardableResult
     private func sendFrames(
         ignoreCongestionWindow: Bool,
         delayedACK: Bool,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         recovery: inout Recovery,
-        state: inout QUICConnectionScheduler.State,
+        pendingItemsState: inout QUICConnectionScheduler.PendingItemsState,
         stats: inout Statistics,
         ecn: inout ECN,
         ack: inout Ack,
@@ -3750,9 +3775,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             delayedACK: delayedACK,
             sentPackets: &sentPackets,
             recovery: &recovery,
-            initialPendingItems: &state.initialPendingItems,
-            handshakePendingItems: &state.handshakePendingItems,
-            applicationPendingItems: &state.applicationPendingItems,
+            initialPendingItems: &pendingItemsState.initialPendingItems,
+            handshakePendingItems: &pendingItemsState.handshakePendingItems,
+            applicationPendingItems: &pendingItemsState.applicationPendingItems,
             stats: &stats,
             ecn: &ecn,
             ack: &ack,
@@ -3872,7 +3897,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 ignoreCongestionWindow: ignoreCongestionWindow,
                 retransmission: retransmission,
                 sentPackets: &self.sentPackets,
-                state: &self.scheduler.state,
+                pendingItemsState: &self.pendingItemsState,
                 discardInitialRecoveryState: &discardInitialRecoveryState,
                 stats: &self.stats,
                 ecn: &self.ecn,
@@ -3890,7 +3915,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    // Binds all three pending-items buckets through a single `inout` access to `scheduler.state`
+    // Binds all three pending-items buckets through a single `inout` access to `pendingItemsState`
     // rather than three separate ones, which is what lets the compiler prove they're disjoint.
     // Also folds in the capacity lookup so the whole call only takes one access to `scheduler`.
     @discardableResult
@@ -3899,7 +3924,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         ignoreCongestionWindow: Bool,
         retransmission: Bool,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
-        state: inout QUICConnectionScheduler.State,
+        pendingItemsState: inout QUICConnectionScheduler.PendingItemsState,
         discardInitialRecoveryState: inout Bool,
         stats: inout Statistics,
         ecn: inout ECN,
@@ -3907,16 +3932,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         sentPackets.reserveCapacity(
-            capacityForPacketNumberSpace(applicationPendingItems: &state.applicationPendingItems)
+            capacityForPacketNumberSpace(applicationPendingItems: &pendingItemsState.applicationPendingItems)
         )
         return sendFramesInternal(
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
             retransmission: retransmission,
             sentPackets: &sentPackets,
-            initialPendingItems: &state.initialPendingItems,
-            handshakePendingItems: &state.handshakePendingItems,
-            applicationPendingItems: &state.applicationPendingItems,
+            initialPendingItems: &pendingItemsState.initialPendingItems,
+            handshakePendingItems: &pendingItemsState.handshakePendingItems,
+            applicationPendingItems: &pendingItemsState.applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState,
             stats: &stats,
             ecn: &ecn,
@@ -3949,7 +3974,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 on: path,
                 ignoreCongestionWindow: ignoreCongestionWindow,
                 retransmission: retransmission,
-                state: &self.scheduler.state,
+                pendingItemsState: &self.pendingItemsState,
                 discardInitialRecoveryState: &discardInitialRecoveryState,
                 stats: &stats,
                 ecn: &ecn,
@@ -3959,14 +3984,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    // Binds all three pending-items buckets through a single `inout` access to `scheduler.state`
+    // Binds all three pending-items buckets through a single `inout` access to `pendingItemsState`
     // rather than three separate ones, which is what lets the compiler prove they're disjoint.
     @discardableResult
     private func sendFramesFromRecovery(
         on path: QUICPath,
         ignoreCongestionWindow: Bool,
         retransmission: Bool,
-        state: inout QUICConnectionScheduler.State,
+        pendingItemsState: inout QUICConnectionScheduler.PendingItemsState,
         discardInitialRecoveryState: inout Bool,
         stats: inout Statistics,
         ecn: inout ECN,
@@ -3977,9 +4002,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             on: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
             retransmission: retransmission,
-            initialPendingItems: &state.initialPendingItems,
-            handshakePendingItems: &state.handshakePendingItems,
-            applicationPendingItems: &state.applicationPendingItems,
+            initialPendingItems: &pendingItemsState.initialPendingItems,
+            handshakePendingItems: &pendingItemsState.handshakePendingItems,
+            applicationPendingItems: &pendingItemsState.applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState,
             stats: &stats,
             ecn: &ecn,
@@ -5361,7 +5386,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             earlyDataAccepted = true
         } else {
             if !resendRejectedEarlyDataAutomatically {
-                scheduler.state.applicationPendingItems.retransmitStreams.removeAll()
+                pendingItemsState.applicationPendingItems.retransmitStreams.removeAll()
                 flowControlState.resetSentBytes()
                 applyToAllFlows { stream in
                     stream.resetSendStreamData()
@@ -5588,7 +5613,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let space = PacketNumberSpace.fromKeyState(keyState: keyState)
         // Flush first so that we won't send out frames other than ACKs with older key
         if space == .applicationData {
-            for flowID in scheduler.state.applicationPendingItems.flushClearingQueuedStreams() {
+            for flowID in pendingItemsState.applicationPendingItems.flushClearingQueuedStreams() {
                 clearStreamSendable(flowID)
             }
         } else {
@@ -5985,7 +6010,7 @@ extension QUICConnection {
         log.datapath("Connection has received more credit")
         if hasSentDataBlocked {
             log.datapath("Unblocked")
-            scheduler.state.applicationPendingItems.triggerAllStreamsUnblocked = true
+            pendingItemsState.applicationPendingItems.triggerAllStreamsUnblocked = true
             hasSentDataBlocked = false
         }
         return true
@@ -6056,7 +6081,7 @@ extension QUICConnection {
         // 5. process max stream data
         stream.processIncomingMaxStreamData(remoteMaxStreamData: frame.max, in: &eventContext)
         if !stream.listMembership.contains(.unblockedSend), !stream.pendingStart {
-            scheduler.state.applicationPendingItems.unblockedSendStreams.append(stream)
+            pendingItemsState.applicationPendingItems.unblockedSendStreams.append(stream)
         }
         return true
     }
@@ -6349,13 +6374,13 @@ extension QUICConnection {
             errorCode = applicationErrorCode
         }
         stream.log.notice("Sending STOP_SENDING, error: \(errorCode)")
-        scheduler.state.applicationPendingItems.addStreamStopSending(streamID: streamID.value, code: errorCode)
+        pendingItemsState.applicationPendingItems.addStreamStopSending(streamID: streamID.value, code: errorCode)
     }
 
     // Mark stream FIN and trigger servicing
     private func markStreamFinished(stream: Flow) {
         stream.sendBuffer.markStreamFinished()
-        scheduler.state.applicationPendingItems.appendStreamToService(stream)
+        pendingItemsState.applicationPendingItems.appendStreamToService(stream)
     }
 
     private func sendResetStream(stream: Flow) {
@@ -6372,7 +6397,7 @@ extension QUICConnection {
         // sendOffset represents the offset of the next
         // byte that we would write, so we use that for
         // RESET_STREAM's Final Size.
-        scheduler.state.applicationPendingItems.addStreamReset(
+        pendingItemsState.applicationPendingItems.addStreamReset(
             streamID: streamID.value,
             code: errorCode,
             finalSize: stream.sendOffset
@@ -6656,7 +6681,7 @@ extension QUICConnection {
         serviceStreamDataToSend(flow: flowID, in: &eventContext)
 
         // Kick off send for data in send queue
-        scheduler.state.applicationPendingItems.appendStreamToService(stream)
+        pendingItemsState.applicationPendingItems.appendStreamToService(stream)
     }
 
     // When the burst limit has been reached for application data, we schedule

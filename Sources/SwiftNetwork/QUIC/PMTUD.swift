@@ -144,11 +144,7 @@ struct PMTUDState: ~Copyable {
             ) { firedAt, timerState in
                 let innerPath = connection.path(for: pathID)
                 guard let innerPath else { return }
-                innerPath.pmtudState.timerFired(
-                    at: firedAt,
-                    path: innerPath,
-                    in: &timerState
-                )
+                connection.sendPMTUDProbe(on: innerPath, firedAt: firedAt, in: &timerState)
             }
         }
 
@@ -398,7 +394,7 @@ struct PMTUDState: ~Copyable {
         sendProbe(
             on: path,
             sentPackets: &sentPackets,
-            state: &connection.scheduler.state,
+            pendingItemsState: &connection.pendingItemsState,
             stats: &stats,
             ecn: &ecn,
             ack: &ack,
@@ -406,12 +402,12 @@ struct PMTUDState: ~Copyable {
         )
     }
 
-    // Binds all three pending-items buckets through a single `inout` access to `scheduler.state`
+    // Binds all three pending-items buckets through a single `inout` access to `pendingItemsState`
     // rather than three separate ones, which is what lets the compiler prove they're disjoint.
     mutating func sendProbe(
         on path: QUICPath,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
-        state: inout QUICConnectionScheduler.State,
+        pendingItemsState: inout QUICConnectionScheduler.PendingItemsState,
         stats: inout Statistics,
         ecn: inout ECN,
         ack: inout Ack,
@@ -420,9 +416,9 @@ struct PMTUDState: ~Copyable {
         sendProbe(
             on: path,
             sentPackets: &sentPackets,
-            initialPendingItems: &state.initialPendingItems,
-            handshakePendingItems: &state.handshakePendingItems,
-            applicationPendingItems: &state.applicationPendingItems,
+            initialPendingItems: &pendingItemsState.initialPendingItems,
+            handshakePendingItems: &pendingItemsState.handshakePendingItems,
+            applicationPendingItems: &pendingItemsState.applicationPendingItems,
             stats: &stats,
             ecn: &ecn,
             ack: &ack,

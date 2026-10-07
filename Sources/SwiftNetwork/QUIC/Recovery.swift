@@ -1771,7 +1771,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
         // Now that we have deal with all the ACK'ed packets,
         // it's safe to ask PMTUD to send packets.
-        connection.scheduler.state.applicationPendingItems.triggerAllStreamsUnblocked = true
+        connection.pendingItemsState.applicationPendingItems.triggerAllStreamsUnblocked = true
     }
 }
 #endif
