@@ -196,6 +196,7 @@ struct PacketNumber: Comparable, ExpressibleByIntegerLiteral, Hashable, CustomSt
         return (bits + 7) / 8
     }
 
+    @inline(always)
     func encode(
         lastAcked: PacketNumber,
         fixedSize: EncodedPacketNumber.Size? = nil
@@ -207,7 +208,7 @@ struct PacketNumber: Comparable, ExpressibleByIntegerLiteral, Hashable, CustomSt
         // check for packet number not greater than lastAcked.
         // If lastAcked == .none the peer has not yet acknowledged anything in this packet number space
         if lastAcked != .none, self <= lastAcked {
-            Logger.proto.error("Ack number underflow: \(self) <= \(lastAcked)")
+            outlinedProtoLogError("Ack number underflow; number, lastAcked", self.value, lastAcked.value)
             throw QUICError.packet(QUICPacketError.ackNumberUnderflow)
         }
 
@@ -217,7 +218,7 @@ struct PacketNumber: Comparable, ExpressibleByIntegerLiteral, Hashable, CustomSt
         var truncatedPacketNumber = self.value
         var size: EncodedPacketNumber.Size
         if let fixedSize {
-            Logger.proto.error("WARNING: Use overrideSentNumberSize only for unit testing!")
+            outlinedProtoLogError("WARNING: Use overrideSentNumberSize only for unit testing!")
             size = fixedSize
         } else {
             if difference <= 0xff {

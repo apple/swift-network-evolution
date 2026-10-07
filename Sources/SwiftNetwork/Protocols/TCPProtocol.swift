@@ -55,7 +55,7 @@ public struct TCPProtocol: NetworkProtocol {
         16
     }
 
-    public struct TCPOptions: PerProtocolOptions {
+    public struct TCPOptions: PerProtocolOptions, Sendable {
 
         internal var _maximumSegmentSize: UInt32 = 0
         public var maximumSegmentSize: UInt32 {

@@ -120,7 +120,7 @@ public struct DemuxProtocol: NetworkProtocol {
     public typealias Options = DemuxOptions
     public typealias Metadata = DemuxMetadata
 
-    public struct DemuxOptions: PerProtocolOptions {
+    public struct DemuxOptions: PerProtocolOptions, Sendable {
         var demuxPatterns = Deque<DemuxPattern>()
 
         init() {}

@@ -28,7 +28,7 @@ public struct CustomIPProtocol: NetworkProtocol {
     public typealias Options = CustomIPOptions
     public typealias Metadata = CustomIPMetadata
 
-    public struct CustomIPOptions: PerProtocolOptions {
+    public struct CustomIPOptions: PerProtocolOptions, Sendable {
         var ipProtocolNumber: UInt8 = 0
         init() {}
 

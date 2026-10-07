@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Synchronization
 import XCTest
 
 #if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux))
@@ -571,11 +572,11 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     // ACKs should be bundled on outgoing STREAM frames rather than going out in their own
     // packet as much as possible, this test tracks that.
     func testQUICEcho1MiBAckBundling() {
-        var packetSizes: [Int] = []
+        let observedPacketSizes = Mutex<[Int]>([])
         let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
             // Identify short header packet to accumulate the total sizes at the end
             guard (firstByte & 0xC0) == 0x40 else { return }
-            packetSizes.append(byteCount)
+            observedPacketSizes.withLock { $0.append(byteCount) }
         }
 
         QUICTestHarness().runQUICTest(
@@ -584,6 +585,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
             bridgeObserveFrameHandler: observeFrameHandler
         )
 
+        let packetSizes = observedPacketSizes.withLock { $0 }
         XCTAssertFalse(packetSizes.isEmpty, "packetSizes should not be empty")
 
         // A standalone ACK (no STREAM data) fits comfortably under 100 bytes, but a
@@ -792,11 +794,11 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         let clientOptions = QUICProtocol.options()
         clientOptions.connectionOptions.initialPacketSize = 1400
 
-        var observedInitialPacketSizes: [Int] = []
+        let observedInitialPacketSizes = Mutex<[Int]>([])
         let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
             // Verify initial packet
             guard (firstByte & 0xF0) == 0xC0 else { return }
-            observedInitialPacketSizes.append(byteCount)
+            observedInitialPacketSizes.withLock { $0.append(byteCount) }
         }
 
         QUICTestHarness().runQUICTest(
@@ -807,8 +809,11 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
             bridgeObserveFrameHandler: observeFrameHandler
         )
 
-        XCTAssertFalse(observedInitialPacketSizes.isEmpty, "Should have observed at least one Initial packet")
-        XCTAssertEqual(observedInitialPacketSizes.first, 1400)
+        XCTAssertFalse(
+            observedInitialPacketSizes.withLock { $0.isEmpty },
+            "Should have observed at least one Initial packet"
+        )
+        XCTAssertEqual(observedInitialPacketSizes.withLock { $0.first }, 1400)
     }
 
     func testQUICDatagramRemoteMaxDatagramFrameSize() {

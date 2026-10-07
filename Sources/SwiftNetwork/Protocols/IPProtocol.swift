@@ -69,7 +69,7 @@ public struct IPProtocol: NetworkProtocol {
         1280
     }
 
-    public enum Version: UInt8 {
+    public enum Version: UInt8, Sendable {
         /// Allows any IP version.
         case any = 0
         /// Uses only IP version 4 (IPv4).
@@ -78,7 +78,7 @@ public struct IPProtocol: NetworkProtocol {
         case v6 = 6
     }
 
-    public enum AddressPreference: UInt8 {
+    public enum AddressPreference: UInt8, Sendable {
         case any = 0
         case temporary = 1
         case stable = 2
@@ -110,7 +110,7 @@ public struct IPProtocol: NetworkProtocol {
         }
     }
 
-    public struct IPOptions: PerProtocolOptions {
+    public struct IPOptions: PerProtocolOptions, Sendable {
         var version: Version = .any
         var localAddressPreference: AddressPreference = .any
 

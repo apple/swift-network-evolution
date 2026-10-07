@@ -828,7 +828,9 @@ final class SwiftNetworkConnectionTests: NetTestCase {
     func testNoTransportCustomLink() {
         let group = DispatchGroup()
         group.enter()
-        var injection: ((Span<UInt8>) -> Void)?
+        // The rx handler writes this during connection setup, before the `.ready` update leaves `group`, and the
+        // test reads it only after `group.wait`, so the group orders the two accesses.
+        nonisolated(unsafe) var injection: ((Span<UInt8>) -> Void)?
         let c1 = NetworkConnection(
             to: Endpoint(address: IPv4Address.loopback, port: 7778),
             using: .parameters {

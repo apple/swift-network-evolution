@@ -185,26 +185,108 @@ extension Frame {
 }
 
 extension UnsafeRawBufferPointer {
+    /// The one's-complement sum of the buffer's 16-bit words in native byte order, folded to 16 bits. An odd final
+    /// byte is padded with a zero byte after it.
+    @available(Network 0.1.0, *)
     @inlinable
     @inline(always)
     func checksum16() -> UInt16 {
         guard let baseAddress else { return 0 }
         let byteCount = count
-        let wordCount = byteCount / 2
-        let words = UnsafeBufferPointer(
-            start: baseAddress.bindMemory(to: UInt16.self, capacity: wordCount),
-            count: wordCount
-        )
-        var sum: UInt32 = 0
-        for word in words {
-            sum &+= UInt32(word)
+
+        // `x + rotate(x, half)` leaves the end-around-carry sum of the two halves in the top half.
+        @inline(always)
+        func fold(_ sum: UInt64) -> UInt16 {
+            let sum32 = UInt32(truncatingIfNeeded: (sum &+ ((sum &<< 32) | (sum &>> 32))) &>> 32)
+            return UInt16(truncatingIfNeeded: (sum32 &+ ((sum32 &<< 16) | (sum32 &>> 16))) &>> 16)
         }
-        if byteCount % 2 != 0 {
-            sum &+= UInt32(baseAddress.load(fromByteOffset: byteCount &- 1, as: UInt8.self))
+
+        if byteCount < 8 {
+            // Two overlapping loads, assembled into one little-endian word.
+            var word: UInt64 = 0
+            if byteCount >= 4 {
+                let low = UInt32(littleEndian: baseAddress.loadUnaligned(as: UInt32.self))
+                let high = UInt32(
+                    littleEndian: baseAddress.loadUnaligned(fromByteOffset: byteCount &- 4, as: UInt32.self)
+                )
+                word = UInt64(low) | ((UInt64(high) &>> UInt64(truncatingIfNeeded: (8 &- byteCount) &* 8)) &<< 32)
+            } else if byteCount >= 2 {
+                let low = UInt16(littleEndian: baseAddress.loadUnaligned(as: UInt16.self))
+                let high = UInt16(
+                    littleEndian: baseAddress.loadUnaligned(fromByteOffset: byteCount &- 2, as: UInt16.self)
+                )
+                word = UInt64(low) | ((UInt64(high) &>> UInt64(truncatingIfNeeded: (4 &- byteCount) &* 8)) &<< 16)
+            } else if byteCount == 1 {
+                word = UInt64(baseAddress.load(as: UInt8.self))
+            }
+            return fold(word.littleEndian)
         }
-        sum = (sum >> 16) &+ (sum & 0xffff)
-        sum = (sum >> 16) &+ (sum & 0xffff)
-        return UInt16(sum)
+
+        var sum: UInt64 = 0
+        var carry: UInt64 = 0
+        var cursor = baseAddress
+
+        // Adds the word at `offset` from `cursor` and the incoming carry, at 128 bits; the high word is the carry out.
+        // A run of these compiles to one add-with-carry chain.
+        @inline(always)
+        func addWord(at offset: Int) {
+            let word = cursor.loadUnaligned(fromByteOffset: offset, as: UInt64.self)
+            let total = UInt128(sum) &+ UInt128(word) &+ UInt128(carry)
+            sum = UInt64(truncatingIfNeeded: total)
+            carry = UInt64(truncatingIfNeeded: total &>> 64)
+        }
+
+        // Ends a chain. A chain that carries out leaves at most 2^64 - 2 behind, so adding the carry back cannot wrap.
+        @inline(always)
+        func addCarry() {
+            sum &+= carry
+            carry = 0
+        }
+
+        // Within each block the words at offsets 0 and 8 are read last, so the pointer bump folds into their load.
+        let blockEnd = baseAddress + (byteCount & ~63)
+        while cursor != blockEnd {
+            addWord(at: 16)
+            addWord(at: 24)
+            addWord(at: 32)
+            addWord(at: 40)
+            addWord(at: 48)
+            addWord(at: 56)
+            addWord(at: 0)
+            addWord(at: 8)
+            addCarry()
+            cursor += 64
+        }
+        if byteCount & 32 != 0 {
+            addWord(at: 16)
+            addWord(at: 24)
+            addWord(at: 0)
+            addWord(at: 8)
+            addCarry()
+            cursor += 32
+        }
+        if byteCount & 16 != 0 {
+            addWord(at: 0)
+            addWord(at: 8)
+            addCarry()
+            cursor += 16
+        }
+        if byteCount & 8 != 0 {
+            addWord(at: 0)
+            addCarry()
+        }
+
+        // The last `byteCount % 8` bytes are the top of the buffer's last eight and start a multiple of eight bytes
+        // from the start, so shifting them to the bottom of a little-endian word keeps their 16-bit pairing.
+        let trailingCount = byteCount & 7
+        if trailingCount != 0 {
+            cursor = baseAddress + (byteCount &- 8)
+            let last = UInt64(littleEndian: cursor.loadUnaligned(as: UInt64.self))
+            let trailing = (last &>> UInt64(truncatingIfNeeded: (8 &- trailingCount) &* 8)).littleEndian
+            let (partial, overflow) = sum.addingReportingOverflow(trailing)
+            sum = partial &+ (overflow ? 1 : 0)
+        }
+        return fold(sum)
     }
 }
 

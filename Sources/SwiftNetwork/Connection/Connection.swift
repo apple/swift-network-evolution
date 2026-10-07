@@ -1058,8 +1058,8 @@ public struct StreamBridge: StreamProtocol {
 public struct CustomLink: StreamProtocol {
     public typealias ContentType = Void
 
-    private var tx: ((Span<UInt8>) -> Void)? = nil
-    private var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? = nil
+    private var tx: (@Sendable (_ bytes: Span<UInt8>) -> Void)? = nil
+    private var rx: (@Sendable (_ inject: @escaping (_ bytes: Span<UInt8>) -> Void) -> Void)? = nil
 
     public let belowProtocol: Void
     /// Configure CustomLink for tx byte handling
@@ -1073,7 +1073,7 @@ public struct CustomLink: StreamProtocol {
     ///
     /// - Parameter handler: A closure that will be called with a
     /// span of bytes to be written to the network.
-    public func tx(_ handler: @escaping (Span<UInt8>) -> Void) -> Self {
+    public func tx(_ handler: @escaping @Sendable (_ bytes: Span<UInt8>) -> Void) -> Self {
         var mutableSelf = self
         mutableSelf.tx = handler
         return mutableSelf
@@ -1095,7 +1095,9 @@ public struct CustomLink: StreamProtocol {
     /// - Parameter handler: A closure that will be called with an
     /// escaping closure that should be stored for later use when bytes
     /// need to be injected into the protocol stack.
-    public func rx(_ handler: @escaping ((@escaping (Span<UInt8>) -> Void) -> Void)) -> Self {
+    public func rx(
+        _ handler: @escaping @Sendable (_ inject: @escaping (_ bytes: Span<UInt8>) -> Void) -> Void
+    ) -> Self {
         var mutableSelf = self
         mutableSelf.rx = handler
         return mutableSelf

@@ -87,7 +87,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             _tlsOptions.externalPSK = .init(externalIdentity: identity, epsk: .init(data: epsk))
         }
         #else
-        private struct SwiftTLSOptionsStorage {
+        private struct SwiftTLSOptionsStorage: Sendable {
             var serverName: String?
             var quicTransportParameters: [UInt8]?
             var applicationProtocols: [String]?
@@ -1310,6 +1310,13 @@ public struct SwiftTLSProtocol: NetworkProtocol {
     #endif
 
 }
+
+#if !EXPORT_SWIFTTLS
+// Under `EXPORT_SWIFTTLS` the options store a `SwiftTLSOptions`, which is not `Sendable`, so the options can only be
+// `Sendable` when they hold their own copy of the fields.
+@available(Network 0.1.0, *)
+extension SwiftTLSProtocol.SwiftTLSProtocolOptions: Sendable {}
+#endif
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
