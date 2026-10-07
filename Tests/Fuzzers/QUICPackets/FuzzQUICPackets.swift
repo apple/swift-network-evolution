@@ -114,15 +114,12 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
         connection.fromExternal(frame) { eventContext, frame in
             var frame = frame
             var packetParser = PacketParser(logPrefixer: connection.logPrefixer)
-            connection.handleInbound(
-                frame: &frame,
+            connection.serviceReceivedFramesForFuzzing(
+                &frame,
                 from: path,
                 inConnectedState: true,
                 isServerConnection: false,
                 packetParser: &packetParser,
-                stats: &connection.stats,
-                ack: &connection.ack,
-                ecn: &connection.ecn,
                 in: &eventContext
             )
         }

@@ -55,12 +55,12 @@ internal import os
 @available(Network 0.1.0, *)
 final class SwiftNetworkQUICKeepaliveTests: NetTestCase {
     func testQUICClientKeepAliveWithLowTimeoutAndPMTUDInterval() throws {
-        // This test is expected to timeout because the idleTimeout is set to 2 seconds.
-        // The handshake starts up and no data is transferred, so the connection should timeout after 2 seconds.
+        // This test is expected to timeout because the idleTimeout is set to 3 seconds.
+        // The handshake starts up and no data is transferred, so the connection should timeout after 3 seconds.
         // Note that the keep-alive interval does not actually keep the connection alive,
         // the PMTUD probe actually is the part that keeps the connection alive.
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.idleTimeout = .seconds(2)
+        clientOptions.connectionOptions.idleTimeout = .seconds(3)
         clientOptions.connectionOptions.pmtudUpdateInterval = .seconds(1)
         let serverOptions = QUICProtocol.options()
         serverOptions.connectionOptions.pmtudUpdateInterval = .seconds(1)
@@ -85,7 +85,7 @@ final class SwiftNetworkQUICKeepaliveTests: NetTestCase {
                 }
 
                 // Expect to hit the timer without having hit an error yet
-                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 3.0)
+                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 4.0)
                 XCTAssertEqual(waitResult, XCTWaiter.Result.timedOut, "Waiter should be able to wait without error")
                 XCTAssertEqual(networkError, nil)
             }

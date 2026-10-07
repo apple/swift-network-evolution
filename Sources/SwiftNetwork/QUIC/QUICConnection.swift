@@ -7754,6 +7754,37 @@ extension QUICConnection {
     }
 }
 
+#if Fuzzing
+// Helper for fuzzing
+@available(Network 0.1.0, *)
+extension QUICConnection {
+    func serviceReceivedFramesForFuzzing(
+        _ frame: inout Frame,
+        from path: QUICPath,
+        inConnectedState: Bool,
+        isServerConnection: Bool,
+        packetParser: inout PacketParser,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        schedule(.receiveFrames(path: path.pathIdentifier), defaultResult: (), in: &eventContext) { eventContext in
+            self.withSendPathBorrow(in: &eventContext) { eventContext in
+                self.handleInbound(
+                    frame: &frame,
+                    from: path,
+                    inConnectedState: inConnectedState,
+                    isServerConnection: isServerConnection,
+                    packetParser: &packetParser,
+                    stats: &self.stats,
+                    ack: &self.ack,
+                    ecn: &self.ecn,
+                    in: &eventContext
+                )
+            }
+        }
+    }
+}
+#endif
+
 // MARK: Stats Proccesing
 
 @available(Network 0.1.0, *)
