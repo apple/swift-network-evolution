@@ -43,7 +43,7 @@ extension AES.GCM {
         #if DISABLE_SHIM_CRYPTO_SPAN_APIS
         try seal(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: &tag)
         #else
-        #if canImport(CryptoKit, _version: 383.2.1)
+        #if canImport(CryptoKit) && canImport(CryptoKit, _version: 383.2.1)
         if #available(macOS 27, iOS 27, watchOS 27, tvOS 27, visionOS 27, *) {
             try seal(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: &tag)
             return
@@ -69,7 +69,7 @@ extension AES.GCM {
         #if DISABLE_SHIM_CRYPTO_SPAN_APIS
         try open(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: tag)
         #else
-        #if canImport(CryptoKit, _version: 383.2.1)
+        #if canImport(CryptoKit) && canImport(CryptoKit, _version: 383.2.1)
         if #available(macOS 27, iOS 27, watchOS 27, tvOS 27, visionOS 27, *) {
             try open(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: tag)
             return
@@ -93,7 +93,7 @@ extension ChaChaPoly {
         #if DISABLE_SHIM_CRYPTO_SPAN_APIS
         try seal(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: &tag)
         #else
-        #if canImport(CryptoKit, _version: 383.2.1)
+        #if canImport(CryptoKit) && canImport(CryptoKit, _version: 383.2.1)
         if #available(macOS 27, iOS 27, watchOS 27, tvOS 27, visionOS 27, *) {
             try seal(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: &tag)
             return
@@ -119,7 +119,7 @@ extension ChaChaPoly {
         #if DISABLE_SHIM_CRYPTO_SPAN_APIS
         try open(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: tag)
         #else
-        #if canImport(CryptoKit, _version: 383.2.1)
+        #if canImport(CryptoKit) && canImport(CryptoKit, _version: 383.2.1)
         if #available(macOS 27, iOS 27, watchOS 27, tvOS 27, visionOS 27, *) {
             try open(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: tag)
             return
