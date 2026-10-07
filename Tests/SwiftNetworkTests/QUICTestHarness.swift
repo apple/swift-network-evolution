@@ -698,7 +698,8 @@ class QUICTestHarness {
         streamIndex: Int,
         readChunkSize: Int = .max,
         timeout: TimeInterval = 5.0,
-        shouldBatchSends: Bool = false
+        shouldBatchSends: Bool = false,
+        shouldEchoData: Bool = true
     ) {
         guard let state else {
             XCTFail("State must be non-nil")
@@ -818,9 +819,11 @@ class QUICTestHarness {
                 }
                 serverReadBytes += response.count
 
-                let receivedFIN = serverStreamHarness.receivedFIN
-                let writeResult = serverStreamHarness.write(response, sendFIN: receivedFIN, in: &state)
-                XCTAssertTrue(writeResult, "Server failed send response")
+                if shouldEchoData {
+                    let receivedFIN = serverStreamHarness.receivedFIN
+                    let writeResult = serverStreamHarness.write(response, sendFIN: receivedFIN, in: &state)
+                    XCTAssertTrue(writeResult, "Server failed send response")
+                }
             }
 
             if serverReadBytes >= dataGenerator.totalSize {
@@ -846,7 +849,9 @@ class QUICTestHarness {
         }
 
         wait(for: [serverReadExpectation], timeout: timeout)
-        wait(for: [clientReadExpectation], timeout: timeout)
+        if shouldEchoData {
+            wait(for: [clientReadExpectation], timeout: timeout)
+        }
 
         // If FINs are sent, also ensure that the streams move to disconnected
         if dataGenerator.sendFIN {
@@ -1081,6 +1086,7 @@ class QUICTestHarness {
         verifyResetStreamHalfClosure: Bool = false,
         shouldMarkIdle: Bool = false,
         shouldBatchSends: Bool = false,
+        shouldEchoData: Bool = true,
         clientOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         sendMaxStreamUpdate: Bool = false,
@@ -1189,7 +1195,8 @@ class QUICTestHarness {
                         streamIndex: index,
                         readChunkSize: clientReadChunkSize,
                         timeout: timeout,
-                        shouldBatchSends: shouldBatchSends
+                        shouldBatchSends: shouldBatchSends,
+                        shouldEchoData: shouldEchoData
                     )
                 } else {
                     XCTAssertTrue(dataBlock == nil && blockSize == 0 && blockCount == 0)

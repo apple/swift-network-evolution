@@ -765,22 +765,38 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         )
     }
 
+    // How long an ACK that is due, but would be the only frame in its packet, waits for a
+    // packet to ride on. This is the time tolerance of the ACK policy in processPending(),
+    // but no shorter than the timer granularity: on a path with a negligible RTT a shorter
+    // wait sends an ACK for nearly every batch of packets received.
+    func bundlingDelay(on path: QUICPath) -> NetworkDuration {
+        min(maxDelay, max(path.rtt.smoothedRTT / 2, Recovery.timerGranularity))
+    }
+
     mutating func scheduleDelayedAck(in eventContext: inout NetworkContext.EventContext) {
-        // ACK timer is already scheduled
+        // ACK timer is already scheduled, for no later than this
         if timerScheduled {
             return
         }
+        scheduleDelayedAck(within: maxDelay, in: &eventContext)
+    }
+
+    // Arms the delayed ACK timer to fire within `delay`, pulling it in if it is armed for
+    // later. An ACK that is due but would be alone in its packet waits for one to ride on
+    // this way, rather than on a second timer racing this one.
+    mutating func scheduleDelayedAck(
+        within delay: NetworkDuration,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         timerScheduled = true
-        log.datapath("Scheduling delayed ACK in \(maxDelay)")
-        if let timerID = timerID {
-            if let connection {
-                connection.timer.reschedule(
-                    identifier: timerID,
-                    fromNow: maxDelay,
-                    timerNow: connection.now,
-                    in: &eventContext
-                )
-            }
+        log.datapath("Scheduling delayed ACK within \(delay)")
+        if let timerID, let connection {
+            connection.timer.reschedule(
+                identifier: timerID,
+                noLaterThan: delay,
+                timerNow: connection.now,
+                in: &eventContext
+            )
         }
     }
 

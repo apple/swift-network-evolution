@@ -603,6 +603,108 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         )
     }
 
+    // A receiver with nothing to send has no packet for its ACKs to ride on. An ACK that is
+    // due must still go out after the bundling delay rather than the max ACK delay, or a
+    // sender whose congestion window is waiting on it stalls. Stretching the max ACK delay
+    // makes such a stall outlast the test.
+    func testQUICOneWayTransferDoesNotWaitForMaxAckDelay() {
+        QUICTestHarness().runQUICTest(
+            blockSize: 10240,
+            blockCount: 100,
+            sendFIN: false,
+            shouldEchoData: false,
+            afterHandshake: { harness in
+                let expectation = XCTestExpectation(description: "Wait for max ACK delay to be extended")
+                harness.context.async {
+                    harness.state?.serverInstance.ack.maxDelay = .seconds(30)
+                    // Keep the client's view of the server's ACK delay consistent, otherwise
+                    // its PTO fires while an ACK is held and the probe restarts the transfer.
+                    harness.state?.clientInstance.currentPath?.rtt.remoteMaxAckDelay = .seconds(30)
+                    expectation.fulfill()
+                }
+                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
+                XCTAssertEqual(waitResult, .completed, "Max ACK delay should be extended")
+            }
+        )
+    }
+
+    // A due ACK with no packet to ride on pulls the delayed ACK timer in to the bundling
+    // delay, and a later request for the max ACK delay, or a longer bundling delay, never
+    // pushes it back out. There is one timer for both.
+    func testDueAckPullsDelayedAckTimerIn() {
+        QUICTestHarness().runQUICTest(
+            afterHandshake: { harness in
+                let expectation = XCTestExpectation(description: "Wait for the ACK timer to be checked")
+                harness.context.async {
+                    defer { expectation.fulfill() }
+                    guard let client = harness.state?.clientInstance, let timerID = client.ack.timerID else {
+                        XCTFail("Client instance and its ACK timer need to be present to proceed")
+                        return
+                    }
+                    client.fromExternal { eventContext in
+                        // Start from a known state: the handshake may have armed the timer
+                        // some time ago, so fire it, then arm it for the max ACK delay.
+                        client.fireDelayedAckTimer(at: client.now, in: &eventContext)
+                        XCTAssertFalse(client.ack.timerScheduled)
+                        XCTAssertNil(client.timer.deadline(of: timerID))
+                        let beforeArm = client.now
+                        client.ack.scheduleDelayedAck(in: &eventContext)
+                        XCTAssertTrue(client.ack.timerScheduled)
+                        guard let armed = client.timer.deadline(of: timerID) else {
+                            XCTFail("ACK timer should be armed for the max ACK delay")
+                            return
+                        }
+                        XCTAssertGreaterThanOrEqual(armed, beforeArm.advanced(by: client.ack.maxDelay))
+
+                        // A due ACK pulls it in to the bundling delay. The clock is live, so
+                        // bracket the deadline rather than compute it.
+                        let before = client.now
+                        client.ack.scheduleDelayedAck(within: .milliseconds(2), in: &eventContext)
+                        let after = client.now
+                        XCTAssertTrue(client.ack.timerScheduled)
+                        guard let pulledIn = client.timer.deadline(of: timerID) else {
+                            XCTFail("ACK timer should be armed for the bundling delay")
+                            return
+                        }
+                        XCTAssertLessThan(pulledIn, armed, "pulled in from the max ACK delay")
+                        XCTAssertGreaterThanOrEqual(pulledIn, before.advanced(by: .milliseconds(2)))
+                        XCTAssertLessThanOrEqual(pulledIn, after.advanced(by: .milliseconds(2)))
+                        // The wakeup follows it, coalesced to within the timer threshold
+                        XCTAssertGreaterThanOrEqual(client.timer.nextDeadline, before, "the wakeup is armed")
+                        XCTAssertLessThanOrEqual(
+                            client.timer.nextDeadline,
+                            pulledIn.advanced(by: Timer.timerThreshold),
+                            "the wakeup is no later than the pulled-in deadline"
+                        )
+
+                        // The max ACK delay does not push it back out
+                        client.ack.scheduleDelayedAck(in: &eventContext)
+                        XCTAssertEqual(client.timer.deadline(of: timerID), pulledIn, "max ACK delay kept it")
+
+                        // Nor does a longer bundling delay
+                        client.ack.scheduleDelayedAck(within: .milliseconds(10), in: &eventContext)
+                        XCTAssertEqual(client.timer.deadline(of: timerID), pulledIn, "longer bundling delay kept it")
+
+                        // Once the timer has fired, a new request arms a fresh deadline
+                        client.fireDelayedAckTimer(at: client.now, in: &eventContext)
+                        XCTAssertFalse(client.ack.timerScheduled, "firing clears the scheduled flag")
+                        XCTAssertNil(client.timer.deadline(of: timerID))
+                        let beforeRearm = client.now
+                        client.ack.scheduleDelayedAck(in: &eventContext)
+                        XCTAssertTrue(client.ack.timerScheduled)
+                        guard let rearmed = client.timer.deadline(of: timerID) else {
+                            XCTFail("ACK timer should be armed again")
+                            return
+                        }
+                        XCTAssertGreaterThanOrEqual(rearmed, beforeRearm.advanced(by: client.ack.maxDelay))
+                    }
+                }
+                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
+                XCTAssertEqual(waitResult, .completed, "ACK timer should have been checked")
+            }
+        )
+    }
+
     #if !NETWORK_PRIVATE
     // Note: These tests takes too long to in for automation
     // Changed to 30 seconds to give it leeway to run locally
