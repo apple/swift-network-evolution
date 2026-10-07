@@ -168,10 +168,14 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                     let client = harness.state?.clientInstance
                     XCTAssertNotNil(client, "Client instance needs to be present to proceed")
                     if let client, let path = client.currentPath {
-                        XCTAssertGreaterThan(
-                            client.ack.unackedPacketCount,
-                            0,
-                            "Client should still owe the peer a delayed ACK"
+                        // The ACK for the echoed data may have been sent already, alone or along
+                        // with a PMTUD probe, so owe the peer one for the timer to send.
+                        client.fromExternal { _ in
+                            client.ack.shouldTransmit(packetNumberSpace: .applicationData)
+                        }
+                        XCTAssertTrue(
+                            client.ack.ackRequiresAssembly(packetNumberSpace: .applicationData),
+                            "Client should owe the peer an ACK"
                         )
 
                         // Acknowledge a probe short of the path maximum, which leaves the
@@ -195,6 +199,10 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                             client.fireDelayedAckTimer(at: .systemNow, in: &eventContext)
                         }
 
+                        XCTAssertFalse(
+                            client.ack.ackRequiresAssembly(packetNumberSpace: .applicationData),
+                            "Client should not owe the peer an ACK once the delayed ACK has been sent"
+                        )
                         XCTAssertEqual(
                             client.ack.unackedPacketCount,
                             0,

@@ -762,6 +762,14 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         )
     }
 
+    // How long an ACK that is due, but would be the only frame in its packet, waits for a
+    // packet to ride on. This is the time tolerance of the ACK policy in processPending(),
+    // but no shorter than the timer granularity: on a path with a negligible RTT a shorter
+    // wait sends an ACK for nearly every batch of packets received.
+    func bundlingDelay(on path: QUICPath) -> NetworkDuration {
+        min(maxDelay, max(path.rtt.smoothedRTT / 2, Recovery.timerGranularity))
+    }
+
     mutating func scheduleDelayedAck(in eventContext: inout NetworkContext.EventContext) {
         // ACK timer is already scheduled
         if timerScheduled {
