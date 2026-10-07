@@ -31,6 +31,12 @@ import BasicContainers
 internal import DequeModule
 #endif
 
+#if canImport(CryptoKit)
+import CryptoKit
+#elseif canImport(Crypto)
+import Crypto
+#endif
+
 // Tests conditions that QUICConnectionScheduler should prevent
 @available(Network 0.1.0, *)
 let schedulerReentrancyTestsLogPrefixer: LogPrefixer = LogPrefixer("[SchedulerReentrancyTests]")

@@ -120,6 +120,9 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
                 inConnectedState: true,
                 isServerConnection: false,
                 packetParser: &packetParser,
+                stats: &connection.stats,
+                ack: &connection.ack,
+                ecn: &connection.ecn,
                 in: &eventContext
             )
         }
