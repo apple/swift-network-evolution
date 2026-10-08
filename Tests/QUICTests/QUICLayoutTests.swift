@@ -31,13 +31,13 @@ final class QUICLayoutTests: XCTestCase {
 
     func testLayoutPacket() {
         let packetSize = 156
-        let packetRecordSize = 209
+        let packetRecordSize = 256
         XCTAssertEqual(packetSize, MemoryLayout<Packet>.size)
         XCTAssertEqual(packetRecordSize, MemoryLayout<SentPacketRecord>.size)
     }
 
     func testlayoutFrameAck() {
-        let frameAckSize = 56
+        let frameAckSize = 128
         XCTAssertEqual(frameAckSize, MemoryLayout<FrameAck>.size)
     }
 

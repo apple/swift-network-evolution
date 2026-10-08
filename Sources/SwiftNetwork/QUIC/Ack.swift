@@ -732,25 +732,83 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         return shouldSend
     }
 
+    // Called from tests only to its okay to use toArray() here
     static func blockSequence(
         frame: borrowing FrameAck,
         oldestPacketNumber: PacketNumber = .initial
     ) -> AckBlockSequence {
         AckBlockSequence(
             largest: frame.largest,
-            ranges: frame.ranges,
+            ranges: frame.ranges.toArray(),
             oldestPacketNumber: oldestPacketNumber
         )
     }
 
-    static func blockSequence(
-        frame: TransmittedItems.TransmittedAckFrame,
-        oldestPacketNumber: PacketNumber = .initial
-    ) -> AckBlockSequence {
-        AckBlockSequence(
+    /// Decoding function the etworkSmallUniqueArray<FrameAckRange, 3> from
+    /// either FrameAck or TransmittedAckFrame
+    private static func withBlocks(
+        largest: PacketNumber,
+        ranges: borrowing NetworkSmallUniqueArray<FrameAckRange, 2>,
+        oldestPacketNumber: PacketNumber,
+        _ body: (AckBlock) -> Void
+    ) {
+        var largest = largest
+        var index = 0
+        let count = ranges.count
+        while index < count {
+            let range = ranges[index].range
+            guard range <= largest else {
+                // Guard against underflow.
+                return
+            }
+            let smallest = largest - range
+            let savedLargest = largest
+            // Only recompute `largest` if we are iterating again.
+            // Otherwise, we might end up with an integer underflow.
+            if index + 1 != count {
+                guard smallest >= 2 else {
+                    // Guard against underflow.
+                    return
+                }
+                let gap = ranges[index + 1].gap
+                guard gap <= smallest - 2 else {
+                    // Guard against underflow.
+                    return
+                }
+                largest = smallest - gap - 2
+            }
+            index += 1
+            if savedLargest >= oldestPacketNumber {
+                body((start: smallest, end: savedLargest))
+            }
+        }
+    }
+
+    /// Decodes the ACK ranges using FrameAck
+    static func withBlocks(
+        frame: borrowing FrameAck,
+        oldestPacketNumber: PacketNumber = .initial,
+        _ body: (AckBlock) -> Void
+    ) {
+        withBlocks(
             largest: frame.largest,
             ranges: frame.ranges,
-            oldestPacketNumber: oldestPacketNumber
+            oldestPacketNumber: oldestPacketNumber,
+            body
+        )
+    }
+
+    /// Decodes the ACK ranges using TransmittedAckFrame
+    static func withBlocks(
+        frame: borrowing TransmittedItems.TransmittedAckFrame,
+        oldestPacketNumber: PacketNumber = .initial,
+        _ body: (AckBlock) -> Void
+    ) {
+        withBlocks(
+            largest: frame.largest,
+            ranges: frame.ranges,
+            oldestPacketNumber: oldestPacketNumber,
+            body
         )
     }
 
@@ -1012,7 +1070,7 @@ struct AckBitstring: ~Copyable {
 
     // Same as init, but does not zero out bitstring[]
     mutating func reinit(frame: borrowing FrameAck, oldestPN: PacketNumber) {
-        for block in Ack.blockSequence(frame: frame, oldestPacketNumber: oldestPN) {
+        Ack.withBlocks(frame: frame, oldestPacketNumber: oldestPN) { block in
             let start = max(block.start, oldestPN)
             nset(start: start, stop: block.end)
         }
