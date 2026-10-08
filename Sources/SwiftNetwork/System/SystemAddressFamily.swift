@@ -14,6 +14,8 @@
 
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Android)
+import Android
 #elseif canImport(Musl)
 import Musl
 #elseif !NETWORK_STANDALONE
@@ -23,13 +25,13 @@ import Darwin
 enum AddressFamily: UInt8, Sendable {
     case unspecified = 0
     case ipv4 = 2
-    #if os(Linux)
+    #if os(Linux) || os(Android)
     case ipv6 = 10  // AF_INET6 is 10 on Linux
     #else
     case ipv6 = 30
     #endif
     case unix = 1
-    #if os(Linux)
+    #if os(Linux) || os(Android)
     case route = 16  // AF_ROUTE is 16 on Linux
     #else
     case route = 17
@@ -40,14 +42,14 @@ enum AddressFamily: UInt8, Sendable {
         case 0: self = .unspecified
         case 2: self = .ipv4
         // AF_INET6 is different across platforms
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         case 10: self = .ipv6
         #else
         case 30: self = .ipv6
         #endif
         case 1: self = .unix
         // AF_ROUTE is different across platforms
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         case 16: self = .route
         #else
         case 17: self = .route
