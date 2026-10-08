@@ -67,10 +67,10 @@ extension System {
     #endif
 
     static func interfaceNameToIndex(name: String) throws -> UInt32 {
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         return try SystemInterface.if_nametoindex(name)
         #elseif !NETWORK_STANDALONE || NETWORK_DRIVERKIT
-        // Darwin and Android just have if_nametoindex exposed.
+        // Darwin just has if_nametoindex exposed
         let index = if_nametoindex(name)
         guard index > 0 else {
             throw NetworkError.posix(ENOENT)

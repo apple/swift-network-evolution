@@ -48,7 +48,24 @@ internal enum SystemInterface {
         static let IFNAMSIZ = 16
     }
 
-    #if !canImport(Android)
+    #if canImport(Android)
+    @inline(never)
+    static func if_indextoname(
+        _ index: CUnsignedInt,
+        _ name: UnsafeMutablePointer<CChar>?
+    ) throws -> UnsafeMutablePointer<CChar>? {
+        try System.syscallOptional {
+            Android.if_indextoname(index, name!)
+        }
+    }
+
+    @inline(never)
+    internal static func if_nametoindex(_ name: UnsafePointer<CChar>?) throws -> CUnsignedInt {
+        try System.syscall(blocking: false) {
+            Android.if_nametoindex(name!)
+        }.result
+    }
+    #else
     @inline(never)
     static func if_indextoname(
         _ index: CInt,
@@ -225,7 +242,7 @@ internal enum SystemInterface {
                 throw NetworkError.posix(error)
             }
             #if canImport(Android)
-            guard let nameBuffer = if_indextoname(index, bufferAddress) else {
+            guard let nameBuffer = try SystemInterface.if_indextoname(index, bufferAddress) else {
                 let error = errno
                 Logger.system.error("Android if_indextoname failed for interface index \(index): \(error)")
                 throw NetworkError.posix(error)
