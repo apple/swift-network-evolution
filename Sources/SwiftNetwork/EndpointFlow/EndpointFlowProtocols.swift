@@ -22,31 +22,62 @@ internal import Logging
 internal import os
 #endif
 
+/// Events the stack has delivered to a flow but the flow has not yet consumed.
+@available(Network 0.1.0, *)
+struct EndpointFlowPendingEvents {
+    /// `.some(nil)` when the connect succeeded, `.some(error)` when it failed.
+    var connected: NetworkError?? = nil
+
+    /// `true` when inbound data is available, `false` when the peer disconnected.
+    var inboundDataAvailable: Bool? = nil
+
+    /// Set when the lower layer has room for more outbound data.
+    var outputRoomAvailable = false
+
+    /// Set when the remote peer disconnects.
+    var disconnected: NetworkError? = nil
+
+    /// Flows the peer opened on a multiplexing connection, oldest first.
+    ///
+    /// Only inbound flow handlers record these; see `InboundEndpointFlowProtocol`.
+    var inboundFlows: [PendingInboundFlow] = []
+
+    var isEmpty: Bool {
+        self.connected == nil && self.inboundDataAvailable == nil && !self.outputRoomAvailable
+            && self.disconnected == nil && self.inboundFlows.isEmpty
+    }
+}
+
+/// A flow the peer opened, waiting for the connection to hand it to the application.
+@available(Network 0.1.0, *)
+struct PendingInboundFlow {
+    /// The lower-layer instance to attach to, rather than creating a new flow.
+    let instance: InstanceIdentifier
+    let metadata: AbstractProtocolMetadata?
+}
+
 @available(Network 0.1.0, *)
 class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtocol {
     typealias LinkageType = LinkageFamily.Upper
     typealias LowerProtocol = LinkageFamily.Lower
 
-    // Completions: called once!
-    //
-    // These run inline while the delivering event holds the event context, so each one takes the
-    // state and must thread it into any call back into the stack. Calling a state-free entry
-    // point from inside one of these would re-derive the state and trip exclusivity.
-    struct Completions {
-        public var connected: ((inout NetworkContext.EventContext, NetworkError?) -> Void)?
-        public var outputRoomAvailable: ((inout NetworkContext.EventContext) -> Void)?
+    // Events recorded for the owning flow, and the hook that nudges it to consume them.
+    var pending = EndpointFlowPendingEvents()
 
-        // true when inbound data is available, false when disconnected
-        public var inboundDataAvailable: ((inout NetworkContext.EventContext, Bool) -> Void)?
+    /// Asks the owning flow to drain `pending`, threading in the event context the delivering
+    /// event already holds.
+    ///
+    /// This is a no-op when a flow call is already in progress; that call drains on its way out.
+    var wakeFlow: ((inout NetworkContext.EventContext) -> Void)? = nil
 
-        // invoked when error detected
-        public var error: ((inout NetworkContext.EventContext, NetworkError) -> Void)?
-
-        // invoked when remote peer disconnects
-        public var disconnected: ((inout NetworkContext.EventContext, NetworkError) -> Void)?
-        public init() {}
+    /// Records an event and asks the flow to consume it.
+    private func recordEvent(
+        in eventContext: inout NetworkContext.EventContext,
+        _ record: (inout EndpointFlowPendingEvents) -> Void
+    ) {
+        record(&self.pending)
+        self.wakeFlow?(&eventContext)
     }
-    var completions = Completions()
 
     var log = NetworkLoggerState()
 
@@ -81,10 +112,7 @@ class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtoco
 
     func handleConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
         log.debug("Received connected event")
-        if let completion = completions.connected {
-            self.completions.connected = nil
-            completion(&eventContext, nil)
-        }
+        recordEvent(in: &eventContext) { $0.connected = .some(nil) }
     }
 
     func handleDisconnectedEvent(
@@ -93,56 +121,30 @@ class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtoco
     ) {
         log.debug("Received disconnected event")
         let disconnectError = error ?? .posix(ENOTCONN)
-        if let completion = completions.connected {
-            self.completions.connected = nil
-            completion(&eventContext, disconnectError)
-        }
-        if let error, let errorCompletion = self.completions.error {
-            self.completions.error = nil
-            errorCompletion(&eventContext, error)
-        }
-
-        if let inboundDataAvailableCompletion = self.completions.inboundDataAvailable {
-            self.completions.inboundDataAvailable = nil
-            inboundDataAvailableCompletion(&eventContext, false)
-        }
-
-        if let disconnectedCompletion = self.completions.disconnected {
-            self.completions.disconnected = nil
-            disconnectedCompletion(&eventContext, disconnectError)
+        recordEvent(in: &eventContext) {
+            // A disconnect before the connect completed is reported as a failed connect, and it
+            // also wakes any outstanding read.
+            $0.connected = .some(disconnectError)
+            $0.inboundDataAvailable = false
+            $0.disconnected = disconnectError
         }
     }
 
     func handleInboundDataAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
         log.debug("Received inbound data available event")
-        // Clear the slot before invoking: the completion may synchronously
-        // re-arm the waiter (when receiveStreamData returns nil because the
-        // requested minimum spans more than one segment). Clearing afterwards
-        // would clobber that re-registration and drop later notifications.
-        if let inboundDataAvailableCompletion = self.completions.inboundDataAvailable {
-            self.completions.inboundDataAvailable = nil
-            inboundDataAvailableCompletion(&eventContext, true)
-        }
+        recordEvent(in: &eventContext) { $0.inboundDataAvailable = true }
     }
 
     public func handleOutboundRoomAvailableEvent(
         in eventContext: inout NetworkContext.EventContext
     ) {
         log.debug("Received outbound room available event")
-        if let completion = self.completions.outputRoomAvailable {
-            self.completions.outputRoomAvailable = nil
-            completion(&eventContext)
-        }
+        recordEvent(in: &eventContext) { $0.outputRoomAvailable = true }
     }
 
     public func start() {
         log.debug("Starting flow")
         invokeConnect()
-    }
-
-    public func start(_ completion: @escaping (inout NetworkContext.EventContext, NetworkError?) -> Void) {
-        self.completions.connected = completion
-        start()
     }
 
     public func stop() {
@@ -162,6 +164,7 @@ class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtoco
     /// Completions run inline while the delivering event holds the state, so they have to use
     /// this rather than `teardown()`.
     public func teardown(in eventContext: inout NetworkContext.EventContext) {
+        self.wakeFlow = nil
         do throws(NetworkError) {
             var mutatingSelf = self
             try mutatingSelf.invokeDetach(in: &eventContext)
@@ -177,35 +180,6 @@ class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtoco
     public func abort(error: NetworkError? = nil) {
         log.debug("Aborting flow")
         invokeDisconnect(error: error)
-    }
-
-    public func waitForOutputRoomAvailable(
-        _ completion: @escaping (inout NetworkContext.EventContext) -> Void
-    ) {
-        completions.outputRoomAvailable = completion
-    }
-
-    public func waitForInboundDataAvailable(
-        completion: @escaping (inout NetworkContext.EventContext, Bool) -> Void
-    ) {
-        completions.inboundDataAvailable = completion
-    }
-
-    public func waitForError(
-        completion: @escaping (inout NetworkContext.EventContext, NetworkError) -> Void
-    ) {
-        completions.error = completion
-    }
-
-    public func waitForDisconnected(
-        completion: @escaping (inout NetworkContext.EventContext, NetworkError) -> Void
-    ) {
-        completions.disconnected = completion
-    }
-
-    /// Registers a completion that does not need the event context.
-    public func waitForDisconnected(completion: @escaping (NetworkError) -> Void) {
-        completions.disconnected = { _, error in completion(error) }
     }
 }
 
@@ -440,3 +414,142 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<BaseStreamLinkageFa
         }
     }
 }
+
+// MARK: - Inbound flow handlers
+
+/// The top of a multiplexing connection's own stack, as opposed to one of its flows.
+@available(Network 0.1.0, *)
+class InboundEndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: InboundFlowHandler, LoggableProtocol
+where LinkageFamily.Listener.PairedUpperLinkage == LinkageFamily.InboundFlow {
+    typealias LowerProtocol = LinkageFamily.Listener
+
+    // Recorded for the owning flow and consumed by its drain; see `EndpointFlowPendingEvents`.
+    var pending = EndpointFlowPendingEvents()
+    var wakeFlow: ((inout NetworkContext.EventContext) -> Void)? = nil
+
+    var log = NetworkLoggerState()
+    private(set) var context: NetworkContext
+    var identifier: InstanceIdentifier
+    var eventManager = ProtocolEventManager()
+    var lower = LowerProtocol()
+
+    init(identifier: String = "", context: NetworkContext) {
+        log.logPrefix = "[InboundEndpointFlowProtocol:\(identifier)]"
+        self.context = context
+        self.identifier = .init(context: context, eventManager: &self.eventManager)
+    }
+
+    /// Records an event and asks the flow to consume it.
+    private func recordEvent(
+        in eventContext: inout NetworkContext.EventContext,
+        _ record: (inout EndpointFlowPendingEvents) -> Void
+    ) {
+        record(&self.pending)
+        self.wakeFlow?(&eventContext)
+    }
+
+    func attachLowerProtocol(
+        _ lowerProtocol: LowerProtocol
+    ) throws(NetworkError) -> LowerProtocol.PairedUpperLinkage? {
+        guard lower.isDetached else {
+            throw NetworkError.posix(EALREADY)
+        }
+        lower = lowerProtocol
+        return nil
+    }
+
+    func handleConnectedEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        log.debug("Received connected event")
+        recordEvent(in: &eventContext) { $0.connected = .some(nil) }
+    }
+
+    func handleDisconnectedEvent(
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        log.debug("Received disconnected event")
+        let disconnectError = error ?? .posix(ENOTCONN)
+        recordEvent(in: &eventContext) {
+            // A disconnect before the handshake completed is reported as a failed connect.
+            $0.connected = .some(disconnectError)
+            $0.disconnected = disconnectError
+        }
+    }
+
+    func handleNetworkProtocolEvent(
+        event: NetworkProtocolEvent,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        log.debug("Received network protocol event: \(event)")
+    }
+
+    func handleNewInboundFlowEvent(
+        flowInstance: InstanceIdentifier,
+        flowMetadata: AbstractProtocolMetadata?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        log.debug("Received new inbound flow event for instance \(flowInstance)")
+        // The flow is only recorded here. Building something for the application to use means
+        // creating another channel, which borrows this one's flow, so it has to happen once the
+        // drain has let go of it.
+        recordEvent(in: &eventContext) {
+            $0.inboundFlows.append(PendingInboundFlow(instance: flowInstance, metadata: flowMetadata))
+        }
+    }
+
+    /// Brings the connection up.
+    public func start() {
+        log.debug("Starting connection flow")
+        fromExternal { eventContext in
+            lower.invokeConnect(for: identifier, in: &eventContext)
+        }
+    }
+
+    /// Closes the connection gracefully.
+    public func stop() {
+        log.debug("Stopping connection flow")
+        fromExternal { eventContext in
+            lower.invokeDisconnect(error: nil, for: identifier, in: &eventContext)
+        }
+    }
+
+    /// Closes the connection without waiting for it to drain.
+    public func abort(error: NetworkError? = nil) {
+        log.debug("Aborting connection flow")
+        fromExternal { eventContext in
+            lower.invokeDisconnect(error: error, for: identifier, in: &eventContext)
+        }
+    }
+
+    public func invokeApplicationEvent(_ event: ApplicationEvent, in eventContext: inout NetworkContext.EventContext) {
+        lower.invokeApplicationEvent(event: event, for: identifier, in: &eventContext)
+    }
+
+    /// Detaches from the connection and hands this instance's event state back.
+    ///
+    /// Nothing sits above this, so no lower linkage releases the state on its behalf; see
+    /// `TopProtocolHandler.teardown(in:)`, which this mirrors for a listener-backed instance.
+    public func teardown(in eventContext: inout NetworkContext.EventContext) {
+        guard !identifier.isNone else { return }
+        self.wakeFlow = nil
+        do throws(NetworkError) {
+            try lower.invokeDetach(for: identifier, in: &eventContext)
+            lower = .init()
+        } catch {
+            log.error("Failed to detach lower protocol: \(error)")
+        }
+        unregisterEventManager(in: &eventContext)
+    }
+}
+
+@available(Network 0.1.0, *)
+final class InboundStreamEndpointFlowProtocol: InboundEndpointFlowProtocol<BaseStreamLinkageFamily> {}
+
+@available(Network 0.1.0, *)
+final class InboundDatagramEndpointFlowProtocol: InboundEndpointFlowProtocol<BaseDatagramLinkageFamily> {}
