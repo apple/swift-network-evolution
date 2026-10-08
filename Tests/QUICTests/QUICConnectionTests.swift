@@ -80,7 +80,6 @@ final class QUICConnectionTests: XCTestCase {
                 self.connection.fromExternal { eventContext in
                     let _ = self.connection.createInboundStreams(
                         streamID: zeroStreamID,
-                        stats: &self.connection.stats,
                         in: &eventContext
                     )
                 }

@@ -709,9 +709,6 @@ public final class QUICPath: MultiplexingDatagramPath<
 
     func handlePathChallengeResponse(
         _ data: UInt64,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         guard case .probing = state else { return }
@@ -751,14 +748,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         }
         if migrationPending {
             migrationPending = false
-            parentProtocol.migration.migrate(
-                to: self,
-                connection: parentProtocol,
-                stats: &stats,
-                ecn: &ecn,
-                ack: &ack,
-                in: &eventContext
-            )
+            parentProtocol.migration.migrate(to: self, connection: parentProtocol, in: &eventContext)
         }
     }
 

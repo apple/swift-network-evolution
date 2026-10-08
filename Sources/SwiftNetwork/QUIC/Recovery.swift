@@ -404,7 +404,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             sentPath: QUICPath,
             sentEntry: borrowing PacketContainerEntry,
             connection: QUICConnection,
-            ack: inout Ack,
             in eventContext: inout NetworkContext.EventContext
         ) {
             if sentEntry.lostTime == .zero && sentEntry.packet.isInFlightEligible {
@@ -440,7 +439,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 packetNumber: sentEntry.packet.number,
                 packetNumberSpace: sentEntry.packet.numberSpace,
                 sentPath: sentPath,
-                ack: &ack,
                 in: &eventContext
             )
         }
@@ -525,9 +523,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             path: QUICPath,
             now: NetworkClock.Instant,
             connection: QUICConnection,
-            stats: inout Statistics,
-            ecn: inout ECN,
-            ack: inout Ack,
             in eventContext: inout NetworkContext.EventContext
         ) -> Bool {
             let packetNumberSpace = ackFrame.packetNumberSpace
@@ -578,7 +573,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     sentPath: sentPath,
                     sentEntry: ackedEntry,
                     connection: connection,
-                    ack: &ack,
                     in: &eventContext
                 )
             }
@@ -598,16 +592,16 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
             let ceCount =
                 path.ecnState?.validateAck(
-                    ecn: ecn,
+                    ecn: connection.ecn,
                     frame: ackFrame,
                     previousLargestAcked: previousLargestAcked,
                     newlyAckedECNPackets: newlyECTAcked
                 ) ?? 0
-            stats.increment(
+            connection.stats.increment(
                 .ecnCapablePacketsAcknowledged,
                 by: Int(newlyECTAcked)
             )
-            stats.increment(.ecnCapablePacketsMarked, by: ceCount)
+            connection.stats.increment(.ecnCapablePacketsMarked, by: ceCount)
             // Process ECN only after we reach capable
             if path.ecnState?.state == .capable {
                 if packetNumberSpace == .applicationData {
@@ -929,9 +923,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         pnSpace: PacketNumberSpace,
         timeNow: NetworkClock.Instant,
         connection: QUICConnection,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         connection.applyToAllPaths { path in
@@ -941,7 +932,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             }
             path.recoveryState.lossDelay = lossDelay
         }
-        stats.increment(.retransmitTimeOut)
+        connection.stats.increment(.retransmitTimeOut)
 
         var lostPacket = false
         var lostPackets: [PacketIdentifier] = []
@@ -981,10 +972,10 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     connection.log.datapath(
                         "Declaring packet lost \(pn) in \(entry.packet.numberSpace), sent time \(entry.sentTime) <= \(lostPacketSentTime), or sent packet number \(largestAckedPacketNumber) >= \(pn + packetThreshold)"
                     )
-                    stats.increment(.txLostPackets)
-                    stats.increment(.txLostBytes, by: entry.packet.totalLength)
+                    connection.stats.increment(.txLostPackets)
+                    connection.stats.increment(.txLostBytes, by: entry.packet.totalLength)
                     if entry.packet.ectMarked {
-                        stats.increment(.ecnCapablePacketsLost)
+                        connection.stats.increment(.ecnCapablePacketsLost)
                     }
                     // Defer removing from sent_packet up to 1 RTT
                     // and set the lost time.
@@ -1021,14 +1012,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             withMutableInnerState(packetNumberSpace: pnSpace) { innerState in
                 innerState.declarePacketLost(lostPackets, connection: connection)
             }
-            retransmitPackets(
-                lostPackets,
-                connection: connection,
-                stats: &stats,
-                ecn: &ecn,
-                ack: &ack,
-                in: &eventContext
-            )
+            retransmitPackets(lostPackets, connection: connection, in: &eventContext)
             lostPacket = true
         }
         return lostPacket
@@ -1037,9 +1021,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     mutating func retransmitPackets(
         _ lostPackets: [PacketIdentifier],
         connection: QUICConnection,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         for identifier in lostPackets {
@@ -1052,9 +1033,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 let sentPackets = connection.retransmitPacket(
                     entry.packet,
                     discardInitialRecoveryState: &discardInitialRecoveryState,
-                    stats: &stats,
-                    ecn: &ecn,
-                    ack: &ack,
                     in: &eventContext
                 )
                 innerState.recordSentPackets(sentPackets, connection: connection)
@@ -1070,14 +1048,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         // We may have lost a PMTUD probe, so check if we want to resend it
         connection.withCurrentPath { path in
             var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
-            path.pmtudState.tryToSend(
-                on: path,
-                sentPackets: &sentPackets,
-                stats: &stats,
-                ecn: &ecn,
-                ack: &ack,
-                in: &eventContext
-            )
+            path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets, in: &eventContext)
             recordSentPackets(&sentPackets, connection: connection, in: &eventContext)
             return
         }
@@ -1089,9 +1060,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         path: QUICPath? = nil,
         timeNow: NetworkClock.Instant,
         connection: QUICConnection,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         var packetLost = false
@@ -1100,9 +1068,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 pnSpace: pnSpace,
                 timeNow: timeNow,
                 connection: connection,
-                stats: &stats,
-                ecn: &ecn,
-                ack: &ack,
                 in: &eventContext
             )
         } else {
@@ -1110,9 +1075,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 pnSpace: .initial,
                 timeNow: timeNow,
                 connection: connection,
-                stats: &stats,
-                ecn: &ecn,
-                ack: &ack,
                 in: &eventContext
             ) {
                 packetLost = true
@@ -1121,9 +1083,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 pnSpace: .handshake,
                 timeNow: timeNow,
                 connection: connection,
-                stats: &stats,
-                ecn: &ecn,
-                ack: &ack,
                 in: &eventContext
             ) {
                 packetLost = true
@@ -1132,9 +1091,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 pnSpace: .applicationData,
                 timeNow: timeNow,
                 connection: connection,
-                stats: &stats,
-                ecn: &ecn,
-                ack: &ack,
                 in: &eventContext
             ) {
                 packetLost = true
@@ -1146,14 +1102,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             let path = path ?? connection.currentPath
             if let path {
                 var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
-                path.pmtudState.tryToSend(
-                    on: path,
-                    sentPackets: &sentPackets,
-                    stats: &stats,
-                    ecn: &ecn,
-                    ack: &ack,
-                    in: &eventContext
-                )
+                path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets, in: &eventContext)
                 recordSentPackets(&sentPackets, connection: connection, in: &eventContext)
             }
             connection.sendAllEnqueuedOutboundDatagrams(in: &eventContext)
@@ -1286,9 +1235,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     on: path,
                     ignoreCongestionWindow: true,
                     discardInitialRecoveryState: &discardInitialRecoveryState,
-                    stats: &connection.stats,
-                    ecn: &connection.ecn,
-                    ack: &connection.ack,
                     in: &eventContext
                 )
                 // Only a recorded packet counts as a probe; the pending items may write no payload.
@@ -1326,9 +1272,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                             packet: entry.packet,
                             path: path,
                             discardInitialRecoveryState: &discardInitialRecoveryState,
-                            stats: &connection.stats,
-                            ecn: &connection.ecn,
-                            ack: &connection.ack,
                             in: &eventContext
                         )
                     }
@@ -1376,9 +1319,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     on: path,
                     ignoreCongestionWindow: true,
                     discardInitialRecoveryState: &discardInitialRecoveryState,
-                    stats: &connection.stats,
-                    ecn: &connection.ecn,
-                    ack: &connection.ack,
                     in: &eventContext
                 )
                 if !innerState.recordSentPackets(packets, connection: connection) {
@@ -1422,9 +1362,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 on: path,
                 ptoCount: path.recoveryState.PTOCount,
                 sentPackets: &sentPackets,
-                stats: &connection.stats,
-                ecn: &connection.ecn,
-                ack: &connection.ack,
                 in: &eventContext
             )
             recordSentPackets(&sentPackets, connection: connection, in: &eventContext)
@@ -1444,14 +1381,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         )
         if lossTime != .zero {
             log.datapath("Recovery timer fired, finding lost packets")
-            findLostPacket(
-                timeNow: timeNow,
-                connection: connection,
-                stats: &connection.stats,
-                ecn: &connection.ecn,
-                ack: &connection.ack,
-                in: &eventContext
-            )
+            findLostPacket(timeNow: timeNow, connection: connection, in: &eventContext)
         } else {
             log.datapath("Recovery timer fired, PTO")
             connection.withCurrentPath { path in
@@ -1617,9 +1547,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         ack: consuming FrameAck,
         ackedPath: QUICPath,
         connection: QUICConnection,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ackState: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         let packetNumberSpace = ack.packetNumberSpace
@@ -1698,9 +1625,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 path: ackedPath,
                 now: timeNow,
                 connection: connection,
-                stats: &stats,
-                ecn: &ecn,
-                ack: &ackState,
                 in: &eventContext
             )
         }
@@ -1740,9 +1664,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 path: ackedPath,
                 timeNow: timeNow,
                 connection: connection,
-                stats: &stats,
-                ecn: &ecn,
-                ack: &ackState,
                 in: &eventContext
             )
         }
@@ -1771,7 +1692,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
         // Now that we have deal with all the ACK'ed packets,
         // it's safe to ask PMTUD to send packets.
-        connection.pendingItemsState.applicationPendingItems.triggerAllStreamsUnblocked = true
+        connection.applicationPendingItems.triggerAllStreamsUnblocked = true
     }
 }
 #endif

@@ -166,7 +166,7 @@ final class SchedulerReentrancyTests: XCTestCase {
                 // Simulate "a received frame unblocked a stream", which is what makes
                 // `inboundStopping` decide there is something to flush. The nested `sendFrames(in:)`
                 // still bails without a packet to build, so queue something trivial too.
-                self.connection.pendingItemsState.applicationPendingItems.triggerAllStreamsUnblocked = true
+                self.connection.applicationPendingItems.triggerAllStreamsUnblocked = true
                 self.connection.withPendingItems(for: .applicationData) { $0.ping = true }
                 self.connection.inboundStopping(path: currentPath.pathIdentifier, in: &eventContext)
             }
@@ -290,9 +290,6 @@ final class SchedulerReentrancyTests: XCTestCase {
             self.connection.fromExternal { eventContext in
                 migratingPath.handlePathChallengeResponse(
                     outboundChallenge,
-                    stats: &self.connection.stats,
-                    ecn: &self.connection.ecn,
-                    ack: &self.connection.ack,
                     in: &eventContext
                 )
             }
@@ -407,7 +404,7 @@ final class SchedulerReentrancyTests: XCTestCase {
                     in: &eventContext
                 )
                 connection.scheduleReportReady(in: &eventContext)
-                connection.confirmHandshake(ack: &connection.ack)
+                connection.confirmHandshake()
             }
 
             let waitingPath = makeLocalPath(dcid: Self.pathBCID, sequenceNumber: 2, validated: false)

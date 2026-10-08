@@ -1130,7 +1130,6 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
 
     func process(
         connection: QUICConnection,
-        stats: inout Statistics,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         guard let streamID = QUICStreamID(self.id) else {
@@ -1165,11 +1164,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         } else {
             // RESET_STREAM may be the first frame the peer sends on a stream
             // createInboundStreams will register it.
-            let inboundStreamResult = connection.createInboundStreams(
-                streamID: streamID,
-                stats: &stats,
-                in: &eventContext
-            )
+            let inboundStreamResult = connection.createInboundStreams(streamID: streamID, in: &eventContext)
             if inboundStreamResult.checkZombie {
                 connection.zombieStreamListFinalSizeReceived(
                     streamID: streamID,
@@ -1325,7 +1320,6 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
 
     func process(
         connection: QUICConnection,
-        stats: inout Statistics,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         guard let streamID = QUICStreamID(self.id) else {
@@ -1363,11 +1357,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
                 connection.close(with: .streamStateError, "STOP_SENDING: non-existent stream", in: &eventContext)
                 return false
             }
-            let inboundStreamResult = connection.createInboundStreams(
-                streamID: streamID,
-                stats: &stats,
-                in: &eventContext
-            )
+            let inboundStreamResult = connection.createInboundStreams(streamID: streamID, in: &eventContext)
             // If we are ignoring the stream
             if !inboundStreamResult.created {
                 return true
@@ -2993,7 +2983,6 @@ struct FrameHandshakeDone: ~Copyable, QUICFrameProtocol {
 
     func process(
         connection: QUICConnection,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         if connection.isServer {
@@ -3001,7 +2990,7 @@ struct FrameHandshakeDone: ~Copyable, QUICFrameProtocol {
             return false
         }
 
-        connection.confirmHandshake(ack: &ack)
+        connection.confirmHandshake()
         return true
     }
 }

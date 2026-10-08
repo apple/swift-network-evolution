@@ -1023,8 +1023,8 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
         // This notification is delivered from the application's read, which runs after the
         // inbound batch has already been serviced and flushed. If the read opened up the
         // receive window, we should send the credit here.
-        if parentProtocol.pendingItemsState.applicationPendingItems.maxData
-            || parentProtocol.pendingItemsState.applicationPendingItems.maxStreamData
+        if parentProtocol.applicationPendingItems.maxData
+            || parentProtocol.applicationPendingItems.maxStreamData
         {
             parentProtocol.sendFrames(in: &eventContext)
         }

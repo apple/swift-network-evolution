@@ -342,7 +342,7 @@ extension QUICConnection {
         }
         if self.flowControlState.recalculateInboundMaxData() {
             log.datapath("Updating MAX_DATA to \(self.flowControlState.inboundMaxData)")
-            self.pendingItemsState.applicationPendingItems.maxData = true
+            self.applicationPendingItems.maxData = true
             self.hasAdvertisedMaxData = true
         }
     }
@@ -567,7 +567,7 @@ extension QUICStreamInstance {
                 log.datapath(
                     "Updating MAX_STREAM_DATA for \(streamID!.value) to \(flowControlState.inboundMaxData)"
                 )
-                connection.pendingItemsState.applicationPendingItems.appendMaxStreamDataFlow(self.flowIdentifier)
+                connection.applicationPendingItems.appendMaxStreamDataFlow(self.flowIdentifier)
                 hasAdvertisedMaxStreamData = true
                 sendConnectionCredit = true
             }

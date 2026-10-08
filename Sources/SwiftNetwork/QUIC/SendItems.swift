@@ -3229,7 +3229,6 @@ struct TransmittedItems: ~Copyable {
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
         sentPath: QUICPath,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         if let ackFrame {
@@ -3237,8 +3236,7 @@ struct TransmittedItems: ~Copyable {
                 frame: ackFrame,
                 packetNumber: packetNumber,
                 packetNumberSpace: packetNumberSpace,
-                sentPath: sentPath,
-                ack: &ack
+                sentPath: sentPath
             )
         }
 

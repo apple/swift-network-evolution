@@ -128,9 +128,6 @@ struct PMTUDState: ~Copyable {
 
     mutating func start(
         on path: QUICPath,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         let connection = path.parentProtocol
@@ -190,7 +187,7 @@ struct PMTUDState: ~Copyable {
 
         updateProbeSize(on: path)
         connection.recordSentPackets(in: &eventContext) { sentPackets, blockState in
-            sendProbe(on: path, sentPackets: &sentPackets, stats: &stats, ecn: &ecn, ack: &ack, in: &blockState)
+            sendProbe(on: path, sentPackets: &sentPackets, in: &blockState)
         }
     }
 
@@ -272,15 +269,7 @@ struct PMTUDState: ~Copyable {
             path.log.info("Packet too big MTU < current path MTU \(currentPathMTU)")
             packetTooBigMTU = (packetTooBigMTU == 0) ? nextMTU : min(packetTooBigMTU, nextMTU)
             path.parentProtocol.recordSentPackets(in: &eventContext) { sentPackets, blockState in
-                let connection = path.parentProtocol
-                enterBlackholeDetection(
-                    on: path,
-                    sentPackets: &sentPackets,
-                    stats: &connection.stats,
-                    ecn: &connection.ecn,
-                    ack: &connection.ack,
-                    in: &blockState
-                )
+                enterBlackholeDetection(on: path, sentPackets: &sentPackets, in: &blockState)
             }
         } else if currentPathMTU < nextMTU && nextMTU < probedMTU {
             path.log.info("Current path MTU < packet too big MTU size < probed MTU")
@@ -363,65 +352,27 @@ struct PMTUDState: ~Copyable {
         on path: QUICPath,
         ptoCount: Int,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         guard !path.isFlowControlled,
             ptoCount > PMTUDState.blackholeThreshold,
             enabled
         else { return }
-        enterBlackholeDetection(
-            on: path,
-            sentPackets: &sentPackets,
-            stats: &stats,
-            ecn: &ecn,
-            ack: &ack,
-            in: &eventContext
-        )
+        enterBlackholeDetection(on: path, sentPackets: &sentPackets, in: &eventContext)
     }
 
     mutating func sendProbe(
         on path: QUICPath,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         let connection = path.parentProtocol
         sendProbe(
             on: path,
             sentPackets: &sentPackets,
-            pendingItemsState: &connection.pendingItemsState,
-            stats: &stats,
-            ecn: &ecn,
-            ack: &ack,
-            in: &eventContext
-        )
-    }
-
-    // Binds all three pending-items buckets through a single `inout` access to `pendingItemsState`
-    // rather than three separate ones, which is what lets the compiler prove they're disjoint.
-    mutating func sendProbe(
-        on path: QUICPath,
-        sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
-        pendingItemsState: inout QUICConnectionScheduler.PendingItemsState,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
-        in eventContext: inout NetworkContext.EventContext
-    ) {
-        sendProbe(
-            on: path,
-            sentPackets: &sentPackets,
-            initialPendingItems: &pendingItemsState.initialPendingItems,
-            handshakePendingItems: &pendingItemsState.handshakePendingItems,
-            applicationPendingItems: &pendingItemsState.applicationPendingItems,
-            stats: &stats,
-            ecn: &ecn,
-            ack: &ack,
+            initialPendingItems: &connection.initialPendingItems,
+            handshakePendingItems: &connection.handshakePendingItems,
+            applicationPendingItems: &connection.applicationPendingItems,
             in: &eventContext
         )
     }
@@ -432,9 +383,6 @@ struct PMTUDState: ~Copyable {
         initialPendingItems: inout PendingItems,
         handshakePendingItems: inout PendingItems,
         applicationPendingItems: inout PendingItems,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         pendingTransmission = false
@@ -457,7 +405,7 @@ struct PMTUDState: ~Copyable {
         // timer rather than by an application write, in which case nothing else
         // reports the connection active before the packet is transmitted.
         connection.checkConnectionIdle(
-            unackedPacketCount: ack.unackedPacketCount,
+            unackedPacketCount: connection.ack.unackedPacketCount,
             in: &eventContext
         )
 
@@ -470,9 +418,6 @@ struct PMTUDState: ~Copyable {
             handshakePendingItems: &handshakePendingItems,
             applicationPendingItems: &applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState,
-            stats: &stats,
-            ecn: &ecn,
-            ack: &ack,
             in: &eventContext
         )
         guard sentPackets.count > countBeforeSend else {
@@ -496,13 +441,10 @@ struct PMTUDState: ~Copyable {
     mutating func tryToSend(
         on path: QUICPath,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         guard pendingTransmission else { return }
-        sendProbe(on: path, sentPackets: &sentPackets, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+        sendProbe(on: path, sentPackets: &sentPackets, in: &eventContext)
     }
 
     mutating func timerFired(
@@ -513,25 +455,14 @@ struct PMTUDState: ~Copyable {
         path.log.debug("PMTUD timer fired")
         self.searchCompleted = false
         self.updateProbeSize(on: path)
-        let connection = path.parentProtocol
-        connection.recordSentPackets(in: &eventContext) { sentPackets, blockState in
-            sendProbe(
-                on: path,
-                sentPackets: &sentPackets,
-                stats: &connection.stats,
-                ecn: &connection.ecn,
-                ack: &connection.ack,
-                in: &blockState
-            )
+        path.parentProtocol.recordSentPackets(in: &eventContext) { sentPackets, blockState in
+            sendProbe(on: path, sentPackets: &sentPackets, in: &blockState)
         }
     }
 
     private mutating func enterBlackholeDetection(
         on path: QUICPath,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
-        stats: inout Statistics,
-        ecn: inout ECN,
-        ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) {
         guard enabled else { return }
@@ -549,7 +480,7 @@ struct PMTUDState: ~Copyable {
 
         // Reset probe size
         updateProbeSize(on: path)
-        sendProbe(on: path, sentPackets: &sentPackets, stats: &stats, ecn: &ecn, ack: &ack, in: &eventContext)
+        sendProbe(on: path, sentPackets: &sentPackets, in: &eventContext)
     }
 
     private func findNextMTU(mtu: Int, findLarger: Bool) -> Int {
