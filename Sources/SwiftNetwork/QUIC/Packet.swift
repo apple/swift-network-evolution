@@ -92,12 +92,6 @@ enum PacketKeyState: Int, CaseIterable, CustomStringConvertible, Comparable {
 
 @available(Network 0.1.0, *)
 struct SentPacketRecord: ~Copyable {
-    // Field order: `ecn` and `flags` are grouped first (both 1 byte,
-    // 1-byte-aligned, so neither forces padding), ahead of the 8-byte-aligned
-    // `totalLength`/`sentPath`/`identifier`. Swift lays out stored properties
-    // in declaration order rather than repacking them, and this value is
-    // live across the hot `protector.seal` call on every sent packet, so its
-    // size matters. See `TransmittedItems`'s own "Field order" note.
     var transmittedItems: TransmittedItems = TransmittedItems()
 
     var number: PacketNumber {
