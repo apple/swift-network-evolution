@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -28,7 +31,7 @@ public struct CustomIPProtocol: NetworkProtocol {
     public typealias Options = CustomIPOptions
     public typealias Metadata = CustomIPMetadata
 
-    public struct CustomIPOptions: PerProtocolOptions {
+    public struct CustomIPOptions: PerProtocolOptions, Sendable {
         var ipProtocolNumber: UInt8 = 0
         init() {}
 

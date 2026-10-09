@@ -18,6 +18,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -964,14 +967,9 @@ struct Protector: ~Copyable, PrefixedLoggable {
             // Packet number offset must always be set, otherwise sampleRange doesn't work before we get here.
             packetNumberOffset = packet.packetNumberOffset!
         } else {
-            // When sealing/encrypting, the packet number is known but may be overridden
-            if let length = packet.overrideSentNumberSize?.rawValue {
-                packetNumberLength = length
-            } else {
-                // The packet number would not have been written if it doesn't encode
-                packetNumberLength = try! packet.number.encode(lastAcked: packet.lastAcked).size
-                    .rawValue
-            }
+            // When sealing/encrypting, writing the header recorded the encoded length, including
+            // any override of the number of bytes it occupies.
+            packetNumberLength = Int(packet.packetNumberLength)
             packetNumberOffset = packet.packetNumberOffset!
         }
 

@@ -27,6 +27,9 @@ import Foundation
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -57,7 +60,7 @@ let SwiftTLSRecordProtocolMaxOutstandingReadBytes: Int = (8 * 1024 * 1024)  // 8
 #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
 // The record layer is generic over its instance's linkages, so this cannot be a static stored
 // property on it.
-#if !os(Linux) && !NETWORK_STANDALONE
+#if !os(Linux) && !os(Android) && !NETWORK_STANDALONE
 private let swiftTLSRecordSuccessErrorCode = errSecSuccess
 #else
 private let swiftTLSRecordSuccessErrorCode = 0
@@ -87,7 +90,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             _tlsOptions.externalPSK = .init(externalIdentity: identity, epsk: .init(data: epsk))
         }
         #else
-        private struct SwiftTLSOptionsStorage {
+        private struct SwiftTLSOptionsStorage: Sendable {
             var serverName: String?
             var quicTransportParameters: [UInt8]?
             var applicationProtocols: [String]?
@@ -1225,6 +1228,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             var totalReceivedBytes = 0
             var generatedError = false
             let priorTLSState = tlsManager.state
+            let priorHandshakeComplete = tlsManager.isHandshakeComplete
 
             // Process all incoming network data
             while var frame = receivedFrames.popFirst() {
@@ -1273,7 +1277,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
                 return
             }
 
-            let justConnected = (priorTLSState == .handshake && tlsManager.state == .connected)
+            let justConnected = !priorHandshakeComplete && tlsManager.isHandshakeComplete
             if tlsManager.state == .handshake || justConnected {
                 // Send any pending handshake data
                 try? sendAllOutgoingData(in: &eventContext)
@@ -1310,6 +1314,13 @@ public struct SwiftTLSProtocol: NetworkProtocol {
     #endif
 
 }
+
+#if !EXPORT_SWIFTTLS
+// Under `EXPORT_SWIFTTLS` the options store a `SwiftTLSOptions`, which is not `Sendable`, so the options can only be
+// `Sendable` when they hold their own copy of the fields.
+@available(Network 0.1.0, *)
+extension SwiftTLSProtocol.SwiftTLSProtocolOptions: Sendable {}
+#endif
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)

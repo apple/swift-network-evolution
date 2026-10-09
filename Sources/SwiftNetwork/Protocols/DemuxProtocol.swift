@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -120,7 +123,7 @@ public struct DemuxProtocol: NetworkProtocol {
     public typealias Options = DemuxOptions
     public typealias Metadata = DemuxMetadata
 
-    public struct DemuxOptions: PerProtocolOptions {
+    public struct DemuxOptions: PerProtocolOptions, Sendable {
         var demuxPatterns = Deque<DemuxPattern>()
 
         init() {}

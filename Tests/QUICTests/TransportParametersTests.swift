@@ -42,7 +42,7 @@ final class TransportParametersTests: XCTestCase {
         XCTAssertTrue(parameter.usingDefaultValue)
         parameter = .ackDelayExponent(value: 3)
         XCTAssertTrue(parameter.usingDefaultValue)
-        parameter = .maxAckDelay(value: 25)
+        parameter = .maxAckDelay(duration: .milliseconds(25))
         XCTAssertTrue(parameter.usingDefaultValue)
         parameter = .disableActiveMigration()
         XCTAssertFalse(parameter.usingDefaultValue)
@@ -58,7 +58,7 @@ final class TransportParametersTests: XCTestCase {
     }
 
     func testUint64Serialization2() throws {
-        let maxAckDelay = TransportParameter.maxAckDelay(value: 555)
+        let maxAckDelay = TransportParameter.maxAckDelay(duration: .milliseconds(555))
         transportParameters.append(maxAckDelay)
         let data = try transportParameters.serialize()
         let expectedData: [UInt8] = [0x0b, 0x02, 0x42, 0x2b]
@@ -236,7 +236,7 @@ final class TransportParametersTests: XCTestCase {
         let ackDelayExponent = TransportParameter.ackDelayExponent(value: 20)
         transportParameters.append(ackDelayExponent)
 
-        let maxAckDelay = TransportParameter.maxAckDelay(value: 7755)
+        let maxAckDelay = TransportParameter.maxAckDelay(duration: .milliseconds(7755))
         transportParameters.append(maxAckDelay)
 
         let disableActiveMigration = TransportParameter.disableActiveMigration()
@@ -263,7 +263,7 @@ final class TransportParametersTests: XCTestCase {
         let activeConnectionIDLimit = TransportParameter.activeConnectionIDLimit(value: 128)
         transportParameters.append(activeConnectionIDLimit)
 
-        let minAckDelay = TransportParameter.minAckDelay(value: 1000)
+        let minAckDelay = TransportParameter.minAckDelay(duration: .microseconds(1000))
         transportParameters.append(minAckDelay)
 
         let data = try transportParameters.serialize()
@@ -305,8 +305,214 @@ final class TransportParametersTests: XCTestCase {
         XCTAssertEqual(newParameters[.ackDelayExponent]!, ackDelayExponent)
         XCTAssertEqual(newParameters[.preferredAddress]!, preferredAddressParameter)
         XCTAssertEqual(newParameters[.maxAckDelay]!, maxAckDelay)
+        XCTAssertEqual(newParameters[.minAckDelay]!, minAckDelay)
         XCTAssertEqual(newParameters[.disableActiveMigration]!, disableActiveMigration)
         XCTAssertEqual(newParameters[.maxDatagramFrameSize]!, maxDatagramFrameSize)
+    }
+
+    // MARK: - Helpers
+
+    /// Encodes a single parameter whose value is a variable-length integer.
+    private func encodedIntegerParameter(_ type: TransportParameterTypes, _ rawValue: UInt64) -> [UInt8] {
+        Serializer.serialize { write in
+            write.vle(type.rawValue)
+            write.vle(rawValue.variableLengthSize)
+            write.vle(rawValue)
+        }
+    }
+
+    private func encodedType(_ type: TransportParameterTypes) -> [UInt8] {
+        Serializer.serialize { write in write.vle(type.rawValue) }
+    }
+
+    private func decode(_ bytes: [UInt8]) throws -> TransportParameters {
+        try TransportParameters.deserialize(bytes.span, logPrefixer: tpTestsLogPrefixer)
+    }
+
+    private func assertDecodeError(
+        _ expected: TransportParameterDecodeErrors,
+        _ bytes: [UInt8],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertThrowsError(try decode(bytes), file: file, line: line) { error in
+            guard case QUICError.transportParametersDecode(let actual) = error else {
+                return XCTFail("Unexpected error \(error)", file: file, line: line)
+            }
+            XCTAssertEqual(actual, expected, file: file, line: line)
+        }
+    }
+
+    // MARK: - Ack delay parameters: encoding
+
+    func testAckDelayUsingDefaultValue() {
+        XCTAssertTrue(TransportParameter.maxAckDelay(duration: Ack.defaultMaxDelay).usingDefaultValue)
+        XCTAssertFalse(TransportParameter.maxAckDelay(duration: .milliseconds(26)).usingDefaultValue)
+        XCTAssertTrue(TransportParameter.minAckDelay(duration: .zero).usingDefaultValue)
+        XCTAssertFalse(TransportParameter.minAckDelay(duration: .microseconds(1)).usingDefaultValue)
+    }
+
+    // Default-valued ack delay parameters are omitted from the wire.
+    func testAckDelayDefaultsNotSerialized() throws {
+        transportParameters.append(.maxAckDelay(duration: Ack.defaultMaxDelay))
+        transportParameters.append(.minAckDelay(duration: .zero))
+        XCTAssertEqual(try transportParameters.serialize(), [])
+    }
+
+    func testMaxAckDelayIsEncodedInMilliseconds() throws {
+        transportParameters.append(.maxAckDelay(duration: .milliseconds(26)))
+        XCTAssertEqual(try transportParameters.serialize(), [0x0b, 0x01, 0x1a])
+    }
+
+    func testMinAckDelayIsEncodedInMicroseconds() throws {
+        transportParameters.append(.minAckDelay(duration: .milliseconds(1)))
+        let expected: [UInt8] = [
+            0xc0, 0x00, 0x00, 0x00, 0xff, 0x03, 0xde, 0x1a, /* type */
+            0x02, /* len */
+            0x43, 0xe8, /* 1000 us */
+        ]
+        XCTAssertEqual(try transportParameters.serialize(), expected)
+    }
+
+    func testAckDelayEquality() {
+        XCTAssertEqual(
+            TransportParameter.maxAckDelay(duration: .milliseconds(30)),
+            .maxAckDelay(duration: .microseconds(30_000))
+        )
+        XCTAssertNotEqual(
+            TransportParameter.maxAckDelay(duration: .milliseconds(30)),
+            .maxAckDelay(duration: .milliseconds(31))
+        )
+        XCTAssertNotEqual(
+            TransportParameter.minAckDelay(duration: .microseconds(500)),
+            .minAckDelay(duration: .microseconds(501))
+        )
+        // Same duration, different parameter.
+        XCTAssertNotEqual(
+            TransportParameter.maxAckDelay(duration: .milliseconds(1)),
+            .minAckDelay(duration: .milliseconds(1))
+        )
+    }
+
+    // Neither ack delay parameter is remembered for 0-RTT.
+    func testAckDelayParametersNotSerializedForEarlyData() throws {
+        transportParameters.append(.maxAckDelay(duration: .milliseconds(30)))
+        transportParameters.append(.minAckDelay(duration: .microseconds(1000)))
+        transportParameters.append(.initialMaxData(value: 4444))
+
+        XCTAssertEqual(try transportParameters.serialize(forEarlyData: true), [0x04, 0x02, 0x51, 0x5c])
+
+        let full = try decode(transportParameters.serialize())
+        XCTAssertEqual(full[.maxAckDelay]?.duration, .milliseconds(30))
+        XCTAssertEqual(full[.minAckDelay]?.duration, .microseconds(1000))
+        XCTAssertEqual(full[.initialMaxData]?.value, 4444)
+    }
+
+    // MARK: - Ack delay parameters: decoding
+
+    func testDeserializeMaxAckDelayBounds() throws {
+        let maximum = UInt64(1 << 14)
+        let accepted = try decode(encodedIntegerParameter(.maxAckDelay, maximum))
+        XCTAssertEqual(accepted[.maxAckDelay]?.duration, .milliseconds(maximum))
+
+        // Includes the largest VLE, which must not overflow NetworkDuration.
+        for rawValue in [maximum + 1, (UInt64(1) << 62) - 1] {
+            assertDecodeError(.outOfBounds, encodedIntegerParameter(.maxAckDelay, rawValue))
+        }
+    }
+
+    // Values need not be minimally encoded (RFC 9000, Section 16).
+    func testDeserializeMaxAckDelayNonMinimalEncoding() throws {
+        let parameters = try decode([0x0b, 0x04, 0x80, 0x00, 0x00, 0x19])
+        XCTAssertEqual(parameters[.maxAckDelay]?.duration, .milliseconds(25))
+    }
+
+    func testDeserializeAckDelayMalformedLength() {
+        for type in [TransportParameterTypes.maxAckDelay, .minAckDelay] {
+            let prefix = encodedType(type)
+            // Empty value.
+            assertDecodeError(.invalidSize, prefix + [0x00])
+            // Length covers a 1-byte VLE plus a trailing byte.
+            assertDecodeError(.invalidSize, prefix + [0x02, 0x19, 0x00])
+            // Length runs past the end of the buffer.
+            assertDecodeError(.invalidSize, prefix + [0x02, 0x40])
+        }
+    }
+
+    // min_ack_delay (microseconds) must not exceed max_ack_delay (milliseconds).
+    func testDeserializeMinAckDelayVersusMaxAckDelay() throws {
+        func encode(maxMilliseconds: UInt64, minMicroseconds: UInt64) -> [UInt8] {
+            encodedIntegerParameter(.maxAckDelay, maxMilliseconds)
+                + encodedIntegerParameter(.minAckDelay, minMicroseconds)
+        }
+
+        // Below and exactly at the limit are accepted; the equal case checks the unit conversion.
+        let below = try decode(encode(maxMilliseconds: 10, minMicroseconds: 1000))
+        XCTAssertEqual(below[.minAckDelay]?.duration, .milliseconds(1))
+        XCTAssertEqual(below[.maxAckDelay]?.duration, .milliseconds(10))
+        XCTAssertNoThrow(try decode(encode(maxMilliseconds: 1, minMicroseconds: 1000)))
+
+        // One microsecond over is rejected.
+        assertDecodeError(.outOfBounds, encode(maxMilliseconds: 1, minMicroseconds: 1001))
+    }
+
+    // The check runs after all parameters are read, so min_ack_delay may come first.
+    func testDeserializeMinAckDelayBeforeMaxAckDelay() throws {
+        let accepted = try decode(
+            encodedIntegerParameter(.minAckDelay, 30_000) + encodedIntegerParameter(.maxAckDelay, 30)
+        )
+        XCTAssertEqual(accepted[.minAckDelay]?.duration, .milliseconds(30))
+        XCTAssertEqual(accepted[.maxAckDelay]?.duration, .milliseconds(30))
+
+        assertDecodeError(
+            .outOfBounds,
+            encodedIntegerParameter(.minAckDelay, 30_001) + encodedIntegerParameter(.maxAckDelay, 30)
+        )
+    }
+
+    // Without max_ack_delay, min_ack_delay is checked against the default max_ack_delay.
+    func testDeserializeMinAckDelayVersusDefaultMaxAckDelay() throws {
+        let defaultMaxMicroseconds = UInt64(Ack.defaultMaxDelay.microseconds)
+        let accepted = try decode(encodedIntegerParameter(.minAckDelay, defaultMaxMicroseconds))
+        XCTAssertEqual(accepted[.minAckDelay]?.duration, Ack.defaultMaxDelay)
+        XCTAssertNil(accepted[.maxAckDelay])
+
+        assertDecodeError(.outOfBounds, encodedIntegerParameter(.minAckDelay, defaultMaxMicroseconds + 1))
+    }
+
+    func testDeserializeMinAckDelayBounds() throws {
+        // Pair with the largest valid max_ack_delay so only the min_ack_delay bound applies.
+        func encode(minMicroseconds: UInt64) -> [UInt8] {
+            encodedIntegerParameter(.maxAckDelay, UInt64(Ack.maxDelay.milliseconds))
+                + encodedIntegerParameter(.minAckDelay, minMicroseconds)
+        }
+
+        let maximum = UInt64(Ack.maxDelay.microseconds)
+        let accepted = try decode(encode(minMicroseconds: maximum))
+        XCTAssertEqual(accepted[.minAckDelay]?.duration, Ack.maxDelay)
+
+        // Includes the largest VLE, which must not overflow NetworkDuration.
+        for rawValue in [maximum + 1, (UInt64(1) << 62) - 1] {
+            assertDecodeError(.outOfBounds, encode(minMicroseconds: rawValue))
+        }
+    }
+
+    // MARK: - Other range-checked parameters
+
+    func testDeserializeAckDelayExponentBounds() throws {
+        let accepted = try decode(encodedIntegerParameter(.ackDelayExponent, 20))
+        XCTAssertEqual(accepted[.ackDelayExponent]?.value, 20)
+        assertDecodeError(.outOfBounds, encodedIntegerParameter(.ackDelayExponent, 21))
+    }
+
+    func testDeserializeMaxUDPPayloadSizeBounds() throws {
+        for accepted: UInt64 in [1200, 65527] {
+            let parameters = try decode(encodedIntegerParameter(.maxUDPPayloadSize, accepted))
+            XCTAssertEqual(parameters[.maxUDPPayloadSize]?.value, Int(accepted))
+        }
+        for rejected: UInt64 in [1199, 65528] {
+            assertDecodeError(.outOfBounds, encodedIntegerParameter(.maxUDPPayloadSize, rejected))
+        }
     }
 
     func testPreferredAddressEqualityComparesBothSides() {
@@ -507,7 +713,7 @@ final class TransportParametersTests: XCTestCase {
             value: 877
         )
         let ackDelayExponent = TransportParameter.ackDelayExponent(value: 20)
-        let maxAckDealy = TransportParameter.maxAckDelay(value: 7755)
+        let maxAckDealy = TransportParameter.maxAckDelay(duration: .milliseconds(7755))
         let disableActiveMigration = TransportParameter.disableActiveMigration()
 
         transportParameters.append(maxUDPPayloadSize)
