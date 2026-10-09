@@ -1131,6 +1131,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         stats.increment(.txStreamResetFrames)
     }
 
+    @inline(never)
     func process(
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
@@ -1321,6 +1322,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         stats.increment(.txStreamStopSendingFrames)
     }
 
+    @inline(never)
     func process(
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
@@ -2984,6 +2986,7 @@ struct FrameHandshakeDone: ~Copyable, QUICFrameProtocol {
         try validateSerializationResult(result)
     }
 
+    @inline(never)
     func process(
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
