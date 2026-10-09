@@ -90,14 +90,14 @@ public struct IPv6Address: IPAddress, Hashable, CustomDebugStringConvertible {
     /// A Boolean value that indicates whether this is an IPv4-mapped address.
     ///
     /// For example, `::ffff:1.2.3.4`.
-    var isIPv4Mapped: Bool {
+    public var isIPv4Mapped: Bool {
         Self.isIPv4Mapped(from: address)
     }
 
     /// The IPv4 address for an IPv4-mapped IPv6 address.
     ///
     /// Returns `nil` if this address isn't IPv4-mapped.
-    var asIPv4: IPv4Address? {
+    public var asIPv4: IPv4Address? {
         guard self.isIPv4Mapped else {
             return nil
         }
@@ -109,6 +109,10 @@ public struct IPv6Address: IPAddress, Hashable, CustomDebugStringConvertible {
 
     internal var addressValue: (UInt32, UInt32, UInt32, UInt32) {
         address
+    }
+
+    public var rawValue: (UInt32, UInt32, UInt32, UInt32) {
+        self.address
     }
 
     public init(_ tuple: (UInt32, UInt32, UInt32, UInt32)) {
