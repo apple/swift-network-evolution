@@ -439,6 +439,20 @@ final class QLogTests: XCTestCase {
         XCTAssertEqual(result.count, expected_data.count)
         assertStringJSONContent(result, expected: expected_data)
     }
+
+    // RFC 9000 Section 19.3: the ACK Delay field is decoded by multiplying it by 2 to the
+    // power of the sender's ack_delay_exponent.
+    func testAckDelayIsScaledByDelayExponent() {
+        let frame = FrameAck.toShorthandLogEntry(
+            delay: 625,
+            largest: PacketNumber(2),
+            ranges: [],
+            ecnCounter: nil
+        )
+        let data = EventFrame(frame: frame, ackDelayExponent: 5).dumpData()
+        // 625 on the wire is 625 << 5 = 20,000 microseconds.
+        XCTAssertEqual(data["ack_delay"] as? UInt64, 20_000)
+    }
 }
 #endif
 
