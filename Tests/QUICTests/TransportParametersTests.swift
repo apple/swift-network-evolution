@@ -515,6 +515,77 @@ final class TransportParametersTests: XCTestCase {
         }
     }
 
+    // MARK: - RFC 9000 validation
+
+    // Section 7.4: a parameter must not be sent more than once.
+    func testDeserializeDuplicateParameter() {
+        assertDecodeError(
+            .duplicateParameter,
+            encodedIntegerParameter(.initialMaxData, 1000) + encodedIntegerParameter(.initialMaxData, 1000)
+        )
+        assertDecodeError(
+            .duplicateParameter,
+            encodedIntegerParameter(.maxAckDelay, 10) + encodedIntegerParameter(.maxAckDelay, 20)
+        )
+        // A duplicate is rejected even with other parameters in between.
+        assertDecodeError(
+            .duplicateParameter,
+            [0x0c, 0x00] + encodedIntegerParameter(.initialMaxData, 1000) + [0x0c, 0x00]
+        )
+    }
+
+    // Section 18.2: active_connection_id_limit must be at least 2.
+    func testDeserializeActiveConnectionIDLimitBounds() throws {
+        let accepted = try decode(encodedIntegerParameter(.activeConnectionIDLimit, 2))
+        XCTAssertEqual(accepted[.activeConnectionIDLimit]?.value, 2)
+        for rejected: UInt64 in [0, 1] {
+            assertDecodeError(.outOfBounds, encodedIntegerParameter(.activeConnectionIDLimit, rejected))
+        }
+    }
+
+    // Section 4.6: stream limits must not exceed 2^60.
+    func testDeserializeInitialMaxStreamsBounds() throws {
+        let limit = UInt64(1) << 60
+        for type in [TransportParameterTypes.initialMaxStreamsBidirectional, .initialMaxStreamsUnidirectional] {
+            let accepted = try decode(encodedIntegerParameter(type, limit))
+            XCTAssertEqual(accepted[type]?.value, Int(limit))
+            assertDecodeError(.outOfBounds, encodedIntegerParameter(type, limit + 1))
+        }
+    }
+
+    /// Encodes a preferred_address parameter with the given connection ID and any extra bytes.
+    private func encodedPreferredAddress(connectionID: [UInt8], trailing: [UInt8] = []) -> [UInt8] {
+        var value: [UInt8] = [0xc0, 0x00, 0x02, 0x01, 0x11, 0x5c]  // IPv4 address and port
+        value += Array(repeating: 0x20, count: 16) + [0x11, 0x5d]  // IPv6 address and port
+        value += [UInt8(connectionID.count)] + connectionID
+        value += Array(repeating: 0xab, count: QUICStatelessResetToken.size)
+        value += trailing
+        return [0x0d, UInt8(value.count)] + value
+    }
+
+    func testDeserializePreferredAddress() throws {
+        let parameters = try decode(encodedPreferredAddress(connectionID: [1, 2, 3, 4]))
+        let preferredAddress = try XCTUnwrap(parameters[.preferredAddress]?.preferredAddress)
+        XCTAssertEqual(preferredAddress.ipv4Address, 0xc000_0201)
+        XCTAssertEqual(preferredAddress.ipv4Port, 4444)
+        XCTAssertEqual(preferredAddress.ipv6Port, 4445)
+        XCTAssertEqual(preferredAddress.connectionID, QUICConnectionID([1, 2, 3, 4]))
+    }
+
+    // Section 18.2: the connection ID in preferred_address must not be zero-length.
+    func testDeserializePreferredAddressZeroLengthConnectionID() {
+        assertDecodeError(.outOfBounds, encodedPreferredAddress(connectionID: []))
+    }
+
+    func testDeserializePreferredAddressTrailingBytes() {
+        assertDecodeError(.invalidSize, encodedPreferredAddress(connectionID: [1, 2, 3, 4], trailing: [0x00]))
+    }
+
+    // Section 18.2: disable_active_migration has no value.
+    func testDeserializeDisableActiveMigrationWithValue() {
+        assertDecodeError(.invalidSize, [0x0c, 0x01, 0x00])
+    }
+
     func testPreferredAddressEqualityComparesBothSides() {
         let addressA = PreferredAddress(
             connectionID: QUICConnectionID([1, 2, 3, 4])!,
