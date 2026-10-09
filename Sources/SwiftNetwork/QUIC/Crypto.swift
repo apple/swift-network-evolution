@@ -148,7 +148,7 @@ final class QUICCrypto {
             protocolLogIDNumber: 0
         )
         tlsOptions.setProtocolInstance(tlsInstance.identifier)
-        tlsOptions.perProtocolOptions = mutableTLSOptions
+        tlsOptions.replacePerProtocolOptions(mutableTLSOptions)
 
         var tlsParameters = Parameters()
         tlsParameters.isServer = parentConnection.isServer
