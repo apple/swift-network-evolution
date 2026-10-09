@@ -37,7 +37,7 @@ final class QUICLayoutTests: XCTestCase {
     }
 
     func testlayoutFrameAck() {
-        let frameAckSize = 128
+        let frameAckSize = 112
         XCTAssertEqual(frameAckSize, MemoryLayout<FrameAck>.size)
     }
 

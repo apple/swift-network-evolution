@@ -384,6 +384,7 @@ extension NetworkSmallUniqueArray where Element: Copyable {
     @inline(always)
     init(repeating element: Element, count: Int) {
         self.init()
+        reserveCapacity(count)
         for _ in 0..<count {
             append(element)
         }

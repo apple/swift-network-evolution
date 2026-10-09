@@ -372,31 +372,15 @@ struct AckBlockIterator: IteratorProtocol {
                 return nil
             }
             let range = ranges[index].range
-            guard range <= largest else {
-                // Guard against underflow
+            let nextGap: PacketNumber? = index + 1 != ranges.count ? ranges[index + 1].gap : nil
+            guard let block = Ack.decodeStep(largest: &largest, range: range, nextGap: nextGap) else {
                 return nil
             }
-            let smallest = largest - range
-            let savedLargest = largest
-            // Only recompute `largest' if we are iterating again.
-            // Otherwise, we might end up with an integer underflow.
-            if index + 1 != ranges.count {
-                guard smallest >= 2 else {
-                    // Guard against underflow
-                    return nil
-                }
-                let gap = ranges[index + 1].gap
-                guard gap <= smallest - 2 else {
-                    // Guard against underflow
-                    return nil
-                }
-                largest = smallest - gap - 2
-            }
             index += 1
-            if savedLargest < oldestPacketNumber {
+            if block.end < oldestPacketNumber {
                 continue
             } else {
-                return (start: smallest, end: savedLargest)
+                return block
             }
         }
     }
@@ -744,7 +728,35 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         )
     }
 
-    /// Decoding function the etworkSmallUniqueArray<FrameAckRange, 3> from
+    @inline(always)
+    fileprivate static func decodeStep(
+        largest: inout PacketNumber,
+        range: PacketNumber,
+        nextGap: PacketNumber?
+    ) -> AckBlock? {
+        guard range <= largest else {
+            // Guard against underflow.
+            return nil
+        }
+        let smallest = largest - range
+        let savedLargest = largest
+        // Only recompute `largest` if there is a next range to decode.
+        // Otherwise, we might end up with an integer underflow.
+        if let nextGap {
+            guard smallest >= 2 else {
+                // Guard against underflow.
+                return nil
+            }
+            guard nextGap <= smallest - 2 else {
+                // Guard against underflow.
+                return nil
+            }
+            largest = smallest - nextGap - 2
+        }
+        return (start: smallest, end: savedLargest)
+    }
+
+    /// Decoding function the etworkSmallUniqueArray<FrameAckRange, 2> from
     /// either FrameAck or TransmittedAckFrame
     private static func withBlocks(
         largest: PacketNumber,
@@ -757,29 +769,13 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         let count = ranges.count
         while index < count {
             let range = ranges[index].range
-            guard range <= largest else {
-                // Guard against underflow.
+            let nextGap: PacketNumber? = index + 1 != count ? ranges[index + 1].gap : nil
+            guard let block = decodeStep(largest: &largest, range: range, nextGap: nextGap) else {
                 return
             }
-            let smallest = largest - range
-            let savedLargest = largest
-            // Only recompute `largest` if we are iterating again.
-            // Otherwise, we might end up with an integer underflow.
-            if index + 1 != count {
-                guard smallest >= 2 else {
-                    // Guard against underflow.
-                    return
-                }
-                let gap = ranges[index + 1].gap
-                guard gap <= smallest - 2 else {
-                    // Guard against underflow.
-                    return
-                }
-                largest = smallest - gap - 2
-            }
             index += 1
-            if savedLargest >= oldestPacketNumber {
-                body((start: smallest, end: savedLargest))
+            if block.end >= oldestPacketNumber {
+                body(block)
             }
         }
     }
