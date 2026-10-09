@@ -1600,9 +1600,12 @@ extension FrameDatagram: SendableItem {
                 continue
             }
             var datagramsListIsEmpty = false
+            // Thrown once the closure has returned, because `accessDatagramsToSend` takes a
+            // non-throwing closure. It tells the packet builder that this packet is full.
+            var writeError: QUICError? = nil
             connection.accessDatagramsToSend(flow: datagramFlow) { datagrams in
-                while var datagramFrame = datagrams.popFirst() {
-                    let dataLength = datagramFrame.unclaimedLength
+                while !datagrams.isEmpty {
+                    let dataLength = datagrams.peekFirstFrame { $0.unclaimedLength }
                     connection.log.datapath(
                         "Handle output datagram for flow \(firstFlowID.debugDescription) (size \(dataLength))"
                     )
@@ -1610,32 +1613,53 @@ extension FrameDatagram: SendableItem {
                         connection.log.error(
                             "Unable to send datagram frame, length \(dataLength) exceeds usable size \(datagramFlow.usableDatagramSize)"
                         )
-                        datagramFrame.finalize(success: false)
+                        guard var oversized = datagrams.popFirst() else { break }
+                        oversized.finalize(success: false)
                         continue
                     }
 
-                    do throws(QUICError) {
-                        try FrameDatagram.write(
-                            frame: &frame,
-                            hasLength: true,
-                            flowID: datagramFlow.flowID,
-                            contextID: datagramFlow.contextID,
-                            data: datagramFrame,
-                            stats: &stats
-                        )
-                        sentDatagram = true
-                        shorthandFrames?.append(
-                            toShorthandLogEntry(
+                    // Write from the queue and remove it only once it is written, so a datagram
+                    // that does not fit the rest of this packet stays queued for the next one.
+                    let roomBeforeWriting = frame.unclaimedLength
+                    writeError = datagrams.peekFirstFrame { datagramFrame in
+                        do throws(QUICError) {
+                            try FrameDatagram.write(
+                                frame: &frame,
+                                hasLength: true,
                                 flowID: datagramFlow.flowID,
-                                length: UInt64(dataLength)
+                                contextID: datagramFlow.contextID,
+                                data: datagramFrame,
+                                stats: &stats
                             )
-                        )
-                    } catch {
-                        connection.log.error("Unable to write datagram for flow \(firstFlowID)")
+                            return nil
+                        } catch {
+                            return error
+                        }
                     }
-                    datagramFrame.finalize(success: true)
+                    if writeError != nil {
+                        connection.log.datapath(
+                            "Datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
+                        )
+                        break
+                    }
+                    sentDatagram = true
+                    shorthandFrames?.append(
+                        toShorthandLogEntry(
+                            flowID: datagramFlow.flowID,
+                            length: UInt64(dataLength)
+                        )
+                    )
+                    if var written = datagrams.popFirst() {
+                        written.finalize(success: true)
+                    }
+                    break
                 }
                 datagramsListIsEmpty = datagrams.isEmpty
+            }
+            if let writeError {
+                // A write only fails before anything is dequeued, so nothing was written in this
+                // call and the caller is free to treat this as "the packet is full".
+                throw writeError
             }
             if datagramsListIsEmpty {
                 // Nothing left to do on the first flow, remove it
