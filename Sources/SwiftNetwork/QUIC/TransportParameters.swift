@@ -115,7 +115,7 @@ enum TransportParameter: Equatable {
         value: UInt64
     )
     case ackDelayExponent(_ type: TransportParameterTypes = .ackDelayExponent, value: UInt64)
-    case maxAckDelay(_ type: TransportParameterTypes = .maxAckDelay, value: UInt64)
+    case maxAckDelay(_ type: TransportParameterTypes = .maxAckDelay, duration: NetworkDuration)
     case disableActiveMigration(_ type: TransportParameterTypes = .disableActiveMigration)
     case preferredAddress(
         _ type: TransportParameterTypes = .preferredAddress,
@@ -131,13 +131,13 @@ enum TransportParameter: Equatable {
         _ type: TransportParameterTypes = .maxDatagramFrameSize,
         value: UInt64
     )
-    case minAckDelay(_ type: TransportParameterTypes = .minAckDelay, value: UInt64)
+    case minAckDelay(_ type: TransportParameterTypes = .minAckDelay, duration: NetworkDuration)
     case migrationVersion(_ type: TransportParameterTypes = .migrationVersion, value: UInt64)
 
     var serializeForEarlyData: Bool {
         switch self {
         case .ackDelayExponent, .maxAckDelay, .initialSCID, .originalDCID, .preferredAddress,
-            .retrySCID, .statelessResetToken:
+            .retrySCID, .statelessResetToken, .minAckDelay:
             return false
         default:
             return true
@@ -175,7 +175,15 @@ enum TransportParameter: Equatable {
         guard let defaultValue = TransportParameter.defaultValue(forType: self.type) else {
             return false
         }
-        return value == defaultValue
+        // Duration parameters are compared in their wire unit.
+        switch self {
+        case .maxAckDelay(_, let duration):
+            return duration.milliseconds == defaultValue
+        case .minAckDelay(_, let duration):
+            return duration.microseconds == defaultValue
+        default:
+            return value == defaultValue
+        }
     }
 
     var type: TransportParameterTypes {
@@ -208,7 +216,7 @@ enum TransportParameter: Equatable {
     var value: Int {
         switch self {
         case .originalDCID, .statelessResetToken, .preferredAddress, .disableActiveMigration,
-            .initialSCID, .retrySCID:
+            .initialSCID, .retrySCID, .maxAckDelay, .minAckDelay:
             fatalError("invalid function call")
         case .maxIdleTimeout(_, let value),
             .maxUDPPayloadSize(_, let value),
@@ -219,12 +227,20 @@ enum TransportParameter: Equatable {
             .initialMaxStreamsBidirectional(_, let value),
             .initialMaxStreamsUnidirectional(_, let value),
             .ackDelayExponent(_, let value),
-            .maxAckDelay(_, let value),
             .activeConnectionIDLimit(_, let value),
             .maxDatagramFrameSize(_, let value),
-            .minAckDelay(_, let value),
             .migrationVersion(_, let value):
             return Int(value)
+        }
+    }
+
+    var duration: NetworkDuration {
+        switch self {
+        case .maxAckDelay(_, let duration),
+            .minAckDelay(_, let duration):
+            return duration
+        default:
+            fatalError("invalid function call")
         }
     }
 
@@ -233,13 +249,7 @@ enum TransportParameter: Equatable {
         case .originalDCID(_, let connectionID), .initialSCID(_, let connectionID),
             .retrySCID(_, let connectionID):
             return connectionID
-        case .maxIdleTimeout, .maxUDPPayloadSize, .initialMaxData,
-            .initialMaxStreamDataBidirectionalLocal,
-            .initialMaxStreamDataBidirectionalRemote, .initialMaxStreamDataUnidirectional,
-            .initialMaxStreamsBidirectional, .initialMaxStreamsUnidirectional, .ackDelayExponent,
-            .maxAckDelay, .activeConnectionIDLimit, .maxDatagramFrameSize,
-            .minAckDelay,
-            .migrationVersion, .statelessResetToken, .preferredAddress, .disableActiveMigration:
+        default:
             fatalError("invalid function call")
         }
     }
@@ -248,14 +258,7 @@ enum TransportParameter: Equatable {
         switch self {
         case .statelessResetToken(_, let statelessResetToken):
             return statelessResetToken
-        case .originalDCID, .initialSCID, .retrySCID, .maxIdleTimeout, .maxUDPPayloadSize,
-            .initialMaxData,
-            .initialMaxStreamDataBidirectionalLocal,
-            .initialMaxStreamDataBidirectionalRemote, .initialMaxStreamDataUnidirectional,
-            .initialMaxStreamsBidirectional, .initialMaxStreamsUnidirectional, .ackDelayExponent,
-            .maxAckDelay, .activeConnectionIDLimit, .maxDatagramFrameSize,
-            .minAckDelay,
-            .migrationVersion, .preferredAddress, .disableActiveMigration:
+        default:
             fatalError("invalid function call")
         }
     }
@@ -264,14 +267,7 @@ enum TransportParameter: Equatable {
         switch self {
         case .preferredAddress(_, let preferredAddress):
             return preferredAddress
-        case .originalDCID, .initialSCID, .retrySCID, .maxIdleTimeout, .maxUDPPayloadSize,
-            .initialMaxData,
-            .initialMaxStreamDataBidirectionalLocal,
-            .initialMaxStreamDataBidirectionalRemote, .initialMaxStreamDataUnidirectional,
-            .initialMaxStreamsBidirectional, .initialMaxStreamsUnidirectional, .ackDelayExponent,
-            .maxAckDelay, .activeConnectionIDLimit, .maxDatagramFrameSize,
-            .minAckDelay, .statelessResetToken,
-            .migrationVersion, .disableActiveMigration:
+        default:
             fatalError("invalid function call")
         }
     }
@@ -296,12 +292,13 @@ enum TransportParameter: Equatable {
             .initialMaxStreamsBidirectional(let type, let value),
             .initialMaxStreamsUnidirectional(let type, let value),
             .ackDelayExponent(let type, let value),
-            .maxAckDelay(let type, let value),
             .activeConnectionIDLimit(let type, let value),
             .maxDatagramFrameSize(let type, let value),
-            .minAckDelay(let type, let value),
             .migrationVersion(let type, let value):
             logPrefixer.debug("\(type)=\(value)")
+        case .maxAckDelay(let type, let duration),
+            .minAckDelay(let type, let duration):
+            logPrefixer.debug("\(type)=\(duration)")
         }
     }
 
@@ -372,16 +369,32 @@ enum TransportParameter: Equatable {
             .initialMaxStreamsBidirectional(let type, let value),
             .initialMaxStreamsUnidirectional(let type, let value),
             .ackDelayExponent(let type, let value),
-            .maxAckDelay(let type, let value),
             .activeConnectionIDLimit(let type, let value),
             .maxDatagramFrameSize(let type, let value),
-            .minAckDelay(let type, let value),
             .migrationVersion(let type, let value):
             buffer.append(
                 contentsOf: Serializer.serialize { write in
                     write.vle(type.rawValue)
                     write.vle(value.variableLengthSize)
                     write.vle(value)
+                }
+            )
+        // N.B.: maxAckDelay is serialized in *milliseconds*.
+        case .maxAckDelay(let type, let duration):
+            buffer.append(
+                contentsOf: Serializer.serialize { write in
+                    write.vle(type.rawValue)
+                    write.vle(duration.milliseconds.variableLengthSize)
+                    write.vle(duration.milliseconds)
+                }
+            )
+        // N.B.: minAckDelay is serialized in *microseconds*.
+        case .minAckDelay(let type, let duration):
+            buffer.append(
+                contentsOf: Serializer.serialize { write in
+                    write.vle(type.rawValue)
+                    write.vle(duration.microseconds.variableLengthSize)
+                    write.vle(duration.microseconds)
                 }
             )
         }
@@ -424,6 +437,32 @@ enum TransportParameter: Equatable {
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
         }
         return value
+    }
+
+    // max_ack_delay is encoded in milliseconds. The raw value is peer-controlled, so it is
+    // range-checked before conversion: a large value would overflow NetworkDuration.
+    private static func deserializeMaxAckDelay(_ buffer: Span<UInt8>) throws(QUICError) -> NetworkDuration {
+        let milliseconds = try deserializeUInt64(buffer)
+        guard milliseconds <= UInt64(Ack.maxDelay.milliseconds) else {
+            #if !DisableErrorLogging
+            Logger.proto.error("max_ack_delay \(milliseconds) ms is greater than \(Ack.maxDelay)")
+            #endif
+            throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
+        }
+        return .milliseconds(milliseconds)
+    }
+
+    // min_ack_delay is encoded in microseconds. It must not exceed max_ack_delay, so anything
+    // above the largest valid max_ack_delay is rejected before conversion.
+    private static func deserializeMinAckDelay(_ buffer: Span<UInt8>) throws(QUICError) -> NetworkDuration {
+        let microseconds = try deserializeUInt64(buffer)
+        guard microseconds <= UInt64(Ack.maxDelay.microseconds) else {
+            #if !DisableErrorLogging
+            Logger.proto.error("min_ack_delay \(microseconds) us is greater than \(Ack.maxDelay)")
+            #endif
+            throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
+        }
+        return .microseconds(microseconds)
     }
 
     private static func deserializeConnectionID(
@@ -611,7 +650,7 @@ enum TransportParameter: Equatable {
         case .ackDelayExponent:
             parameter = try .ackDelayExponent(value: deserializeUInt64(buffer))
         case .maxAckDelay:
-            parameter = try .maxAckDelay(value: deserializeUInt64(buffer))
+            parameter = try .maxAckDelay(duration: deserializeMaxAckDelay(buffer.span))
         case .disableActiveMigration:
             parameter = .disableActiveMigration()
         case .preferredAddress:
@@ -625,7 +664,7 @@ enum TransportParameter: Equatable {
         case .maxDatagramFrameSize:
             parameter = try .maxDatagramFrameSize(value: deserializeUInt64(buffer))
         case .minAckDelay:
-            parameter = try .minAckDelay(value: deserializeUInt64(buffer))
+            parameter = try .minAckDelay(duration: deserializeMinAckDelay(buffer.span))
         case .migrationVersion:
             parameter = try .migrationVersion(value: deserializeUInt64(buffer))
         }
@@ -672,7 +711,7 @@ enum TransportParameter: Equatable {
         case .ackDelayExponent:
             parameter = try .ackDelayExponent(value: deserializeUInt64(buffer))
         case .maxAckDelay:
-            parameter = try .maxAckDelay(value: deserializeUInt64(buffer))
+            parameter = try .maxAckDelay(duration: deserializeMaxAckDelay(buffer))
         case .disableActiveMigration:
             parameter = .disableActiveMigration()
         case .preferredAddress:
@@ -686,7 +725,7 @@ enum TransportParameter: Equatable {
         case .maxDatagramFrameSize:
             parameter = try .maxDatagramFrameSize(value: deserializeUInt64(buffer))
         case .minAckDelay:
-            parameter = try .minAckDelay(value: deserializeUInt64(buffer))
+            parameter = try .minAckDelay(duration: deserializeMinAckDelay(buffer))
         case .migrationVersion:
             parameter = try .migrationVersion(value: deserializeUInt64(buffer))
         }
@@ -713,12 +752,12 @@ enum TransportParameter: Equatable {
             .initialMaxStreamsBidirectional,
             .initialMaxStreamsUnidirectional,
             .ackDelayExponent,
-            .maxAckDelay,
             .activeConnectionIDLimit,
             .maxDatagramFrameSize,
-            .minAckDelay,
             .migrationVersion:
             return lhs.value == rhs.value
+        case .maxAckDelay, .minAckDelay:
+            return lhs.duration == rhs.duration
         }
     }
 }
@@ -790,8 +829,8 @@ public struct TransportParameters: PrefixedLoggable {
         }
         parameters.log.debug("Deserializing transport parameters (size \(buffer.count))")
 
-        var maxAckDelay: UInt64? = nil
-        var minAckDelay: UInt64? = nil
+        var maxAckDelay: NetworkDuration? = nil
+        var minAckDelay: NetworkDuration? = nil
         var buffer = buffer
         while !buffer.isEmpty {
             var rawType: UInt64 = 0
@@ -851,32 +890,25 @@ public struct TransportParameters: PrefixedLoggable {
                     .transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
             }
 
-            if case .maxAckDelay(_, let value) = parameter {
-                if value > Ack.maxDelayMilliseconds {
-                    parameters.log.error(
-                        "max_ack_delay is greater than \(Ack.maxDelayMilliseconds)"
-                    )
-                    throw
-                        QUICError
-                        .transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
-                }
-                maxAckDelay = value
+            // N.B.: the 2^14 ms bound on max_ack_delay is enforced while parsing.
+            if case .maxAckDelay(_, let duration) = parameter {
+                maxAckDelay = duration
             }
-            if case .minAckDelay(_, let value) = parameter {
-                minAckDelay = value
+            if case .minAckDelay(_, let duration) = parameter {
+                minAckDelay = duration
             }
             parameters.append(parameter)
         }
-        // minAckDelay must be smaller than maxAckDelay.
+        // minAckDelay must not be greater than maxAckDelay.
         // If maxAckDelay wasn't sent, we use the default.
-        //
-        // N.B.: minAckDelay is in microseconds but maxAckDelay
-        // is in milliseconds.
-        if let minAckDelay = minAckDelay, let maxAckDelay = maxAckDelay,
-            minAckDelay > maxAckDelay * System.Time.USEC_PER_MSEC
-        {
-            parameters.log.error("min_ack_delay is GREATER than max_ack_delay")
-            throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
+        if let minAckDelay = minAckDelay {
+            let maxAckDelay = maxAckDelay ?? Ack.defaultMaxDelay
+            if minAckDelay > maxAckDelay {
+                parameters.log.error(
+                    "min_ack_delay \(minAckDelay) is GREATER than max_ack_delay \(maxAckDelay)"
+                )
+                throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
+            }
         }
         return parameters
     }

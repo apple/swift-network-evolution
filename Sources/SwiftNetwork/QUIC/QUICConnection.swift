@@ -1050,11 +1050,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // The peer's max_ack_delay is stored in the RTT struct where it's most
         // often used.
         if let remoteMaxAckDelay = remoteTransportParameters[.maxAckDelay] {
-            currentPath?.rtt.remoteMaxAckDelay = .milliseconds(remoteMaxAckDelay.value)
+            currentPath?.rtt.remoteMaxAckDelay = remoteMaxAckDelay.duration
         } else {
-            currentPath?.rtt.remoteMaxAckDelay = .milliseconds(
-                TransportParameter.defaultValue(forType: .maxAckDelay)!
-            )
+            currentPath?.rtt.remoteMaxAckDelay = Ack.defaultMaxDelay
         }
 
         if let ackDelayExponent = remoteTransportParameters[.ackDelayExponent] {
