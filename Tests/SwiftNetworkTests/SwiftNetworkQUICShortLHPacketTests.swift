@@ -14,12 +14,16 @@
 
 import XCTest
 
-#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux))
+#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux) || os(Android))
 
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 #elseif canImport(Network)
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
+#endif
+
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
 #if IMPORT_SWIFTTLS
@@ -38,6 +42,9 @@ import Crypto
 
 #if canImport(Glibc)
 import Glibc
+internal import Logging
+#elseif canImport(Android)
+import Android
 internal import Logging
 #elseif canImport(Musl)
 import Musl
@@ -157,11 +164,12 @@ final class SwiftNetworkQUICShortLHPacketTests: NetTestCase {
         serverParameters.isServer = true
         let context = serverParameters.context
         let serverPath = PathProperties(parameters: serverParameters)
-        let serverQUIC = QUICProtocol.instance(context: context)
+        let storage = TestNetworkProtocolStorage(context: context)
+        let (serverQUICStreamListener, _, serverQUICMultipath) = storage.createTestQUICInstance()
 
         let serverQUICOptions = self.createQUICTestOptions(server: true)
         serverQUICOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
-        serverQUICOptions.setProtocolInstance(serverQUIC)
+        serverQUICOptions.setProtocolInstance(serverQUICStreamListener.identifier)
 
         serverParameters.defaultStack.prepend(applicationProtocol: .quic(serverQUICOptions))
 
@@ -169,33 +177,47 @@ final class SwiftNetworkQUICShortLHPacketTests: NetTestCase {
         context.async {
             defer { expectation.fulfill() }
 
-            let serverListenerLinkage = StreamListenerLinkage(reference: serverQUIC)
-            let serverUpperHarness = StreamUpperHarness(
+            let (serverUpperHarness, serverUpperHarnessLinkage) = storage.createNewStreamFlowHarness(
                 identifier: "Server",
                 local: serverEndpoint,
                 remote: clientEndpoint,
                 parameters: serverParameters,
                 path: serverPath,
-                context: serverParameters.context,
-                listenerProtocol: serverListenerLinkage
+                context: context
             )
-            XCTAssertNotNil(serverUpperHarness, "Failed to attach QUIC to server upper harness")
-            guard let serverUpperHarness else {
-                return
-            }
 
-            let serverLowerHarness = DatagramLowerHarness(identifier: "Server", context: serverParameters.context)
-            serverLowerHarness.maximumOutputSize = 9000
             do {
-                try serverQUIC.attachLowerProtocolForNewPath(
-                    serverLowerHarness.reference,
+                // Attach from the upper linkage so both directions are bound.
+                try serverUpperHarnessLinkage.invokeAttachLowerProtocol(
+                    serverQUICStreamListener,
                     remote: clientEndpoint,
                     local: serverEndpoint,
                     parameters: serverParameters,
                     path: serverPath
                 )
             } catch {
-                XCTAssertTrue(false, "Failed to attach server stack")
+                XCTFail("Failed to attach server upper harness to QUIC: \(error)")
+                return
+            }
+
+            let (serverLowerHarness, serverLowerHarnessLinkage) = storage.createDatagramLowerHarness(
+                identifier: "Server",
+                context: context
+            )
+            serverLowerHarness.maximumOutputSize = 9000
+
+            do {
+                var serverQUICMultipath = serverQUICMultipath
+                try serverQUICMultipath.invokeAttachLowerProtocolForNewPath(
+                    serverLowerHarnessLinkage,
+                    remote: clientEndpoint,
+                    local: serverEndpoint,
+                    parameters: serverParameters,
+                    path: serverPath
+                )
+            } catch {
+                XCTFail("Failed to attach server stack: \(error)")
+                return
             }
 
             serverUpperHarness.start()
@@ -207,8 +229,7 @@ final class SwiftNetworkQUICShortLHPacketTests: NetTestCase {
             XCTAssertTrue(outboundResponse?.count == 1200, "Expected 1200 byte response to Initial packet")
 
             serverUpperHarness.teardown()
-
-            expectation.fulfill()
+            storage.releaseHeldInstances()
         }
         wait(for: [expectation], timeout: 10.0)
     }

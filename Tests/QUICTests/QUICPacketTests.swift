@@ -22,6 +22,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 #if canImport(BasicContainers)
 import BasicContainers
 internal import DequeModule
@@ -399,7 +403,7 @@ final class PacketTests: XCTestCase {
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
             0x07, 0x08,
         ]
-        let packet = QUICConnectionUtilities.createStatelessResetPacket(
+        let packet = try QUICConnectionUtilities.createStatelessResetPacket(
             token: QUICStatelessResetToken(validToken)!,
             triggeringPacketLength: 35
         )
@@ -412,19 +416,117 @@ final class PacketTests: XCTestCase {
         )
         XCTAssertTrue((packet[0] & 0x80) == 0, "Packet is not marked as a short header packet")
 
-        let packet2 = QUICConnectionUtilities.createStatelessResetPacket(
-            token: QUICStatelessResetToken(validToken)!,
-            triggeringPacketLength: 4
-        )
-        XCTAssertEqual(
-            packet2,
-            [],
+        XCTAssertThrowsError(
+            try QUICConnectionUtilities.createStatelessResetPacket(
+                token: QUICStatelessResetToken(validToken)!,
+                triggeringPacketLength: 4
+            ),
             "Stateless Reset packet bytes needs to be greater than 21 bytes"
+        ) { error in
+            guard let networkError = error as? NetworkError else {
+                XCTFail("Expected a NetworkError, got \(error)")
+                return
+            }
+            XCTAssertEqual(
+                networkError.category?.identifier,
+                "QUICUtilities",
+                "Should fail with the packetFailedToBuild category due to an invalid packet size"
+            )
+        }
+    }
+
+    func testQUICStatelessResetIsSmallerThanTriggeringPacket() throws {
+        // RFC 9000 §10.3.3: every Stateless Reset must be smaller than the packet that triggered it.
+        // Otherwise two endpoints answering each other's resets loop forever.
+        let token = QUICStatelessResetToken([UInt8](repeating: 0x01, count: 16))!
+        for triggeringPacketLength in (Constants.minimumPacketSize + 1)...100 {
+            let packet = try QUICConnectionUtilities.createStatelessResetPacket(
+                token: token,
+                triggeringPacketLength: triggeringPacketLength
+            )
+            XCTAssertLessThan(
+                packet.count,
+                triggeringPacketLength,
+                "Stateless Reset for a \(triggeringPacketLength)-byte packet is not smaller"
+            )
+        }
+    }
+
+    func testQUICVersionNegotiationPacket() throws {
+
+        let destinationConnectionID = QUICConnectionID([0xAA, 0xBB, 0xCC, 0xDD])!
+        let sourceConnectionID = QUICConnectionID([
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        ])!
+
+        let vnPacket = try XCTUnwrap(
+            try QUICConnectionUtilities.createVersionNegotiationPacket(
+                destinationConnectionID: destinationConnectionID,
+                sourceConnectionID: sourceConnectionID
+            )
         )
-        XCTAssertTrue(
-            packet2.count == 0,
-            "Stateless Reset packet bytes should be zero due to a invalid packet size"
+
+        // firstByte(1) + version(4) + dcidLen(1) + dcid(8) + scidLen(1) + scid(4) + v1(4) + negotiationPattern(4)
+        XCTAssertEqual(vnPacket.count, 27, "Should have created a valid version negotiation packet")
+        XCTAssertTrue((vnPacket[0] & 0x80) != 0, "Packet is not marked as a long header packet")
+
+        let version = Array(vnPacket[1..<5])
+        XCTAssertEqual(version, [0x00, 0x00, 0x00, 0x00], "Version field must be zero")
+
+        // N.B.: the packet dcid/scid are swapped relative to the parameters passed in.
+        let packetDcidLength = vnPacket[5]
+        XCTAssertEqual(
+            packetDcidLength,
+            UInt8(sourceConnectionID.length),
+            "Packet DCID length should match the provided SCID length"
         )
+        let packetDcid = Array(vnPacket[6..<(6 + Int(packetDcidLength))])
+        XCTAssertEqual(
+            packetDcid,
+            sourceConnectionID.connectionID,
+            "Packet DCID bytes should match the provided SCID bytes"
+        )
+
+        let scidLenOffset = 6 + Int(packetDcidLength)
+        let packetScidLength = vnPacket[scidLenOffset]
+        XCTAssertEqual(
+            packetScidLength,
+            UInt8(destinationConnectionID.length),
+            "Packet SCID length should match the provided DCID length"
+        )
+        let scidOffset = scidLenOffset + 1
+        let packetScid = Array(vnPacket[scidOffset..<(scidOffset + Int(packetScidLength))])
+        XCTAssertEqual(
+            packetScid,
+            destinationConnectionID.connectionID,
+            "Packet SCID bytes should match the provided DCID bytes"
+        )
+
+        let versionsOffset = scidOffset + Int(packetScidLength)
+        let advertisedVersions = Array(vnPacket[versionsOffset...])
+        XCTAssertEqual(
+            advertisedVersions,
+            [0x00, 0x00, 0x00, 0x01, 0x1a, 0x2a, 0x3a, 0x4a],
+            "Should advertise the requested version followed by the negotiation pattern"
+        )
+
+        XCTAssertThrowsError(
+            try QUICConnectionUtilities.createVersionNegotiationPacket(
+                destinationConnectionID: QUICConnectionID([])!,
+                sourceConnectionID: QUICConnectionID([])!
+            ),
+            "Version negotiation packet should fail to build because SCID and DCID are not long enough to form a valid QUIC packet"
+        ) { error in
+            guard let networkError = error as? NetworkError else {
+                XCTFail("Expected a NetworkError, got \(error)")
+                return
+            }
+            XCTAssertEqual(
+                networkError.category?.identifier,
+                "QUICUtilities",
+                "Should fail with the packetFailedToBuild category due to an invalid packet size"
+            )
+        }
     }
 
     func testDeserializePacketNumber() throws {

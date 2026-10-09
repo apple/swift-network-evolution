@@ -13,6 +13,9 @@
 //===----------------------------------------------------------------------===//
 
 import XCTest
+#if canImport(Android)
+import Android
+#endif
 
 @testable import SwiftNetwork
 

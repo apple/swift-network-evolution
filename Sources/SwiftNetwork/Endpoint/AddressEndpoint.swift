@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -54,7 +57,6 @@ public struct AddressEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendabl
     public var type: AddressEndpointType
     public var priority: UInt16 = 0
     public var weight: UInt16 = 0
-    public var ethernetAddress: EthernetAddress?
     var originalFd: Int32? = nil
     var scope: UInt32 = 0
 
@@ -291,7 +293,7 @@ public struct AddressEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendabl
             if !matchInterface {
                 return true
             }
-            guard let interface else {
+            guard let interface = self.interface else {
                 return false
             }
             return interface.index == interfaceIndex
@@ -327,7 +329,7 @@ public struct AddressEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendabl
             if !matchInterface {
                 return true
             }
-            guard let interface else {
+            guard let interface = self.interface else {
                 return false
             }
             return interface.index == interfaceIndex

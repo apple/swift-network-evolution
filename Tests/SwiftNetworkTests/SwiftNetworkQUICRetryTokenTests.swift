@@ -14,12 +14,16 @@
 
 import XCTest
 
-#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux))
+#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux) || os(Android))
 
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 #elseif canImport(Network)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
+#endif
+
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
 #if IMPORT_SWIFTTLS
@@ -38,6 +42,9 @@ import Crypto
 
 #if canImport(Glibc)
 import Glibc
+internal import Logging
+#elseif canImport(Android)
+import Android
 internal import Logging
 #elseif canImport(Musl)
 import Musl

@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -36,7 +39,6 @@ public struct QUICConnectionProtocol: NetworkProtocol {
 
     public typealias Options = QUICConnectionOptions
     public typealias Metadata = QUICConnectionMetadata
-    public typealias Instance = QUICConnection
 
     #if !NETWORK_EMBEDDED
     typealias QUICMetadataSetterHandler = (@convention(block) (UInt64) -> Void)
@@ -143,7 +145,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         public var sourceConnectionID: [UInt8]? = nil
         public var destinationConnectionID: [UInt8]? = nil
         // NOTE: sessionUpdateBlock is not supported in Embedded
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         var sessionStateUpdateBlock: (@Sendable @convention(block) ([UInt8]?, [UInt8]?) -> Void)?
         #elseif !NETWORK_STANDALONE && canImport(Darwin)
         var sessionStateUpdateBlock: (@Sendable @convention(block) (DispatchData?, DispatchData?) -> Void)? = nil
@@ -663,7 +665,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         }
         #endif
 
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         func setSessionStateUpdateBlock(
             _ sessionStateUpdateBlock: (@Sendable @convention(block) ([UInt8]?, [UInt8]?) -> Void)?,
             queue: DispatchQueue
@@ -689,7 +691,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
                 return false
             }
             // NOTE: sessionUpdateBlock is not supported in Embedded
-            #if os(Linux)
+            #if os(Linux) || os(Android)
             let tlsBytes = Array(tlsState[tlsState.startIndex..<tlsState.endIndex])
             let quicStateBytes = Array(quicState[quicState.startIndex..<quicState.endIndex])
             sessionQueue.async {
@@ -1179,9 +1181,6 @@ public struct QUICConnectionProtocol: NetworkProtocol {
     public func newPerProtocolOptions(from existing: QUICConnectionOptions) -> QUICConnectionOptions { existing }
     public func newPerProtocolOptions(from serializedBytes: [UInt8]) -> QUICConnectionOptions? { nil }
     public func newPerProtocolMetadata() -> QUICConnectionMetadata? { QUICConnectionMetadata() }
-    public func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? {
-        QUICConnection(context: context).reference
-    }
 
     static let identifier = ProtocolIdentifier(name: "quic-connection", level: .transport, mapping: .manyToOne)
 

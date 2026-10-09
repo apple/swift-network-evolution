@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -33,9 +36,9 @@ public struct CustomLinkProtocol: NetworkProtocol {
     public typealias Metadata = CustomLinkMetadata
     public typealias Instance = CustomLinkInstance
 
-    public struct CustomLinkOptions: PerProtocolOptions {
-        public var tx: ((Span<UInt8>) -> Void)? = nil
-        public var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? = nil
+    public struct CustomLinkOptions: PerProtocolOptions, Sendable {
+        public var tx: (@Sendable (_ bytes: Span<UInt8>) -> Void)? = nil
+        public var rx: (@Sendable (_ inject: @escaping (_ bytes: Span<UInt8>) -> Void) -> Void)? = nil
         init() {}
 
         init?(from serializedBytes: [UInt8]) {
@@ -72,18 +75,23 @@ public struct CustomLinkProtocol: NetworkProtocol {
         }
     }
 
-    public final class CustomLinkInstance: BottomStreamProtocol, ProtocolInstanceContainer {
-        public var upper = InboundStreamLinkage()
-        var lower = OutboundStreamLinkage()
+    public final class CustomLinkInstance: BottomStreamProtocol {
+        public typealias LinkageType = BaseOutboundStreamLinkage
+        public typealias UpperProtocol = BaseInboundStreamLinkage
+
+        public var upper = UpperProtocol()
 
         public private(set) var context: NetworkContext
-        init(context: NetworkContext) { self.context = context }
-        public var reference: ProtocolInstanceReference { ProtocolInstanceReference(customLinkProtocol: self) }
+        init(context: NetworkContext) {
+            self.context = context
+            self.identifier = InstanceIdentifier(context: context, eventManager: &self.eventManager)
+        }
+        public var identifier: InstanceIdentifier
         var log = NetworkLoggerState()
         public var eventManager = ProtocolEventManager()
         private var incomingFrames = FrameArray()
-        public var tx: ((Span<UInt8>) -> Void)? = nil
-        public var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? = nil
+        public var tx: (@Sendable (Span<UInt8>) -> Void)? = nil
+        public var rx: (@Sendable (@escaping (Span<UInt8>) -> Void) -> Void)? = nil
 
         public func setup(
             remote: Endpoint?,
@@ -91,20 +99,24 @@ public struct CustomLinkProtocol: NetworkProtocol {
             parameters: Parameters?,
             path: PathProperties?
         ) throws(NetworkError) {
-            #if !NETWORK_EMBEDDED
-            if let parameters, let CustomLinkOptions: ProtocolOptions<CustomLinkProtocol> = getOptions(from: parameters)
-            {
-                self.tx = CustomLinkOptions.tx
-                self.rx = CustomLinkOptions.rx
+            if let parameters, let customLinkOptions = parameters.customLinkOptions(for: self.identifier) {
+                self.tx = customLinkOptions.tx
+                self.rx = customLinkOptions.rx
             }
             if let rx = self.rx {
                 rx { bytes in
                     self.context.assert()
                     self.incomingFrames.add(frames: FrameArray(frame: Frame(copyBuffer: bytes)))
-                    self.deliverInboundDataAvailableEvent()
+                    // The read handler is an entry point into the stack, so acquire the event
+                    // state here rather than assuming the caller holds it.
+                    self.fromExternal { eventContext in
+                        self.upper.deliverInboundDataAvailableEvent(
+                            from: self.identifier,
+                            in: &eventContext
+                        )
+                    }
                 }
             }
-            #endif
         }
 
         public func teardown() {
@@ -115,21 +127,28 @@ public struct CustomLinkProtocol: NetworkProtocol {
             incomingFrames.finalizeAllFramesAsFailed()
         }
 
-        public func connect(_ from: ProtocolInstanceReference) {
-            fromExternal {
-                upper.deliverConnectedEvent(reference)
-            }
+        public func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+            upper.deliverConnectedEvent(from: identifier, in: &eventContext)
         }
 
-        public func receiveStreamData(minimumBytes: Int, maximumBytes: Int) throws(NetworkError) -> FrameArray? {
+        public func receiveStreamData(
+            minimumBytes: Int,
+            maximumBytes: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> FrameArray? {
             incomingFrames.drainArray(maximumByteCount: maximumBytes)
         }
 
-        public func getOutboundStreamDataRoomAvailable() throws(NetworkError) -> Int {
+        public func getOutboundStreamDataRoomAvailable(
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> Int {
             Int.max
         }
 
-        public func sendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {
+        public func sendStreamData(
+            _ streamData: consuming FrameArray,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) {
             streamData.iterateMutableFrames { frame in
                 if let tx, let span = frame.span {
                     tx(span)
@@ -151,9 +170,6 @@ public struct CustomLinkProtocol: NetworkProtocol {
         CustomLinkOptions(from: serializedBytes)
     }
     public func newPerProtocolMetadata() -> CustomLinkMetadata? { CustomLinkMetadata() }
-    public func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? {
-        CustomLinkInstance(context: context).reference
-    }
 
     static let identifier = ProtocolIdentifier(name: "CustomLink", level: .link, mapping: .oneToOne)
     static let definition = ProtocolDefinition<CustomLinkProtocol>(identifier: identifier)
@@ -161,22 +177,18 @@ public struct CustomLinkProtocol: NetworkProtocol {
     static public func options() -> ProtocolOptions<CustomLinkProtocol> {
         CustomLinkProtocol.definition.protocolOptions()
     }
-
-    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
-        CustomLinkProtocol().newProtocolInstance(context: context)!
-    }
 }
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 extension ProtocolOptions<CustomLinkProtocol> {
-    public var tx: ((Span<UInt8>) -> Void)? {
+    public var tx: (@Sendable (_ bytes: Span<UInt8>) -> Void)? {
         get { perProtocolOptions!.tx }
-        set { perProtocolOptions!.tx = newValue }
+        set { modifyPerProtocolOptions { $0.tx = newValue } }
     }
 
-    public var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? {
+    public var rx: (@Sendable (_ inject: @escaping (_ bytes: Span<UInt8>) -> Void) -> Void)? {
         get { perProtocolOptions!.rx }
-        set { perProtocolOptions!.rx = newValue }
+        set { modifyPerProtocolOptions { $0.rx = newValue } }
     }
 }

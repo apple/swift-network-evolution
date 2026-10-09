@@ -40,6 +40,8 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
     case pathChanged(_ info: QUICPathInfo)
     case pathValidated(_ info: QUICPathInfo)
     case pathUnreachable(_ info: QUICPathInfo)
+    case pathCIDAssigned(_ info: QUICPathInfo)
+    case pathCurrent(_ info: QUICPathInfo)
 
     public var description: String {
         switch self {
@@ -76,6 +78,12 @@ public enum QUICEvent: DomainSpecificNetworkProtocolEvent {
         case .pathUnreachable(let pathInfo):
             return
                 "QUIC: Path unreachable local: \(pathInfo.local.description) remote: \(pathInfo.remote.description)"
+        case .pathCIDAssigned(let pathInfo):
+            return
+                "QUIC: Path ConnectionID assigned, local: \(pathInfo.local.description) remote: \(pathInfo.remote.description)"
+        case .pathCurrent(let pathInfo):
+            return
+                "QUIC: Path became current, local: \(pathInfo.local.description) remote: \(pathInfo.remote.description)"
         }
     }
 }

@@ -22,12 +22,16 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 final class QUICLayoutTests: XCTestCase {
 
     func testLayoutPacket() {
         let packetSize = 156
-        let packetRecordSize = 193
+        let packetRecordSize = 209
         XCTAssertEqual(packetSize, MemoryLayout<Packet>.size)
         XCTAssertEqual(packetRecordSize, MemoryLayout<SentPacketRecord>.size)
     }

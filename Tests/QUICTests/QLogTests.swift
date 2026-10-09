@@ -22,9 +22,15 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 #if QlogOutput
+@available(Network 0.1.0, *)
 let qlogTestsLogPrefixer = LogPrefixer("[QLogTests]")
 
+@available(Network 0.1.0, *)
 final class QLogTests: XCTestCase {
     var qlog: QLog = QLog(context: NetworkContext(identifier: "QLogTests"))
 
@@ -319,7 +325,7 @@ final class QLogTests: XCTestCase {
         let emptyConnectionID = QUICConnectionID(0)
         let initialSCID = TransportParameter.initialSCID(connectionID: emptyConnectionID)
         transportParameters.append(initialSCID)
-        let maxAckDelay = TransportParameter.maxAckDelay(value: 25)
+        let maxAckDelay = TransportParameter.maxAckDelay(duration: .milliseconds(25))
         transportParameters.append(maxAckDelay)
         let maxIdleTimeout = TransportParameter.maxIdleTimeout(value: 0)
         transportParameters.append(maxIdleTimeout)
@@ -332,43 +338,11 @@ final class QLogTests: XCTestCase {
         let initialMaxData = TransportParameter.initialMaxData(value: 1024)
         transportParameters.append(initialMaxData)
 
+        // Use the TransportParameters overload so the library's own field extraction
+        // (including the max_ack_delay duration-to-milliseconds conversion) is exercised.
         qlog.parametersSet(
             owner: .local,
-            resumptionAllowed: nil,
-            earlyDataEnabled: nil,
-            tlsCipher: "",
-            originalDCID: transportParameters[TransportParameterTypes.originalDCID]?.connectionID,
-            initialSCID: transportParameters[TransportParameterTypes.initialSCID]?.connectionID,
-            retrySCID: transportParameters[TransportParameterTypes.retrySCID]?.connectionID,
-            disableActiveMigration: transportParameters[
-                TransportParameterTypes.disableActiveMigration
-            ] != nil ? true : false,
-            maxIdleTimeout: transportParameters[TransportParameterTypes.maxIdleTimeout]?.value,
-            maxUDPPayloadSize: transportParameters[TransportParameterTypes.maxUDPPayloadSize]?
-                .value,
-            ackDelayExponent: transportParameters[TransportParameterTypes.ackDelayExponent]?
-                .value,
-            maxAckDelay: transportParameters[TransportParameterTypes.maxAckDelay]?.value,
-            activeConnectionIDLimit: transportParameters[
-                TransportParameterTypes.activeConnectionIDLimit
-            ]?.value,
-            initialMaxData: transportParameters[TransportParameterTypes.initialMaxData]?.value,
-            initialMaxStreamDataBidirectionalRemote: transportParameters[
-                TransportParameterTypes.initialMaxStreamDataBidirectionalRemote
-            ]?.value,
-            initialMaxStreamDataBidirectionalLocal: transportParameters[
-                TransportParameterTypes.initialMaxStreamDataBidirectionalLocal
-            ]?.value,
-            initialMaxStreamDataUnidirectional: transportParameters[
-                TransportParameterTypes.initialMaxStreamDataUnidirectional
-            ]?.value,
-            initialMaxStreamsBidirectional: transportParameters[
-                TransportParameterTypes.initialMaxStreamsBidirectional
-            ]?.value,
-            initialMaxStreamsUnidirectional: transportParameters[
-                TransportParameterTypes.initialMaxStreamsUnidirectional
-            ]?.value,
-            preferredAddress: nil,
+            transportParameters: transportParameters,
             timestamp: .zero
         )
 

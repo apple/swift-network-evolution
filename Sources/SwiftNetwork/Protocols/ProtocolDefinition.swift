@@ -214,7 +214,6 @@ public protocol NetworkProtocol: Sendable {
     func newPerProtocolOptions(from existing: Options) -> Options
     func newPerProtocolOptions(from serializedBytes: [UInt8]) -> Options?
     func newPerProtocolMetadata() -> Metadata?
-    func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference?
 }
 
 @_spi(Essentials)

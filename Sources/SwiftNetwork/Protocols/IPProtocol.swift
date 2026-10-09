@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -27,7 +30,6 @@ internal import os
 public struct IPProtocol: NetworkProtocol {
     public typealias Options = IPOptions
     public typealias Metadata = IPMetadata
-    typealias Instance = IPInstance
 
     static public var ipv4HeaderLength: Int {
         MemoryLayout<UInt8>.size * 20
@@ -70,7 +72,7 @@ public struct IPProtocol: NetworkProtocol {
         1280
     }
 
-    public enum Version: UInt8 {
+    public enum Version: UInt8, Sendable {
         /// Allows any IP version.
         case any = 0
         /// Uses only IP version 4 (IPv4).
@@ -79,7 +81,7 @@ public struct IPProtocol: NetworkProtocol {
         case v6 = 6
     }
 
-    public enum AddressPreference: UInt8 {
+    public enum AddressPreference: UInt8, Sendable {
         case any = 0
         case temporary = 1
         case stable = 2
@@ -111,7 +113,7 @@ public struct IPProtocol: NetworkProtocol {
         }
     }
 
-    public struct IPOptions: PerProtocolOptions {
+    public struct IPOptions: PerProtocolOptions, Sendable {
         var version: Version = .any
         var localAddressPreference: AddressPreference = .any
 
@@ -340,16 +342,29 @@ public struct IPProtocol: NetworkProtocol {
         }
     }
 
-    struct IPInstance: ~Copyable, OneToOneDatagramProtocol {
-        var upper = InboundDatagramLinkage()
-        var lower = OutboundDatagramLinkage()
+    struct IPInstance: ~Copyable,
+        OneToOneDatagramProtocol
+    {
+        typealias UpperProtocol = BaseInboundDatagramLinkage
+        typealias LowerProtocol = BaseOutboundDatagramLinkage
 
-        var ipInstanceIndex: NetworkStateIndex? = nil
+        var upper = UpperProtocol()
+        var lower = LowerProtocol()
 
         private(set) var context: NetworkContext
-        init(context: NetworkContext) { self.context = context }
+        init(context: NetworkContext) {
+            self.init(context: context, in: &context.eventContext)
+        }
 
-        private(set) var reference: ProtocolInstanceReference = .init()
+        init(context: NetworkContext, in eventContext: inout NetworkContext.EventContext) {
+            self.context = context
+            self.identifier = InstanceIdentifier(
+                eventManager: &self.eventManager,
+                in: &eventContext
+            )
+        }
+
+        var identifier: InstanceIdentifier
 
         var log = NetworkLoggerState()
         var eventManager = ProtocolEventManager()
@@ -357,17 +372,6 @@ public struct IPProtocol: NetworkProtocol {
         static let IPMoreFragmentsFlag: UInt16 = 0x2000
         static let IPFragmentOffsetMask: UInt16 = 0x1FFF
         static let IPMaxFragmentCount: Int = 32
-
-        // Only called by newProtocolInstance()
-        fileprivate static func registerNewIP(on context: NetworkContext) -> ProtocolInstanceReference {
-            let ip = IPInstance(context: context)
-            let registeredIndex = context.registerIPInstance(ip)
-            context.ipInstances[registeredIndex].ipInstanceIndex = registeredIndex
-            context.ipInstances[registeredIndex].reference = ProtocolInstanceReference(
-                ip: &context.ipInstances[registeredIndex]
-            )
-            return context.ipInstances[registeredIndex].reference
-        }
 
         var passthroughEvents = true
 
@@ -384,6 +388,26 @@ public struct IPProtocol: NetworkProtocol {
             var mtu = 0
             var outputHandlerMessageSize = 0
             var dscpValue: UInt8?
+        }
+
+        enum IPStats {
+            // Cases used in both protocols
+            case localOut
+            case softwareChecksumSend(byteCount: Int)
+            case tooShort
+            case badVersion
+            case delivered
+            case clear
+            // IPv4 cases
+            case badHeaderLength
+            case tooLong
+            case noProtocol
+            case badChecksum
+            // IPv6 cases
+            case total
+            case tooSmall
+            case tooManyHeaders
+            case fragmentLocalOut
         }
 
         struct IPInstanceFlags: OptionSet {
@@ -459,6 +483,11 @@ public struct IPProtocol: NetworkProtocol {
             var counters = IPCounters()
             var pathProperties = IPPathProperties()
             var reassemblyState: IPv4ReassemblyState?
+
+            #if NETWORK_PRIVATE && !targetEnvironment(simulator)
+            var _ipStatsRegion: UnsafeMutableRawPointer? = nil
+            var flowRegistration: PathEvaluator.FlowRegistration? = nil
+            #endif
 
             struct IPv4ReassemblyState: ~Copyable {
                 var reassemblyID: UInt16
@@ -702,7 +731,22 @@ public struct IPProtocol: NetworkProtocol {
                 var hadFragments = false
                 // If fragments are present, hadFragments will be set and metadataComplete will not be set on the frame.
                 inboundFrames.iterateMutableFrames { frame in
+                    // Chain-member frames of a single-IP aggregate carry no IP
+                    // header of their own; they are payload continuation of the
+                    // preceding aggregate head. Pass them through untouched so
+                    // the transport can regroup the datagram. Mark them
+                    // metadataComplete so the fragment-reassembly slow path
+                    // below does not try to parse them as fragment headers.
+                    if frame.isPacketChainMember {
+                        frame.metadataComplete = true
+                        return .continueIterating
+                    }
                     let originalFrameLength = frame.unclaimedLength
+                    // For a single-IP aggregate head, the datagram spans this
+                    // frame plus its chain members; packetChainTotalLength holds
+                    // the true datagram length (this buffer holds only the head).
+                    let datagramLength =
+                        frame.isSingleIPAggregate ? frame.packetChainTotalLength : originalFrameLength
                     var versionAndHeaderLength: UInt8 = 0
                     var tos: UInt8 = 0
                     var totalLength: UInt16 = 0
@@ -727,11 +771,13 @@ public struct IPProtocol: NetworkProtocol {
 
                     guard result.isValid else {
                         log.info("Failed to parse IPv4 header: \(result)")
+                        self.recordStatsEvent(stat: .noProtocol)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
                     guard originalFrameLength >= IPv4Instance.headerLength else {
                         log.error("Received IPv4 packet with incorrect length \(originalFrameLength)")
+                        self.recordStatsEvent(stat: .tooShort)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
@@ -739,6 +785,7 @@ public struct IPProtocol: NetworkProtocol {
                     let version = UInt8(versionAndHeaderLength >> 4)
                     guard version == Version.v4.rawValue else {
                         log.error("Invalid IPv4 version: \(version)")
+                        self.recordStatsEvent(stat: .badVersion)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
@@ -748,6 +795,7 @@ public struct IPProtocol: NetworkProtocol {
 
                     guard headerLength >= IPv4Instance.headerLength else {
                         log.error("Invalid header length: \(headerLength)")
+                        self.recordStatsEvent(stat: .badHeaderLength)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
@@ -768,15 +816,17 @@ public struct IPProtocol: NetworkProtocol {
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
-                    guard totalLength == originalFrameLength else {
+                    guard totalLength == datagramLength else {
                         log.error(
-                            "Received length mismatch with IP total length \(totalLength) != \(originalFrameLength)"
+                            "Received length mismatch with IP total length \(totalLength) != \(datagramLength)"
                         )
+                        self.recordStatsEvent(stat: .tooLong)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
                     guard headerLength <= totalLength else {
                         log.error("Invalid header length (greater than IP length): \(headerLength) > \(totalLength)")
+                        self.recordStatsEvent(stat: .badHeaderLength)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
@@ -785,6 +835,7 @@ public struct IPProtocol: NetworkProtocol {
                     if offset & UInt16(IPMoreFragmentsFlag | IPFragmentOffsetMask) != 0 {
                         if frame.isSingleIPAggregate {
                             log.fault("Received fragment on a super-packet with length: \(originalFrameLength)")
+                            frame.finalize(success: false)
                             return .removeFrameAndContinue
                         }
                         hadFragments = true
@@ -817,6 +868,7 @@ public struct IPProtocol: NetworkProtocol {
                     if frame.isChecksumIPChecked {
                         guard frame.isChecksumIPValid else {
                             log.error("Invalid checksum \(checksum)")
+                            self.recordStatsEvent(stat: .badChecksum)
                             frame.finalize(success: false)
                             return .removeFrameAndContinue
                         }
@@ -825,12 +877,21 @@ public struct IPProtocol: NetworkProtocol {
                             frameChecksum == 0
                         else {
                             log.error("Invalid checksum \(checksum)")
+                            self.recordStatsEvent(stat: .badChecksum)
                             frame.finalize(success: false)
                             return .removeFrameAndContinue
                         }
                     }
-                    _ = frame.claim(fromStart: Int(headerLength), fromEnd: originalFrameLength - Int(totalLength))
+                    if frame.isSingleIPAggregate {
+                        // Payload continues into chain-member frames; claim only
+                        // the IP header from this head frame. claim() also
+                        // decrements packetChainTotalLength by headerLength.
+                        _ = frame.claim(fromStart: Int(headerLength))
+                    } else {
+                        _ = frame.claim(fromStart: Int(headerLength), fromEnd: originalFrameLength - Int(totalLength))
+                    }
                     self.counters.rxPackets += 1
+                    self.recordStatsEvent(stat: .delivered)
                     return .continueIterating
                 }
 
@@ -947,10 +1008,11 @@ public struct IPProtocol: NetworkProtocol {
                 }
             }
 
-            mutating func writeOutboundFrames(
+            mutating func writeOutboundFrames<Lower: OutboundDatagramLinkage>(
                 _ frames: inout FrameArray,
-                lower: OutboundDatagramLinkage,
-                selfReference: ProtocolInstanceReference
+                lower: Lower,
+                selfInstance: InstanceIdentifier,
+                in eventContext: inout NetworkContext.EventContext
             ) {
                 frames.iterateMutableFrames { frame in
                     guard frame.unclaim(fromStart: IPv4Instance.headerLength) else {
@@ -1004,9 +1066,10 @@ public struct IPProtocol: NetworkProtocol {
                         let maxFragmentFrameSize = IPv4Instance.headerLength + fragmentRoom
                         guard
                             var allocatedFrames = try? lower.invokeGetDatagramsToSend(
-                                selfReference,
                                 maximumDatagramCount: fragmentCount,
-                                minimumDatagramSize: maxFragmentFrameSize
+                                minimumDatagramSize: maxFragmentFrameSize,
+                                for: selfInstance,
+                                in: &eventContext
                             )
                         else {
                             frame.finalize(success: false)
@@ -1058,6 +1121,7 @@ public struct IPProtocol: NetworkProtocol {
                                 fragmentationSucceeded = false
                                 break
                             }
+                            self.recordStatsEvent(stat: .localOut)
                             let copied = frame.copyInto(
                                 &fragmentFrame,
                                 atOffset: IPv4Instance.headerLength,
@@ -1075,6 +1139,7 @@ public struct IPProtocol: NetworkProtocol {
                                 } else {
                                     let checksumValue = try fragmentFrame.ipChecksum(offset: 0, length: 20)
                                     self.setChecksumValue(frame: &fragmentFrame, value: checksumValue)
+                                    self.recordStatsEvent(stat: .softwareChecksumSend(byteCount: 20))
                                 }
                             } catch {
                                 #if !DisableErrorLogging
@@ -1123,6 +1188,7 @@ public struct IPProtocol: NetworkProtocol {
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
+                    self.recordStatsEvent(stat: .localOut)
 
                     do throws(ChecksumError) {
                         if self.flags.corruptChecksums {
@@ -1135,6 +1201,7 @@ public struct IPProtocol: NetworkProtocol {
                                 let checksumValue = try frame.ipChecksum(offset: 0, length: 20)
                                 self.setChecksumValue(frame: &frame, value: checksumValue)
                                 self.flags.didCorruptChecksum = false
+                                self.recordStatsEvent(stat: .softwareChecksumSend(byteCount: 20))
                             }
                         } else {
                             if self.flags.csumOffload {
@@ -1143,6 +1210,7 @@ public struct IPProtocol: NetworkProtocol {
                             } else {
                                 let checksumValue = try frame.ipChecksum(offset: 0, length: 20)
                                 self.setChecksumValue(frame: &frame, value: checksumValue)
+                                self.recordStatsEvent(stat: .softwareChecksumSend(byteCount: 20))
                             }
                         }
                     } catch {
@@ -1155,6 +1223,12 @@ public struct IPProtocol: NetworkProtocol {
                     self.counters.txPackets += 1
                     return .continueIterating
                 }
+            }
+
+            mutating func recordStatsEvent(stat: IPStats) {
+                #if NETWORK_PRIVATE && !targetEnvironment(simulator) && !NETWORK_EMBEDDED
+                recordsStatsEvent(stat: stat)
+                #endif
             }
         }
 
@@ -1170,6 +1244,11 @@ public struct IPProtocol: NetworkProtocol {
             var counters = IPCounters()
             var pathProperties = IPPathProperties()
             var reassemblyState: IPv6ReassemblyState?
+
+            #if NETWORK_PRIVATE && !targetEnvironment(simulator)
+            var _ipStatsRegion: UnsafeMutableRawPointer? = nil
+            var flowRegistration: PathEvaluator.FlowRegistration? = nil
+            #endif
 
             static let fragmentExtensionHeader: UInt8 = 44
             static let hopByHopExtensionHeader: UInt8 = 0
@@ -1468,7 +1547,19 @@ public struct IPProtocol: NetworkProtocol {
                 var hadFragments = false
                 // If fragments are present, hadFragments will be set and metadataComplete will not be set on the frame.
                 inboundFrames.iterateMutableFrames { frame in
+                    // Chain-member frames of a single-IP aggregate carry no IP
+                    // header of their own; they are payload continuation of the
+                    // preceding aggregate head. Pass them through untouched so
+                    // the transport can regroup the datagram. Mark them
+                    // metadataComplete so the fragment-reassembly slow path
+                    // below does not try to parse them as fragment headers.
+                    if frame.isPacketChainMember {
+                        frame.metadataComplete = true
+                        return .continueIterating
+                    }
                     let originalFrameLength = frame.unclaimedLength
+                    let datagramLength =
+                        frame.isSingleIPAggregate ? frame.packetChainTotalLength : originalFrameLength
                     var flow: UInt32 = 0
                     var payloadLength: UInt16 = 0
                     var hopLimit: UInt8 = 0
@@ -1497,23 +1588,27 @@ public struct IPProtocol: NetworkProtocol {
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
+                    self.recordStatsEvent(stat: .total)
 
                     guard originalFrameLength >= IPv6Instance.headerLength else {
                         log.error("Received IPv6 packet with incorrect length \(originalFrameLength)")
+                        self.recordStatsEvent(stat: .tooSmall)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
                     let version = UInt8(flow >> 28)  // Get the first 4 high order bits for version
                     guard version == Version.v6.rawValue else {
                         log.error("Not an IPv6 packet")
+                        self.recordStatsEvent(stat: .badVersion)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
                     let ipv6Length = (payloadLength + UInt16(IPv6Instance.headerLength))
-                    guard ipv6Length == originalFrameLength else {
+                    guard ipv6Length == datagramLength else {
                         log.error(
-                            "Received IPv6 packet with incorrect length, expected \(ipv6Length) received \(originalFrameLength)"
+                            "Received IPv6 packet with incorrect length, expected \(ipv6Length) received \(datagramLength)"
                         )
+                        self.recordStatsEvent(stat: .tooShort)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
@@ -1567,6 +1662,7 @@ public struct IPProtocol: NetworkProtocol {
                         }
                     }
                     guard !parseError && currentProto == self.ipProtocolNumber else {
+                        self.recordStatsEvent(stat: .tooManyHeaders)
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
@@ -1600,11 +1696,19 @@ public struct IPProtocol: NetworkProtocol {
                     frame.dscpValue = trafficClass >> 2
                     frame.metadataComplete = true
 
-                    _ = frame.claim(
-                        fromStart: headerOffset,
-                        fromEnd: originalFrameLength - (Int(payloadLength) + IPv6Instance.headerLength)
-                    )
+                    if frame.isSingleIPAggregate {
+                        // Payload continues into chain-member frames; claim only
+                        // the IPv6 header from this head frame. claim() also
+                        // decrements packetChainTotalLength by headerOffset.
+                        _ = frame.claim(fromStart: headerOffset)
+                    } else {
+                        _ = frame.claim(
+                            fromStart: headerOffset,
+                            fromEnd: originalFrameLength - (Int(payloadLength) + IPv6Instance.headerLength)
+                        )
+                    }
                     self.counters.rxPackets += 1
+                    self.recordStatsEvent(stat: .delivered)
                     return .continueIterating
                 }
 
@@ -1747,10 +1851,11 @@ public struct IPProtocol: NetworkProtocol {
                 }
             }
 
-            mutating func writeOutboundFrames(
+            mutating func writeOutboundFrames<Lower: OutboundDatagramLinkage>(
                 _ frames: inout FrameArray,
-                lower: OutboundDatagramLinkage,
-                selfReference: ProtocolInstanceReference
+                lower: Lower,
+                selfInstance: InstanceIdentifier,
+                in eventContext: inout NetworkContext.EventContext
             ) {
                 frames.iterateMutableFrames { (frame: inout Frame) -> FrameArray.FrameIterationResult in
                     _ = frame.unclaim(fromStart: IPv6Instance.headerLength)
@@ -1807,9 +1912,10 @@ public struct IPProtocol: NetworkProtocol {
                         let maxFragmentFrameSize = ipv6CompleteHeaderLength + fragmentRoom
                         guard
                             var allocatedFrames = try? lower.invokeGetDatagramsToSend(
-                                selfReference,
                                 maximumDatagramCount: fragmentCount,
-                                minimumDatagramSize: maxFragmentFrameSize
+                                minimumDatagramSize: maxFragmentFrameSize,
+                                for: selfInstance,
+                                in: &eventContext
                             )
                         else {
                             frame.finalize(success: false)
@@ -1867,6 +1973,7 @@ public struct IPProtocol: NetworkProtocol {
                                 fragmentationSucceeded = false
                                 break
                             }
+                            self.recordStatsEvent(stat: .fragmentLocalOut)
                             let copied = frame.copyInto(
                                 &fragmentFrame,
                                 atOffset: ipv6CompleteHeaderLength,
@@ -1912,8 +2019,15 @@ public struct IPProtocol: NetworkProtocol {
                         return .continueIterating
                     }
                     self.counters.txPackets += 1
+                    self.recordStatsEvent(stat: .localOut)
                     return .continueIterating
                 }
+            }
+
+            mutating func recordStatsEvent(stat: IPStats) {
+                #if NETWORK_PRIVATE && !targetEnvironment(simulator) && !NETWORK_EMBEDDED
+                recordsStatsEvent(stat: stat)
+                #endif
             }
         }
 
@@ -1921,6 +2035,7 @@ public struct IPProtocol: NetworkProtocol {
             case ipv4(IPv4Instance)
             case ipv6(IPv6Instance)
         }
+
         var instanceType: IPInstanceType = .ipv4(IPv4Instance())
 
         mutating func setup(
@@ -1984,6 +2099,11 @@ public struct IPProtocol: NetworkProtocol {
                 }
             }
 
+            #if NETWORK_PRIVATE && !targetEnvironment(simulator)
+            let flowRegistration = path?.flows.first(where: { $0.privateFlow.flowRegistration != nil })?.privateFlow
+                .flowRegistration
+            #endif
+
             if case .v4(let localIPv4Address, _) = localAddress.type {
                 guard case .v4(let remoteIPv4Address, _) = remoteAddress.type else {
                     log.error("Local endpoint is IPv4, but remote endpoint is not IPv4")
@@ -2002,6 +2122,10 @@ public struct IPProtocol: NetworkProtocol {
                 instance.pathProperties.mtu = mtu
                 instance.flags = flags
                 instance.ttl = ttl
+                #if NETWORK_PRIVATE && !targetEnvironment(simulator)
+                instance.flowRegistration = flowRegistration
+                instance.updateStatsRegionFromPath(flowRegistration: flowRegistration)
+                #endif
                 instanceType = .ipv4(instance)
             } else if case .v6(let localIPv6Address, _) = localAddress.type {
                 guard case .v6(let remoteIPv6Address, _) = remoteAddress.type else {
@@ -2020,6 +2144,10 @@ public struct IPProtocol: NetworkProtocol {
                 instance.hopLimit = ttl
                 var generator = SystemRandomNumberGenerator()
                 instance.flowLabel = UInt32(generator.next() >> 32)
+                #if NETWORK_PRIVATE && !targetEnvironment(simulator)
+                instance.flowRegistration = flowRegistration
+                instance.updateStatsRegionFromPath(flowRegistration: flowRegistration)
+                #endif
                 instanceType = .ipv6(instance)
             } else {
                 log.error("Unsupported address type")
@@ -2028,7 +2156,7 @@ public struct IPProtocol: NetworkProtocol {
         }
 
         mutating func teardown() {
-            IPInstance.drainReassemblyQueue(&instanceType)
+            Self.drainReassemblyQueue(&instanceType)
         }
 
         @inline(always)
@@ -2040,23 +2168,31 @@ public struct IPProtocol: NetworkProtocol {
                     fragment.finalize(success: false)
                 }
                 instance.reassemblyState = nil
+                instance.recordStatsEvent(stat: .clear)
                 instanceType = .ipv4(instance)
             case .ipv6(var instance):
                 while var fragment = instance.reassemblyState?.inputReassemblyFrames.popFirst() {
                     fragment.finalize(success: false)
                 }
                 instance.reassemblyState = nil
+                instance.recordStatsEvent(stat: .clear)
                 instanceType = .ipv6(instance)
             }
         }
 
-        mutating func receiveDatagrams(maximumDatagramCount: Int) throws(NetworkError) -> FrameArray? {
+        mutating func receiveDatagrams(
+            maximumDatagramCount: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> FrameArray? {
             repeat {
-                let inboundFrames = try invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount)
+                let inboundFrames = try invokeReceiveDatagrams(
+                    maximumDatagramCount: maximumDatagramCount,
+                    in: &eventContext
+                )
                 guard var inboundFrames, !inboundFrames.isEmpty else {
                     return nil
                 }
-                IPInstance.processInbound(
+                Self.processInbound(
                     &self.instanceType,
                     log: self.log,
                     frames: &inboundFrames,
@@ -2070,14 +2206,18 @@ public struct IPProtocol: NetworkProtocol {
             } while true
         }
 
-        func getDatagramsToSend(maximumDatagramCount: Int, minimumDatagramSize: Int) throws(NetworkError) -> FrameArray?
-        {
+        func getDatagramsToSend(
+            maximumDatagramCount: Int,
+            minimumDatagramSize: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> FrameArray? {
             switch self.instanceType {
             case .ipv4(let instance):
                 let minimumDatagramSize = instance.incrementByHeaderLength(minimumDatagramSize)
                 let outboundFrames = try invokeGetDatagramsToSend(
                     maximumDatagramCount: maximumDatagramCount,
-                    minimumDatagramSize: minimumDatagramSize
+                    minimumDatagramSize: minimumDatagramSize,
+                    in: &eventContext
                 )
                 guard var outboundFrames else { return nil }
                 instance.prepareOutboundFrames(&outboundFrames)
@@ -2086,7 +2226,8 @@ public struct IPProtocol: NetworkProtocol {
                 let minimumDatagramSize = instance.incrementByHeaderLength(minimumDatagramSize)
                 let outboundFrames = try invokeGetDatagramsToSend(
                     maximumDatagramCount: maximumDatagramCount,
-                    minimumDatagramSize: minimumDatagramSize
+                    minimumDatagramSize: minimumDatagramSize,
+                    in: &eventContext
                 )
                 guard var outboundFrames else { return nil }
                 instance.prepareOutboundFrames(&outboundFrames)
@@ -2094,16 +2235,20 @@ public struct IPProtocol: NetworkProtocol {
             }
         }
 
-        mutating func sendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
+        mutating func sendDatagrams(
+            _ datagrams: consuming FrameArray,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) {
             let lower = self.lower
-            let selfReference = self.effectiveSelfReference
-            IPInstance.processOutbound(
+            let selfInstance = self.effectiveSelfInstance
+            Self.processOutbound(
                 &self.instanceType,
                 lower: lower,
-                selfReference: selfReference,
-                datagrams: &datagrams
+                selfInstance: selfInstance,
+                datagrams: &datagrams,
+                in: &eventContext
             )
-            try invokeSendDatagrams(datagrams)
+            try invokeSendDatagrams(datagrams, in: &eventContext)
         }
 
         /// - Parameter now: Read lazily, and only when something will use it. Every consumer of
@@ -2133,16 +2278,17 @@ public struct IPProtocol: NetworkProtocol {
         @inline(always)
         private static func processOutbound(
             _ instanceType: inout IPInstanceType,
-            lower: OutboundDatagramLinkage,
-            selfReference: ProtocolInstanceReference,
-            datagrams: inout FrameArray
+            lower: LowerProtocol,
+            selfInstance: InstanceIdentifier,
+            datagrams: inout FrameArray,
+            in eventContext: inout NetworkContext.EventContext
         ) {
             switch instanceType {
             case .ipv4(var instance):
-                instance.writeOutboundFrames(&datagrams, lower: lower, selfReference: selfReference)
+                instance.writeOutboundFrames(&datagrams, lower: lower, selfInstance: selfInstance, in: &eventContext)
                 instanceType = .ipv4(instance)
             case .ipv6(var instance):
-                instance.writeOutboundFrames(&datagrams, lower: lower, selfReference: selfReference)
+                instance.writeOutboundFrames(&datagrams, lower: lower, selfInstance: selfInstance, in: &eventContext)
                 instanceType = .ipv6(instance)
             }
         }
@@ -2157,9 +2303,6 @@ public struct IPProtocol: NetworkProtocol {
     public func newPerProtocolOptions(from existing: IPOptions) -> IPOptions { existing }
     public func newPerProtocolOptions(from serializedBytes: [UInt8]) -> IPOptions? { IPOptions(from: serializedBytes) }
     public func newPerProtocolMetadata() -> IPMetadata? { IPMetadata() }
-    public func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? {
-        IPInstance.registerNewIP(on: context)
-    }
 
     static let identifier = ProtocolIdentifier(name: "ip", level: .internet, mapping: .oneToOne)
 
@@ -2168,10 +2311,6 @@ public struct IPProtocol: NetworkProtocol {
     #endif
 
     static public func options() -> ProtocolOptions<IPProtocol> { IPProtocol.definition.protocolOptions() }
-
-    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
-        IPProtocol().newProtocolInstance(context: context)!
-    }
 
     #if !NETWORK_EMBEDDED
     internal static func _staticMetadata(ecnFlag: ECN) -> ProtocolMetadata<IPProtocol> {
@@ -2202,22 +2341,22 @@ public struct IPProtocol: NetworkProtocol {
 extension ProtocolOptions<IPProtocol> {
     var version: IPProtocol.Version {
         get { perProtocolOptions!.version }
-        set { perProtocolOptions!.version = newValue }
+        set { modifyPerProtocolOptions { $0.version = newValue } }
     }
     var localAddressPreference: IPProtocol.AddressPreference {
         get { perProtocolOptions!.localAddressPreference }
-        set { perProtocolOptions!.localAddressPreference = newValue }
+        set { modifyPerProtocolOptions { $0.localAddressPreference = newValue } }
     }
     public var dscpValue: UInt8? {
         get { perProtocolOptions!.dscpValue }
-        set { perProtocolOptions!.dscpValue = newValue }
+        set { modifyPerProtocolOptions { $0.dscpValue = newValue } }
     }
     public var flags: IPProtocol.IPOptions.Flags {
         get { perProtocolOptions!.flags }
-        set { perProtocolOptions!.flags = newValue }
+        set { modifyPerProtocolOptions { $0.flags = newValue } }
     }
     public var hopLimit: UInt8? {
         get { perProtocolOptions!.hopLimit }
-        set { perProtocolOptions!.hopLimit = newValue }
+        set { modifyPerProtocolOptions { $0.hopLimit = newValue } }
     }
 }

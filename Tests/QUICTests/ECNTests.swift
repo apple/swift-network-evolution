@@ -22,6 +22,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 // MARK: ECN Initialization Tests
 @available(Network 0.1.0, *)
 final class ECNTests: XCTestCase {
@@ -30,11 +34,21 @@ final class ECNTests: XCTestCase {
     var stats: Statistics!
     var conn: QUICConnection!
     let logPrefixer = LogPrefixer("[ECNTests]")
+    // These tests reset ECN state without a path attached.
+    let noPath: QUICPath? = nil
 
     override func setUp() {
         super.setUp()
         conn = QUICConnection(context: NetworkContext.implicitContext)
         stats = Statistics()
+    }
+
+    override func tearDown() {
+        // The connection was built directly rather than attached to a stack, so nothing else
+        // hands its event state back.
+        conn.context.onQueue { self.conn.destroyFromExternalTest() }
+        conn = nil
+        super.tearDown()
     }
 
     private func runInitTest(
@@ -57,7 +71,7 @@ final class ECNTests: XCTestCase {
         runProcessIPCodepoint()
         validateECNPackets(counter, expectedCount)
 
-        ecnPath.reset(ecn: &ecn)
+        ecnPath.reset(ecn: &ecn, path: noPath)
         validateECNPackets(counter, 0)
 
         runProcessIPCodepoint()
@@ -413,6 +427,14 @@ final class ECNValidateTests: XCTestCase {
         super.setUp()
         conn = QUICConnection(context: NetworkContext.implicitContext)
         stats = Statistics()
+    }
+
+    override func tearDown() {
+        // The connection was built directly rather than attached to a stack, so nothing else
+        // hands its event state back.
+        conn.context.onQueue { self.conn.destroyFromExternalTest() }
+        conn = nil
+        super.tearDown()
     }
 
     private func createFrame(
@@ -843,6 +865,7 @@ final class ECNValidateTests: XCTestCase {
 
     func testValidateAckReturnsCorrectCECount() async throws {
         let connection = QUICConnection(context: NetworkContext.implicitContext)
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let ecn = ECN(
             echoEnabled: true,
             markingEnabled: true,
@@ -884,6 +907,7 @@ final class ECNValidateTests: XCTestCase {
         context.activate()
 
         let connection = QUICConnection(context: context)
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let ecn = ECN(
             echoEnabled: true,
             markingEnabled: true,

@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -27,7 +30,6 @@ internal import os
 public struct UDPProtocol: NetworkProtocol {
     public typealias Options = UDPOptions
     public typealias Metadata = UDPMetadata
-    typealias Instance = UDPInstance
 
     static public var headerLength: Int {
         MemoryLayout<UInt16>.size * 4
@@ -82,33 +84,50 @@ public struct UDPProtocol: NetworkProtocol {
         public func isEqual(to other: UDPMetadata, for: ProtocolCompareMode) -> Bool { true }
     }
 
-    struct UDPInstance: ~Copyable, OneToOneDatagramProtocol {
-        var upper = InboundDatagramLinkage()
-        var lower = OutboundDatagramLinkage()
+    struct UDPInstanceFlags: OptionSet {
+        init(rawValue: Self.RawValue) {
+            self.rawValue = rawValue
+        }
+        var rawValue: UInt16
+        static let isIPv4 = UDPInstanceFlags(rawValue: 1 << 0)
+        static let flowControlled = UDPInstanceFlags(rawValue: 1 << 1)
+        static let outputPending = UDPInstanceFlags(rawValue: 1 << 2)
+        static let partialChecksumOffload = UDPInstanceFlags(rawValue: 1 << 3)
+        static let noChecksum = UDPInstanceFlags(rawValue: 1 << 4)
+        static let noMetadata = UDPInstanceFlags(rawValue: 1 << 5)
+        static let ignoreInboundChecksum = UDPInstanceFlags(rawValue: 1 << 6)
+        static let upperTransportIsQUIC = UDPInstanceFlags(rawValue: 1 << 7)
+        static let fullChecksumOffload = UDPInstanceFlags(rawValue: 1 << 8)
+        static let reportedReceiveError = UDPInstanceFlags(rawValue: 1 << 9)
+        static let gotPathAttributes = UDPInstanceFlags(rawValue: 1 << 10)
+    }
 
-        var udpInstanceIndex: NetworkStateIndex? = nil
+    struct UDPInstance: ~Copyable, OneToOneDatagramProtocol {
+
+        typealias UpperProtocol = BaseInboundDatagramLinkage
+        typealias LowerProtocol = BaseOutboundDatagramLinkage
+
+        var upper = UpperProtocol()
+        var lower = LowerProtocol()
 
         private(set) var context: NetworkContext
-        init(context: NetworkContext) { self.context = context }
+        init(context: NetworkContext) {
+            self.init(context: context, in: &context.eventContext)
+        }
 
-        private(set) var reference: ProtocolInstanceReference = .init()
+        init(context: NetworkContext, in eventContext: inout NetworkContext.EventContext) {
+            self.context = context
+            self.identifier = InstanceIdentifier(
+                eventManager: &self.eventManager,
+                in: &eventContext
+            )
+        }
+
+        var identifier: InstanceIdentifier
 
         var log = NetworkLoggerState()
 
         var eventManager = ProtocolEventManager()
-
-        // Only called by newProtocolInstance()
-        fileprivate static func registerNewUDP(
-            on context: NetworkContext,
-        ) -> ProtocolInstanceReference {
-            let udp = UDPInstance(context: context)
-            let registeredIndex = context.registerUDPInstance(udp)
-            context.udpInstances[registeredIndex].udpInstanceIndex = registeredIndex
-            context.udpInstances[registeredIndex].reference = ProtocolInstanceReference(
-                udp: &context.udpInstances[registeredIndex]
-            )
-            return context.udpInstances[registeredIndex].reference
-        }
 
         var passthroughEvents = true
 
@@ -141,24 +160,7 @@ public struct UDPProtocol: NetworkProtocol {
             flags.contains(.isIPv4)
         }
 
-        struct Flags: OptionSet {
-            init(rawValue: Self.RawValue) {
-                self.rawValue = rawValue
-            }
-            var rawValue: UInt16
-            static let isIPv4 = Flags(rawValue: 1 << 0)
-            static let flowControlled = Flags(rawValue: 1 << 1)
-            static let outputPending = Flags(rawValue: 1 << 2)
-            static let partialChecksumOffload = Flags(rawValue: 1 << 3)
-            static let noChecksum = Flags(rawValue: 1 << 4)
-            static let noMetadata = Flags(rawValue: 1 << 5)
-            static let ignoreInboundChecksum = Flags(rawValue: 1 << 6)
-            static let upperTransportIsQUIC = Flags(rawValue: 1 << 7)
-            static let fullChecksumOffload = Flags(rawValue: 1 << 8)
-            static let reportedReceiveError = Flags(rawValue: 1 << 9)
-            static let gotPathAttributes = Flags(rawValue: 1 << 10)
-        }
-        var flags: Flags = Flags()
+        var flags = UDPInstanceFlags()
 
         var gotPathAttributes: Bool {
             get { flags.contains(.gotPathAttributes) }
@@ -296,9 +298,16 @@ public struct UDPProtocol: NetworkProtocol {
             }
         }
 
-        mutating func receiveDatagrams(maximumDatagramCount: Int) throws(NetworkError) -> FrameArray? {
+        mutating func receiveDatagrams(
+            maximumDatagramCount: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> FrameArray? {
             repeat {
-                guard var frameArray = try invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount),
+                guard
+                    var frameArray = try invokeReceiveDatagrams(
+                        maximumDatagramCount: maximumDatagramCount,
+                        in: &eventContext
+                    ),
                     frameArray.count > 0
                 else {
                     return nil
@@ -396,7 +405,8 @@ public struct UDPProtocol: NetworkProtocol {
 
         mutating func getDatagramsToSend(
             maximumDatagramCount: Int,
-            minimumDatagramSize: Int
+            minimumDatagramSize: Int,
+            in eventContext: inout NetworkContext.EventContext
         ) throws(NetworkError) -> FrameArray? {
             if self.flags.contains(.flowControlled) {
                 // Wait until UDP flow is allowed
@@ -406,7 +416,8 @@ public struct UDPProtocol: NetworkProtocol {
 
             var outputFrames = try invokeGetDatagramsToSend(
                 maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: incrementByUDPHeaderLength(minimumDatagramSize)
+                minimumDatagramSize: incrementByUDPHeaderLength(minimumDatagramSize),
+                in: &eventContext
             )
             outputFrames?.iterateMutableFrames { frame in
                 _ = frame.claim(fromStart: UDPProtocol.headerLength)
@@ -416,7 +427,10 @@ public struct UDPProtocol: NetworkProtocol {
             return outputFrames
         }
 
-        mutating func sendDatagrams(_ datagrams: consuming FrameArray) throws(NetworkError) {
+        mutating func sendDatagrams(
+            _ datagrams: consuming FrameArray,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) {
             datagrams.iterateMutableFrames { frame in
                 recordStatsEvent(stat: .outboundPackets)
                 guard frame.unclaim(fromStart: UDPProtocol.headerLength) else {
@@ -499,7 +513,7 @@ public struct UDPProtocol: NetworkProtocol {
                 return .continueIterating
             }
 
-            return try invokeSendDatagrams(datagrams)
+            return try invokeSendDatagrams(datagrams, in: &eventContext)
         }
 
         #if !NETWORK_EMBEDDED
@@ -511,7 +525,11 @@ public struct UDPProtocol: NetworkProtocol {
             snapshot.sentTransportByteCount = UInt64(transmitByteCount)
         }
 
-        mutating func handleDisconnectedEvent(_ from: ProtocolInstanceReference, error: NetworkError?) {
+        mutating func handleDisconnectedEvent(
+            error: NetworkError?,
+            for instance: InstanceIdentifier,
+            in eventContext: inout NetworkContext.EventContext
+        ) {
             recordStatsEvent(stat: .clear)
         }
 
@@ -526,10 +544,6 @@ public struct UDPProtocol: NetworkProtocol {
     }
     public func newPerProtocolMetadata() -> UDPMetadata? { UDPMetadata() }
 
-    public func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? {
-        UDPInstance.registerNewUDP(on: context)
-    }
-
     static public let identifier = ProtocolIdentifier(name: "udp", level: .transport, mapping: .oneToOne)
 
     #if !NETWORK_PRIVATE
@@ -537,10 +551,6 @@ public struct UDPProtocol: NetworkProtocol {
     #endif
 
     static public func options() -> ProtocolOptions<UDPProtocol> { UDPProtocol.definition.protocolOptions() }
-
-    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
-        UDPProtocol().newProtocolInstance(context: context)!
-    }
 }
 
 @available(Network 0.1.0, *)
@@ -548,10 +558,12 @@ extension ProtocolOptions<UDPProtocol> {
     public var preferNoChecksum: Bool {
         get { perProtocolOptions!.contains(.preferNoChecksum) }
         set {
-            if newValue {
-                perProtocolOptions!.insert(.preferNoChecksum)
-            } else {
-                perProtocolOptions!.remove(.preferNoChecksum)
+            modifyPerProtocolOptions { udpOptions in
+                if newValue {
+                    udpOptions.insert(.preferNoChecksum)
+                } else {
+                    udpOptions.remove(.preferNoChecksum)
+                }
             }
         }
     }
@@ -559,10 +571,12 @@ extension ProtocolOptions<UDPProtocol> {
     public var noMetadata: Bool {
         get { perProtocolOptions!.contains(.noMetadata) }
         set {
-            if newValue {
-                perProtocolOptions!.insert(.noMetadata)
-            } else {
-                perProtocolOptions!.remove(.noMetadata)
+            modifyPerProtocolOptions { udpOptions in
+                if newValue {
+                    udpOptions.insert(.noMetadata)
+                } else {
+                    udpOptions.remove(.noMetadata)
+                }
             }
         }
     }
@@ -570,10 +584,12 @@ extension ProtocolOptions<UDPProtocol> {
     public var ignoreInboundChecksum: Bool {
         get { perProtocolOptions!.contains(.ignoreInboundChecksum) }
         set {
-            if newValue {
-                perProtocolOptions!.insert(.ignoreInboundChecksum)
-            } else {
-                perProtocolOptions!.remove(.ignoreInboundChecksum)
+            modifyPerProtocolOptions { udpOptions in
+                if newValue {
+                    udpOptions.insert(.ignoreInboundChecksum)
+                } else {
+                    udpOptions.remove(.ignoreInboundChecksum)
+                }
             }
         }
     }
@@ -581,10 +597,12 @@ extension ProtocolOptions<UDPProtocol> {
     public var useQUICStats: Bool {
         get { perProtocolOptions!.contains(.useQUICStats) }
         set {
-            if newValue {
-                perProtocolOptions!.insert(.useQUICStats)
-            } else {
-                perProtocolOptions!.remove(.useQUICStats)
+            modifyPerProtocolOptions { udpOptions in
+                if newValue {
+                    udpOptions.insert(.useQUICStats)
+                } else {
+                    udpOptions.remove(.useQUICStats)
+                }
             }
         }
     }
@@ -592,10 +610,12 @@ extension ProtocolOptions<UDPProtocol> {
     public var fullChecksumOffload: Bool {
         get { perProtocolOptions!.contains(.fullChecksumOffload) }
         set {
-            if newValue {
-                perProtocolOptions!.insert(.fullChecksumOffload)
-            } else {
-                perProtocolOptions!.remove(.fullChecksumOffload)
+            modifyPerProtocolOptions { udpOptions in
+                if newValue {
+                    udpOptions.insert(.fullChecksumOffload)
+                } else {
+                    udpOptions.remove(.fullChecksumOffload)
+                }
             }
         }
     }

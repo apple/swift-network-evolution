@@ -22,6 +22,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -40,7 +43,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
     var largestTimestamp: NetworkClock.Instant = .zero
     var delay = UInt64(0)
     var lastCECount = 0
-    var lastGenerationCountUpdate = 0  // Last time we updated the gen count.
+    var lastGenerationCountUpdate: NetworkClock.Instant = .zero
     var largestAckElicitingPNReceived: PacketNumber = .none
     var largestPNReceived: PacketNumber = .none
     var generationCount = 0
@@ -59,7 +62,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
         now: NetworkClock.Instant
     ) {
         log.datapath(
-            "appending pn \(packetNumber) for space \(packetNumberSpace)"
+            "Appending pn \(packetNumber) for space \(packetNumberSpace)"
         )
 
         var oldLargest: PacketNumber
@@ -143,7 +146,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
         let index = blocks.firstIndex(where: { $0.start == startPN && $0.end == endPN })
         if let index {
             log.datapath(
-                "removing ACK block \(startPN.value)-\(endPN.value) at index \(index), current block count: \(blocks.count)"
+                "Removing ACK block \(startPN.value)-\(endPN.value) at index \(index), current block count: \(blocks.count)"
             )
             blocks.remove(at: index)
             // The next ACK must not be compressed.
@@ -173,7 +176,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
             // compress it.
             generationCount += 1
         } else if _slowPath(packetNumber < oldLargest) {
-            log.fault("packetNumber \(packetNumber) < oldest \(oldLargest)")
+            log.fault("PacketNumber \(packetNumber) < oldest \(oldLargest)")
         }
     }
 
@@ -215,7 +218,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
     ) -> Int {
         guard blocks.first != nil && needsTransmission == true, let lastBlock = blocks.last else {
             log.datapath(
-                "no ACKs to send for \(packetNumberSpace) (needsTransmission \(needsTransmission))"
+                "No ACKs to send for \(packetNumberSpace) (needsTransmission \(needsTransmission))"
             )
             return 0
         }
@@ -224,7 +227,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
             return 0
         }
         let largest = lastBlock.end
-        log.datapath("processing ACKs for \(packetNumberSpace)")
+        log.datapath("Processing ACKs for \(packetNumberSpace)")
         // Calculate ack_delay if assemble() is called
         // without calling size().
         switch packetNumberSpace {
@@ -453,7 +456,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     static let defaultMaxDelay: NetworkDuration = .milliseconds(25)
 
     static let maxDelayExponent = 20  // Values above 20 are invalid
-    static let maxDelayMilliseconds = (1 << 14) * System.Time.USEC_PER_MSEC  // Values above 2^14ms are invalid
+    static let maxDelay: NetworkDuration = .milliseconds(1 << 14)  // Values above 2^14ms are invalid
 
     private var initialAckSpace: AckSpace
     private var handshakeAckSpace: AckSpace
@@ -506,8 +509,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         self.applicationAckSpace = AckSpace(logPrefixer: logPrefixer)
     }
 
-    mutating func reset() {
-        connection?.timer.stop()
+    mutating func reset(in eventContext: inout NetworkContext.EventContext) {
+        connection?.timer.stop(in: &eventContext)
         connection = nil
     }
 
@@ -517,25 +520,25 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
     }
 
-    mutating func timerFired(at timeNow: NetworkClock.Instant) {
-        log.datapath("delayed ACK timer fired")
+    mutating func timerFired(at timeNow: NetworkClock.Instant, in eventContext: inout NetworkContext.EventContext) {
+        log.datapath("Delayed ACK timer fired")
         if let connection = connection {
             if sendPending(
                 isAckSet: connection.isAckSet,
                 setAckFrame: connection.scheduleAckFrame,
                 ecn: connection.ecn,
-                now: timeNow
+                now: timeNow,
+                in: &eventContext
             ) {
-                connection.sendFrames(delayedACK: true)
+                connection.sendFrames(delayedACK: true, in: &eventContext)
 
                 // An ACK-only packet is not ack-eliciting, so once it is sent
                 // there is nothing left in pending items or in recovery to
                 // observe. This is the only place that can return the
                 // connection to idle after a delayed ACK.
-                connection.checkConnectionIdle(unackedPacketCount: unackedPacketCount)
+                connection.checkConnectionIdle(unackedPacketCount: unackedPacketCount, in: &eventContext)
             }
         }
-
     }
 
     @discardableResult
@@ -702,7 +705,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
         ecn: borrowing ECN,
-        now: NetworkClock.Instant
+        now: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         guard let connection else {
             return false
@@ -720,7 +724,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             connection.timer.reschedule(
                 identifier: timerID,
                 fromNow: .zero,
-                timerNow: now
+                timerNow: now,
+                in: &eventContext
             )
             timerScheduled = false
         }
@@ -760,19 +765,20 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         )
     }
 
-    mutating func scheduleDelayedAck() {
+    mutating func scheduleDelayedAck(in eventContext: inout NetworkContext.EventContext) {
         // ACK timer is already scheduled
         if timerScheduled {
             return
         }
         timerScheduled = true
-        log.datapath("scheduling delayed ACK in \(maxDelay)")
+        log.datapath("Scheduling delayed ACK in \(maxDelay)")
         if let timerID = timerID {
             if let connection {
                 connection.timer.reschedule(
                     identifier: timerID,
                     fromNow: maxDelay,
-                    timerNow: connection.now
+                    timerNow: connection.now,
+                    in: &eventContext
                 )
             }
         }
@@ -783,7 +789,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         connectionWindow: Int,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
-        ecn: borrowing ECN
+        ecn: borrowing ECN,
+        in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         // If the peer asked us to, delay the ACK.
         // Otherwise, delay the ACK if we are not forcing ACKs immediately
@@ -805,10 +812,10 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     && unackedPacketCount < packetThreshold
                     && now < lastSentTime.advanced(by: delayedTime))
         {
-            scheduleDelayedAck()
+            scheduleDelayedAck(in: &eventContext)
             return false
         } else {
-            log.datapath("sending ACKs immediately")
+            log.datapath("Sending ACKs immediately")
             return schedulePending(
                 on: path,
                 isAckSet: isAckSet,
@@ -823,7 +830,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         connectionWindow: Int,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
-        ecn: borrowing ECN
+        ecn: borrowing ECN,
+        in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         if unackedPacketCount < 1 {
             // If there are no unacked packets, do nothing
@@ -836,7 +844,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 connectionWindow: connectionWindow,
                 isAckSet: isAckSet,
                 setAckFrame: setAckFrame,
-                ecn: ecn
+                ecn: ecn,
+                in: &eventContext
             )
         }
     }
@@ -880,7 +889,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
     mutating func getGenerationCount(
         for packetNumberSpace: PacketNumberSpace,
-        now: Int
+        now: NetworkClock.Instant
     ) -> Int {
         guard QUICPreferences.shared.ackCompressionEnabled && !disableAckCompression else {
             return 0
@@ -893,14 +902,14 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
             // The generation counter needs to be updated at
             // least every 5 ms.
-            let updateInterval = Int(5 * System.Time.USEC_PER_MSEC)
-            if ackSpace.lastGenerationCountUpdate != 0
+            let updateInterval: NetworkDuration = .milliseconds(5)
+            if ackSpace.lastGenerationCountUpdate != .zero
                 && now >= ackSpace.lastGenerationCountUpdate + updateInterval
             {
                 ackSpace.generationCount += 1
                 generationCount = ackSpace.generationCount
                 ackSpace.lastGenerationCountUpdate = now
-            } else if ackSpace.lastGenerationCountUpdate == 0 {
+            } else if ackSpace.lastGenerationCountUpdate == .zero {
                 ackSpace.lastGenerationCountUpdate = now
             }
             generationCount = ackSpace.generationCount
@@ -1021,14 +1030,20 @@ struct AckBitstring: ~Copyable {
         // The connection will stall if these two conditions occur.
         let initialWord = initialWord
         if _slowPath(startWord < initialWord) {
-            Logger.proto.fault(
-                "Initial word \(initialWord) is lower than start \(startWord) (pn \(start))"
+            outlinedProtoLogFault(
+                "Initial word is lower than start; initial, start, packet number",
+                initialWord,
+                startWord,
+                start.value
             )
             return false
         }
         if _slowPath(stopWord < initialWord) {
-            Logger.proto.fault(
-                "Initial word \(initialWord) is lower than stop \(stopWord) (pn \(stop))"
+            outlinedProtoLogFault(
+                "Initial word is lower than stop; initial, stop, packet number",
+                initialWord,
+                stopWord,
+                stop.value
             )
             return false
         }
@@ -1047,14 +1062,20 @@ struct AckBitstring: ~Copyable {
         let bitstringCount = UInt64(bitstring.count)
         let initialWord = initialWord
         if _slowPath(startWord > initialWord + bitstringCount) {
-            Logger.proto.fault(
-                "Size \(bitstringCount + initialWord) is lower than start \(startWord) (pn \(start))"
+            outlinedProtoLogFault(
+                "Bitstring size is lower than start; size, start, packet number",
+                bitstringCount + initialWord,
+                startWord,
+                start.value
             )
             return false
         }
         if _slowPath(stopWord > initialWord + bitstringCount) {
-            Logger.proto.fault(
-                "Size \(bitstringCount + initialWord) is lower than start \(stopWord) (pn \(stop))"
+            outlinedProtoLogFault(
+                "Bitstring size is lower than stop; size, stop, packet number",
+                bitstringCount + initialWord,
+                stopWord,
+                stop.value
             )
             return false
         }
@@ -1072,7 +1093,7 @@ struct AckBitstring: ~Copyable {
 
         if stopWord >= size {
             guard _slowPath(stopWord < UInt32.max / 2) else {
-                Logger.proto.info("Refusing to grow bitstring further")
+                outlinedProtoLogInfo("Refusing to grow bitstring further")
                 return
             }
             let targetSize = Int(stopWord) + 1
@@ -1118,7 +1139,7 @@ struct AckBitstring: ~Copyable {
         guard initialWord == other.initialWord else {
             let initialWord = self.initialWord
             let otherInitialWord = other.initialWord
-            Logger.proto.fault("Bitstring initial mismatch \(initialWord) != \(otherInitialWord)")
+            outlinedProtoLogFault("Bitstring initial mismatch; self, other", initialWord, otherInitialWord)
             return AckBitstringSequence.empty
         }
         if size > other.size {

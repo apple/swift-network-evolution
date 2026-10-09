@@ -13,7 +13,7 @@ jobs:
     uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.15
     with:
       swift_flags: "-Xswiftc -warnings-as-errors"
-      swift_nightly_flags: "--build-system native -Xswiftc -warnings-as-errors"  # workaround nightly-main issue
+      swift_nightly_flags: "-Xswiftc -warnings-as-errors"
       enable_macos_checks: true
       macos_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}]"
       macos_build_command: bash .github/workflows/scripts/ci-macos.sh
@@ -21,10 +21,13 @@ jobs:
       ios_host_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}]"
       ios_build_command: bash .github/workflows/scripts/ci-ios.sh
       enable_linux_checks: true
-      linux_swift_versions: '["nightly-6.3", "6.3"]'
+      linux_swift_versions: '["nightly-6.4.x", "6.3", "6.4"]'
+      linux_static_sdk_versions: '["nightly-6.4.x", "6.3", "6.4"]'
       linux_build_command: bash .github/workflows/scripts/ci-linux.sh
       enable_windows_checks: false
-      enable_android_sdk_build: false
+      android_sdk_versions: '["nightly-6.4.x", "6.4"]'
+      enable_android_sdk_build: true
+      enable_android_sdk_checks: true
       enable_embedded_wasm_sdk_build: false
       enable_linux_static_sdk_build: true
   tests-nightly-main:
@@ -32,13 +35,16 @@ jobs:
     name: Test (nightly-main)
     uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.15
     with:
-      swift_nightly_flags: "--build-system native -Xswiftc -warnings-as-errors"  # workaround nightly-main issue
+      swift_nightly_flags: "-Xswiftc -warnings-as-errors"
       enable_linux_checks: true
       linux_swift_versions: '["nightly-main"]'
+      linux_static_sdk_versions: '["nightly-main"]'
       linux_build_command: bash .github/workflows/scripts/ci-linux.sh
       enable_macos_checks: false
       enable_windows_checks: false
-      enable_android_sdk_build: false
+      android_sdk_versions: '["nightly-main"]'
+      enable_android_sdk_build: true
+      enable_android_sdk_checks: true
       enable_embedded_wasm_sdk_build: false
       enable_linux_static_sdk_build: true
   soundness:
@@ -47,3 +53,15 @@ jobs:
     with:
       license_header_check_project_name: "Swift"
       api_breakage_check_container_image: "swiftlang/swift:nightly-6.3-jammy"
+  fuzz-smoke:
+    # Quick smoke check that the fuzz targets still build and don't crash
+    # immediately - not a substitute for the much longer, corpus-persisting
+    # nightly fuzzing run (see fuzz-nightly.yml).
+    #
+    # Named "Test" so the check reads "Pull request / Test / Fuzzing": GitHub
+    # composes the name from the workflow name, this caller job's name, and the
+    # job name inside the called workflow.
+    name: Test
+    uses: ./.github/workflows/fuzz.yml
+    with:
+      durations: 'FuzzQUICPackets=200 FuzzTransportParameters=10'

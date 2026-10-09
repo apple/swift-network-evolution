@@ -17,6 +17,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -51,7 +54,7 @@ struct QUICStreamZombie {
         self.localMaxStreamData = localMaxStreamData
         self.logIDString = logIDString
         Logger.proto.info(
-            "\(logIDString) unknown final size; creating zombie stream (last size \(lastSize))"
+            "\(logIDString) Unknown final size; creating zombie stream (last size \(lastSize))"
         )
     }
 
@@ -60,6 +63,7 @@ struct QUICStreamZombie {
         newLastOffset: UInt64,
         newFinalSize: UInt64,
         lastOffset: UInt64,
+        in eventContext: inout NetworkContext.EventContext
     ) -> UInt64? {
         // Like QUICStream.updateLastOffset() but on a zombie and:
         // - final is always true
@@ -73,24 +77,28 @@ struct QUICStreamZombie {
         // than the size of the stream data that was already established
         if newLastOffset < lastOffset {
             connection.log.error(
-                "[false:zombie] endpoint received size \(newLastOffset) that's lower than size of the stream \(lastOffset)"
+                "Endpoint received size \(newLastOffset) that's lower than size of the stream \(lastOffset)"
             )
             connection.close(
                 with:
                     .finalSizeError,
-                "received final size lower than already received size"
+                "received final size lower than already received size",
+                in: &eventContext
             )
             return nil
         }
 
         // Case 3 is never true because finalSize is invalid
-        connection.log.datapath("zombie final size was \(newFinalSize)")
+        connection.log.datapath("Zombie final size was \(newFinalSize)")
 
         guard lastOffset < newLastOffset else {
             return nil
         }
         let lastOffsetDelta = newLastOffset - lastOffset
-        connection.updateLastReceivedOffsetForZombie(lastOffsetDelta: lastOffsetDelta)
+        connection.updateLastReceivedOffsetForZombie(
+            lastOffsetDelta: lastOffsetDelta,
+            in: &eventContext
+        )
         return lastOffsetDelta
     }
 }
@@ -107,12 +115,12 @@ struct QUICStreamZombieList {
     ) {
         guard !zombies.contains(where: { $0.streamID == streamID }) else {
             Logger.proto.fault(
-                "\(logIDString) connection trying to create zombie that's already on zombie list! (last size \(lastSize))"
+                "\(logIDString) Connection trying to create zombie that's already on zombie list! (last size \(lastSize))"
             )
             return
         }
         Logger.proto.info(
-            "\(logIDString) unknown final size; creating a zombie stream (last size \(lastSize))"
+            "\(logIDString) Unknown final size; creating a zombie stream (last size \(lastSize))"
         )
 
         let zombie = QUICStreamZombie(
@@ -138,7 +146,8 @@ struct QUICStreamZombieList {
         logIDString: String,
         streamID: QUICStreamID,
         finalSize: UInt64,
-        connection: QUICConnection
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         let zombie = find(streamID: streamID)
         zombies.removeAll(where: { $0.streamID == streamID })
@@ -146,7 +155,7 @@ struct QUICStreamZombieList {
 
         guard let zombie, let lastSize else {
             connection.log.debug(
-                "[S\(streamID)] received final size of \(finalSize) but zombie not found or last size unknown"
+                "[S\(streamID)] Received final size of \(finalSize) but zombie not found or last size unknown"
             )
             return
         }
@@ -171,7 +180,8 @@ struct QUICStreamZombieList {
                 connection: connection,
                 newLastOffset: newLastOffset,
                 newFinalSize: finalSize,
-                lastOffset: prevLastOffset
+                lastOffset: prevLastOffset,
+                in: &eventContext
             )
         else {
             connection.log.error(

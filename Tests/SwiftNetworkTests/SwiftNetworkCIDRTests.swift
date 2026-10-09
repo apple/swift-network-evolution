@@ -20,6 +20,10 @@ import XCTest
 @_spi(Essentials) import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 final class SwiftNetworkCIDRTests: NetTestCase {
 
@@ -304,5 +308,67 @@ final class SwiftNetworkCIDRTests: NetTestCase {
         let ep = Endpoint(address: addr, port: 443)
         XCTAssertTrue(ep.matchesPattern("2001:db8::/32"))
         XCTAssertFalse(ep.matchesPattern("2001:db9::/32"))
+    }
+
+    // MARK: - Endpoint.matchesPattern
+
+    func testEndpointMatchesPattern_ipv6LiteralExact() {
+        let ep = Endpoint(address: IPv6Address.loopback, port: 443)
+        XCTAssertTrue(ep.matchesPattern("::1"))
+        XCTAssertFalse(ep.matchesPattern("::2"))
+    }
+
+    func testEndpointMatchesPattern_ipv6LiteralNonCanonicalSpellingStillMatches() {
+        // One IPv6 address has many spellings, and an exception list may
+        // use any of them.
+        let ep = Endpoint(address: IPv6Address.loopback, port: 443)
+        XCTAssertTrue(ep.matchesPattern("0:0:0:0:0:0:0:1"))
+        XCTAssertTrue(ep.matchesPattern("0000:0000:0000:0000:0000:0000:0000:0001"))
+    }
+
+    func testEndpointMatchesPattern_ipv6WildcardPatternRefused() {
+        // Refuse domain-style matching for IPv6
+        let addr = IPv6Address([
+            0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        ])!
+        let ep = Endpoint(address: addr, port: 443)
+        XCTAssertFalse(ep.matchesPattern("2001:db8:*"))
+    }
+
+    func testEndpointMatchesPattern_ipv4WildcardInAddressTextStillWorks() {
+        // IPv4 keeps it, which is what makes "17.42.*.10" style entries work.
+        let ep = Endpoint(address: IPv4Address([17, 42, 9, 10])!, port: 443)
+        XCTAssertTrue(ep.matchesPattern("17.42.*.10"))
+        XCTAssertFalse(ep.matchesPattern("17.43.*.10"))
+    }
+
+    func testEndpointMatchesPattern_addressLiteralDoesNotMatchHostEndpoint() {
+        // An address-literal pattern must not fall through to domain matching.
+        let ep = Endpoint(hostname: "1.2.3.4", port: 80)
+        XCTAssertFalse(ep.matchesPattern("1.2.3.4"))
+    }
+
+    func testEndpointMatchesPattern_cidrDoesNotMatchHostEndpoint() {
+        let ep = Endpoint(hostname: "example.com", port: 80)
+        XCTAssertFalse(ep.matchesPattern("192.168.1.0/24"))
+        XCTAssertFalse(ep.matchesPattern("2001:db8::/32"))
+    }
+
+    func testEndpointMatchesPattern_ipv4LiteralDoesNotMatchIPv6Endpoint() {
+        let ep = Endpoint(address: IPv6Address.loopback, port: 443)
+        XCTAssertFalse(ep.matchesPattern("1.2.3.4"))
+    }
+
+    func testEndpointMatchesPattern_unsupportedEndpointTypeNeverMatches() {
+        // Reject anything that is not a host or address before reading the pattern, so
+        // even the wildcard does not match.
+        guard let urlEndpoint = URLEndpoint(url: URL(string: "https://example.com/x")!) else {
+            XCTFail("could not build URL endpoint")
+            return
+        }
+        let ep = Endpoint(urlEndpoint)
+        XCTAssertFalse(ep.matchesPattern("*"))
+        XCTAssertFalse(ep.matchesPattern("example.com"))
     }
 }

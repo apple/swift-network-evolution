@@ -18,6 +18,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -155,11 +158,72 @@ enum TLSCipherSuite: CaseIterable {
     }
 }
 
+#if canImport(CommonCrypto)
+/// An AES-ECB cryptor for computing header protection masks, created once per key.
+///
+/// Creating a cryptor costs several allocations, which `CCCrypt` would pay on every packet. ECB carries no state from
+/// one block to the next, so a single cryptor can encrypt every sample its key protects.
+struct HeaderProtectionCryptor: ~Copyable {
+    private let cryptor: CCCryptorRef?
+
+    /// Creates a cryptor for `key`, or one that fails every operation when `key` is `nil` or unusable.
+    @available(Network 0.1.0, *)
+    init(key: SymmetricKey?) {
+        guard let key else {
+            self.cryptor = nil
+            return
+        }
+        var cryptor: CCCryptorRef?
+        let status = key.withUnsafeBytes { keyBuffer in
+            CCCryptorCreate(
+                CCOperation(kCCEncrypt),
+                CCAlgorithm(kCCAlgorithmAES),
+                CCOptions(kCCOptionECBMode),
+                keyBuffer.baseAddress,
+                keyBuffer.count,
+                nil,
+                &cryptor
+            )
+        }
+        self.cryptor = status == kCCSuccess ? cryptor : nil
+    }
+
+    deinit {
+        if let cryptor {
+            CCCryptorRelease(cryptor)
+        }
+    }
+
+    /// Encrypts the 16-byte block at `input` into `output`.
+    func encryptBlock(_ input: UnsafeRawPointer, into output: UnsafeMutableRawPointer) -> CCCryptorStatus {
+        guard let cryptor else {
+            return CCCryptorStatus(kCCParamError)
+        }
+        var bytesEncrypted = 0
+        let status = CCCryptorUpdate(
+            cryptor,
+            input,
+            kCCBlockSizeAES128,
+            output,
+            kCCBlockSizeAES128,
+            &bytesEncrypted
+        )
+        guard status == kCCSuccess else {
+            return status
+        }
+        return bytesEncrypted == kCCBlockSizeAES128 ? status : CCCryptorStatus(kCCAlignmentError)
+    }
+}
+#endif
+
 @available(Network 0.1.0, *)
 struct SecFramerKeys: ~Copyable {
-    enum KeyType {
+    enum KeyType: Equatable {
         case aesGCM
         case chaChaPoly
+        #if Fuzzing
+        case null
+        #endif
     }
     let key: SymmetricKey
     let iv: ProtectorIV
@@ -169,6 +233,9 @@ struct SecFramerKeys: ~Copyable {
     let type: KeyType
     let isEmpty: Bool
     let log: LogPrefixer
+    #if canImport(CommonCrypto)
+    let headerProtectionCryptor: HeaderProtectionCryptor
+    #endif
 
     init(
         key: SymmetricKey,
@@ -188,6 +255,11 @@ struct SecFramerKeys: ~Copyable {
         self.type = type
         self.log = log
         self.isEmpty = isEmpty
+        #if canImport(CommonCrypto)
+        self.headerProtectionCryptor = HeaderProtectionCryptor(
+            key: type == .aesGCM && !isEmpty ? headerProtectionKey : nil
+        )
+        #endif
     }
     var size: Int {
         key.bitCount
@@ -240,6 +312,56 @@ protocol SecFramerProtocol: ~Copyable {
     ) throws(QUICError)
 }
 
+#if Fuzzing
+// A no-op packet protector used only by fuzz targets.
+@available(Network 0.1.0, *)
+struct SecFramerNull: ~Copyable, SecFramerProtocol {
+    static func createKeyStorage(
+        key: SymmetricKey,
+        iv: ProtectorIV,
+        headerProtectionKey: SymmetricKey,
+        savedWriteSecret: SymmetricKey? = nil,
+        savedReadSecret: SymmetricKey? = nil,
+        log: LogPrefixer
+    ) -> SecFramerKeys {
+        SecFramerKeys(
+            key: key,
+            iv: iv,
+            headerProtectionKey: headerProtectionKey,
+            savedWriteSecret: savedWriteSecret,
+            savedReadSecret: savedReadSecret,
+            type: .null,
+            log: log
+        )
+    }
+
+    static func seal(
+        keys: borrowing SecFramerKeys,
+        nonce: ProtectorNonce,
+        packet: inout Packet,
+        frame: inout Frame
+    ) throws(QUICError) {
+    }
+
+    static func open(
+        keys: borrowing SecFramerKeys,
+        nonce: ProtectorNonce,
+        packet: inout Packet,
+        frame: inout Frame
+    ) throws(QUICError) {
+    }
+
+    static func headerProtection(
+        keys: borrowing SecFramerKeys,
+        packet: inout Packet,
+        frame: inout Frame,
+        mask: inout MutableRawSpan,
+        loggingOperation: StaticString
+    ) throws(QUICError) {
+    }
+}
+#endif
+
 @available(Network 0.1.0, *)
 struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
 
@@ -252,10 +374,10 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
         log: LogPrefixer
     ) -> SecFramerKeys {
         guard _slowPath(key.bitCount == headerProtectionKey.bitCount) else {
-            fatalError("invalid key or headerProtectionKey")
+            fatalError("Invalid key or headerProtectionKey")
         }
         guard _slowPath(key.bitCount == 128 || key.bitCount == 256) else {
-            fatalError("invalid key size")
+            fatalError("Invalid key size")
         }
         return SecFramerKeys(
             key: key,
@@ -280,7 +402,7 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
         let payloadLength = packet.payloadLength
         let tagLength = packet.tagLength
         keys.log.datapath(
-            "sealing for AESGCM\(size), nonce len \(nonce.count), header \(headerLength), payload \(payloadLength) tag \(tagLength)"
+            "Sealing for AESGCM\(size), nonce len \(nonce.count), header \(headerLength), payload \(payloadLength) tag \(tagLength)"
         )
         #endif
 
@@ -296,8 +418,8 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
             let tag = UnsafeMutableRawBufferPointer(rebasing: buffer[packet.tagRange])
             var tagSpan = OutputRawSpan(buffer: tag, initializedCount: 0)
             let nonce = try AES.GCM.Nonce(copying: nonce.span.bytes)
-            try AES.GCM.seal(
-                inPlace: &payloadSpan,
+            try AES.GCM.sealInPlace(
+                &payloadSpan,
                 using: keys.key,
                 nonce: nonce,
                 authenticating: headerSpan,
@@ -329,29 +451,11 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
 
         #if canImport(CommonCrypto)
         let packetBuffer = buffer.withUnsafeMutableBytes { $0 }
-        let result = keys.headerProtectionKey.withUnsafeBytes { headerKeyBuffer in
-            Swift.withUnsafeBytes(of: keys.iv) { ivBuffer in
-                mask.withUnsafeMutableBytes { maskBuffer in
-                    let operation = CCOperation(kCCEncrypt)
-                    let algorithm = CCAlgorithm(kCCAlgorithmAES)
-                    let options = CCOptions(kCCOptionECBMode)
-                    var bytesEncrypted = 0
-
-                    return CCCrypt(
-                        operation,
-                        algorithm,
-                        options,
-                        headerKeyBuffer.baseAddress!,
-                        keys.headerProtectionKey.bitCount / 8,
-                        ivBuffer.baseAddress!,
-                        packetBuffer.baseAddress! + packet.sampleRange.lowerBound,
-                        packet.sampleRange.count,
-                        maskBuffer.baseAddress!,
-                        kCCBlockSizeAES128,
-                        &bytesEncrypted
-                    )
-                }
-            }
+        let result = mask.withUnsafeMutableBytes { maskBuffer in
+            keys.headerProtectionCryptor.encryptBlock(
+                packetBuffer.baseAddress! + packet.sampleRange.lowerBound,
+                into: maskBuffer.baseAddress!
+            )
         }
         guard result == kCCSuccess else {
             keys.log.error("Unable to \(loggingOperation) header: \(result)")
@@ -398,7 +502,7 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
         let tagLength = packet.tagLength
         let pn = packet.number.value
         keys.log.datapath(
-            "opening for AESGCM\(size), nonce len \(nonce.count), header \(headerLength), payload \(payloadLength), tag \(tagLength), pn \(pn)"
+            "Opening for AESGCM\(size), nonce len \(nonce.count), header \(headerLength), payload \(payloadLength), tag \(tagLength), pn \(pn)"
         )
         #endif
         guard var buffer = frame.mutableSpan else {
@@ -413,8 +517,8 @@ struct SecFramerAESGCM: ~Copyable, SecFramerProtocol {
             let tag = UnsafeMutableRawBufferPointer(rebasing: buffer[packet.tagRange])
             let nonce = try AES.GCM.Nonce(copying: nonce.span.bytes)
             try AES.GCM
-                .open(
-                    inPlace: &payloadSpan,
+                .openInPlace(
+                    &payloadSpan,
                     using: keys.key,
                     nonce: nonce,
                     authenticating: header.bytes,
@@ -442,10 +546,10 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
         log: LogPrefixer
     ) -> SecFramerKeys {
         guard _slowPath(key.bitCount == headerProtectionKey.bitCount) else {
-            fatalError("invalid key or headerProtectionKey")
+            fatalError("Invalid key or headerProtectionKey")
         }
         guard _slowPath(key.bitCount == 256) else {
-            fatalError("invalid key size")
+            fatalError("Invalid key size")
         }
         return SecFramerKeys(
             key: key,
@@ -469,7 +573,7 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
         let payloadLength = packet.payloadLength
         let tagLength = packet.tagLength
         keys.log.datapath(
-            "sealing for ChaCha20Poly1305, nonce len \(nonce.count), header \(headerLength), payload \(payloadLength) tag \(tagLength)"
+            "Sealing for ChaCha20Poly1305, nonce len \(nonce.count), header \(headerLength), payload \(payloadLength) tag \(tagLength)"
         )
         #endif
         guard var buffer = frame.mutableSpan else {
@@ -485,8 +589,8 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
                 var tagSpan = OutputRawSpan(buffer: tag, initializedCount: 0)
                 let nonce = try ChaChaPoly.Nonce(copying: nonce.span.bytes)
                 try ChaChaPoly
-                    .seal(
-                        inPlace: &payloadSpan,
+                    .sealInPlace(
+                        &payloadSpan,
                         using: keys.key,
                         nonce: nonce,
                         authenticating: headerSpan,
@@ -546,7 +650,7 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
             throw QUICError.protector(.headerProtectionFailed)
         }
         #else
-        fatalError("not implemented")
+        fatalError("Not implemented")
         #endif
     }
 
@@ -561,7 +665,7 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
         let payloadLength = packet.payloadLength
         let tagLength = packet.tagLength
         keys.log.datapath(
-            "opening for ChaCha20Poly1305, nonce len \(nonce.count), header \(headerLength), payload \(payloadLength), tag \(tagLength)"
+            "Opening for ChaCha20Poly1305, nonce len \(nonce.count), header \(headerLength), payload \(payloadLength), tag \(tagLength)"
         )
         #endif
         guard var buffer = frame.mutableSpan else {
@@ -576,8 +680,8 @@ struct SecFramerChaChaPoly: ~Copyable, SecFramerProtocol {
             var payloadSpan = payload.mutableBytes
             let tag = UnsafeMutableRawBufferPointer(rebasing: buffer[packet.tagRange])
             let nonce = try ChaChaPoly.Nonce(copying: nonce.span.bytes)
-            try ChaChaPoly.open(
-                inPlace: &payloadSpan,
+            try ChaChaPoly.openInPlace(
+                &payloadSpan,
                 using: keys.key,
                 nonce: nonce,
                 authenticating: header,
@@ -647,12 +751,22 @@ struct Protector: ~Copyable, PrefixedLoggable {
         deriveInitialSecrets(destinationCID: destinationCID)
     }
 
-    private func encode(label: String, secretLength: Int) -> [UInt8] {
+    /// Encodes the HKDF label for `label` and passes it to `body`.
+    ///
+    /// The encoding only has to last for one expansion, so it is built in an inline array rather than on the heap.
+    private func withEncodedLabel<Result>(
+        _ label: String,
+        secretLength: Int,
+        _ body: (UnsafeRawBufferPointer) -> Result
+    ) -> Result {
         let quicLabel = "tls13 "
         let labelLength = quicLabel.utf8.count + label.utf8.count
+        // TLS caps a label at 255 bytes (RFC 8446 Section 7.1), so the encoding is at most 259: 2 bytes of length,
+        // a 1-byte label length, the label, and a 1-byte length for the empty context.
+        precondition(labelLength <= 255, "HKDF label is longer than TLS allows")
         // 2 is for the length, 1 byte prefix for each label, 1 byte for context
         let totalLength = 2 + 1 + labelLength + 1
-        var result = [UInt8](repeating: 0, count: totalLength)
+        var result = InlineArray<259, UInt8>(repeating: 0)
         var index = 0
 
         // Encode the length of the secret
@@ -662,13 +776,19 @@ struct Protector: ~Copyable, PrefixedLoggable {
         index += 1
         result[index] = UInt8(labelLength)
         index += 1
-        result.replaceSubrange(index..<index + quicLabel.utf8.count, with: quicLabel.utf8)
-        index += quicLabel.utf8.count
-        result.replaceSubrange(index..<index + label.utf8.count, with: label.utf8)
-        index += label.utf8.count
+        for byte in quicLabel.utf8 {
+            result[index] = byte
+            index += 1
+        }
+        for byte in label.utf8 {
+            result[index] = byte
+            index += 1
+        }
         result[index] = 0
 
-        return result
+        return result.span.withUnsafeBytes { bytes in
+            body(UnsafeRawBufferPointer(rebasing: bytes[..<totalLength]))
+        }
     }
 
     private func deriveWithSHA256(
@@ -676,12 +796,13 @@ struct Protector: ~Copyable, PrefixedLoggable {
         label: String,
         outputSecretLength: Int
     ) -> SymmetricKey {
-        let encodedLabel = encode(label: label, secretLength: outputSecretLength)
-        return HKDF<SHA256>.expand(
-            pseudoRandomKey: inputSecret,
-            info: encodedLabel,
-            outputByteCount: outputSecretLength
-        )
+        withEncodedLabel(label, secretLength: outputSecretLength) { encodedLabel in
+            HKDF<SHA256>.expand(
+                pseudoRandomKey: inputSecret,
+                info: encodedLabel,
+                outputByteCount: outputSecretLength
+            )
+        }
     }
 
     private func deriveWithSHA384(
@@ -689,12 +810,13 @@ struct Protector: ~Copyable, PrefixedLoggable {
         label: String,
         outputSecretLength: Int
     ) -> SymmetricKey {
-        let encodedLabel = encode(label: label, secretLength: outputSecretLength)
-        return HKDF<SHA384>.expand(
-            pseudoRandomKey: inputSecret,
-            info: encodedLabel,
-            outputByteCount: outputSecretLength
-        )
+        withEncodedLabel(label, secretLength: outputSecretLength) { encodedLabel in
+            HKDF<SHA384>.expand(
+                pseudoRandomKey: inputSecret,
+                info: encodedLabel,
+                outputByteCount: outputSecretLength
+            )
+        }
     }
 
     mutating func deriveInitialSecrets(destinationCID: QUICConnectionID) {
@@ -845,14 +967,9 @@ struct Protector: ~Copyable, PrefixedLoggable {
             // Packet number offset must always be set, otherwise sampleRange doesn't work before we get here.
             packetNumberOffset = packet.packetNumberOffset!
         } else {
-            // When sealing/encrypting, the packet number is known but may be overridden
-            if let length = packet.overrideSentNumberSize?.rawValue {
-                packetNumberLength = length
-            } else {
-                // The packet number would not have been written if it doesn't encode
-                packetNumberLength = try! packet.number.encode(lastAcked: packet.lastAcked).size
-                    .rawValue
-            }
+            // When sealing/encrypting, writing the header recorded the encoded length, including
+            // any override of the number of bytes it occupies.
+            packetNumberLength = Int(packet.packetNumberLength)
             packetNumberOffset = packet.packetNumberOffset!
         }
 
@@ -916,6 +1033,10 @@ struct Protector: ~Copyable, PrefixedLoggable {
             #else
             throw (.protector(.unsupportedAlgorithm))
             #endif
+        #if Fuzzing
+        case .null:
+            break
+        #endif
         }
     }
 
@@ -967,6 +1088,21 @@ struct Protector: ~Copyable, PrefixedLoggable {
             #else
             throw (.protector(.unsupportedAlgorithm))
             #endif
+        #if Fuzzing
+        case .null:
+            var maskSpan = mask.mutableSpan
+            var maskRawSpan = maskSpan.mutableBytes
+            try SecFramerNull.headerProtection(
+                keys: keys,
+                packet: &packet,
+                frame: &frame,
+                mask: &maskRawSpan,
+                loggingOperation: "open"
+            )
+            // The mask stays zeroed, so this leaves the header untouched:
+            // fuzzer input is treated as already-plaintext.
+            Protector.processHeaderProtection(packet: &packet, frame: &frame, mask: mask.span.bytes)
+        #endif
         }
     }
 
@@ -1000,6 +1136,11 @@ struct Protector: ~Copyable, PrefixedLoggable {
             #else
             throw (.protector(.unsupportedAlgorithm))
             #endif
+        #if Fuzzing
+        case .null:
+            let nonce = prepareNonce(iv: keys.iv, packetNumber: packet.number)
+            try SecFramerNull.open(keys: keys, nonce: nonce, packet: &packet, frame: &frame)
+        #endif
         }
     }
 
@@ -1141,6 +1282,12 @@ struct Protector: ~Copyable, PrefixedLoggable {
                 isWrite ? savedWriteSecret! : savedReadSecret!
             keySize = key.bitCount / 8
             ivSize = iv.count
+        #if Fuzzing
+        case .null:
+            // Null protector keys are never phase0/phase1 traffic secrets,
+            // so key-phase rotation should never be triggered for them.
+            fatalError("trafficUpdate is unreachable for a null protector")
+        #endif
         }
         let keyUpdateSecret: SymmetricKey
         let key: SymmetricKey
@@ -1221,6 +1368,10 @@ struct Protector: ~Copyable, PrefixedLoggable {
                 nextFramer.savedReadSecret = keyUpdateSecret
                 readFramer[nextKeyState.rawValue] = nextFramer
             }
+        #if Fuzzing
+        case .null:
+            fatalError("trafficUpdate is unreachable for a null protector")
+        #endif
         }
     }
 
@@ -1281,6 +1432,22 @@ struct Protector: ~Copyable, PrefixedLoggable {
         keys.type
     }
 
+    #if Fuzzing
+    // Installs a no-op protector for the given key state so incoming packets
+    // are treated as already-plaintext instead of being rejected/queued for
+    // missing keys. Only usable by fuzz targets; never available in
+    // production builds. Only the read side is installed since fuzzing only
+    // exercises the receive path.
+    mutating func installNullProtector(for keyState: PacketKeyState) {
+        readFramer[keyState.rawValue] = SecFramerNull.createKeyStorage(
+            key: SymmetricKey(data: []),
+            iv: ProtectorIV(repeating: 0),
+            headerProtectionKey: SymmetricKey(data: []),
+            log: log
+        )
+    }
+    #endif
+
     mutating func drop(keyState: PacketKeyState) {
         log.info("Dropping keys for state: \(keyState.description)")
         let readType: SecFramerKeys.KeyType = keyType(keys: readFramer[keyState.rawValue])
@@ -1312,7 +1479,12 @@ struct Protector: ~Copyable, PrefixedLoggable {
 
     @inline(always)
     func getTagSize(for keyState: PacketKeyState?) -> UInt8 {
-        16
+        #if Fuzzing
+        if let keyState, readFramer[keyState.rawValue].type == .null {
+            return 0
+        }
+        #endif
+        return 16
     }
 
     static func openRetry(retryPseudo: RawSpan, retryTag: RawSpan) throws(QUICError) {
@@ -1320,8 +1492,8 @@ struct Protector: ~Copyable, PrefixedLoggable {
         do {
             var ciphertext = MutableRawSpan()
             let nonce = try AES.GCM.Nonce(copying: retryNonceArray.span.bytes)
-            try AES.GCM.open(
-                inPlace: &ciphertext,
+            try AES.GCM.openInPlace(
+                &ciphertext,
                 using: retryKey,
                 nonce: nonce,
                 authenticating: retryPseudo,
@@ -1341,8 +1513,8 @@ struct Protector: ~Copyable, PrefixedLoggable {
             var ciphertext = MutableRawSpan()
             do throws(CryptoKitMetaError) {
                 let nonce = try AES.GCM.Nonce(copying: retryNonceArray.span.bytes)
-                try AES.GCM.seal(
-                    inPlace: &ciphertext,
+                try AES.GCM.sealInPlace(
+                    &ciphertext,
                     using: retryKey,
                     nonce: nonce,
                     authenticating: retryPseudo,

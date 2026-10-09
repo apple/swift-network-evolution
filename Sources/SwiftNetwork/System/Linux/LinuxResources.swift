@@ -12,20 +12,32 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if os(Linux)
+#if os(Linux) || os(Android)
 #if canImport(Glibc)
 import Glibc
+internal import SwiftNetworkLinuxShim
+#elseif canImport(Android)
+import Android
 #elseif canImport(Musl)
 import Musl
-#endif
 internal import SwiftNetworkLinuxShim
+#endif
 
 /// A set of Linux system APIs for interacting with the system resources.
 internal enum SystemResources {
-
+    #if canImport(Android)
+    static func getFDLimit() -> UInt64 {
+        var existing = rlimit()
+        if getrlimit(RLIMIT_NOFILE, &existing) == 0 {
+            return UInt64(existing.rlim_cur)
+        }
+        return 0
+    }
+    #else
     static func getFDLimit() -> UInt64 {
         SwiftNetworkLinuxShim_getFDLimit()
     }
+    #endif
 }
 
 #endif

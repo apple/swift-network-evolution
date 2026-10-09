@@ -46,21 +46,21 @@ public enum ServerAccurateECNState: UInt32, Equatable {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public struct ProtocolEstablishmentReport: Equatable {
-    let handshakeMilliseconds: NetworkDuration
-    let handshakeRTTMilliseconds: NetworkDuration
-    let protocolIdentifier: ProtocolIdentifier
-    let clientAccurateECNState: ClientAccurateECNState
-    let serverAccurateECNState: ServerAccurateECNState
+    public let handshakeDuration: NetworkDuration
+    public let handshakeRTT: NetworkDuration
+    public let protocolIdentifier: ProtocolIdentifier
+    public let clientAccurateECNState: ClientAccurateECNState
+    public let serverAccurateECNState: ServerAccurateECNState
 
-    init(
-        handshakeMilliseconds: NetworkDuration,
-        handshakeRTTMilliseconds: NetworkDuration,
+    public init(
+        handshakeDuration: NetworkDuration,
+        handshakeRTT: NetworkDuration,
         protocolIdentifier: ProtocolIdentifier,
         clientAccurateECNState: ClientAccurateECNState = .ecnInvalid,
         serverAccurateECNState: ServerAccurateECNState = .ecnInvalid
     ) {
-        self.handshakeMilliseconds = handshakeMilliseconds
-        self.handshakeRTTMilliseconds = handshakeRTTMilliseconds
+        self.handshakeDuration = handshakeDuration
+        self.handshakeRTT = handshakeRTT
         self.protocolIdentifier = protocolIdentifier
         self.clientAccurateECNState = clientAccurateECNState
         self.serverAccurateECNState = serverAccurateECNState
@@ -77,21 +77,21 @@ public struct ProtocolEstablishmentReport: Equatable {
         static let quicStatelessResetDuringPathProbe = Flags(rawValue: 1 << 3)
     }
     private var flags = Flags()
-    var l4sEnabled: Bool {
+    public var l4sEnabled: Bool {
         get { flags.contains(.l4sEnabled) }
         set { if newValue { flags.insert(.l4sEnabled) } else { flags.remove(.l4sEnabled) } }
     }
-    var quicMigrationSupported: Bool {
+    public var quicMigrationSupported: Bool {
         get { flags.contains(.quicMigrationSupported) }
         set { if newValue { flags.insert(.quicMigrationSupported) } else { flags.remove(.quicMigrationSupported) } }
     }
-    var quicStatelessResetReceived: Bool {
+    public var quicStatelessResetReceived: Bool {
         get { flags.contains(.quicStatelessResetReceived) }
         set {
             if newValue { flags.insert(.quicStatelessResetReceived) } else { flags.remove(.quicStatelessResetReceived) }
         }
     }
-    var quicStatelessResetDuringPathProbe: Bool {
+    public var quicStatelessResetDuringPathProbe: Bool {
         get { flags.contains(.quicStatelessResetDuringPathProbe) }
         set {
             if newValue {

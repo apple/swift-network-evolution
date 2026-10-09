@@ -22,6 +22,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -780,19 +783,19 @@ extension FrameStreamSendMetadata: SendableItem {
             // Already completely written, ignore
             guard !stream.sendState.dataHasAlreadyBeenSent else {
                 pendingItems.popServicedStream()
+                stream.listMembership.remove(.sendable)
                 continue
             }
 
-            // Check the sendBuffer has data to send at the current send offset
-            let remainingStreamLength = stream.remainingSendDataToService
+            let (offset, remainingStreamLength, hasLast) = stream.availableSendData()
             let allowedFlowControlLength = stream.availableRemoteReceiveWindow(for: connection)
             let lengthToSend = min(remainingStreamLength, allowedFlowControlLength)
-            let isFinal = stream.sendBuffer.hasLast && lengthToSend == remainingStreamLength
+            let isFinal = hasLast && lengthToSend == remainingStreamLength
 
-            let offset = stream.sendOffset
             let shouldSend = remainingStreamLength > 0 || isFinal
             guard shouldSend else {
                 pendingItems.popServicedStream()
+                stream.listMembership.remove(.sendable)
                 continue
             }
 
@@ -800,10 +803,12 @@ extension FrameStreamSendMetadata: SendableItem {
                 // Has data to send, but cannot
                 // Remove the stream for now
                 pendingItems.popServicedStream()
+                stream.listMembership.remove(.sendable)
                 // And trigger sending blocked frames if necessary
                 stream.recordStreamDataSending(
                     writtenLength: 0,
                     isFinal: false,
+                    hasMoreDataToService: true,
                     pendingItems: &pendingItems,
                     connection: connection
                 )
@@ -818,11 +823,12 @@ extension FrameStreamSendMetadata: SendableItem {
                 length: lengthToSend,
                 isFinal: isFinal
             )
+            let hasMoreDataToService = remainingStreamLength > UInt64(lengthWritten)
 
             if lengthWritten < lengthToSend {
                 // Incomplete write. Save what was transmitted, and record what is left.
                 let writtenStream = TransmittedItems.SentStream(
-                    flowID: stream.identifier,
+                    flowID: stream.flowIdentifier,
                     streamID: stream.streamID!,
                     offset: offset,
                     length: UInt64(lengthWritten),
@@ -840,13 +846,14 @@ extension FrameStreamSendMetadata: SendableItem {
                 stream.recordStreamDataSending(
                     writtenLength: UInt64(lengthWritten),
                     isFinal: false,
+                    hasMoreDataToService: hasMoreDataToService,
                     pendingItems: &pendingItems,
                     connection: connection
                 )
             } else {
                 // Complete write. Save it to transmitted items for a record.
                 let writtenStream = TransmittedItems.SentStream(
-                    flowID: stream.identifier,
+                    flowID: stream.flowIdentifier,
                     streamID: stream.streamID!,
                     offset: offset,
                     length: UInt64(lengthWritten),
@@ -864,12 +871,14 @@ extension FrameStreamSendMetadata: SendableItem {
                 stream.recordStreamDataSending(
                     writtenLength: UInt64(lengthWritten),
                     isFinal: isFinal,
+                    hasMoreDataToService: hasMoreDataToService,
                     pendingItems: &pendingItems,
                     connection: connection
                 )
 
                 // Complete write, remove this stream from the list to service
                 pendingItems.popServicedStream()
+                stream.listMembership.remove(.sendable)
             }
             sentStream = true
         }
@@ -1594,11 +1603,11 @@ extension FrameDatagram: SendableItem {
             // Thrown once the closure has returned, because `accessDatagramsToSend` takes a
             // non-throwing closure. It tells the packet builder that this packet is full.
             var writeError: QUICError? = nil
-            connection.accessDatagramsToSend(flow: firstFlowID) { datagrams in
+            connection.accessDatagramsToSend(flow: datagramFlow) { datagrams in
                 while !datagrams.isEmpty {
                     let dataLength = datagrams.peekFirstFrame { $0.unclaimedLength }
                     connection.log.datapath(
-                        "handle output datagram for flow \(firstFlowID.debugDescription) (size \(dataLength))"
+                        "Handle output datagram for flow \(firstFlowID.debugDescription) (size \(dataLength))"
                     )
                     guard dataLength <= datagramFlow.usableDatagramSize else {
                         connection.log.error(
@@ -1629,7 +1638,7 @@ extension FrameDatagram: SendableItem {
                     }
                     if writeError != nil {
                         connection.log.datapath(
-                            "datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
+                            "Datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
                         )
                         break
                     }
@@ -2588,7 +2597,7 @@ struct PendingItems: ~Copyable {
 
     func canAddStreamToService(_ stream: QUICStreamInstance) -> Bool {
         !stream.sendState.dataHasAlreadyBeenSent
-            && ((stream.hasMoreSendDataToService && stream.availableRemoteReceiveWindow > 0)
+            && ((stream.hasMoreSendDataToService && stream.availableRemoteReceiveWindow(for: stream.parentProtocol) > 0)
                 || stream.sendBuffer.hasLast)
     }
 
@@ -2603,10 +2612,13 @@ struct PendingItems: ~Copyable {
             // Nothing new to send
             return
         }
-        if !streamsToService.contains(newStream.identifier) {
-            streamsToService.append(newStream.identifier)
-            stream = true
+        guard !newStream.listMembership.contains(.sendable) else {
+            // Already queued to be serviced
+            return
         }
+        newStream.listMembership.insert(.sendable)
+        streamsToService.append(newStream.flowIdentifier)
+        stream = true
     }
 
     mutating func prependStreamToService(_ newStream: QUICStreamInstance) {
@@ -2614,10 +2626,13 @@ struct PendingItems: ~Copyable {
             // Nothing new to send
             return
         }
-        if !streamsToService.contains(newStream.identifier) {
-            streamsToService.prepend(newStream.identifier)
-            stream = true
+        guard !newStream.listMembership.contains(.sendable) else {
+            // Already queued to be serviced
+            return
         }
+        newStream.listMembership.insert(.sendable)
+        streamsToService.prepend(newStream.flowIdentifier)
+        stream = true
     }
 
     @discardableResult
@@ -2709,6 +2724,14 @@ struct PendingItems: ~Copyable {
 
     mutating func flush() {
         self = PendingItems(packetNumberSpace: packetNumberSpace)
+    }
+
+    // Flush sendable streams for application space when the connection is flushed
+    @discardableResult
+    mutating func flushClearingQueuedStreams() -> Deque<MultiplexedFlowIdentifier> {
+        let droppedStreams = streamsToService
+        flush()
+        return droppedStreams
     }
 
     init(packetNumberSpace: PacketNumberSpace) {
@@ -3114,19 +3137,78 @@ struct TransmittedItems: ~Copyable {
     var sentCrypto = NetworkUniqueArray<SentCrypto>()
 
     // Minimal information about a send on a stream
-    struct SentStream: ~Copyable {
+    struct SentStream {
         let flowID: MultiplexedFlowIdentifier
         let streamID: QUICStreamID
         let offset: UInt64
         let length: UInt64
         let isFinal: Bool
 
-        func matches(_ other: borrowing SentStream) -> Bool {
+        func matches(_ other: SentStream) -> Bool {
             flowID == other.flowID && streamID == other.streamID && offset == other.offset && length == other.length
                 && isFinal == other.isFinal
         }
     }
-    var sentStreams = NetworkUniqueArray<SentStream>()
+
+    /// The stream sends a packet carried.
+    ///
+    /// A packet almost always carries a single stream, and every sent packet keeps its record until it is
+    /// acknowledged or lost, so one send is held inline and only a second one allocates storage.
+    struct SentStreams: ~Copyable {
+        private enum Storage: ~Copyable {
+            case empty
+            case one(SentStream)
+            case many(NetworkUniqueArray<SentStream>)
+        }
+
+        private var storage = Storage.empty
+
+        var isEmpty: Bool {
+            switch storage {
+            case .empty: return true
+            case .one: return false
+            case .many(let sends): return sends.isEmpty
+            }
+        }
+
+        var count: Int {
+            switch storage {
+            case .empty: return 0
+            case .one: return 1
+            case .many(let sends): return sends.count
+            }
+        }
+
+        subscript(index: Int) -> SentStream {
+            switch storage {
+            case .empty:
+                preconditionFailure("Index out of range")
+            case .one(let send):
+                precondition(index == 0, "Index out of range")
+                return send
+            case .many(let sends):
+                return sends[index]
+            }
+        }
+
+        mutating func append(_ sentStream: SentStream) {
+            var taken = Storage.empty
+            swap(&taken, &storage)
+            switch consume taken {
+            case .empty:
+                storage = .one(sentStream)
+            case .one(let first):
+                var sends = NetworkUniqueArray<SentStream>(minimumCapacity: 2)
+                sends.append(first)
+                sends.append(sentStream)
+                storage = .many(sends)
+            case .many(var sends):
+                sends.append(sentStream)
+                storage = .many(sends)
+            }
+        }
+    }
+    var sentStreams = SentStreams()
 
     var maxStreamDataFlows = Deque<MultiplexedFlowIdentifier>()
     var streamDataBlockedFlows = Deque<MultiplexedFlowIdentifier>()
@@ -3172,7 +3254,8 @@ struct TransmittedItems: ~Copyable {
         connection: QUICConnection,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
-        sentPath: QUICPath
+        sentPath: QUICPath,
+        in eventContext: inout NetworkContext.EventContext
     ) {
         if let ackFrame {
             connection.acknowledgedAck(
@@ -3188,7 +3271,8 @@ struct TransmittedItems: ~Copyable {
                 flowID: sentStreams[i].flowID,
                 offset: sentStreams[i].offset,
                 length: sentStreams[i].length,
-                isFinal: sentStreams[i].isFinal
+                isFinal: sentStreams[i].isFinal,
+                in: &eventContext
             )
         }
         for i in 0..<sentCrypto.count {
@@ -3200,14 +3284,15 @@ struct TransmittedItems: ~Copyable {
         }
 
         for streamReset in streamResets {
-            connection.acknowledgedResetStream(id: streamReset.streamID)
+            connection.acknowledgedResetStream(id: streamReset.streamID, in: &eventContext)
         }
 
         if let pmtudProbeMSS {
             connection.acknowledgedPMTUDProbe(
                 on: sentPath,
                 packetNumber: packetNumber,
-                mss: pmtudProbeMSS
+                mss: pmtudProbeMSS,
+                in: &eventContext
             )
         }
 

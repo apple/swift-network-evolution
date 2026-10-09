@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -32,6 +35,16 @@ struct StreamSendBuffer: ~Copyable {
     private var storage = FrameArrayQueue()
     private(set) var storageStartOffset: StreamOffset = 0
     private(set) var hasLast = false
+
+    struct Cursor: ~Copyable {
+        var previousCursorIndex: Int = 0
+        var previousCursorFrameStartOffset: StreamOffset = 0
+        var previousCursorResumeOffset: StreamOffset = 0
+        var previousCursorValid: Bool = false
+    }
+
+    // Used to save the previous index and offset for resuming at a position in the frame array
+    private var cursor: Cursor = Cursor()
 
     mutating func addSendData(_ data: consuming Frame, isLast: Bool) {
         if isLast {
@@ -53,11 +66,17 @@ struct StreamSendBuffer: ~Copyable {
 
     mutating func empty() {
         storage.finalizeAllFramesAsFailed()
+        cursor.previousCursorValid = false
     }
 
     // If we've sent all the stored data out once.
     func hasMoreSendDataToService(currentSendOffset: StreamOffset) -> Bool {
         storageStartOffset + StreamLength(storage.unclaimedLength) > currentSendOffset
+    }
+
+    // Returns remaining data to service and the flag for `hasLast`
+    func sendServiceState(currentSendOffset: StreamOffset) -> (remaining: StreamLength, hasLast: Bool) {
+        (remainingDataLengthToService(currentSendOffset: currentSendOffset), hasLast)
     }
 
     // How much remains to be serviced == has not yet been sent out once.
@@ -87,7 +106,7 @@ struct StreamSendBuffer: ~Copyable {
     }
 
     // Returns the length of data it was able to copy out to the destination frame
-    func copyOutSendData(
+    mutating func copyOutSendData(
         offset requestedOffset: StreamOffset,
         length maxRequestedLength: StreamLength,
         into destination: inout Frame,
@@ -114,26 +133,29 @@ struct StreamSendBuffer: ~Copyable {
         // iteration, copying as much as we can from storage, before stopping.
         let requestedLength = min(maxRequestedLength, StreamLength(destination.unclaimedLength))
 
+        // If the previously saved cursor is still valid set the start index
+        var startIndex = 0
+        var currentFrameOffset: StreamOffset = storageStartOffset
+        if cursor.previousCursorValid, cursor.previousCursorResumeOffset == requestedOffset {
+            startIndex = cursor.previousCursorIndex
+            currentFrameOffset = cursor.previousCursorFrameStartOffset
+        }
+
         // This can use FrameArray.iterateImmutableFrames() because it does NOT alter
         // the frame array while iterating.
-        var currentFrameOffset: StreamOffset = storageStartOffset
         var destinationOffset: StreamOffset = 0
         var totalLengthCopied: StreamLength = 0
-        storage.iterateImmutableFrames { frame in
+        var lastVisitedIndex = startIndex
+        var lastVisitedFrameStartOffset = currentFrameOffset
+        storage.iterateImmutableFrames(startingAt: startIndex) { index, frame in
+            lastVisitedIndex = index
+            lastVisitedFrameStartOffset = currentFrameOffset
             // 1. Step past frames that don't include the requested offset
             let currentFrameLength = StreamLength(frame.unclaimedLength)
             if currentFrameOffset + currentFrameLength <= requestedOffset + totalLengthCopied {
                 currentFrameOffset += currentFrameLength
                 return true
             }
-            // Optimization idea for the above skip-past step:
-            // add a way to "continue where we left off last time", if the caller
-            // calls us with offset matching where last call's copy ended:
-            // Ie. first call:  offset: A, length: L
-            // and second call: offset: A + L
-            // Save an iterator context, so we can continue at same offset,
-            // instead of having to skip past looking for the right Frame in the
-            // array again!
 
             // 2. Offset is within this frame, copy out, up to requestedLength
             let offsetWithinFrame = requestedOffset + totalLengthCopied - currentFrameOffset
@@ -149,7 +171,6 @@ struct StreamSendBuffer: ~Copyable {
             precondition(lengthCopied <= currentFrameLength)
             if lengthCopied > 0 {  // Report correctly even if precondition(s) fail
                 // If we fail to copy the expected length, the caller will error handle
-                currentFrameOffset += StreamOffset(currentFrameLength)
                 destinationOffset += StreamOffset(lengthCopied)
                 totalLengthCopied += StreamLength(lengthCopied)
             }
@@ -162,8 +183,17 @@ struct StreamSendBuffer: ~Copyable {
             if totalLengthCopied == requestedLength {
                 return false
             }
+            // Still didn't hit the requested length, so this frame's remaining
+            // unclaimed bytes have been fully consumed; advance past it.
+            currentFrameOffset += StreamOffset(currentFrameLength)
             return true
         }
+        // Save where we ended so the next call can resume without
+        // traversing the frame array from the start.
+        cursor.previousCursorIndex = lastVisitedIndex
+        cursor.previousCursorFrameStartOffset = lastVisitedFrameStartOffset
+        cursor.previousCursorResumeOffset = requestedOffset + totalLengthCopied
+        cursor.previousCursorValid = true
         return totalLengthCopied
     }
 
@@ -221,6 +251,7 @@ struct StreamSendBuffer: ~Copyable {
                     )
                     return
                 }
+                cursor.previousCursorValid = false
             }
             return
         }
@@ -275,6 +306,10 @@ struct FrameArrayQueue: ~Copyable {
 
     func iterateImmutableFrames(_ enumerator: (borrowing Frame) -> Bool) {
         frames.iterateImmutableFrames(enumerator)
+    }
+
+    func iterateImmutableFrames(startingAt startIndex: Int, _ enumerator: (Int, borrowing Frame) -> Bool) {
+        frames.iterateImmutableFrames(startingAt: startIndex, enumerator)
     }
 
     mutating func claim(fromStart: Int) -> Bool {

@@ -20,6 +20,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -182,7 +185,7 @@ enum PathEvaluationError: Error {
 public struct PathProperties: CustomStringConvertible {
 
     var overrideInterface: Interface? = nil
-    var directInterface: Interface? = nil
+    public var directInterface: Interface? = nil
     var delegateInterface: Interface? = nil
     var fallbackInterface: Interface? = nil
     var parameters: MutableParametersStorage

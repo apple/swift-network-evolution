@@ -16,6 +16,8 @@ import XCTest
 
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Android)
+import Android
 #elseif canImport(Darwin)
 internal import Darwin
 #endif
@@ -26,6 +28,10 @@ internal import Darwin
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 #elseif canImport(Network)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
+#endif
+
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
 // The setup / teardown boilerplate and the POSIX test servers live in
@@ -721,7 +727,7 @@ final class SwiftNetworkSocketTests: NetTestCase {
 
     private static func processCPUSeconds() -> Double {
         var usage = rusage()
-        #if canImport(Darwin)
+        #if canImport(Darwin) || canImport(Android)
         getrusage(RUSAGE_SELF, &usage)
         #else
         getrusage(RUSAGE_SELF.rawValue, &usage)

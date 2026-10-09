@@ -17,6 +17,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -167,7 +170,9 @@ enum QUICFrame: ~Copyable {
         frame: inout Frame,
         packet: inout Packet,
         connection: QUICConnection,
-        isLastPacketInFrame: Bool = true
+        stats: inout Statistics,
+        isLastPacketInFrame: Bool = true,
+        in eventContext: inout NetworkContext.EventContext
     ) throws(QUICError) -> QUICFrame {
         switch type {
         case .padding:
@@ -197,13 +202,13 @@ enum QUICFrame: ~Copyable {
         case .resetStream:
             return try FrameResetStream.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .stopSending:
             return try FrameStopSending.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .crypto:
@@ -211,19 +216,19 @@ enum QUICFrame: ~Copyable {
                 frame: &frame,
                 packetNumberSpace: packet.numberSpace,
                 isLastPacketInFrame: isLastPacketInFrame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .newToken:
             return try FrameNewToken.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .stream:
             return try FrameStreamReceived.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .maxData:
@@ -249,25 +254,25 @@ enum QUICFrame: ~Copyable {
         case .dataBlocked:
             return try FrameDataBlocked.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .streamDataBlocked:
             return try FrameStreamDataBlocked.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .streamsBlockedBidirectional:
             return try FrameStreamsBlockedBidirectional.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .streamsBlockedUnidirectional:
             return try FrameStreamsBlockedUnidirectional.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .newConnectionID:
@@ -295,13 +300,13 @@ enum QUICFrame: ~Copyable {
         case .connectionClose:
             return try FrameConnectionClose.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .applicationClose:
             return try FrameApplicationClose.parse(
                 frame: &frame,
-                stats: &connection.stats,
+                stats: &stats,
                 shorthandFrames: &packet.shorthandFrames
             )
         case .handshakeDone:
@@ -315,7 +320,9 @@ enum QUICFrame: ~Copyable {
                 useFlowID: connection.datagramEnableFlowID,
                 useContextID: connection.datagramUseContextID,
                 connection: connection,
-                shorthandFrames: &packet.shorthandFrames
+                stats: &stats,
+                shorthandFrames: &packet.shorthandFrames,
+                in: &eventContext
             )
         }
     }
@@ -769,8 +776,24 @@ struct FramePadding: ~Copyable, QUICFrameProtocol {
     private static func countLeadingZeroBytes(_ bytes: RawSpan) -> Int {
         let count = bytes.byteCount
         let wordSize = MemoryLayout<UInt64>.size
+        let vectorSize = 32
         var offset = 0
 
+        // 1. Speed through the zeros via vectorization.
+        while offset &+ vectorSize <= count {
+            var orResult: UInt8 = 0
+            // This loop is auto-vectorized.
+            for idx in 0..<vectorSize {
+                orResult |= bytes.unsafeLoad(fromUncheckedByteOffset: offset &+ idx, as: UInt8.self)
+            }
+            if orResult == 0 {
+                offset &+= vectorSize
+            } else {
+                break
+            }
+        }
+
+        // 2. Read the rest of the bytes in chunks of words.
         while offset &+ wordSize <= count {
             let word = bytes.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt64.self)
 
@@ -781,6 +804,7 @@ struct FramePadding: ~Copyable, QUICFrameProtocol {
             }
         }
 
+        // 3. Scan the remaining bytes one by one.
         while offset < count, bytes[offset] == 0x00 {
             offset &+= 1
         }
@@ -1107,7 +1131,11 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         stats.increment(.txStreamResetFrames)
     }
 
-    func process(connection: QUICConnection) -> Bool {
+    @inline(never)
+    func process(
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> Bool {
         guard let streamID = QUICStreamID(self.id) else {
             let idValue = self.id
             Logger.proto.error("Stream frame with invalid stream ID \(idValue)")
@@ -1120,7 +1148,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
             Logger.proto.error(
                 "RESET_STREAM received for send-only stream \(streamID.value)"
             )
-            connection.close(with: .streamStateError, "RESET_STREAM for send-only stream")
+            connection.close(with: .streamStateError, "RESET_STREAM for send-only stream", in: &eventContext)
             return false
         }
 
@@ -1131,7 +1159,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
             // that case there is no one to deliver the reset to, so drop it.
             guard let existing = connection.flow(for: flowID) else {
                 Logger.proto.error(
-                    "stream \(streamID.value) has known flow but no QUICStreamInstance; dropping RESET_STREAM"
+                    "Stream \(streamID.value) has known flow but no QUICStreamInstance; dropping RESET_STREAM"
                 )
                 return true
             }
@@ -1140,11 +1168,12 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         } else {
             // RESET_STREAM may be the first frame the peer sends on a stream
             // createInboundStreams will register it.
-            let inboundStreamResult = connection.createInboundStreams(streamID: streamID)
+            let inboundStreamResult = connection.createInboundStreams(streamID: streamID, in: &eventContext)
             if inboundStreamResult.checkZombie {
                 connection.zombieStreamListFinalSizeReceived(
                     streamID: streamID,
-                    finalSize: self.finalSize
+                    finalSize: self.finalSize,
+                    in: &eventContext
                 )
                 return true
             }
@@ -1167,7 +1196,11 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         // Set the application error code
         stream.streamMetadata.applicationError = self.code
         stream.inboundApplicationError = self.code
-        connection.deliverInboundAbortedEvent(stream: stream, error: NetworkError(quicApplicationError: self.code))
+        connection.deliverInboundAbortedEvent(
+            stream: stream,
+            error: NetworkError(quicApplicationError: self.code),
+            in: &eventContext
+        )
         connection.log.info(
             "[S\(streamID.value)] received RESET_STREAM; offsets conn (inorder \(stream.receiveState), last \(connection.flowControlState.totalInOrderInboundBytesRead)), stream (inorder \(stream.flowControlState.totalInOrderInboundBytesRead), last \(stream.lastReceivedOffset)), final \(self.finalSize)"
         )
@@ -1195,7 +1228,8 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         if let lastOffsetDelta = stream.updateLastOffset(
             connection: connection,
             newLastOffset: lastOffset,
-            newFinalSize: self.finalSize
+            newFinalSize: self.finalSize,
+            in: &eventContext
         ) {
             // Even though the stream is getting reset, it may
             // affect the connection max data
@@ -1224,7 +1258,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
                 || stream.sendState == .dataSent || stream.sendState == .dataReceived
             {
                 let error = NetworkError.posix(ECONNRESET)
-                stream.close(errorCode: error)
+                stream.close(errorCode: error, in: &eventContext)
             }
         }
         return true
@@ -1288,7 +1322,11 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         stats.increment(.txStreamStopSendingFrames)
     }
 
-    func process(connection: QUICConnection) -> Bool {
+    @inline(never)
+    func process(
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> Bool {
         guard let streamID = QUICStreamID(self.id) else {
             let idValue = self.id
             Logger.proto.error("Stream frame with invalid stream ID \(idValue)")
@@ -1300,7 +1338,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
             Logger.proto.error(
                 "Received STOP_SENDING for receive only stream"
             )
-            connection.close(with: .streamStateError, "STREAM frame on send-only stream")
+            connection.close(with: .streamStateError, "STREAM frame on send-only stream", in: &eventContext)
             return false
         }
 
@@ -1321,10 +1359,10 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
                 Logger.proto.error(
                     "STOP_SENDING frame received on send stream that does not exist"
                 )
-                connection.close(with: .streamStateError, "STOP_SENDING: non-existent stream")
+                connection.close(with: .streamStateError, "STOP_SENDING: non-existent stream", in: &eventContext)
                 return false
             }
-            let inboundStreamResult = connection.createInboundStreams(streamID: streamID)
+            let inboundStreamResult = connection.createInboundStreams(streamID: streamID, in: &eventContext)
             // If we are ignoring the stream
             if !inboundStreamResult.created {
                 return true
@@ -1341,12 +1379,15 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         }
         stream.streamMetadata.applicationError = self.code
         stream.outboundApplicationError = self.code
-        stream.deliverOutboundAbortedEvent(error: NetworkError(quicApplicationError: self.code))
+        stream.deliverOutboundAbortedEvent(
+            error: NetworkError(quicApplicationError: self.code),
+            in: &eventContext
+        )
         // If STOP_SENDING was received the outbound write should be closed
         // An endpoint that receives a STOP_SENDING frame MUST send a
         // RESET_STREAM frame if the stream is in the "Ready" or "Send" state.
         if stream.sendState == .ready || stream.sendState == .send {
-            let _ = connection.disconnect(flow: stream.identifier, direction: .outbound)
+            let _ = connection.disconnect(flow: stream.flowIdentifier, direction: .outbound, in: &eventContext)
         }
         //
         // Immediately close the stream if we have received
@@ -1356,7 +1397,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         if streamID.isSendOnly(server: connection.isServer) || stream.receiveState == .resetReceived
             || stream.receiveState == .dataRead
         {
-            stream.close(errorCode: streamError)
+            stream.close(errorCode: streamError, in: &eventContext)
         }
         return true
     }
@@ -2486,7 +2527,7 @@ struct FrameNewConnectionID: QUICFrameProtocol {
         else {
             throw QUICError.frameParse(
                 FrameParseError.invalidValue(
-                    "cid length \(cidLength) not within 1...\(QUICConnectionID.maximumSize)"
+                    "CID length \(cidLength) not within 1...\(QUICConnectionID.maximumSize)"
                 )
             )
         }
@@ -2797,7 +2838,7 @@ struct FrameConnectionClose: ~Copyable, QUICFrameProtocol {
 
         guard let frameType = FrameType(rawValue: rawFrameType) else {
             throw QUICError.frameParse(
-                FrameParseError.invalidValue("invalid frame type: \(rawFrameType)")
+                FrameParseError.invalidValue("Invalid frame type: \(rawFrameType)")
             )
         }
         self.frameType = frameType
@@ -2945,9 +2986,13 @@ struct FrameHandshakeDone: ~Copyable, QUICFrameProtocol {
         try validateSerializationResult(result)
     }
 
-    func process(connection: QUICConnection) -> Bool {
+    @inline(never)
+    func process(
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> Bool {
         if connection.isServer {
-            connection.close(with: .protocolViolation, "Received HANDSHAKE_DONE from a client")
+            connection.close(with: .protocolViolation, "Received HANDSHAKE_DONE from a client", in: &eventContext)
             return false
         }
 
@@ -2992,13 +3037,17 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         useFlowID: Bool,
         useContextID: Bool,
         connection: QUICConnection,
-        shorthandFrames: inout [QUICShorthandFrame]?
+        stats: inout Statistics,
+        shorthandFrames: inout [QUICShorthandFrame]?,
+        in eventContext: inout NetworkContext.EventContext
     ) throws(QUICError) -> QUICFrame {
         let frame = try FrameDatagram(
             frame: &frame,
             useFlowID: useFlowID,
             useContextID: useContextID,
-            connection: connection
+            connection: connection,
+            stats: &stats,
+            in: &eventContext
         )
         if shorthandFrames != nil {
             shorthandFrames!.append(frame.toShorthandLogEntry(outgoing: false))
@@ -3029,7 +3078,9 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         frame: inout Frame,
         useFlowID: Bool,
         useContextID: Bool,
-        connection: QUICConnection
+        connection: QUICConnection,
+        stats: inout Statistics,
+        in eventContext: inout NetworkContext.EventContext
     ) throws(QUICError) {
         var rawType: UInt64 = 0
         var contextID: UInt64 = 0
@@ -3109,7 +3160,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
             tpLocalMaxDatagramFrameSize == 0
             ? Constants.maxDatagramFrameSize : tpLocalMaxDatagramFrameSize
         guard datagramLength <= localMaxDatagramFrameSize else {
-            connection.close(with: .protocolViolation, "DATAGRAM frame size too big")
+            connection.close(with: .protocolViolation, "DATAGRAM frame size too big", in: &eventContext)
             throw QUICError.frameParse(FrameParseError.parsingError)
         }
 
@@ -3135,9 +3186,9 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         self.frame.takeOwnershipOfBytes()
 
         if hasLength {
-            connection.stats.increment(.rxDatagramFrameWithLength)
+            stats.increment(.rxDatagramFrameWithLength)
         } else {
-            connection.stats.increment(.rxDatagramFrameWithOutLength)
+            stats.increment(.rxDatagramFrameWithOutLength)
         }
     }
 

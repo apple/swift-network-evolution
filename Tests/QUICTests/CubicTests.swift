@@ -22,116 +22,130 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 final class CubicTests: XCTestCase {
 
     var rtt: RTT!
     let mss = Constants.initialMSS
     var cubic: Cubic!
+    var state = CongestionControlState()
+    // These tests drive the algorithm directly, with no path to pace.
+    let noPath: QUICPath? = nil
     var pacer: Pacer = Pacer(enabled: true)
     let defaultCongestionWindow = UInt64(12000)
 
     override func setUp() {
         let logPrefixer = LogPrefixer("[CubicTests]")
-        cubic = Cubic(pacer: &pacer, mss: mss, logPrefixer: logPrefixer)
+        state = CongestionControlState()
+        cubic = Cubic(state: &state, pacer: &pacer, mss: mss, logPrefixer: logPrefixer)
         rtt = RTT(logPrefixer: logPrefixer)
     }
 
     func testCubicMSS() {
-        /* Test MSS > congestion window */
-        XCTAssertEqual(cubic.availableCongestionWindow, defaultCongestionWindow)
-        cubic.mssChanged(mss: 65000)
-        XCTAssertEqual(cubic.availableCongestionWindow, 65000)
-        cubic.reset(mss: Constants.initialMSS)
-        /* Test MSS < congestion window */
-        XCTAssertEqual(cubic.availableCongestionWindow, defaultCongestionWindow)
-        cubic.mssChanged(mss: 10)
-        XCTAssertEqual(cubic.availableCongestionWindow, defaultCongestionWindow)
-        cubic.reset(mss: Constants.initialMSS)
+        // Test MSS > congestion window
+        XCTAssertEqual(state.availableCongestionWindow, defaultCongestionWindow)
+        cubic.mssChanged(state: &state, mss: 65000)
+        XCTAssertEqual(state.availableCongestionWindow, 65000)
+        cubic.reset(state: &state, mss: Constants.initialMSS)
+        // Test MSS < congestion window
+        XCTAssertEqual(state.availableCongestionWindow, defaultCongestionWindow)
+        cubic.mssChanged(state: &state, mss: 10)
+        XCTAssertEqual(state.availableCongestionWindow, defaultCongestionWindow)
+        cubic.reset(state: &state, mss: Constants.initialMSS)
     }
 
     func testCubicReset() {
-        XCTAssertEqual(cubic.availableCongestionWindow, defaultCongestionWindow)
+        XCTAssertEqual(state.availableCongestionWindow, defaultCongestionWindow)
         let time = NetworkClock.Instant.testBase
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
-        XCTAssertEqual(cubic.availableCongestionWindow, 13000)
-        cubic.reset(mss: Constants.initialMSS)
-        XCTAssertEqual(cubic.availableCongestionWindow, defaultCongestionWindow)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
+        XCTAssertEqual(state.availableCongestionWindow, 13000)
+        cubic.reset(state: &state, mss: Constants.initialMSS)
+        XCTAssertEqual(state.availableCongestionWindow, defaultCongestionWindow)
     }
 
     func testCubicLostPackets() {
-        XCTAssertEqual(cubic.availableCongestionWindow, defaultCongestionWindow)
-        /* "Send" some packets and declare them lost */
+        XCTAssertEqual(state.availableCongestionWindow, defaultCongestionWindow)
+        // "Send" some packets and declare them lost
         let time = NetworkClock.Instant.testBase
-        cubic.packetSent(bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: time,
             mss: mss,
             smoothedRTT: .microseconds(0),
             now: time
         )
-        XCTAssertEqual(cubic.availableCongestionWindow, 8400)
-        /* See if we can send another packet */
-        XCTAssertTrue(cubic.canSend(packetLength: 1000))
+        XCTAssertEqual(state.availableCongestionWindow, 8400)
+        // See if we can send another packet
+        XCTAssertTrue(cubic.canSend(state: state, packetLength: 1000))
     }
 
     func testCubicSlowStart() {
         rtt.smoothedRTT = .microseconds(0)
-        /* "Send" some packets and declare one of them lost */
+        // "Send" some packets and declare one of them lost
         var time = NetworkClock.Instant.testBase
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: time,
             mss: mss,
             smoothedRTT: .microseconds(0),
             now: time
         )
-        XCTAssertEqual(cubic.availableCongestionWindow, 11900)
-        /* Make sure that another successful packet doesn't cause us to continue slow start */
+        XCTAssertEqual(state.availableCongestionWindow, 11900)
+        // Make sure that another successful packet doesn't cause us to continue slow start
         time = NetworkClock.Instant.testBase.advanced(by: .microseconds(100))
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
-        XCTAssertEqual(cubic.availableCongestionWindow, 11953)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
+        XCTAssertEqual(state.availableCongestionWindow, 11953)
     }
 
     func testCubicECN() {
         rtt.smoothedRTT = .microseconds(0)
-        XCTAssertEqual(cubic.availableCongestionWindow, defaultCongestionWindow)
-        /* Test that CE counts will reduce the congestion window immediately and move CUBIC to Congestion avoidance */
+        XCTAssertEqual(state.availableCongestionWindow, defaultCongestionWindow)
+        // Test that CE counts will reduce the congestion window immediately and move CUBIC to Congestion avoidance
         var time = NetworkClock.Instant.testBase
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
         cubic.processECN(
+            state: &state,
+            path: noPath,
             ceCount: 1,
             packetsAcked: 6,
             largestSentPN: 5,
@@ -141,34 +155,36 @@ final class CubicTests: XCTestCase {
             smoothedRTT: rtt.smoothedRTT,
             now: time
         )
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
-        XCTAssertEqual(cubic.availableCongestionWindow, 8400)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
+        XCTAssertEqual(state.availableCongestionWindow, 8400)
         time = NetworkClock.Instant.testBase.advanced(by: .microseconds(100))
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
-        /* congestion window grows during congestion avoidance */
-        XCTAssertEqual(cubic.availableCongestionWindow, 8475)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
+        // congestion window grows during congestion avoidance
+        XCTAssertEqual(state.availableCongestionWindow, 8475)
     }
 
     func testCubicECNEnterCWR() {
         rtt.smoothedRTT = .microseconds(0)
-        XCTAssertEqual(cubic.availableCongestionWindow, defaultCongestionWindow)
-        /* Test that CE counts will reduce congestion window, enter congestion window recovery and after that we don't decrease congestion window for 1RTT even we receive new CE counts */
+        XCTAssertEqual(state.availableCongestionWindow, defaultCongestionWindow)
+        // Test that CE counts will reduce congestion window, enter congestion window recovery and after that we don't decrease congestion window for 1RTT even we receive new CE counts
         var time = NetworkClock.Instant.testBase
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
         cubic.processECN(
+            state: &state,
+            path: noPath,
             ceCount: 1,
             packetsAcked: 4,
             largestSentPN: 5,
@@ -178,13 +194,15 @@ final class CubicTests: XCTestCase {
             smoothedRTT: rtt.smoothedRTT,
             now: time
         )
-        /* availableCongestionWindow = congestionWindow - bytesInFlight = 8400 - 2000 = 6400 */
-        XCTAssertEqual(cubic.availableCongestionWindow, 6400)
+        // availableCongestionWindow = congestionWindow - bytesInFlight = 8400 - 2000 = 6400
+        XCTAssertEqual(state.availableCongestionWindow, 6400)
         time = NetworkClock.Instant.testBase.advanced(by: .microseconds(100))
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
         cubic.processECN(
+            state: &state,
+            path: noPath,
             ceCount: 2,
             packetsAcked: 6,
             largestSentPN: 5,
@@ -194,73 +212,121 @@ final class CubicTests: XCTestCase {
             smoothedRTT: rtt.smoothedRTT,
             now: time
         )
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
-        /* congestion window is the same 8400, bytes in flight has reduced to 0 */
-        XCTAssertEqual(cubic.availableCongestionWindow, 8400)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
+        // congestion window is the same 8400, bytes in flight has reduced to 0
+        XCTAssertEqual(state.availableCongestionWindow, 8400)
+    }
+
+    // CE marks reported through the path must reach the path's congestion controller,
+    // not a discarded copy of it.
+    func testCubicECNThroughPathReducesCongestionWindow() {
+        let connection = QUICConnection(context: NetworkContext.implicitContext)
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+        let path = connection.context.onQueue {
+            QUICPath.makeFromExternalTest(parent: connection)
+        }
+        defer { connection.context.onQueue { path.destroyFromExternalTest() } }
+        path.set(interface: nil, priority: 1, isInitial: true)
+        XCTAssertEqual(path.congestionControlName, "CUBIC")
+        XCTAssertEqual(path.congestionControlWindow, defaultCongestionWindow)
+
+        let time = NetworkClock.Instant.systemNow
+        for _ in 0..<6 {
+            path.congestionControlPacketsSent(bytesSent: 1000)
+        }
+        path.congestionControlAckBegin()
+        for _ in 0..<6 {
+            path.congestionControlPacketsAcked(bytesAcked: 1000, sentTime: time)
+        }
+        path.congestionControlProcessECN(
+            ceCount: 1,
+            packetsAcked: 6,
+            largestSentPN: 5,
+            largestAckedPN: 5,
+            largestAckedSentTime: time,
+            mss: mss,
+            smoothedRTT: rtt.smoothedRTT
+        )
+        // CUBIC reduces the window by beta (0.7) on a new CE mark: 12000 * 0.7 = 8400.
+        XCTAssertEqual(path.congestionControlWindow, 8400)
+
+        // A repeated, unchanged CE count is not a new congestion signal.
+        path.congestionControlProcessECN(
+            ceCount: 1,
+            packetsAcked: 6,
+            largestSentPN: 5,
+            largestAckedPN: 5,
+            largestAckedSentTime: time,
+            mss: mss,
+            smoothedRTT: rtt.smoothedRTT
+        )
+        XCTAssertEqual(path.congestionControlWindow, 8400)
     }
 
     func testCubicAckDuringRecovery() {
         rtt.smoothedRTT = .microseconds(0)
-        /* "Send" some packets and declare one of them lost */
+        // "Send" some packets and declare one of them lost
         var time = NetworkClock.Instant.testBase
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: time,
             mss: mss,
             smoothedRTT: .microseconds(0),
             now: time
         )
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: true, now: time)
-        XCTAssertEqual(cubic.availableCongestionWindow, 8400)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: true, now: time)
+        XCTAssertEqual(state.availableCongestionWindow, 8400)
         time = NetworkClock.Instant.testBase.advanced(by: .microseconds(100))
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
-        XCTAssertEqual(cubic.availableCongestionWindow, 8475)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
+        XCTAssertEqual(state.availableCongestionWindow, 8475)
     }
 
     func testCubicIdleTimeout() {
-        XCTAssertEqual(cubic.availableCongestionWindow, defaultCongestionWindow)
+        XCTAssertEqual(state.availableCongestionWindow, defaultCongestionWindow)
         let time = NetworkClock.Instant.testBase
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
-        XCTAssertEqual(cubic.availableCongestionWindow, 18000)
-        cubic.idleTimeout(mss: mss)
-        XCTAssertEqual(cubic.availableCongestionWindow, defaultCongestionWindow)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
+        XCTAssertEqual(state.availableCongestionWindow, 18000)
+        cubic.idleTimeout(state: &state, mss: mss)
+        XCTAssertEqual(state.availableCongestionWindow, defaultCongestionWindow)
     }
 
     func testCubicPersistentCongestion() {
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.persistentCongestion(mss: mss)
-        XCTAssertEqual(cubic.availableCongestionWindow, 0)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.persistentCongestion(state: &state, mss: mss)
+        XCTAssertEqual(state.availableCongestionWindow, 0)
     }
 
     func testCubicCongestionLimited() {
@@ -273,33 +339,37 @@ final class CubicTests: XCTestCase {
         // therefore give three reductions.
         var sentTime = NetworkClock.Instant.testBase
         var detectedAt = sentTime.advanced(by: .microseconds(100))
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: sentTime)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: sentTime)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: sentTime)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: sentTime)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: sentTime)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: sentTime)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: sentTime)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: sentTime)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: sentTime)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: sentTime)
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
             smoothedRTT: .microseconds(0),
             now: detectedAt
         )
-        XCTAssertEqual(cubic.availableCongestionWindow, 8400)
+        XCTAssertEqual(state.availableCongestionWindow, 8400)
         sentTime = sentTime.advanced(by: .microseconds(1000))
         detectedAt = sentTime.advanced(by: .microseconds(100))
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -307,6 +377,8 @@ final class CubicTests: XCTestCase {
             now: detectedAt
         )
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -314,6 +386,8 @@ final class CubicTests: XCTestCase {
             now: detectedAt
         )
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -321,6 +395,8 @@ final class CubicTests: XCTestCase {
             now: detectedAt
         )
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -329,9 +405,11 @@ final class CubicTests: XCTestCase {
         )
         sentTime = sentTime.advanced(by: .microseconds(1000))
         detectedAt = sentTime.advanced(by: .microseconds(100))
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -339,6 +417,8 @@ final class CubicTests: XCTestCase {
             now: detectedAt
         )
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -348,72 +428,76 @@ final class CubicTests: XCTestCase {
         // One reduction per round, three rounds: 12000 -> 8400 -> 5880 -> 4116, each step
         // `UInt64(Double(window) * Cubic.beta)`. Written out rather than as `pow(beta, 3)`, which
         // is 0.34299999999999997 and truncates to 4115; the reductions compound one at a time.
-        XCTAssertEqual(cubic.availableCongestionWindow, 4116)
-        XCTAssertFalse(cubic.canSend(packetLength: 10000))
+        XCTAssertEqual(state.availableCongestionWindow, 4116)
+        XCTAssertFalse(cubic.canSend(state: state, packetLength: 10000))
     }
 
     func testCubicPacketDiscard() {
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetDiscarded(bytesSent: 1000)
-        XCTAssertEqual(cubic.bytesInFlight, 0)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetDiscarded(state: &state, bytesSent: 1000)
+        XCTAssertEqual(state.bytesInFlight, 0)
     }
 
     func testCubicSpuriousRetransmit() {
         let time = NetworkClock.Instant.testBase
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: time,
             mss: mss,
             smoothedRTT: .microseconds(0),
             now: time
         )
-        cubic.spuriousRetransmit()
-        XCTAssertEqual(cubic.availableCongestionWindow, 9000)
+        cubic.spuriousRetransmit(state: &state)
+        XCTAssertEqual(state.availableCongestionWindow, 9000)
     }
 
-    /* Tests that we can enter CA without any loss after idle period */
+    // Tests that we can enter CA without any loss after idle period
     func testCubicCongestionAvoidance() {
         let time = NetworkClock.Instant.testBase
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
         cubic.packetLost(
+            state: &state,
+            path: noPath,
             bytesLost: 1000,
             largestLostSentTime: time,
             mss: mss,
             smoothedRTT: .microseconds(0),
             now: time
         )
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: true, now: time)
-        XCTAssertEqual(cubic.availableCongestionWindow, 8400)
-        cubic.idleTimeout(mss: mss)
-        XCTAssertEqual(cubic.availableCongestionWindow, 8400)
-        cubic.packetSent(bytesSent: 1200)
-        cubic.packetSent(bytesSent: 1200)
-        cubic.packetSent(bytesSent: 1200)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1200, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1200, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1200, sentTime: time)
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
-        /* Enter CA */
-        XCTAssertEqual(cubic.availableCongestionWindow, 12000)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: true, now: time)
+        XCTAssertEqual(state.availableCongestionWindow, 8400)
+        cubic.idleTimeout(state: &state, mss: mss)
+        XCTAssertEqual(state.availableCongestionWindow, 8400)
+        cubic.packetSent(state: &state, bytesSent: 1200)
+        cubic.packetSent(state: &state, bytesSent: 1200)
+        cubic.packetSent(state: &state, bytesSent: 1200)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1200, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1200, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1200, sentTime: time)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
+        // Enter CA
+        XCTAssertEqual(state.availableCongestionWindow, 12000)
         for _ in 0..<12 {
-            cubic.packetSent(bytesSent: 1000)
+            cubic.packetSent(state: &state, bytesSent: 1000)
         }
-        cubic.ackBegin()
+        cubic.ackBegin(state: &state)
         for _ in 0..<12 {
-            cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
+            cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
         }
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
-        XCTAssertEqual(cubic.availableCongestionWindow, 13200)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
+        XCTAssertEqual(state.availableCongestionWindow, 13200)
 
     }
 
@@ -421,20 +505,20 @@ final class CubicTests: XCTestCase {
         var dataTransferSnapshot = DataTransferSnapshot()
         XCTAssertEqual(dataTransferSnapshot.transportCongestionWindow, 0)
         XCTAssertEqual(dataTransferSnapshot.transportSlowStartThreshold, 0)
-        cubic.filloutDataTransferSnapshot(dataTransferSnapshot: &dataTransferSnapshot)
+        cubic.filloutDataTransferSnapshot(state: state, dataTransferSnapshot: &dataTransferSnapshot)
 
         XCTAssertTrue(dataTransferSnapshot.transportCongestionWindow > 0)
         XCTAssertTrue(dataTransferSnapshot.transportSlowStartThreshold > 0)
         let existingCongestionWindow = dataTransferSnapshot.transportCongestionWindow
         let time = NetworkClock.Instant.testBase
-        cubic.packetSent(bytesSent: 1000)
-        cubic.packetSent(bytesSent: 1000)
-        cubic.ackBegin()
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.packetsAcked(bytesAcked: 1000, sentTime: time)
-        cubic.ackEnd(rtt: rtt, mss: mss, packetsLost: false, now: time)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: time)
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: time)
 
-        cubic.filloutDataTransferSnapshot(dataTransferSnapshot: &dataTransferSnapshot)
+        cubic.filloutDataTransferSnapshot(state: state, dataTransferSnapshot: &dataTransferSnapshot)
         XCTAssertEqual(
             dataTransferSnapshot.transportCongestionWindow,
             (existingCongestionWindow + 2000)
@@ -444,7 +528,11 @@ final class CubicTests: XCTestCase {
     func testCubicExercisingPacer() {
         // Path holds both Pacer and Cubic, thats why its setup this way.
         let connection = QUICConnection(context: NetworkContext.implicitContext)
-        let path = QUICPath(parent: connection)
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+        let path = connection.context.onQueue {
+            QUICPath.makeFromExternalTest(parent: connection)
+        }
+        defer { connection.context.onQueue { path.destroyFromExternalTest() } }
         path.pacePackets = true
         path.set(interface: nil, priority: 1, isInitial: true)
         // startupRate is 10 Mbps, this will affect the pacing time
@@ -497,11 +585,15 @@ final class CubicTests: XCTestCase {
         )
     }
 
-    /// A smoothed RTT that rounds to zero microseconds must not reach the pacing-rate division; it
-    /// traps there.
+    // A smoothed RTT that rounds to zero microseconds must not reach the pacing-rate division; it
+    // traps there.
     func testCubicPacerSurvivesASubMicrosecondSmoothedRTT() {
         let connection = QUICConnection(context: NetworkContext.implicitContext)
-        let path = QUICPath(parent: connection)
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+        let path = connection.context.onQueue {
+            QUICPath.makeFromExternalTest(parent: connection)
+        }
+        defer { connection.context.onQueue { path.destroyFromExternalTest() } }
         path.pacePackets = true
         path.set(interface: nil, priority: 1, isInitial: true)
         path.pacer.setInitialState(10_000_000, 10000)

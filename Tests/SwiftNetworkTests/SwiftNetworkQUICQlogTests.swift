@@ -14,12 +14,16 @@
 
 import XCTest
 
-#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux))
+#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux) || os(Android))
 
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 #elseif canImport(Network)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
+#endif
+
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
 #if IMPORT_SWIFTTLS
@@ -30,14 +34,17 @@ import XCTest
 #endif
 #endif
 
-#if os(Linux)
+#if canImport(Crypto)
 import Crypto
-#else
+#elseif canImport(CryptoKit)
 import CryptoKit
 #endif
 
 #if canImport(Glibc)
 import Glibc
+internal import Logging
+#elseif canImport(Android)
+import Android
 internal import Logging
 #elseif canImport(Musl)
 import Musl
@@ -48,6 +55,7 @@ internal import os
 
 #if QlogOutput
 
+@available(Network 0.1.0, *)
 final class SwiftNetworkQUICQlogTests: NetTestCase {
     func testQUICWriteClientQlogFileOnDataTransfer() throws {
         let dataBlock: [UInt8] = Array("Hello World!".utf8)
@@ -129,6 +137,54 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
             return
         }
         XCTAssertNotNil(resultData)
+        unlink(finalPath)
+    }
+
+    // When the peer sends CONNECTION_CLOSE, the connection arms a draining timer and only writes its
+    // qlog once that timer fires. If the connection is torn down (and its event manager
+    // unregistered) while the timer is still pending, the timer must still be able to write the
+    // qlog rather than scheduling work against an identifier that has already been reset.
+    func testQUICWriteServerQlogFileAfterTeardownWhileDraining() throws {
+        let title = "ServerDrainingQLog"
+        let path = "/tmp/"
+        let finalPath = path + "qlog_server_\(title)_C1.qlog"
+        unlink(finalPath)
+        let harness = QUICTestHarness()
+
+        let serverOptions = QUICProtocol.options()
+        serverOptions.connectionOptions.qlogConfiguration = QLogConfiguration(
+            logTitle: title,
+            logDescription: "ServerDrainingQLogDescription",
+            logPath: path
+        )
+
+        // The client closes the connection with a transport error, which puts the server into
+        // draining. The harness then tears down both sides, which unregisters the server's
+        // connection before its draining timer has fired.
+        harness.runQUICTest(
+            dataBlock: Array("Hello World!".utf8),
+            applicationError: 10,  // PROTOCOL_VIOLATION
+            applicationErrorReason: "Close to start draining",
+            serverOptions: serverOptions
+        )
+
+        // The qlog is only written by the draining timer, so wait for it to fire.
+        let qlogExpectation = XCTestExpectation(description: "Loop until the draining qlog is written")
+        func checkQlogFileExists() {
+            if FileManager.default.fileExists(atPath: finalPath) {
+                qlogExpectation.fulfill()
+                return
+            }
+            harness.context.async {
+                checkQlogFileExists()
+            }
+        }
+        harness.context.async {
+            checkQlogFileExists()
+        }
+        wait(for: [qlogExpectation], timeout: 5.0)
+
+        XCTAssertNotNil(FileManager.default.contents(atPath: finalPath), "Unable to read contents of \(finalPath)")
         unlink(finalPath)
     }
 }

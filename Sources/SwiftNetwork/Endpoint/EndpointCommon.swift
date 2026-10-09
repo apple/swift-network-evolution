@@ -51,6 +51,42 @@ extension Endpoint.EndpointType {
         case applicationService = 6
     }
 
+    /// The common state of whichever endpoint this case holds.
+    var common: EndpointCommon {
+        get {
+            switch self {
+            case .address(let endpoint): return endpoint.common
+            case .applicationService(let endpoint): return endpoint.common
+            case .bonjour(let endpoint): return endpoint.common
+            case .host(let endpoint): return endpoint.common
+            case .srv(let endpoint): return endpoint.common
+            case .url(let endpoint): return endpoint.common
+            }
+        }
+        set {
+            switch self {
+            case .address(var endpoint):
+                endpoint.common = newValue
+                self = .address(endpoint)
+            case .applicationService(var endpoint):
+                endpoint.common = newValue
+                self = .applicationService(endpoint)
+            case .bonjour(var endpoint):
+                endpoint.common = newValue
+                self = .bonjour(endpoint)
+            case .host(var endpoint):
+                endpoint.common = newValue
+                self = .host(endpoint)
+            case .srv(var endpoint):
+                endpoint.common = newValue
+                self = .srv(endpoint)
+            case .url(var endpoint):
+                endpoint.common = newValue
+                self = .url(endpoint)
+            }
+        }
+    }
+
     func toRawValue() -> UInt32 {
         switch self {
         case .address(_):
@@ -84,17 +120,23 @@ extension Endpoint.EndpointType {
 
 @available(Network 0.1.0, *)
 protocol EndpointProtocol: CustomStringConvertible {
-    var interface: Interface? { get }
     func isEqual(to other: Self, flags: EndpointEqualityFlags) -> Bool
     func serialize() -> [UInt8]?
 }
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct EndpointCommon: Equatable, Hashable, Sendable {
-    let interface: Interface?
+// `cnames` and `parentEndpoint` hold `Endpoint`, a mutable class, so the sendability of this
+// struct is only as good as the confinement of those endpoints. The package builds in a language
+// mode that checks this; libnetcore does not, which is why it carries the same fields unannotated.
+public struct EndpointCommon: Equatable, Hashable, @unchecked Sendable {
+    var interface: Interface?
+    var alternatePort: UInt16?
+    var cnames: [Endpoint]?
+    var parentEndpoint: Endpoint?
+    var ethernetAddress: EthernetAddress?
     #if NETWORK_PRIVATE
-    let commonPrivate: EndpointCommon_Private?
+    var commonPrivate: EndpointCommon_Private?
     #endif
 
     init(interface: Interface? = nil) {
@@ -111,8 +153,26 @@ public struct EndpointCommon: Equatable, Hashable, Sendable {
             }
         }
 
+        if flags.contains(.alternatives) {
+            if (self.alternatePort ?? 0) != (other.alternatePort ?? 0) {
+                return false
+            }
+        }
+
+        if flags.contains(.parent) {
+            if self.parentEndpoint != other.parentEndpoint {
+                return false
+            }
+        }
+
+        if flags.contains(.interface) {
+            if self.ethernetAddress != other.ethernetAddress {
+                return false
+            }
+        }
+
         #if NETWORK_PRIVATE
-        if commonPrivate != other.commonPrivate {
+        if !self.isPrivateEqual(to: other, flags: flags) {
             return false
         }
         #endif
@@ -125,23 +185,64 @@ public struct EndpointCommon: Equatable, Hashable, Sendable {
             hasher.combine(interface.hashValue)
         }
     }
+
+    public static func == (lhs: EndpointCommon, rhs: EndpointCommon) -> Bool {
+        lhs.isEqual(to: rhs, flags: .all)
+    }
 }
 
+/// Exposes every ``EndpointCommon`` field on the conforming type as if it were
+/// declared there directly, so that adding a field to `EndpointCommon` (or to
+/// `EndpointCommon_Private`) needs no per-field accessor plumbing on each of the
+/// endpoint types.
+///
+/// Embedded Swift does not support key paths, so that build gets explicit
+/// forwarding accessors below instead of the `dynamicMember` subscript.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
+#if !NETWORK_EMBEDDED
+@dynamicMemberLookup
+#endif
 public protocol EndpointCommonProtocol: Hashable, Equatable {
     var common: EndpointCommon { get set }
 }
 
-#if !NETWORK_PRIVATE
+#if !NETWORK_EMBEDDED
+@_spi(Essentials)
+@available(Network 0.1.0, *)
+extension EndpointCommonProtocol {
+    public subscript<Value>(dynamicMember keyPath: WritableKeyPath<EndpointCommon, Value>) -> Value {
+        get { common[keyPath: keyPath] }
+        set { common[keyPath: keyPath] = newValue }
+    }
+}
+#else
 @available(Network 0.1.0, *)
 extension EndpointCommonProtocol {
     var interface: Interface? {
         get { common.interface }
-        set { common = EndpointCommon(interface: newValue) }
+        set { common.interface = newValue }
+    }
+    var alternatePort: UInt16? {
+        get { common.alternatePort }
+        set { common.alternatePort = newValue }
+    }
+    var cnames: [Endpoint]? {
+        get { common.cnames }
+        set { common.cnames = newValue }
+    }
+    var parentEndpoint: Endpoint? {
+        get { common.parentEndpoint }
+        set { common.parentEndpoint = newValue }
+    }
+    var ethernetAddress: EthernetAddress? {
+        get { common.ethernetAddress }
+        set { common.ethernetAddress = newValue }
     }
 }
+#endif
 
+#if !NETWORK_PRIVATE
 @available(Network 0.1.0, *)
 extension EndpointCommon {
     init?(_ data: inout [UInt8]) {

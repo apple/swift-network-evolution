@@ -20,6 +20,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -553,6 +556,16 @@ public struct Parameters: Hashable, CustomStringConvertible {
         dataMode = .datagram
     }
 
+    public init(tcp: RequiredProtocolConfiguration<TCPProtocol>) {
+        self = Self.init()
+        let tcpOptions = TCPProtocol.options()
+        if case .customize(let handler) = tcp {
+            handler(tcpOptions)
+        }
+        defaultStack.transport = .tcp(tcpOptions)
+        dataMode = .stream
+    }
+
     init(quicConnection: RequiredProtocolConfiguration<QUICConnectionProtocol>) {
         self = Self.init()
         let quicOptions = QUICConnectionProtocol.options()
@@ -577,7 +590,7 @@ public struct Parameters: Hashable, CustomStringConvertible {
             let quicConnectionOptions = QUICConnectionProtocol.options()
             handler(quicConnectionOptions)
             if let innerOptions = quicConnectionOptions.perProtocolOptions {
-                quicOptions.perProtocolOptions?.quicConnectionOptions = innerOptions
+                quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions = innerOptions }
             }
         }
         defaultStack.transport = .quic(quicOptions)
@@ -613,7 +626,7 @@ public struct Parameters: Hashable, CustomStringConvertible {
 
         let quicOptions = QUICConnectionProtocol.options()
         quicOptions.prohibitJoining = true
-        quicOptions.perProtocolOptions?.tlsOptions = tlsOptions
+        quicOptions.modifyPerProtocolOptions { $0.tlsOptions = tlsOptions }
         if case .customize(let handler) = quicConnection {
             handler(quicOptions)
         }
@@ -666,12 +679,12 @@ public struct Parameters: Hashable, CustomStringConvertible {
             let quicConnectionOptions = QUICConnectionProtocol.options()
             handler(quicConnectionOptions)
             if let innerOptions = quicConnectionOptions.perProtocolOptions {
-                quicOptions.perProtocolOptions?.quicConnectionOptions = innerOptions
+                quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions = innerOptions }
             }
         }
 
         quicOptions.prohibitJoining = true
-        quicOptions.perProtocolOptions?.quicConnectionOptions.tlsOptions = tlsOptions
+        quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions.tlsOptions = tlsOptions }
 
         let tcpOptions = TCPProtocol.options()
         if case .customize(let handler) = tcpFallback {
@@ -811,6 +824,7 @@ extension Parameters {
         if usesTLS { description += ", tls" }
         if prohibitExpensivePaths { description += ", no expensive" }
         if prohibitConstrainedPaths { description += ", no constrained" }
+        if prohibitLocalNetwork { description += ", no local network" }
         if prohibitCellularPaths { description += ", no cellular" }
         if preferNoProxy { description += ", prefer no proxy" }
         if noProxyPathSelection { description += ", no proxy path selection" }
@@ -1018,6 +1032,10 @@ extension Parameters {
     var prohibitConstrainedPaths: Bool {
         get { pathParameters.pathValue.prohibitConstrainedPaths }
         set { pathParameters.pathValue.prohibitConstrainedPaths = newValue }
+    }
+    var prohibitLocalNetwork: Bool {
+        get { pathParameters.pathValue.prohibitLocalNetwork }
+        set { pathParameters.pathValue.prohibitLocalNetwork = newValue }
     }
     var prohibitCellularPaths: Bool {
         get { pathParameters.prohibitedInterfaceTypes?.contains(.cellular) ?? false }

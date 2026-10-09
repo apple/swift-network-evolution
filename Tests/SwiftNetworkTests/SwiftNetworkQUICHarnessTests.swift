@@ -12,14 +12,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Synchronization
 import XCTest
 
-#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux))
+#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux) || os(Android))
 
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 #elseif canImport(Network)
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
+#endif
+
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
 #if IMPORT_SWIFTTLS
@@ -38,6 +43,9 @@ import Crypto
 
 #if canImport(Glibc)
 import Glibc
+internal import Logging
+#elseif canImport(Android)
+import Android
 internal import Logging
 #elseif canImport(Musl)
 import Musl
@@ -109,6 +117,56 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
             clientOptions: clientOptions
         )
     }
+
+    // A server that advertises more than 2^60 initial bidirectional streams violates the
+    // transport parameter limits, so the client closes from `reportReady` when TLS reports the
+    // handshake as connected. Here that happens while the client is processing the server's
+    // flight, so the close is deferred until the packet has been handled.
+    func testQUICHandshakeWithInvalidServerTransportParameters() {
+        let serverOptions = QUICProtocol.options()
+        serverOptions.connectionOptions.initialMaxStreamsBidirectional = Constants.maxStreamLimit + 1
+
+        QUICTestHarness().runQUICTest(
+            expectHandshakeError: .init(
+                quicTransportError: QUICTransportError(.transportParameterError, "initial FC over limit")
+            ),
+            serverOptions: serverOptions
+        )
+    }
+
+    #if EXPORT_SWIFTTLS
+    // The same invalid transport parameters, but the client verifies the server asynchronously.
+    // TLS then completes the handshake from its own async continuation rather than from inside
+    // the client's packet processing, so `reportReady`, and the close it raises, runs while crypto
+    // is still handling the connected event from TLS.
+    func testQUICHandshakeWithInvalidServerTransportParametersAfterAsyncVerification() {
+        let serverOptions = QUICProtocol.options()
+        serverOptions.connectionOptions.initialMaxStreamsBidirectional = Constants.maxStreamLimit + 1
+
+        let clientOptions = QUICProtocol.options()
+        var tlsOptions = clientOptions.tlsOptions
+        tlsOptions.tlsOptions.asyncVerifier = AsyncVerifier(availableCertificateTypes: [.rawPublicKey]) { info in
+            guard let deliverResult = info.deliverResult else {
+                return .invalid(reason: "No way to deliver an async result")
+            }
+            // Deliver from off the context, as a real verifier would; the TLS instance has to
+            // hop back onto the context itself.
+            DispatchQueue.global().async {
+                deliverResult(.valid)
+            }
+            return .waiting
+        }
+        clientOptions.tlsOptions = tlsOptions
+
+        QUICTestHarness().runQUICTest(
+            expectHandshakeError: .init(
+                quicTransportError: QUICTransportError(.transportParameterError, "initial FC over limit")
+            ),
+            clientOptions: clientOptions,
+            serverOptions: serverOptions
+        )
+    }
+    #endif
 
     #if EXPORT_SWIFTTLS
     func testQUICHandshakeForceAES128() {
@@ -385,6 +443,48 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         )
     }
 
+    // MARK: Flow control credit for unread inbound bytes
+
+    // Inbound bytes that the application never reads still consumed
+    // connection-level flow control credit. Dropping the stream must return that
+    // credit, or the connection-level receive window is permanently consumed and
+    // the peer eventually cannot send at all.
+    func testQUICDropUnreadInboundBytesReturnsFlowControlCredit() {
+        QUICTestHarness().runQUICDropUnreadInboundBytesLoop()
+    }
+
+    // Control for the test above: the same loop, but the application drains the
+    // bytes before aborting. Credit is returned through the normal read path, so
+    // this must not stall. If both tests fail, the cause is not credit accounting.
+    func testQUICReadInboundBytesBeforeAbortReturnsFlowControlCredit() {
+        QUICTestHarness().runQUICDropUnreadInboundBytesLoop(readBeforeAbort: true)
+    }
+
+    // A single large drop, bigger than the whole advertised window, must also be
+    // credited back rather than leaving the peer permanently blocked.
+    func testQUICDropLargeUnreadInboundBlockReturnsFlowControlCredit() {
+        QUICTestHarness().runQUICDropUnreadInboundBytesLoop(
+            rounds: 6,
+            chunkSize: 10_000,
+            initialMaxData: 20_000
+        )
+    }
+
+    // MARK: Closing a stream from inside ACK processing
+
+    // Closing a stream with `stop()` sends a RESET_STREAM. Processing the peer's
+    // ACK for it closes the stream, which flushes frames — re-entering
+    // `sendFrames()` while `recovery` is still borrowed for ACK processing.
+    func testQUICStopStreamWithUnreadBytesSurvivesResetAck() {
+        QUICTestHarness().runQUICStopStreamAfterPeerWrite()
+    }
+
+    // The same close path, with the inbound bytes drained first: the re-entry does
+    // not depend on there being unread data.
+    func testQUICStopStreamAfterReadingSurvivesResetAck() {
+        QUICTestHarness().runQUICStopStreamAfterPeerWrite(readBeforeStop: true)
+    }
+
     func testQUICEcho40KiB() {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 4)
     }
@@ -462,9 +562,45 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 10)
     }
 
+    // Good test for resuming the StreamSendBuffer at a particular index
+    func testQUICEcho300KiB() {
+        QUICTestHarness().runQUICTest(blockSize: 300, blockCount: 1000)
+    }
+
     // 1MiB == 1,048,576, this is 1,024,000
     func testQUICEcho1MiB() {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 100)
+    }
+
+    // ACKs should be bundled on outgoing STREAM frames rather than going out in their own
+    // packet as much as possible, this test tracks that.
+    func testQUICEcho1MiBAckBundling() {
+        let observedPacketSizes = Mutex<[Int]>([])
+        let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
+            // Identify short header packet to accumulate the total sizes at the end
+            guard (firstByte & 0xC0) == 0x40 else { return }
+            observedPacketSizes.withLock { $0.append(byteCount) }
+        }
+
+        QUICTestHarness().runQUICTest(
+            blockSize: 10240,
+            blockCount: 100,
+            bridgeObserveFrameHandler: observeFrameHandler
+        )
+
+        let packetSizes = observedPacketSizes.withLock { $0 }
+        XCTAssertFalse(packetSizes.isEmpty, "packetSizes should not be empty")
+
+        // A standalone ACK (no STREAM data) fits comfortably under 100 bytes, but a
+        // packet carrying STREAM data is padded out much closer to the path's MTU.
+        let ackOnlySizeThreshold = 100
+        let ackOnlyPacketCount = packetSizes.filter { $0 < ackOnlySizeThreshold }.count
+        print("ackOnlyPacketCount: \(ackOnlyPacketCount), packetSizes: \(packetSizes.count)")
+        XCTAssertLessThan(
+            ackOnlyPacketCount,
+            10,  // Use 10 as an arbitrary threshold here
+            "Most packets should bundle an ACK with STREAM data rather than going out alone"
+        )
     }
 
     #if !NETWORK_PRIVATE
@@ -672,11 +808,11 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         let clientOptions = QUICProtocol.options()
         clientOptions.connectionOptions.initialPacketSize = 1400
 
-        var observedInitialPacketSizes: [Int] = []
+        let observedInitialPacketSizes = Mutex<[Int]>([])
         let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
             // Verify initial packet
             guard (firstByte & 0xF0) == 0xC0 else { return }
-            observedInitialPacketSizes.append(byteCount)
+            observedInitialPacketSizes.withLock { $0.append(byteCount) }
         }
 
         QUICTestHarness().runQUICTest(
@@ -687,8 +823,11 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
             bridgeObserveFrameHandler: observeFrameHandler
         )
 
-        XCTAssertFalse(observedInitialPacketSizes.isEmpty, "Should have observed at least one Initial packet")
-        XCTAssertEqual(observedInitialPacketSizes.first, 1400)
+        XCTAssertFalse(
+            observedInitialPacketSizes.withLock { $0.isEmpty },
+            "Should have observed at least one Initial packet"
+        )
+        XCTAssertEqual(observedInitialPacketSizes.withLock { $0.first }, 1400)
     }
 
     func testQUICDatagramRemoteMaxDatagramFrameSize() {

@@ -21,6 +21,9 @@ import BasicContainers
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -306,22 +309,14 @@ struct Packet: ~Copyable {
     var overrideSentNumberSize: EncodedPacketNumber.Size? {
         get {
             if let _overrideSentNumberSize {
-                #if !DisableErrorLogging
-                Logger.proto.error(
-                    "WARNING: Reading overrideSentNumberSize only be used for unit testing!"
-                )
-                #endif
+                outlinedProtoLogError("WARNING: Reading overrideSentNumberSize only be used for unit testing!")
                 return _overrideSentNumberSize
             }
             return nil
         }
         set(newValue) {
             if let newValue {
-                #if !DisableErrorLogging
-                Logger.proto.error(
-                    "WARNING: Setting overrideSentNumberSize only be used for unit testing!"
-                )
-                #endif
+                outlinedProtoLogError("WARNING: Setting overrideSentNumberSize only be used for unit testing!")
                 _overrideSentNumberSize = newValue
             } else {
                 _overrideSentNumberSize = nil

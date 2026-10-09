@@ -23,6 +23,9 @@ import class Foundation.JSONSerialization
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -169,7 +172,7 @@ struct EventParametersSet: EventProtocol {
     let maxIdleTimeout: Int?
     let maxUDPPayloadSize: Int?
     let ackDelayExponent: Int?
-    let maxAckDelay: Int?
+    let maxAckDelay: NetworkDuration?
     let activeConnectionIDLimit: Int?
     let initialMaxData: Int?
     let initialMaxStreamDataBidirectionalRemote: Int?
@@ -192,7 +195,8 @@ struct EventParametersSet: EventProtocol {
         data["max_idle_timeout"] = maxIdleTimeout
         data["max_udp_payload_size"] = maxUDPPayloadSize
         data["ack_delay_exponent"] = ackDelayExponent
-        data["max_ack_delay"] = maxAckDelay
+        // qlog reports max_ack_delay in milliseconds, matching the wire encoding.
+        data["max_ack_delay"] = maxAckDelay.map { Int($0.milliseconds) }
         data["active_connection_id_limit"] = activeConnectionIDLimit
         data["initial_max_data"] = initialMaxData
         data["initial_max_stream_data_bidi_local"] = initialMaxStreamDataBidirectionalLocal
@@ -851,7 +855,7 @@ final class QLog {
         maxIdleTimeout: Int?,
         maxUDPPayloadSize: Int?,
         ackDelayExponent: Int?,
-        maxAckDelay: Int?,
+        maxAckDelay: NetworkDuration?,
         activeConnectionIDLimit: Int?,
         initialMaxData: Int?,
         initialMaxStreamDataBidirectionalRemote: Int?,
@@ -908,7 +912,7 @@ final class QLog {
             maxUDPPayloadSize: transportParameters[TransportParameterTypes.maxUDPPayloadSize]?
                 .value,
             ackDelayExponent: transportParameters[TransportParameterTypes.ackDelayExponent]?.value,
-            maxAckDelay: transportParameters[TransportParameterTypes.maxAckDelay]?.value,
+            maxAckDelay: transportParameters[TransportParameterTypes.maxAckDelay]?.duration,
             activeConnectionIDLimit: transportParameters[
                 TransportParameterTypes.activeConnectionIDLimit
             ]?.value,

@@ -20,6 +20,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -225,6 +228,16 @@ public protocol ParametersProvider {
     /// - Parameter prohibited: True if constrained paths are prohibited, false otherwise.
     func constrainedPathsProhibited(_ prohibited: Bool) -> Self
 
+    /// Prohibit using paths over the local network.
+    ///
+    /// Prohibit connections and listeners from using a route that goes
+    /// directly to a peer device on the local area network. This does not
+    /// include loopback connections; to prohibit loopback, prohibit the
+    /// loopback interface type.
+    ///
+    /// - Parameter prohibited: True if local network paths are prohibited, false otherwise.
+    func localNetworkProhibited(_ prohibited: Bool) -> Self
+
     /// Specify a specific endpoint to use as the local endpoint.
     ///
     /// For connections, this will be used to initiate traffic;
@@ -402,6 +415,20 @@ extension ParametersProvider {
     public func constrainedPathsProhibited(_ prohibited: Bool) -> Self {
         var mutableSelf = self
         mutableSelf.parameters.prohibitConstrainedPaths = prohibited
+        return mutableSelf
+    }
+
+    /// Prohibit using paths over the local network.
+    ///
+    /// Prohibit connections and listeners from using a route that goes
+    /// directly to a peer device on the local area network. This does not
+    /// include loopback connections; to prohibit loopback, prohibit the
+    /// loopback interface type.
+    ///
+    /// - Parameter prohibited: True if local network paths are prohibited, false otherwise.
+    public func localNetworkProhibited(_ prohibited: Bool) -> Self {
+        var mutableSelf = self
+        mutableSelf.parameters.prohibitLocalNetwork = prohibited
         return mutableSelf
     }
 
@@ -608,6 +635,7 @@ public struct TLS: StreamProtocol {
     private var applicationProtocols: [String]?
     private var earlyDataEnabled: Bool?
     private var ticketsEnabled: Bool?
+    private var customOptionsHandlers: [(ProtocolOptions<SwiftTLSProtocol>) -> Void] = []
 
     var options: ProtocolOptions<TLSProtocol> {
         var options = TLSProtocol.Options()
@@ -658,7 +686,11 @@ public struct TLS: StreamProtocol {
             break
         }
         let defaultProtocolStack = parameters.defaultStack
-        defaultProtocolStack.application.append(.swiftTLS(self.options))
+        let options = self.options
+        for handler in customOptionsHandlers {
+            handler(options)
+        }
+        defaultProtocolStack.application.append(.swiftTLS(options))
     }
 
     /// Set the certificates TLS uses during the handshake.
@@ -689,6 +721,24 @@ public struct TLS: StreamProtocol {
     public func applicationProtocols(_ protocols: [String]) -> Self {
         var mutableSelf = self
         mutableSelf.applicationProtocols = protocols
+        return mutableSelf
+    }
+
+    /// Configure TLS options that this builder does not surface directly.
+    ///
+    /// ```swift
+    /// TLS { NoTransport { CustomLink().tx(txHandler).rx(rxHandler) } }
+    ///     .customOptions { options in
+    ///         options.modifyPerProtocolOptions { tlsOptions in
+    ///             tlsOptions.clientAuthRequired = true
+    ///             tlsOptions.tlsOptions.privateKey = .opaqueReference(sepBackedKey)
+    ///         }
+    ///     }
+    /// ```
+    @_spi(ProtocolProvider)
+    public func customOptions(_ handler: @escaping (ProtocolOptions<SwiftTLSProtocol>) -> Void) -> Self {
+        var mutableSelf = self
+        mutableSelf.customOptionsHandlers.append(handler)
         return mutableSelf
     }
 }
@@ -1013,8 +1063,8 @@ public struct StreamBridge: StreamProtocol {
 public struct CustomLink: StreamProtocol {
     public typealias ContentType = Void
 
-    private var tx: ((Span<UInt8>) -> Void)? = nil
-    private var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? = nil
+    private var tx: (@Sendable (_ bytes: Span<UInt8>) -> Void)? = nil
+    private var rx: (@Sendable (_ inject: @escaping (_ bytes: Span<UInt8>) -> Void) -> Void)? = nil
 
     public let belowProtocol: Void
     /// Configure CustomLink for tx byte handling
@@ -1028,7 +1078,7 @@ public struct CustomLink: StreamProtocol {
     ///
     /// - Parameter handler: A closure that will be called with a
     /// span of bytes to be written to the network.
-    public func tx(_ handler: @escaping (Span<UInt8>) -> Void) -> Self {
+    public func tx(_ handler: @escaping @Sendable (_ bytes: Span<UInt8>) -> Void) -> Self {
         var mutableSelf = self
         mutableSelf.tx = handler
         return mutableSelf
@@ -1050,13 +1100,15 @@ public struct CustomLink: StreamProtocol {
     /// - Parameter handler: A closure that will be called with an
     /// escaping closure that should be stored for later use when bytes
     /// need to be injected into the protocol stack.
-    public func rx(_ handler: @escaping ((@escaping (Span<UInt8>) -> Void) -> Void)) -> Self {
+    public func rx(
+        _ handler: @escaping @Sendable (_ inject: @escaping (_ bytes: Span<UInt8>) -> Void) -> Void
+    ) -> Self {
         var mutableSelf = self
         mutableSelf.rx = handler
         return mutableSelf
     }
 
-    init() {
+    public init() {
     }
 
     public func configure(parameters: Parameters) {
@@ -1674,7 +1726,12 @@ public final class NetworkConnection<ApplicationProtocol: NetworkProtocolOptions
     // ALL mutable state should be guarded and safe from data-races
     fileprivate struct LockedState {
         var stateUpdateHandler: (@Sendable (_ connection: NetworkConnection, _ state: State) -> Void)? = nil
-        var firstStream: Bool = true
+
+        /// Set on a multiplexing connection to receive the flows the peer opens.
+        ///
+        /// Typed loosely because only `NetworkConnection<QUIC>` has streams to hand back, and this
+        /// state is shared by every application protocol.
+        var inboundStreamHandler: (@Sendable (_ stream: QUIC.Stream<QUICStream>) -> Void)? = nil
     }
 
     fileprivate let lockedState = NetworkMutex<LockedState>(LockedState())
@@ -1685,8 +1742,18 @@ public final class NetworkConnection<ApplicationProtocol: NetworkProtocolOptions
     }
 
     /// Inbound connections
-    internal override init(kind: Kind, using flow: EndpointFlow, uuid: SystemUUID) {
+    internal override init(kind: Kind, using flow: consuming EndpointFlow, uuid: SystemUUID) {
         super.init(kind: kind, using: flow, uuid: uuid)
+    }
+
+    internal override func deliverInboundFlow(_ inboundFlow: PendingInboundFlow) {
+        // QUIC is the only protocol with flows of its own today, and an override cannot live in a
+        // constrained extension, so the dispatch to it happens here.
+        guard let connection = self as? NetworkConnection<QUIC> else {
+            super.deliverInboundFlow(inboundFlow)
+            return
+        }
+        connection.acceptInboundStream(inboundFlow)
     }
 
     public var localEndpoint: Endpoint? {
@@ -1730,7 +1797,7 @@ public final class NetworkConnection<ApplicationProtocol: NetworkProtocolOptions
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public class NetworkChannelBase {
+public class NetworkChannelBase: EndpointFlowParent {
     public enum State: Equatable, Sendable {
         /// The initial state prior to start
         case setup
@@ -1790,7 +1857,66 @@ public class NetworkChannelBase {
         case tls
     }
 
-    let endpointFlow: EndpointFlow
+    var endpointFlow: EndpointFlow
+
+    /// The context the flow runs on.
+    ///
+    /// Cached outside the flow so the public entry points can schedule onto the queue without
+    /// taking an access on `endpointFlow`. Span deliveries hand the application a non-escapable
+    /// buffer, so they have to run inline while the flow is borrowed, and the application is free
+    /// to call straight back into public API from one.
+    let context: NetworkContext
+
+    /// Whether a call already holds `endpointFlow` exclusively.
+    ///
+    /// The stack can record an event and ask the flow to drain from deep inside a call the flow
+    /// itself made, so `withFlow` has to be re-entrancy safe. Taking the flow a second time would
+    /// be an exclusivity violation; skipping is correct because the events stay recorded on the
+    /// flow protocol and the call already running drains them on its way out.
+    private var flowIsBorrowed = false
+
+    final func withFlow<R>(_ body: (inout EndpointFlow) -> R) -> R? {
+        guard !flowIsBorrowed else { return nil }
+        flowIsBorrowed = true
+        defer { flowIsBorrowed = false }
+        return body(&endpointFlow)
+    }
+
+    /// Runs `body` with exclusive access to the owned flow, handing it a non-copyable value.
+    ///
+    /// Used by the send and receive entry points, which carry a read or write request. Those
+    /// arrive on the context queue with no flow call in progress, so unlike `withFlow` this cannot
+    /// skip the body: the request has to be handed over or its frame would never be finalized.
+    func withFlow<R, T: ~Copyable>(
+        _ value: consuming T,
+        _ body: (inout EndpointFlow, consuming T) -> R
+    ) -> R {
+        precondition(!flowIsBorrowed, "flow entry point taking a request called re-entrantly")
+        flowIsBorrowed = true
+        defer { flowIsBorrowed = false }
+        return body(&endpointFlow, value)
+    }
+
+    func drainFlowEvents(in eventContext: inout NetworkContext.EventContext) {
+        withFlow { flow in
+            flow.drainPendingEvents(in: &eventContext, self)
+        }
+    }
+
+    func receiveInboundFlow(_ inboundFlow: PendingInboundFlow) {
+        // Called from the drain, which still holds the flow. Building a channel for the new flow
+        // borrows that flow, so hand it to the queue first. This is the same rule the application
+        // completions follow; see `EndpointFlow.deliverToApplication(in:_:)`.
+        context.async {
+            self.deliverInboundFlow(inboundFlow)
+        }
+    }
+
+    /// Hands a flow the peer opened to the application. Overridden by connections that have flows.
+    internal func deliverInboundFlow(_ inboundFlow: PendingInboundFlow) {
+        Logger.connection.error("Received an inbound flow on a channel that does not support them")
+    }
+
     var state: State {
         get {
             State(endpointFlow.state)
@@ -1798,7 +1924,8 @@ public class NetworkChannelBase {
     }
     let kind: Kind
 
-    init(endpointFlow: EndpointFlow, kind: Kind) {
+    init(endpointFlow: consuming EndpointFlow, kind: Kind) {
+        self.context = endpointFlow.parameters.context
         self.endpointFlow = endpointFlow
         self.kind = kind
         self.endpointFlow.stateUpdateHandler = { state in
@@ -1836,14 +1963,28 @@ public class NetworkChannel<ApplicationProtocol: NetworkProtocolOptions>: Networ
         super.init(endpointFlow: EndpointFlow(endpoint: endpoint, parameters: parameters, uuid: uuid), kind: kind)
     }
 
-    internal init(kind: Kind, using flow: EndpointFlow, uuid: SystemUUID) {
+    internal init(kind: Kind, using flow: consuming EndpointFlow, uuid: SystemUUID) {
         self.uuid = uuid
         super.init(endpointFlow: flow, kind: kind)
     }
 
-    internal init(kind: Kind, joining flow: EndpointFlow, uuid: SystemUUID) {
+    internal init(kind: Kind, joining flow: borrowing EndpointFlow, uuid: SystemUUID) {
         self.uuid = uuid
         super.init(endpointFlow: EndpointFlow(existing: flow, uuid: uuid), kind: kind)
+    }
+
+    /// Joins an existing connection by adopting a flow the peer opened on it.
+    internal init(
+        kind: Kind,
+        joining flow: borrowing EndpointFlow,
+        adopting inboundFlowInstance: InstanceIdentifier,
+        uuid: SystemUUID
+    ) {
+        self.uuid = uuid
+        super.init(
+            endpointFlow: EndpointFlow(existing: flow, uuid: uuid, adopting: inboundFlowInstance),
+            kind: kind
+        )
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -1856,7 +1997,9 @@ public class NetworkChannel<ApplicationProtocol: NetworkProtocolOptions>: Networ
     }
 
     @discardableResult public func start() -> Self {
-        endpointFlow.start()
+        context.async {
+            self.withFlow { flow in flow.start(self as NetworkChannelBase) }
+        }
         return self
     }
 
@@ -1885,23 +2028,38 @@ public class NetworkChannel<ApplicationProtocol: NetworkProtocolOptions>: Networ
     ///
     /// Calls to cancel after the first one are ignored.
     public func cancel() {
-        endpointFlow.cancel()
+        context.async {
+            self.withFlow { flow in flow.cancel(self as NetworkChannelBase) }
+        }
     }
 
     /// A variant of `cancel()` that performs a non-graceful closure of the transport
     /// `error`, if provided, is signalled to the peer
     public func forceCancel(error: NetworkError? = nil) {
-        endpointFlow.cancel(force: true, error: error)
+        context.async {
+            self.withFlow { flow in flow.cancel(force: true, error: error, self as NetworkChannelBase) }
+        }
     }
 
     deinit {
-        cancel()
+        // Last-resort teardown for a channel dropped without an explicit `cancel()`.
+        //
+        // `cancel()` can't be used here: it schedules onto the context queue, and the escaping
+        // block would capture `self` and resurrect an object that is already being deinitialised.
+        // The flow is a non-copyable struct stored inline, so it can't be handed to a block
+        // either — but the protocol instances backing it are classes, so detach those and let
+        // them tear themselves down on the queue. Pending requests are failed synchronously,
+        // since they live in the flow and die with it.
+        let detached = withFlow { flow in flow.detachFlowProtocolForTeardown() } ?? nil
+        guard let detached else { return }
+        context.async {
+            detached.teardown()
+        }
     }
 
     public func invokeApplicationEvent(_ event: ApplicationEvent) {
-        let endpointFlow = self.endpointFlow
-        endpointFlow.async {
-            endpointFlow.invokeApplicationEvent(event)
+        context.async {
+            self.withFlow { flow in flow.invokeApplicationEvent(event, self as NetworkChannelBase) }
         }
     }
 }
@@ -2036,7 +2194,9 @@ extension NetworkConnection where ApplicationProtocol: MultiplexProtocol {
     ///
     /// Start should only be called once on a connection, and multiple calls to start will be ignored.
     @discardableResult public func start() -> Self {
-        endpointFlow.start()
+        context.async {
+            self.withFlow { flow in flow.start(self as NetworkChannelBase) }
+        }
         return self
     }
 }
@@ -2061,7 +2221,7 @@ extension QUIC {
         public let parent: NetworkConnection<QUIC>
 
         internal convenience init(
-            using flow: EndpointFlow,
+            using flow: consuming EndpointFlow,
             parent: NetworkConnection<QUIC>,
             uuid: SystemUUID = SystemUUID(),
             @ProtocolStackBuilder<ApplicationProtocol> stackBuilder builder: () -> (ApplicationProtocol)
@@ -2071,7 +2231,7 @@ extension QUIC {
         }
 
         internal convenience init(
-            using flow: EndpointFlow,
+            using flow: consuming EndpointFlow,
             parent: NetworkConnection<QUIC>,
             uuid: SystemUUID = SystemUUID(),
             newBuilder builder: ParametersBuilder<ApplicationProtocol>
@@ -2079,14 +2239,56 @@ extension QUIC {
             self.init(using: flow, parent: parent, uuid: uuid)
         }
 
-        internal init(using flow: EndpointFlow, parent: NetworkConnection<QUIC>, uuid: SystemUUID) {
+        internal init(using flow: consuming EndpointFlow, parent: NetworkConnection<QUIC>, uuid: SystemUUID) {
             self.parent = parent
             super.init(kind: .quic, using: flow, uuid: uuid)
         }
 
-        internal init(joining flow: EndpointFlow, parent: NetworkConnection<QUIC>, uuid: SystemUUID) {
+        internal init(joining flow: borrowing EndpointFlow, parent: NetworkConnection<QUIC>, uuid: SystemUUID) {
             self.parent = parent
             super.init(kind: .quic, joining: flow, uuid: uuid)
+        }
+
+        /// Joins a stream the peer opened, rather than opening a new one.
+        internal init(
+            adopting inboundFlow: PendingInboundFlow,
+            on flow: borrowing EndpointFlow,
+            parent: NetworkConnection<QUIC>,
+            uuid: SystemUUID
+        ) {
+            self.parent = parent
+            super.init(kind: .quic, joining: flow, adopting: inboundFlow.instance, uuid: uuid)
+        }
+
+        /// Starts the stream, taking the connection's QUIC state over first.
+        @discardableResult public override func start() -> Self {
+            context.async {
+                self.adoptConnectionState()
+                self.withFlow { flow in flow.start(self as NetworkChannelBase) }
+            }
+            return self
+        }
+
+        /// Copies the connection's QUIC listener into this stream's flow if it has none.
+        private func adoptConnectionState() {
+            #if !NETWORK_NO_SWIFT_QUIC
+            guard
+                let connectionState = parent.withFlow({ connectionFlow in
+                    (
+                        listener: connectionFlow.quicStreamListenerLinkage,
+                        instance: connectionFlow.quicConnectionInstance
+                    )
+                }),
+                let listener = connectionState.listener
+            else {
+                return
+            }
+            withFlow { flow in
+                guard flow.quicStreamListenerLinkage == nil else { return }
+                flow.quicStreamListenerLinkage = listener
+                flow.quicConnectionInstance = connectionState.instance
+            }
+            #endif
         }
 
         /// Set a closure to be called when the connection's state changes, which may be called
@@ -2107,11 +2309,8 @@ extension QUIC {
             }) {
                 handler(self, state)
             }
-            // Forward the primary stream's state changes to the parent connection so a
-            // connection-level `onStateUpdate` still sees the state changes.
-            if self.endpointFlow === parent.endpointFlow {
-                parent.onStateChange(state)
-            }
+            // The parent connection observes the QUIC connection directly through its own
+            // connection-level flow, so a stream's state is its own and is not forwarded.
         }
     }
 }
@@ -2137,24 +2336,111 @@ extension NetworkConnection where ApplicationProtocol == QUIC {
         uuid: SystemUUID = SystemUUID(),
         completion: @escaping (Result<QUIC.Stream<QUICStream>, any Error>) -> Void
     ) {
-        if directionality == .bidirectional {
-            let firstStream = lockedState.withLock { lockedState in
-                let firstStream = lockedState.firstStream
-                lockedState.firstStream = false
-                return firstStream
-            }
+        // Every stream joins the connection the same way. The connection's own flow represents
+        // the connection, not its first stream, so there is no first-stream special case.
+        let stream = QUIC.Stream<QUICStream>(joining: self.endpointFlow, parent: self, uuid: uuid)
+        completion(Result.success(stream))
+    }
 
-            if firstStream {
-                let stream = QUIC.Stream<QUICStream>(using: self.endpointFlow, parent: self, uuid: uuid)
-                completion(Result.success(stream))
-            } else {
-                let stream = QUIC.Stream<QUICStream>(joining: self.endpointFlow, parent: self, uuid: uuid)
-                completion(Result.success(stream))
-            }
-        } else {
-            let stream = QUIC.Stream<QUICStream>(joining: self.endpointFlow, parent: self, uuid: uuid)
-            completion(Result.success(stream))
+    /// Sets a closure to be called for each stream the peer opens on this connection.
+    ///
+    /// The handler runs on the connection's context queue, once per inbound stream, for as long
+    /// as the connection is up. Each stream is a fully formed channel: send and receive on it as
+    /// you would one returned by `openStream`.
+    @discardableResult public func onInboundStream(
+        _ handler: (@escaping @Sendable (_ stream: QUIC.Stream<QUICStream>) -> Void)
+    ) -> Self {
+        lockedState.withLock { lockedState in
+            lockedState.inboundStreamHandler = handler
         }
+        return self
+    }
+
+    /// Builds a channel for a stream the peer opened and hands it to the application.
+    ///
+    /// Reached from `NetworkChannelBase.receiveInboundFlow`, already deferred onto the context
+    /// queue so that building the stream can borrow this connection's flow.
+    internal func acceptInboundStream(_ inboundFlow: PendingInboundFlow) {
+        guard
+            let handler = lockedState.withLock({ lockedState in lockedState.inboundStreamHandler })
+        else {
+            Logger.connection.debug("Dropping inbound stream; no inbound stream handler is set")
+            return
+        }
+        let stream = QUIC.Stream<QUICStream>(
+            adopting: inboundFlow,
+            on: self.endpointFlow,
+            parent: self,
+            uuid: SystemUUID()
+        )
+        stream.start()
+        handler(stream)
+    }
+}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+extension NetworkConnection where ApplicationProtocol == QUIC {
+    /// Builds and binds the application protocol for one stream the peer opened.
+    ///
+    /// The framework does not build protocols that come from outside it, and a stream needs one
+    /// instance per stream, so whoever owns the protocol builds it here: it takes the QUIC stream
+    /// listener and the new stream's flow instance, attaches itself onto that flow, and returns
+    /// the linkage the stream's endpoint flow then attaches to.
+    ///
+    /// Mirrors `EndpointFlow.StreamApplicationProtocols.InboundProvider`.
+    public typealias InboundStreamApplicationProtocolProvider = (
+        _ streamListener: BaseStreamListenerLinkage,
+        _ flowInstance: InstanceIdentifier,
+        _ context: NetworkContext
+    ) throws(NetworkError) -> BaseOutboundStreamLinkage
+
+    /// Builds the application protocol for one stream opened on this connection.
+    ///
+    /// The outbound counterpart of `InboundStreamApplicationProtocolProvider`: the framework opens
+    /// the stream itself here, so the owner only hands back an instance to splice above it.
+    ///
+    /// Mirrors `EndpointFlow.StreamApplicationProtocols.Factory`.
+    public typealias StreamApplicationProtocolFactory = (
+        _ context: NetworkContext
+    ) throws(NetworkError) -> (upper: BaseInboundStreamLinkage, lower: BaseOutboundStreamLinkage)
+
+    /// Set a handler for streams the peer opens whose stack names an application protocol the
+    /// framework cannot build itself.
+    ///
+    /// Framework protocols such as TLS are built for each stream automatically, and those stacks
+    /// use `onInboundStream(_:)` instead.
+    ///
+    /// - Parameters:
+    ///   - applicationProtocolProvider: Supplies the application protocol for each inbound stream.
+    ///   - handler: Callback invoked for each stream the peer opens.
+    @discardableResult public func onInboundStream(
+        applicationProtocolProvider: @escaping InboundStreamApplicationProtocolProvider,
+        _ handler: (@escaping @Sendable (_ stream: QUIC.Stream<QUICStream>) -> Void)
+    ) -> Self {
+        // The hook is read when a stream builds its stack, which happens on the context queue;
+        // record it there too rather than reaching into the flow from here.
+        context.async {
+            self.withFlow { flow in
+                flow.streamApplicationProtocols.inboundProvider = applicationProtocolProvider
+            }
+        }
+        return self.onInboundStream(handler)
+    }
+
+    /// Supply the application protocol for streams opened with `openStream`, for a stack that
+    /// names one the framework cannot build itself.
+    ///
+    /// Framework protocols such as TLS are built for each stream automatically.
+    @discardableResult public func streamApplicationProtocolFactory(
+        _ factory: @escaping StreamApplicationProtocolFactory
+    ) -> Self {
+        context.async {
+            self.withFlow { flow in
+                flow.streamApplicationProtocols.factory = factory
+            }
+        }
+        return self
     }
 }
 
@@ -2191,14 +2477,15 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
     }
 
     public func send(_ message: StreamMessage, completion: (@Sendable (Result<Void, NetworkError>) -> Void)? = nil) {
-        let endpointFlow = self.endpointFlow
-        endpointFlow.async {
+        context.async {
             let writeRequest = WriteRequest(
                 content: message.content,
                 isComplete: message.isComplete,
                 completion: completion
             )
-            endpointFlow.addWriteRequestOnContext(writeRequest)
+            self.withFlow(writeRequest) { flow, writeRequest in
+                flow.addWriteRequestOnContext(writeRequest, self as NetworkChannelBase)
+            }
         }
     }
 
@@ -2208,15 +2495,16 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
         isComplete: Bool = false,
         completion: (@Sendable (Result<Void, NetworkError>) -> Void)? = nil
     ) {
-        let endpointFlow = self.endpointFlow
-        endpointFlow.async {
+        context.async {
             let writeRequest = WriteRequest(
                 buffer: buffer,
                 owner: owner,
                 isComplete: isComplete,
                 completion: completion
             )
-            endpointFlow.addWriteRequestOnContext(writeRequest)
+            self.withFlow(writeRequest) { flow, writeRequest in
+                flow.addWriteRequestOnContext(writeRequest, self as NetworkChannelBase)
+            }
         }
     }
 
@@ -2225,8 +2513,7 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
         atMost maxBytes: Int,
         completion: @escaping @Sendable (Result<StreamMessage, NetworkError>) -> Void
     ) {
-        let endpointFlow = self.endpointFlow
-        endpointFlow.async {
+        context.async {
             let readRequest = ReadRequest(minimumBytes: minBytes, maximumBytes: maxBytes) {
                 (content, isComplete, isFinal, error) in
                 if let error = error {
@@ -2235,7 +2522,9 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
                     completion(.success(.message(content: content, isComplete: isComplete)))
                 }
             }
-            self.endpointFlow.addReadRequestOnContext(readRequest)
+            self.withFlow(readRequest) { flow, readRequest in
+                flow.addReadRequestOnContext(readRequest, self as NetworkChannelBase)
+            }
         }
     }
 
@@ -2245,8 +2534,7 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
         maximumChunks: Int,
         completion: @escaping @Sendable (Result<StreamSpanMessage, NetworkError>) -> Void
     ) {
-        let endpointFlow = self.endpointFlow
-        endpointFlow.async {
+        context.async {
             let readRequest = ReadRequest(minimumBytes: minBytes, maximumBytes: maxBytes, maximumFrames: maximumChunks)
             {
                 (content, offset, isComplete, isFinal, lastChunkOfBatch, error) in
@@ -2265,7 +2553,9 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
                     )
                 }
             }
-            self.endpointFlow.addReadRequestOnContext(readRequest)
+            self.withFlow(readRequest) { flow, readRequest in
+                flow.addReadRequestOnContext(readRequest, self as NetworkChannelBase)
+            }
         }
     }
 }
@@ -2282,10 +2572,11 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
     }
 
     public func send(_ message: DatagramMessage, completion: (@Sendable (Result<Void, NetworkError>) -> Void)? = nil) {
-        let endpointFlow = self.endpointFlow
-        endpointFlow.async {
+        context.async {
             let writeRequest = WriteRequest(content: message.content, isComplete: true, completion: completion)
-            endpointFlow.addWriteRequestOnContext(writeRequest)
+            self.withFlow(writeRequest) { flow, writeRequest in
+                flow.addWriteRequestOnContext(writeRequest, self as NetworkChannelBase)
+            }
         }
     }
 
@@ -2295,21 +2586,21 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
         isComplete: Bool = false,
         completion: (@Sendable (Result<Void, NetworkError>) -> Void)? = nil
     ) {
-        let endpointFlow = self.endpointFlow
-        endpointFlow.async {
+        context.async {
             let writeRequest = WriteRequest(
                 buffer: buffer,
                 owner: owner,
                 isComplete: isComplete,
                 completion: completion
             )
-            endpointFlow.addWriteRequestOnContext(writeRequest)
+            self.withFlow(writeRequest) { flow, writeRequest in
+                flow.addWriteRequestOnContext(writeRequest, self as NetworkChannelBase)
+            }
         }
     }
 
     public func receive(completion: @escaping @Sendable (Result<DatagramMessage, NetworkError>) -> Void) {
-        let endpointFlow = self.endpointFlow
-        endpointFlow.async {
+        context.async {
             let readRequest = ReadRequest(maximumFrames: 1) {
                 (content, isComplete, isFinal, error) in
                 if let error = error {
@@ -2318,7 +2609,9 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
                     completion(.success(.message(content: content)))
                 }
             }
-            self.endpointFlow.addReadRequestOnContext(readRequest)
+            self.withFlow(readRequest) { flow, readRequest in
+                flow.addReadRequestOnContext(readRequest, self as NetworkChannelBase)
+            }
         }
     }
 }

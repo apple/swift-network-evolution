@@ -22,6 +22,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 final class SendItemsTests: XCTestCase {
 
@@ -60,6 +64,7 @@ final class SendItemsTests: XCTestCase {
         defer { frame.finalize(success: true) }
         let context = NetworkContext(identifier: "SendItemsTests")
         let connection = QUICConnection(context: context)
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         var shorthandFrames: [QUICShorthandFrame]? = nil
         XCTAssertNoThrow(
             try pendingItems.write(
@@ -244,8 +249,8 @@ final class SendItemsTests: XCTestCase {
 
     func testStreamDataBlocked_pendingFlagMirrorsDequeAfterPartialDequeue() {
         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
-        pendingItems.appendStreamDataBlockedFlow(.outboundFlow(index: 1))
-        pendingItems.appendStreamDataBlockedFlow(.outboundFlow(index: 2))
+        pendingItems.appendStreamDataBlockedFlow(MultiplexedFlowIdentifier(testValue: 1))
+        pendingItems.appendStreamDataBlockedFlow(MultiplexedFlowIdentifier(testValue: 2))
 
         var transmittedItems = TransmittedItems()
         FrameStreamDataBlocked.addToTransmittedItems(
@@ -288,7 +293,7 @@ final class SendItemsTests: XCTestCase {
         let contextID: UInt64 = 0
         let flow = QUICDatagramFlow(parent: connection, inbound: true)
         flow.setup(datagramFlowID: flowID, contextID: contextID, logPrefixer: LogPrefixer())
-        connection.multiplexedSecondaryFlows[flow.identifier] = flow
+        connection.multiplexedSecondaryFlows[flow.flowIdentifier] = flow
 
         let payload = [UInt8](repeating: 0xAB, count: 256)
         flow.usableDatagramSize = payload.count
@@ -313,7 +318,7 @@ final class SendItemsTests: XCTestCase {
         let roomBeforeWriting = packet.unclaimedLength
 
         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
-        pendingItems.prependDatagramFlowToService(flow.identifier)
+        pendingItems.prependDatagramFlowToService(flow.flowIdentifier)
         var transmittedItems = TransmittedItems()
         var availableCongestionWindow: UInt64 = 10000
         var shorthandFrames: [QUICShorthandFrame]? = nil
@@ -333,7 +338,7 @@ final class SendItemsTests: XCTestCase {
             outcome.thrownError = error
         }
 
-        connection.accessDatagramsToSend(flow: flow.identifier) { outcome.stillQueued = $0.count }
+        connection.accessDatagramsToSend(flow: flow.flowIdentifier) { outcome.stillQueued = $0.count }
         outcome.flowsToService = pendingItems.datagramFlowsToService.count
         outcome.datagramsWritten = connection.stats[.txDatagramFrameWithLength]
         outcome.bytesWritten = roomBeforeWriting - packet.unclaimedLength

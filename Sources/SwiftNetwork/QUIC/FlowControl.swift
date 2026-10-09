@@ -17,6 +17,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -216,6 +219,31 @@ struct FlowControlState: ~Copyable {
         return true
     }
 
+    // Accounts for inbound bytes that the peer sent, and that therefore consumed
+    // receive window, but that will never be delivered to the application because
+    // the stream carrying them was closed.
+    //
+    // `inboundMaxData` is anchored on `totalInboundBytesDelivered`, so unless
+    // discarded bytes are counted as consumed, the credit they used is never
+    // returned to the peer: the usable receive window shrinks by that amount for
+    // the remaining life of the connection, and enough discarded bytes stall it
+    // outright.
+    //
+    // The caller must have already added these bytes to
+    // `totalInOrderInboundBytesRead`; this only advances the delivered counter to
+    // match, which is what moves the MAX_DATA anchor.
+    fileprivate mutating func creditDiscardedInboundBytes(_ bytes: UInt64) {
+        guard bytes > 0 else { return }
+
+        let (newDelivered, deliveredOverflow) = totalInboundBytesDelivered.addingReportingOverflow(bytes)
+        guard !deliveredOverflow else { return }
+
+        // Delivered can never exceed the in-order total: the difference between
+        // them is what remains buffered awaiting the application.
+        totalInboundBytesDelivered = min(newDelivered, totalInOrderInboundBytesRead)
+        inboundBytesDeliveredSinceLastUpdate += bytes
+    }
+
     // Outbound values (sending):
 
     // Maximum number of bytes allowed to be sent to the peer, as
@@ -229,7 +257,7 @@ struct FlowControlState: ~Copyable {
     fileprivate(set) var pendingOutboundBytesToSend: UInt64 = 0
 
     // Number of bytes that can be sent to the peer before the maximum is reached.
-    fileprivate var remainingOutboundBytesAllowed: UInt64 {
+    var remainingOutboundBytesAllowed: UInt64 {
         guard outboundMaxData > totalOutboundBytesSent else {
             return 0
         }
@@ -239,6 +267,11 @@ struct FlowControlState: ~Copyable {
     mutating func resetSentBytes() {
         totalOutboundBytesSent = 0
         pendingOutboundBytesToSend = 0
+    }
+
+    mutating func recordSent(_ bytes: UInt64) {
+        pendingOutboundBytesToSend -= bytes
+        totalOutboundBytesSent += bytes
     }
 
     // Pass false for connection-wide values
@@ -282,10 +315,6 @@ extension QUICConnection {
                 pendingItems.dataBlocked = true
             }
         }
-    }
-
-    var availableRemoteReceiveWindow: UInt64 {
-        flowControlState.remainingOutboundBytesAllowed
     }
 
     func updateOutboundMaxData(to newValue: UInt64) -> Bool {
@@ -342,10 +371,32 @@ extension QUICConnection {
             log.datapath(
                 "Zombie adjusted in-order inbound bytes changed from \(oldTotalInbound) to \(newValue))"
             )
+            // The stream is already gone, so these bytes can never be delivered.
+            // Count them as consumed to release the credit they used.
+            flowControlState.creditDiscardedInboundBytes(delta)
         }
     }
 
-    func updateLastReceivedOffsetForZombie(lastOffsetDelta: UInt64) {
+    // Releases the receive-window credit used by inbound bytes that arrived on a
+    // stream but that the application will never read, because the stream was
+    // closed with those bytes still buffered.
+    //
+    // The caller must have already accounted for `bytes` in the connection's
+    // in-order inbound total.
+    func creditDiscardedInboundBytes(_ bytes: UInt64) {
+        guard bytes > 0 else { return }
+        flowControlState.creditDiscardedInboundBytes(bytes)
+        log.datapath(
+            "Credited \(bytes) discarded inbound bytes; connection MAX_DATA anchor is now "
+                + "\(self.flowControlState.totalInOrderInboundBytesRead)"
+        )
+        sendInboundFlowControlCredit()
+    }
+
+    func updateLastReceivedOffsetForZombie(
+        lastOffsetDelta: UInt64,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         let connectionMaxData = flowControlState.inboundMaxData
         let connectionCurrentLargestData = flowControlState.largestInboundByteOffsetReceived
         guard connectionMaxData >= connectionCurrentLargestData,
@@ -354,7 +405,7 @@ extension QUICConnection {
             log.error(
                 "Received final size adjustment \(lastOffsetDelta) which had exceeds connection flow control limits"
             )
-            close(with: .flowControlError, "exceeded flow control limits")
+            close(with: .flowControlError, "exceeded flow control limits", in: &eventContext)
             return
         }
         // This cannot overflow, since the value has been just checked
@@ -394,16 +445,16 @@ extension QUICStreamInstance {
         precondition(bytes <= flowControlState.pendingOutboundBytesToSend)
         precondition(bytes <= connection.flowControlState.pendingOutboundBytesToSend)
 
-        flowControlState.pendingOutboundBytesToSend -= bytes
-        flowControlState.totalOutboundBytesSent += bytes
-        connection.flowControlState.pendingOutboundBytesToSend -= bytes
-        connection.flowControlState.totalOutboundBytesSent += bytes
+        flowControlState.recordSent(bytes)
+        connection.flowControlState.recordSent(bytes)
 
         // Draining can reopen a permit that transient backpressure latched to 0
         if self.maximumStreamDataSize == 0 {
             updateOutboundFlowControlCredit(connection: connection)
             if self.maximumStreamDataSize > 0 {
-                upper.deliverOutboundRoomAvailableEvent(reference)
+                // The packet-building path does not carry the event context, so the notification
+                // is queued and delivered once the send that reopened the permit completes.
+                connection.queueOutboundRoomAvailableEvent(for: self)
             }
         }
     }
@@ -420,7 +471,7 @@ extension QUICStreamInstance {
         if flowControlState.totalOutboundBytesSent >= flowControlState.outboundMaxData {
             if !self.hasSentDataBlocked {
                 self.hasSentDataBlocked = true
-                pendingItems.appendStreamDataBlockedFlow(self.identifier)
+                pendingItems.appendStreamDataBlockedFlow(self.flowIdentifier)
             }
         }
     }
@@ -519,7 +570,7 @@ extension QUICStreamInstance {
                 log.datapath(
                     "Updating MAX_STREAM_DATA for \(streamID!.value) to \(flowControlState.inboundMaxData)"
                 )
-                connection.applicationPendingItems.appendMaxStreamDataFlow(self.identifier)
+                connection.applicationPendingItems.appendMaxStreamDataFlow(self.flowIdentifier)
                 hasAdvertisedMaxStreamData = true
                 sendConnectionCredit = true
             }
@@ -533,10 +584,6 @@ extension QUICStreamInstance {
         let connectionFlowControl = connection.flowControlState.remainingOutboundBytesAllowed
         let streamFlowControl = self.flowControlState.remainingOutboundBytesAllowed
         return min(connectionFlowControl, streamFlowControl)
-    }
-
-    var availableRemoteReceiveWindow: UInt64 {
-        availableRemoteReceiveWindow(for: parentProtocol)
     }
 
     func updateOutboundMaxData(to newValue: UInt64) -> Bool {
@@ -618,7 +665,8 @@ extension QUICStreamInstance {
     @inline(always)
     func updateLastReceivedOffset(
         to newLastReceivedOffset: UInt64,
-        connection: QUICConnection
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
     ) -> UInt64? {
         let currentValue = flowControlState.largestInboundByteOffsetReceived
         guard newLastReceivedOffset >= currentValue else { return nil }
@@ -630,7 +678,11 @@ extension QUICStreamInstance {
             log.error(
                 "Received final size \(newLastReceivedOffset) which had exceeds stream flow control limits"
             )
-            connection.close(with: .flowControlError, "exceeded stream flow control limits")
+            connection.close(
+                with: .flowControlError,
+                "exceeded stream flow control limits",
+                in: &eventContext
+            )
             return nil
         }
 
@@ -643,7 +695,11 @@ extension QUICStreamInstance {
             log.error(
                 "Received final size \(newLastReceivedOffset) which had exceeds connection flow control limits"
             )
-            connection.close(with: .flowControlError, "exceeded flow control limits")
+            connection.close(
+                with: .flowControlError,
+                "exceeded flow control limits",
+                in: &eventContext
+            )
             return nil
         }
         // This cannot overflow, since the value has been just checked
@@ -735,7 +791,7 @@ extension QUICStreamInstance {
             self.updateMaximumUnreadInboundBytesAllowed(increment: increment)
             connection.updateMaximumUnreadInboundBytesAllowed(increment: increment)
             log.datapath(
-                "increased the receive high watermark to \(flowControlState.maximumUnreadInboundBytesAllowed)"
+                "Increased the receive high watermark to \(flowControlState.maximumUnreadInboundBytesAllowed)"
             )
             return true
         }

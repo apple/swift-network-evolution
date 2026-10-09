@@ -127,6 +127,11 @@ extension IPv4Address {
         }
         return matchesDomainPattern(debugDescription, pattern: pattern)
     }
+
+    /// Whether this address falls inside an already-parsed IPv4 CIDR block.
+    func matchesCIDR(network: UInt32, mask: UInt32) -> Bool {
+        (addressValue & mask) == network
+    }
 }
 
 @available(Network 0.1.0, *)
@@ -147,31 +152,113 @@ extension IPv6Address {
     /// representation matches `pattern` as a domain pattern.
     func matches(pattern: String) -> Bool {
         if let cidr = parseCIDRv6(pattern) {
-            let (a0, a1, a2, a3) = addressValue
-            let (n0, n1, n2, n3) = cidr.network
-            let (m0, m1, m2, m3) = cidr.mask
-            return (a0 & m0) == n0 && (a1 & m1) == n1 && (a2 & m2) == n2 && (a3 & m3) == n3
+            return matchesCIDR(network: cidr.network, mask: cidr.mask)
         }
         return matchesDomainPattern(debugDescription, pattern: pattern)
+    }
+
+    /// Whether this address falls inside an already-parsed IPv6 CIDR block.
+    func matchesCIDR(
+        network: (UInt32, UInt32, UInt32, UInt32),
+        mask: (UInt32, UInt32, UInt32, UInt32)
+    ) -> Bool {
+        let (a0, a1, a2, a3) = addressValue
+        let (n0, n1, n2, n3) = network
+        let (m0, m1, m2, m3) = mask
+        return (a0 & m0) == n0 && (a1 & m1) == n1 && (a2 & m2) == n2 && (a3 & m3) == n3
+    }
+}
+
+// MARK: - Endpoint pattern matching
+
+/// How a proxy-exception pattern should be interpreted, decided by the pattern's own shape.
+/// Patterns are tried in this order: wildcard, address literal, CIDR, domain.
+@available(Network 0.1.0, *)
+private enum ProxyPatternKind {
+    case wildcard
+    case v4Literal(IPv4Address)
+    case v6Literal(IPv6Address)
+    case v4CIDR(network: UInt32, mask: UInt32)
+    case v6CIDR(network: (UInt32, UInt32, UInt32, UInt32), mask: (UInt32, UInt32, UInt32, UInt32))
+    case domain
+
+    init(_ pattern: String) {
+        if pattern == "*" {
+            self = .wildcard
+        } else if let v4 = IPv4Address(pattern) {
+            self = .v4Literal(v4)
+        } else if let v6 = IPv6Address(pattern) {
+            self = .v6Literal(v6)
+        } else if let cidr = parseCIDRv4(pattern) {
+            self = .v4CIDR(network: cidr.network, mask: cidr.mask)
+        } else if let cidr = parseCIDRv6(pattern) {
+            self = .v6CIDR(network: cidr.network, mask: cidr.mask)
+        } else {
+            self = .domain
+        }
     }
 }
 
 @available(Network 0.1.0, *)
 extension Endpoint {
-    /// Returns true if this endpoint matches `pattern`. `"*"` matches all endpoints. Host endpoints
-    /// are matched by hostname; address endpoints are matched by IP address or CIDR block.
+    /// Returns true if this endpoint matches `pattern`. The pattern's form decides how they're compared.
+    ///
+    /// - Address and CIDR patterns only match address endpoints, so `"1.2.3.4"` doesn't match a
+    ///   host named `1.2.3.4`.
+    /// - Addresses are compared by value, so different spellings of the same IPv6 address match.
+    /// - Wildcard text matching applies to IPv4 addresses only, so `"2001:db8:*"` matches nothing.
     func matchesPattern(_ pattern: String) -> Bool {
-        if pattern == "*" { return true }
+        // Only host and address endpoints can match, and that's checked before the pattern,
+        // so even "*" does not match a bonjour, URL, or service endpoint.
+        let addressEndpoint: AddressEndpoint?
         switch type {
-        case .host(let hostEndpoint):
-            return matchesDomainPattern(hostEndpoint.name, pattern: pattern)
-        case .address(let addressEndpoint):
-            switch addressEndpoint.type {
-            case .v4(let ipv4, _): return ipv4.matches(pattern: pattern)
-            case .v6(let ipv6, _): return ipv6.matches(pattern: pattern)
-            default: return false
-            }
+        case .address(let endpoint):
+            addressEndpoint = endpoint
+        case .host:
+            addressEndpoint = nil
         default:
+            return false
+        }
+
+        switch ProxyPatternKind(pattern) {
+        case .wildcard:
+            return true
+
+        case .v4Literal(let patternAddress):
+            guard let addressEndpoint, case .v4(let ipv4, _) = addressEndpoint.type else { return false }
+            return ipv4.addressValue == patternAddress.addressValue
+
+        case .v6Literal(let patternAddress):
+            guard let addressEndpoint, case .v6(let ipv6, _) = addressEndpoint.type else { return false }
+            // The scope must match too, and a bare literal carries no scope.
+            return ipv6.addressValue == patternAddress.addressValue && addressEndpoint.scope == 0
+
+        case .v4CIDR(let network, let mask):
+            guard let addressEndpoint, case .v4(let ipv4, _) = addressEndpoint.type else { return false }
+            return ipv4.matchesCIDR(network: network, mask: mask)
+
+        case .v6CIDR(let network, let mask):
+            guard let addressEndpoint, case .v6(let ipv6, _) = addressEndpoint.type else { return false }
+            return ipv6.matchesCIDR(network: network, mask: mask)
+
+        case .domain:
+            if case .host(let hostEndpoint) = type {
+                return matchesDomainPattern(hostEndpoint.name, pattern: pattern)
+            }
+            guard let addressEndpoint else { return false }
+            #if NETWORK_PRIVATE
+            // An address resolved from a hostname carries that name as its policy domain, and
+            // domain patterns match against it.
+            if let policyDomain = domainForPolicy,
+                matchesDomainPattern(policyDomain, pattern: pattern)
+            {
+                return true
+            }
+            #endif
+            // IPv4 only, so that wildcard forms like "17.42.*.10" still work.
+            if case .v4(let ipv4, _) = addressEndpoint.type {
+                return matchesDomainPattern(ipv4.debugDescription, pattern: pattern)
+            }
             return false
         }
     }

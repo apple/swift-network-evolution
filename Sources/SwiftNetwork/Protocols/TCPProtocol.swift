@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -36,7 +39,6 @@ enum MultipathVersion: UInt8 {
 public struct TCPProtocol: NetworkProtocol {
     public typealias Options = TCPOptions
     public typealias Metadata = TCPMetadata
-    typealias Instance = TCPInstance
 
     static public var headerLength: Int {
         MemoryLayout<UInt8>.size * 20
@@ -51,7 +53,12 @@ public struct TCPProtocol: NetworkProtocol {
         // Urgent Pointer: UInt16
     }
 
-    public struct TCPOptions: PerProtocolOptions {
+    // Byte offset of checksum within the TCP header.
+    static public var checksumFieldOffset: Int {
+        16
+    }
+
+    public struct TCPOptions: PerProtocolOptions, Sendable {
 
         internal var _maximumSegmentSize: UInt32 = 0
         public var maximumSegmentSize: UInt32 {
@@ -371,12 +378,19 @@ public struct TCPProtocol: NetworkProtocol {
     }
 
     final class TCPInstance: OneToOneStreamToDatagramProtocol, TimerSchedulable {
-        var upper = InboundStreamLinkage()
-        var lower = OutboundDatagramLinkage()
+
+        typealias UpperProtocol = BaseInboundStreamLinkage
+        typealias LowerProtocol = BaseOutboundDatagramLinkage
+
+        var upper = UpperProtocol()
+        var lower = LowerProtocol()
 
         private(set) var context: NetworkContext
-        init(context: NetworkContext) { self.context = context }
-        var reference: ProtocolInstanceReference { ProtocolInstanceReference(tcp: self) }
+        init(context: NetworkContext) {
+            self.context = context
+            self.identifier = InstanceIdentifier(context: context, eventManager: &self.eventManager)
+        }
+        var identifier: InstanceIdentifier
         var passthroughEvents = false
         var log = NetworkLoggerState()
         var eventManager = ProtocolEventManager()
@@ -389,10 +403,19 @@ public struct TCPProtocol: NetworkProtocol {
         ) throws(NetworkError) {
             throw NetworkError.posix(ENOTSUP)
         }
-        func wakeup() {}
-        func receiveStreamData(minimumBytes: Int, maximumBytes: Int) throws(NetworkError) -> FrameArray? { nil }
-        func getOutboundStreamDataRoomAvailable() throws(NetworkError) -> Int { 0 }
-        func sendStreamData(_ streamData: consuming FrameArray) throws(NetworkError) {}
+        func wakeup(in eventContext: inout NetworkContext.EventContext) {}
+        func receiveStreamData(
+            minimumBytes: Int,
+            maximumBytes: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> FrameArray? { nil }
+        func getOutboundStreamDataRoomAvailable(
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> Int { 0 }
+        func sendStreamData(
+            _ streamData: consuming FrameArray,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) {}
         #if !NETWORK_EMBEDDED
         var metadata: AbstractProtocolMetadata? { nil }
         #endif
@@ -403,7 +426,6 @@ public struct TCPProtocol: NetworkProtocol {
     public func newPerProtocolOptions(from existing: TCPOptions) -> TCPOptions { existing }
     public func newPerProtocolOptions(from serializedBytes: [UInt8]) -> TCPOptions? { nil }
     public func newPerProtocolMetadata() -> TCPMetadata? { TCPMetadata() }
-    public func newProtocolInstance(context: NetworkContext) -> ProtocolInstanceReference? { nil }
 
     static let identifier = ProtocolIdentifier(name: "tcp", level: .transport, mapping: .oneToOne)
 
@@ -412,10 +434,6 @@ public struct TCPProtocol: NetworkProtocol {
     #endif
 
     static public func options() -> ProtocolOptions<TCPProtocol> { TCPProtocol.definition.protocolOptions() }
-
-    static public func instance(context: NetworkContext) -> ProtocolInstanceReference {
-        TCPProtocol().newProtocolInstance(context: context)!
-    }
 }
 
 @_spi(Essentials)
@@ -423,74 +441,74 @@ public struct TCPProtocol: NetworkProtocol {
 extension ProtocolOptions<TCPProtocol> {
     public var reduceBuffering: Bool {
         get { perProtocolOptions!.reduceBuffering }
-        set { perProtocolOptions!.reduceBuffering = newValue }
+        set { modifyPerProtocolOptions { $0.reduceBuffering = newValue } }
     }
     public var noDelay: Bool {
         get { perProtocolOptions!.noDelay }
-        set { perProtocolOptions!.noDelay = newValue }
+        set { modifyPerProtocolOptions { $0.noDelay = newValue } }
     }
     public var noTimewait: Bool {
         get { perProtocolOptions!.noTimewait }
-        set { perProtocolOptions!.noTimewait = newValue }
+        set { modifyPerProtocolOptions { $0.noTimewait = newValue } }
     }
     public var noPush: Bool {
         get { perProtocolOptions!.noPush }
-        set { perProtocolOptions!.noPush = newValue }
+        set { modifyPerProtocolOptions { $0.noPush = newValue } }
     }
     public var noOptions: Bool {
         get { perProtocolOptions!.noOptions }
-        set { perProtocolOptions!.noOptions = newValue }
+        set { modifyPerProtocolOptions { $0.noOptions = newValue } }
     }
     public var enableKeepalive: Bool {
         get { perProtocolOptions!.enableKeepalive }
-        set { perProtocolOptions!.enableKeepalive = newValue }
+        set { modifyPerProtocolOptions { $0.enableKeepalive = newValue } }
     }
     public var enableKeepaliveOffload: Bool {
         get { perProtocolOptions!.enableKeepaliveOffload }
-        set { perProtocolOptions!.enableKeepaliveOffload = newValue }
+        set { modifyPerProtocolOptions { $0.enableKeepaliveOffload = newValue } }
     }
     public var disableAckStretching: Bool {
         get { perProtocolOptions!.disableAckStretching }
-        set { perProtocolOptions!.disableAckStretching = newValue }
+        set { modifyPerProtocolOptions { $0.disableAckStretching = newValue } }
     }
     public var disableBlackholeDetection: Bool {
         get { perProtocolOptions!.disableBlackholeDetection }
-        set { perProtocolOptions!.disableBlackholeDetection = newValue }
+        set { modifyPerProtocolOptions { $0.disableBlackholeDetection = newValue } }
     }
     public var enableBackgroundTrafficManagement: Bool {
         get { perProtocolOptions!.enableBackgroundTrafficManagement }
-        set { perProtocolOptions!.enableBackgroundTrafficManagement = newValue }
+        set { modifyPerProtocolOptions { $0.enableBackgroundTrafficManagement = newValue } }
     }
     public var retransmitFinDrop: Bool {
         get { perProtocolOptions!.retransmitFinDrop }
-        set { perProtocolOptions!.retransmitFinDrop = newValue }
+        set { modifyPerProtocolOptions { $0.retransmitFinDrop = newValue } }
     }
     public var enableFastOpen: Bool {
         get { perProtocolOptions!.enableFastOpen }
-        set { perProtocolOptions!.enableFastOpen = newValue }
+        set { modifyPerProtocolOptions { $0.enableFastOpen = newValue } }
     }
     public var noFastOpenCookie: Bool {
         get { perProtocolOptions!.noFastOpenCookie }
-        set { perProtocolOptions!.noFastOpenCookie = newValue }
+        set { modifyPerProtocolOptions { $0.noFastOpenCookie = newValue } }
     }
     public var fastOpenForceEnable: Bool {
         get { perProtocolOptions!.fastOpenForceEnable }
-        set { perProtocolOptions!.fastOpenForceEnable = newValue }
+        set { modifyPerProtocolOptions { $0.fastOpenForceEnable = newValue } }
     }
     public var disableECN: Bool {
         get { perProtocolOptions!.disableECN }
-        set { perProtocolOptions!.disableECN = newValue }
+        set { modifyPerProtocolOptions { $0.disableECN = newValue } }
     }
     public var resetLocalPort: Bool {
         get { perProtocolOptions!.resetLocalPort }
-        set { perProtocolOptions!.resetLocalPort = newValue }
+        set { modifyPerProtocolOptions { $0.resetLocalPort = newValue } }
     }
     public var keepaliveIdleTime: UInt32 {
         get { perProtocolOptions!.keepaliveIdleTime }
-        set { perProtocolOptions!.keepaliveIdleTime = newValue }
+        set { modifyPerProtocolOptions { $0.keepaliveIdleTime = newValue } }
     }
     public var keepaliveInterval: UInt32 {
         get { perProtocolOptions!.keepaliveInterval }
-        set { perProtocolOptions!.keepaliveInterval = newValue }
+        set { modifyPerProtocolOptions { $0.keepaliveInterval = newValue } }
     }
 }
