@@ -1330,7 +1330,7 @@ extension ProtocolOptions<SwiftTLSProtocol> {
             perProtocolOptions ?? SwiftTLSProtocol.Options()
         }
         set {
-            perProtocolOptions?.tlsOptions = newValue.tlsOptions
+            modifyPerProtocolOptions { $0.tlsOptions = newValue.tlsOptions }
         }
     }
 }
