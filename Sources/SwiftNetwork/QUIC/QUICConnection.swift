@@ -5285,6 +5285,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 extension QUICConnection {
 
     // Process an incoming NEW_TOKEN frame
+    @inline(never)
     func processNewTokenFrame(
         _ frame: consuming FrameNewToken,
         in eventContext: inout NetworkContext.EventContext
@@ -5375,6 +5376,7 @@ extension QUICConnection {
     }
 
     // Process incoming CRYPTO frame
+    @inline(never)
     func processCryptoFrame(
         _ frame: consuming FrameCrypto,
         packetNumberSpace: PacketNumberSpace,
@@ -5504,6 +5506,7 @@ extension QUICConnection {
     }
 
     // Handle incoming data blocked frame and notify application protocol if needed
+    @inline(never)
     func processDataBlocked(frame: consuming FrameDataBlocked) -> Bool {
         log.info(
             "Received DATA_BLOCKED (max=\(frame.limit)), previous max data:  \(flowControlState.inboundMaxData)"
@@ -5513,6 +5516,7 @@ extension QUICConnection {
     }
 
     // Handle incoming stream data blocked frame and notify application protocol if needed
+    @inline(never)
     func processStreamDataBlocked(frame: consuming FrameStreamDataBlocked) -> Bool {
         guard let stream = streamFromStreamID(frame.id) else {
             log.datapath("Invalid streamID: \(frame.id)")
@@ -5598,6 +5602,7 @@ extension QUICConnection {
     }
 
     // Handle the incoming maxStreamsBidirectional and update remoteMaxStreams if needed
+    @inline(never)
     func processMaxStreamsBidirectionalFrame(
         _ frame: consuming FrameMaxStreamsBidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5610,6 +5615,7 @@ extension QUICConnection {
     }
 
     // Handle the incoming maxStreamsUnidirectional and update remoteMaxStreams if needed
+    @inline(never)
     func processMaxStreamsUnidirectionalFrame(
         _ frame: consuming FrameMaxStreamsUnidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5621,6 +5627,7 @@ extension QUICConnection {
         )
     }
 
+    @inline(never)
     func processStreamsBlockedBidirectionalFrame(
         _ frame: consuming FrameStreamsBlockedBidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5644,6 +5651,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processStreamsBlockedUnidirectionalFrame(
         _ frame: consuming FrameStreamsBlockedUnidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5667,6 +5675,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processAckFrame(
         _ frame: consuming FrameAck,
         packetNumberSpace: PacketNumberSpace,
@@ -5720,6 +5729,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processApplicationCloseFrame(
         _ frame: consuming FrameApplicationClose,
         in eventContext: inout NetworkContext.EventContext
@@ -5733,6 +5743,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processConnectionCloseFrame(
         _ frame: consuming FrameConnectionClose,
         in eventContext: inout NetworkContext.EventContext
@@ -6462,6 +6473,11 @@ extension QUICConnection {
 
 @available(Network 0.1.0, *)
 extension QUICConnection {
+    // Every frame handler except those on the bulk data path (STREAM, DATAGRAM, MAX_DATA,
+    // MAX_STREAM_DATA, PADDING, PING) must be `@inline(never)`. Production code calls each handler
+    // only from here, so the optimizer would otherwise inline them all, and this function's stack
+    // frame would reserve every handler's locals at once. That frame stays live while CRYPTO input
+    // runs the whole TLS handshake, which has to fit in a 64 KB stack on embedded targets.
     func processFrame(
         _ frame: consuming QUICFrame,
         packetNumberSpace: PacketNumberSpace,
@@ -6888,6 +6904,7 @@ extension QUICConnection {
         }
     }
 
+    @inline(never)
     func processNewConnectionIDFrame(
         _ frame: FrameNewConnectionID,
         in eventContext: inout NetworkContext.EventContext
@@ -7097,6 +7114,7 @@ extension QUICConnection {
         sendFrames(in: &eventContext)
     }
 
+    @inline(never)
     func processRetireConnectionIDFrame(
         _ frame: FrameRetireConnectionID,
         in eventContext: inout NetworkContext.EventContext
@@ -7149,6 +7167,7 @@ extension QUICConnection {
 @available(Network 0.1.0, *)
 extension QUICConnection {
     @discardableResult
+    @inline(never)
     func handlePathChallengeFrame(
         _ frame: FramePathChallenge,
         path: QUICPath,
@@ -7159,6 +7178,7 @@ extension QUICConnection {
     }
 
     @discardableResult
+    @inline(never)
     func handlePathChallengeResponseFrame(
         _ frame: FramePathResponse,
         path: QUICPath,
