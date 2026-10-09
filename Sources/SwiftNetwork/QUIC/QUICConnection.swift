@@ -22,6 +22,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -389,16 +392,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     private var pendOutboundData = false  // Don't immediately process application sends
 
-    // Set while `recovery` is exclusively borrowed for ACK processing.
-    //
-    // Acknowledging a packet can close a stream (a fully-ACKed RESET_STREAM or
-    // FIN), and closing a stream wants to flush frames. The no-argument
-    // `sendFrames()` passes `&recovery` inout, so doing that from inside the ACK
-    // walk would be a second overlapping modification of `recovery` and traps
-    // under exclusivity enforcement. While this is set, `sendFrames()` records
-    // the request instead of performing it, and the ACK path flushes once the
-    // borrow ends.
-    private var isProcessingAcks = false
+    // Set while Recovery or Ack is exclusively borrowed for ACK-related work: either
+    // processing a received ACK frame  or firing the delayed-ACK timers
+    private var isBorrowingRecoveryAckState = false
     private var deferredSendFramesRequested = false
 
     // false == IPv6, true == IPv4
@@ -512,7 +508,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 timerNow: self.now,
                 in: &eventContext
             ) { firedAt, timerState in
-                self.ack.timerFired(at: firedAt, in: &timerState)
+                self.fireDelayedAckTimer(at: firedAt, in: &timerState)
             }
             self.ack = Ack(connection: self, timerID: ackTimerID, logPrefixer: logPrefixer)
 
@@ -1054,11 +1050,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // The peer's max_ack_delay is stored in the RTT struct where it's most
         // often used.
         if let remoteMaxAckDelay = remoteTransportParameters[.maxAckDelay] {
-            currentPath?.rtt.remoteMaxAckDelay = .milliseconds(remoteMaxAckDelay.value)
+            currentPath?.rtt.remoteMaxAckDelay = remoteMaxAckDelay.duration
         } else {
-            currentPath?.rtt.remoteMaxAckDelay = .milliseconds(
-                TransportParameter.defaultValue(forType: .maxAckDelay)!
-            )
+            currentPath?.rtt.remoteMaxAckDelay = Ack.defaultMaxDelay
         }
 
         if let ackDelayExponent = remoteTransportParameters[.ackDelayExponent] {
@@ -3309,6 +3303,26 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
+    // Safe-guard Ack and Recovery overlapping access with isBorrowingRecoveryAckState
+    func fireDelayedAckTimer(
+        at firedAt: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        let wasBorrowing = isBorrowingRecoveryAckState
+        isBorrowingRecoveryAckState = true
+        ack.timerFired(at: firedAt, in: &eventContext)
+        isBorrowingRecoveryAckState = wasBorrowing
+        if !wasBorrowing, deferredSendFramesRequested {
+            deferredSendFramesRequested = false
+            sendFrames(delayedACK: true, in: &eventContext)
+
+            // `timerFired`'s own idle check ran before this deferred flush, while the ACK
+            // frame was still scheduled but not yet sent, so it couldn't observe idleness.
+            // Check again now that the flush has actually cleared the pending ACK.
+            checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
+        }
+    }
+
     // Adds recovery and applicationPendingItems to avoid extra begin/end acccess checking overhead
     @discardableResult
     /// Sends pending frames using an event context the caller already holds.
@@ -3317,11 +3331,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         delayedACK: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        // ACK processing holds `recovery` exclusively, and acknowledging a packet
-        // can close a stream, which in turn wants to flush frames. Passing
-        // `&recovery` again here would overlap that borrow and trap, so record
-        // the request and let the ACK path flush once its borrow has ended.
-        if isProcessingAcks {
+        // Guard with isBorrowingRecoveryAckState because Recovery and Ack to prevent overlapping access
+        if isBorrowingRecoveryAckState {
             deferredSendFramesRequested = true
             return false
         }
@@ -5272,6 +5283,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 extension QUICConnection {
 
     // Process an incoming NEW_TOKEN frame
+    @inline(never)
     func processNewTokenFrame(
         _ frame: consuming FrameNewToken,
         in eventContext: inout NetworkContext.EventContext
@@ -5362,6 +5374,7 @@ extension QUICConnection {
     }
 
     // Process incoming CRYPTO frame
+    @inline(never)
     func processCryptoFrame(
         _ frame: consuming FrameCrypto,
         packetNumberSpace: PacketNumberSpace,
@@ -5491,6 +5504,7 @@ extension QUICConnection {
     }
 
     // Handle incoming data blocked frame and notify application protocol if needed
+    @inline(never)
     func processDataBlocked(frame: consuming FrameDataBlocked) -> Bool {
         log.info(
             "Received DATA_BLOCKED (max=\(frame.limit)), previous max data:  \(flowControlState.inboundMaxData)"
@@ -5500,6 +5514,7 @@ extension QUICConnection {
     }
 
     // Handle incoming stream data blocked frame and notify application protocol if needed
+    @inline(never)
     func processStreamDataBlocked(frame: consuming FrameStreamDataBlocked) -> Bool {
         guard let stream = streamFromStreamID(frame.id) else {
             log.datapath("Invalid streamID: \(frame.id)")
@@ -5585,6 +5600,7 @@ extension QUICConnection {
     }
 
     // Handle the incoming maxStreamsBidirectional and update remoteMaxStreams if needed
+    @inline(never)
     func processMaxStreamsBidirectionalFrame(
         _ frame: consuming FrameMaxStreamsBidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5597,6 +5613,7 @@ extension QUICConnection {
     }
 
     // Handle the incoming maxStreamsUnidirectional and update remoteMaxStreams if needed
+    @inline(never)
     func processMaxStreamsUnidirectionalFrame(
         _ frame: consuming FrameMaxStreamsUnidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5608,6 +5625,7 @@ extension QUICConnection {
         )
     }
 
+    @inline(never)
     func processStreamsBlockedBidirectionalFrame(
         _ frame: consuming FrameStreamsBlockedBidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5631,6 +5649,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processStreamsBlockedUnidirectionalFrame(
         _ frame: consuming FrameStreamsBlockedUnidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5654,6 +5673,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processAckFrame(
         _ frame: consuming FrameAck,
         packetNumberSpace: PacketNumberSpace,
@@ -5684,7 +5704,8 @@ extension QUICConnection {
         // to flush frames. Suppress those nested flushes for the duration of the
         // `recovery` borrow below, then perform one flush afterwards if any were
         // requested.
-        isProcessingAcks = true
+        let wasBorrowing = isBorrowingRecoveryAckState
+        isBorrowingRecoveryAckState = true
         recovery.receivedAck(
             ack: frame,
             ackedPath: path,
@@ -5698,14 +5719,15 @@ extension QUICConnection {
         recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
 
         // The borrow of `recovery` has ended, so it is safe to flush again.
-        isProcessingAcks = false
-        if deferredSendFramesRequested {
+        isBorrowingRecoveryAckState = wasBorrowing
+        if !wasBorrowing, deferredSendFramesRequested {
             deferredSendFramesRequested = false
             sendFrames(in: &eventContext)
         }
         return true
     }
 
+    @inline(never)
     func processApplicationCloseFrame(
         _ frame: consuming FrameApplicationClose,
         in eventContext: inout NetworkContext.EventContext
@@ -5719,6 +5741,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processConnectionCloseFrame(
         _ frame: consuming FrameConnectionClose,
         in eventContext: inout NetworkContext.EventContext
@@ -6448,6 +6471,11 @@ extension QUICConnection {
 
 @available(Network 0.1.0, *)
 extension QUICConnection {
+    // Every frame handler except those on the bulk data path (STREAM, DATAGRAM, MAX_DATA,
+    // MAX_STREAM_DATA, PADDING, PING) must be `@inline(never)`. Production code calls each handler
+    // only from here, so the optimizer would otherwise inline them all, and this function's stack
+    // frame would reserve every handler's locals at once. That frame stays live while CRYPTO input
+    // runs the whole TLS handshake, which has to fit in a 64 KB stack on embedded targets.
     func processFrame(
         _ frame: consuming QUICFrame,
         packetNumberSpace: PacketNumberSpace,
@@ -6874,6 +6902,7 @@ extension QUICConnection {
         }
     }
 
+    @inline(never)
     func processNewConnectionIDFrame(
         _ frame: FrameNewConnectionID,
         in eventContext: inout NetworkContext.EventContext
@@ -7116,6 +7145,7 @@ extension QUICConnection {
         sendFrames(in: &eventContext)
     }
 
+    @inline(never)
     func processRetireConnectionIDFrame(
         _ frame: FrameRetireConnectionID,
         in eventContext: inout NetworkContext.EventContext
@@ -7168,6 +7198,7 @@ extension QUICConnection {
 @available(Network 0.1.0, *)
 extension QUICConnection {
     @discardableResult
+    @inline(never)
     func handlePathChallengeFrame(
         _ frame: FramePathChallenge,
         path: QUICPath,
@@ -7178,6 +7209,7 @@ extension QUICConnection {
     }
 
     @discardableResult
+    @inline(never)
     func handlePathChallengeResponseFrame(
         _ frame: FramePathResponse,
         path: QUICPath,

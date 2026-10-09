@@ -15,17 +15,126 @@
 // Wrappers over older Crypto functions when span-based APIs are not available.
 // This path exists for compatibility, but is significantly less efficient.
 
+#if canImport(CryptoKit)
+internal import CryptoKit
+#elseif canImport(Crypto)
+@preconcurrency internal import Crypto
+#endif
+
+// Every entry point here seals or opens `message` where it lies. `sealInPlace` and `openInPlace` take CryptoKit's
+// span-based API wherever the running OS provides it, and otherwise fall back to `sealInPlaceThroughSealedBox` and
+// `openInPlaceThroughSealedBox`, which go through a `SealedBox` and copy the result back. The entry points need names
+// of their own: a wrapper named after the span-based API would shadow it throughout the module, and every call would
+// take the copying path even where the OS has the real one.
+//
+// CryptoKit first declares that API in the 27 SDKs, as module version 383.2.1. A build against an older SDK must not
+// compile the call at all, since `#available` only chooses at run time; those builds always take the fallback.
+
+// Availability due to `SwiftCrypto`'s `AES.GCM`
+@available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
+extension AES.GCM {
+    static func sealInPlace(
+        _ message: inout MutableRawSpan,
+        using key: SymmetricKey,
+        nonce: AES.GCM.Nonce,
+        authenticating authenticatedData: RawSpan? = nil,
+        tag: inout OutputRawSpan
+    ) throws(CryptoKitMetaError) {
+        #if DISABLE_SHIM_CRYPTO_SPAN_APIS
+        try seal(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: &tag)
+        #else
+        #if canImport(CryptoKit) && canImport(CryptoKit, _version: 383.2.1)
+        if #available(macOS 27, iOS 27, watchOS 27, tvOS 27, visionOS 27, *) {
+            try seal(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: &tag)
+            return
+        }
+        #endif
+        try sealInPlaceThroughSealedBox(
+            &message,
+            using: key,
+            nonce: nonce,
+            authenticating: authenticatedData,
+            tag: &tag
+        )
+        #endif
+    }
+
+    static func openInPlace(
+        _ message: inout MutableRawSpan,
+        using key: SymmetricKey,
+        nonce: AES.GCM.Nonce,
+        authenticating authenticatedData: RawSpan? = nil,
+        tag: RawSpan
+    ) throws(CryptoKitMetaError) {
+        #if DISABLE_SHIM_CRYPTO_SPAN_APIS
+        try open(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: tag)
+        #else
+        #if canImport(CryptoKit) && canImport(CryptoKit, _version: 383.2.1)
+        if #available(macOS 27, iOS 27, watchOS 27, tvOS 27, visionOS 27, *) {
+            try open(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: tag)
+            return
+        }
+        #endif
+        try openInPlaceThroughSealedBox(&message, using: key, nonce: nonce, authenticating: authenticatedData, tag: tag)
+        #endif
+    }
+}
+
+// Availability due to `SwiftCrypto`'s `ChaChaPoly`
+@available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
+extension ChaChaPoly {
+    static func sealInPlace(
+        _ message: inout MutableRawSpan,
+        using key: SymmetricKey,
+        nonce: ChaChaPoly.Nonce,
+        authenticating authenticatedData: RawSpan? = nil,
+        tag: inout OutputRawSpan
+    ) throws(CryptoKitMetaError) {
+        #if DISABLE_SHIM_CRYPTO_SPAN_APIS
+        try seal(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: &tag)
+        #else
+        #if canImport(CryptoKit) && canImport(CryptoKit, _version: 383.2.1)
+        if #available(macOS 27, iOS 27, watchOS 27, tvOS 27, visionOS 27, *) {
+            try seal(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: &tag)
+            return
+        }
+        #endif
+        try sealInPlaceThroughSealedBox(
+            &message,
+            using: key,
+            nonce: nonce,
+            authenticating: authenticatedData,
+            tag: &tag
+        )
+        #endif
+    }
+
+    static func openInPlace(
+        _ message: inout MutableRawSpan,
+        using key: SymmetricKey,
+        nonce: ChaChaPoly.Nonce,
+        authenticating authenticatedData: RawSpan? = nil,
+        tag: RawSpan
+    ) throws(CryptoKitMetaError) {
+        #if DISABLE_SHIM_CRYPTO_SPAN_APIS
+        try open(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: tag)
+        #else
+        #if canImport(CryptoKit) && canImport(CryptoKit, _version: 383.2.1)
+        if #available(macOS 27, iOS 27, watchOS 27, tvOS 27, visionOS 27, *) {
+            try open(inPlace: &message, using: key, nonce: nonce, authenticating: authenticatedData, tag: tag)
+            return
+        }
+        #endif
+        try openInPlaceThroughSealedBox(&message, using: key, nonce: nonce, authenticating: authenticatedData, tag: tag)
+        #endif
+    }
+}
+
 #if !DISABLE_SHIM_CRYPTO_SPAN_APIS
 #if canImport(Foundation)
 import Foundation
 #elseif canImport(SwiftSystem)
 import SwiftSystem
-#endif
-
-#if canImport(CryptoKit)
-internal import CryptoKit
-#elseif canImport(Crypto)
-@preconcurrency internal import Crypto
 #endif
 
 // Availability due to `SwiftCrypto`'s `SymmetricKey`
@@ -55,8 +164,9 @@ extension AES.GCM.Nonce {
 // Availability due to `SwiftCrypto`'s `AES.GCM`
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 extension AES.GCM {
-    static func seal(
-        inPlace message: inout MutableRawSpan,
+    /// Seals `message` in place by way of a `SealedBox`, for OS versions without the span-based API.
+    static func sealInPlaceThroughSealedBox(
+        _ message: inout MutableRawSpan,
         using key: SymmetricKey,
         nonce: AES.GCM.Nonce,
         authenticating authenticatedData: RawSpan? = nil,
@@ -91,8 +201,9 @@ extension AES.GCM {
         }
     }
 
-    static func open(
-        inPlace message: inout MutableRawSpan,
+    /// Opens `message` in place by way of a `SealedBox`, for OS versions without the span-based API.
+    static func openInPlaceThroughSealedBox(
+        _ message: inout MutableRawSpan,
         using key: SymmetricKey,
         nonce: AES.GCM.Nonce,
         authenticating authenticatedData: RawSpan? = nil,
@@ -135,8 +246,9 @@ extension ChaChaPoly.Nonce {
 // Availability due to `SwiftCrypto`'s `ChaChaPoly`
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 extension ChaChaPoly {
-    static func seal(
-        inPlace message: inout MutableRawSpan,
+    /// Seals `message` in place by way of a `SealedBox`, for OS versions without the span-based API.
+    static func sealInPlaceThroughSealedBox(
+        _ message: inout MutableRawSpan,
         using key: SymmetricKey,
         nonce: ChaChaPoly.Nonce,
         authenticating authenticatedData: RawSpan? = nil,
@@ -168,8 +280,9 @@ extension ChaChaPoly {
         }
     }
 
-    static func open(
-        inPlace message: inout MutableRawSpan,
+    /// Opens `message` in place by way of a `SealedBox`, for OS versions without the span-based API.
+    static func openInPlaceThroughSealedBox(
+        _ message: inout MutableRawSpan,
         using key: SymmetricKey,
         nonce: ChaChaPoly.Nonce,
         authenticating authenticatedData: RawSpan? = nil,

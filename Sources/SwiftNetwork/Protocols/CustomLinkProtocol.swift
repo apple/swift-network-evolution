@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -33,9 +36,9 @@ public struct CustomLinkProtocol: NetworkProtocol {
     public typealias Metadata = CustomLinkMetadata
     public typealias Instance = CustomLinkInstance
 
-    public struct CustomLinkOptions: PerProtocolOptions {
-        public var tx: ((Span<UInt8>) -> Void)? = nil
-        public var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? = nil
+    public struct CustomLinkOptions: PerProtocolOptions, Sendable {
+        public var tx: (@Sendable (_ bytes: Span<UInt8>) -> Void)? = nil
+        public var rx: (@Sendable (_ inject: @escaping (_ bytes: Span<UInt8>) -> Void) -> Void)? = nil
         init() {}
 
         init?(from serializedBytes: [UInt8]) {
@@ -87,8 +90,8 @@ public struct CustomLinkProtocol: NetworkProtocol {
         var log = NetworkLoggerState()
         public var eventManager = ProtocolEventManager()
         private var incomingFrames = FrameArray()
-        public var tx: ((Span<UInt8>) -> Void)? = nil
-        public var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? = nil
+        public var tx: (@Sendable (Span<UInt8>) -> Void)? = nil
+        public var rx: (@Sendable (@escaping (Span<UInt8>) -> Void) -> Void)? = nil
 
         public func setup(
             remote: Endpoint?,
@@ -179,12 +182,12 @@ public struct CustomLinkProtocol: NetworkProtocol {
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 extension ProtocolOptions<CustomLinkProtocol> {
-    public var tx: ((Span<UInt8>) -> Void)? {
+    public var tx: (@Sendable (_ bytes: Span<UInt8>) -> Void)? {
         get { perProtocolOptions!.tx }
         set { perProtocolOptions!.tx = newValue }
     }
 
-    public var rx: ((@escaping (Span<UInt8>) -> Void) -> Void)? {
+    public var rx: (@Sendable (_ inject: @escaping (_ bytes: Span<UInt8>) -> Void) -> Void)? {
         get { perProtocolOptions!.rx }
         set { perProtocolOptions!.rx = newValue }
     }

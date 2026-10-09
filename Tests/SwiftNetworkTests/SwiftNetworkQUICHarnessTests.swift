@@ -12,9 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Synchronization
 import XCTest
 
-#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux))
+#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux) || os(Android))
 
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
@@ -42,6 +43,9 @@ import Crypto
 
 #if canImport(Glibc)
 import Glibc
+internal import Logging
+#elseif canImport(Android)
+import Android
 internal import Logging
 #elseif canImport(Musl)
 import Musl
@@ -568,6 +572,37 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 100)
     }
 
+    // ACKs should be bundled on outgoing STREAM frames rather than going out in their own
+    // packet as much as possible, this test tracks that.
+    func testQUICEcho1MiBAckBundling() {
+        let observedPacketSizes = Mutex<[Int]>([])
+        let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
+            // Identify short header packet to accumulate the total sizes at the end
+            guard (firstByte & 0xC0) == 0x40 else { return }
+            observedPacketSizes.withLock { $0.append(byteCount) }
+        }
+
+        QUICTestHarness().runQUICTest(
+            blockSize: 10240,
+            blockCount: 100,
+            bridgeObserveFrameHandler: observeFrameHandler
+        )
+
+        let packetSizes = observedPacketSizes.withLock { $0 }
+        XCTAssertFalse(packetSizes.isEmpty, "packetSizes should not be empty")
+
+        // A standalone ACK (no STREAM data) fits comfortably under 100 bytes, but a
+        // packet carrying STREAM data is padded out much closer to the path's MTU.
+        let ackOnlySizeThreshold = 100
+        let ackOnlyPacketCount = packetSizes.filter { $0 < ackOnlySizeThreshold }.count
+        print("ackOnlyPacketCount: \(ackOnlyPacketCount), packetSizes: \(packetSizes.count)")
+        XCTAssertLessThan(
+            ackOnlyPacketCount,
+            10,  // Use 10 as an arbitrary threshold here
+            "Most packets should bundle an ACK with STREAM data rather than going out alone"
+        )
+    }
+
     #if !NETWORK_PRIVATE
     // Note: These tests takes too long to in for automation
     // Changed to 30 seconds to give it leeway to run locally
@@ -762,11 +797,11 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         let clientOptions = QUICProtocol.options()
         clientOptions.connectionOptions.initialPacketSize = 1400
 
-        var observedInitialPacketSizes: [Int] = []
+        let observedInitialPacketSizes = Mutex<[Int]>([])
         let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
             // Verify initial packet
             guard (firstByte & 0xF0) == 0xC0 else { return }
-            observedInitialPacketSizes.append(byteCount)
+            observedInitialPacketSizes.withLock { $0.append(byteCount) }
         }
 
         QUICTestHarness().runQUICTest(
@@ -777,8 +812,11 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
             bridgeObserveFrameHandler: observeFrameHandler
         )
 
-        XCTAssertFalse(observedInitialPacketSizes.isEmpty, "Should have observed at least one Initial packet")
-        XCTAssertEqual(observedInitialPacketSizes.first, 1400)
+        XCTAssertFalse(
+            observedInitialPacketSizes.withLock { $0.isEmpty },
+            "Should have observed at least one Initial packet"
+        )
+        XCTAssertEqual(observedInitialPacketSizes.withLock { $0.first }, 1400)
     }
 
     func testQUICDatagramRemoteMaxDatagramFrameSize() {

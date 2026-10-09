@@ -14,7 +14,7 @@
 
 import XCTest
 
-#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux))
+#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux) || os(Android))
 
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
@@ -28,6 +28,9 @@ import XCTest
 
 #if canImport(Glibc)
 import Glibc
+internal import Logging
+#elseif canImport(Android)
+import Android
 internal import Logging
 #elseif canImport(Musl)
 import Musl

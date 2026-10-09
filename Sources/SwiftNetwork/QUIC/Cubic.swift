@@ -17,6 +17,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -54,22 +57,6 @@ extension CubicLikeProtocol {
 struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
     var log: LogPrefixer
 
-    var congestionWindow = UInt64(0)
-    var bytesInFlight = UInt64(0)
-    var packetsAcked = UInt64(0)
-    var packetsMarked = UInt64(0)
-    var ecnCECounter = 0
-    var largestSentPN = Int64(0)
-    var slowStartThreshold = UInt64.max
-    var prevSlowStartThreshold = UInt64.max
-    var recoveryStartTime = NetworkClock.Instant.zero
-    var bytesAcked = UInt64(0)
-    var pipeAckSamples = [UInt64(0)]
-    var pipeAckValue = UInt64(0)
-    var pipeAckSampleEnd = NetworkClock.Instant.zero
-    var pipeAckAcked = UInt64(0)
-    var pipeAckIndex = 0
-
     var K: Double = 0
     var numCongestionEvents = 0
     var totalAcked = UInt64(0) /* total bytes acked for cubic */
@@ -96,21 +83,22 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         UInt64(min(10 * mss, max(2 * mss, 14720)))
     }
 
-    init(pacer: inout Pacer, mss: Int, qlog: QLog? = nil, logPrefixer: LogPrefixer) {
+    init(state: inout CongestionControlState, pacer: inout Pacer, mss: Int, qlog: QLog? = nil, logPrefixer: LogPrefixer)
+    {
         self.log = logPrefixer
-        reset(mss: mss, qlog: qlog)
+        reset(state: &state, mss: mss, qlog: qlog)
         if pacer.enabled {
             let startupRate =
-                congestionWindow * System.Time.USEC_PER_SEC / UInt64(pacingInitialRTT.microseconds)
+                state.congestionWindow * System.Time.USEC_PER_SEC / UInt64(pacingInitialRTT.microseconds)
             let startupBurstSize = UInt64(mss)
             pacer.setInitialState(startupRate, UInt32(truncatingIfNeeded: startupBurstSize))
             pacer.reset()
         }
-        logUpdate(qlog: qlog)
+        state.logUpdate(log: log, qlog: qlog)
         logState(qlog: qlog, state: .slowStart, trigger: nil)
     }
 
-    private mutating func setK(mss: Int) {
+    private mutating func setK(state: CongestionControlState, mss: Int) {
         // K is the time period(s) that WCubic(t) function takes to increase
         // the current window size to WMax if there are no further
         // congestion events. Compute the cubic K using,
@@ -119,12 +107,12 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             K = 0
             return
         }
-        guard maxCongestionWindow > congestionWindow else {
+        guard maxCongestionWindow > state.congestionWindow else {
             K = 0
-            if maxCongestionWindow < congestionWindow {
+            if maxCongestionWindow < state.congestionWindow {
                 // Log a fault for underflow cases. Don't log if it would just be zero.
                 let maxCongestionWindow = maxCongestionWindow
-                let congestionWindow = congestionWindow
+                let congestionWindow = state.congestionWindow
                 Logger.proto.fault(
                     "Max congestion window \(maxCongestionWindow) should be greater than congestion window \(congestionWindow)"
                 )
@@ -132,7 +120,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             return
         }
 
-        K = Double(maxCongestionWindow - congestionWindow) / Cubic.cFactor
+        K = Double(maxCongestionWindow - state.congestionWindow) / Cubic.cFactor
         K = K / Double(mss)
         #if !NETWORK_EMBEDDED
         K = cbrt(K)
@@ -141,7 +129,12 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         #endif
     }
 
-    private mutating func getTarget(mss: Int, smoothedRTT: NetworkDuration, now: NetworkClock.Instant) -> UInt64 {
+    private mutating func getTarget(
+        state: CongestionControlState,
+        mss: Int,
+        smoothedRTT: NetworkDuration,
+        now: NetworkClock.Instant
+    ) -> UInt64 {
         if epochStart == .zero {
             // If we exit slow start without any packet
             // loss, CUBIC switches to CA where t is the elapsed
@@ -149,15 +142,15 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             // epochStart to now here.
             epochStart = now
             // Set originPoint for the start of epoch
-            if congestionWindow < maxCongestionWindow {
+            if state.congestionWindow < maxCongestionWindow {
                 originPoint = maxCongestionWindow
-                setK(mss: mss)
+                setK(state: state, mss: mss)
             } else {
-                originPoint = congestionWindow
+                originPoint = state.congestionWindow
                 K = 0
             }
             // Reset tcpCongestionWindow to be in sync with cubic
-            tcpCongestionWindow = congestionWindow
+            tcpCongestionWindow = state.congestionWindow
             tcpTotalAcked = 0
         }
         // Compute target cubic window W(t+RTT) for the next RTT using,
@@ -186,6 +179,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
 
     // Handle an in-sequence ACK in congestion avoidance phase
     private mutating func processAckCongestionAvoidance(
+        state: inout CongestionControlState,
         bytesAcked: UInt64,
         smoothedRTT: NetworkDuration,
         mss: Int,
@@ -193,21 +187,21 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
     ) {
         totalAcked += bytesAcked
         // compute W(t+RTT)
-        let WCubicNext = getTarget(mss: mss, smoothedRTT: smoothedRTT, now: now)
+        let WCubicNext = getTarget(state: state, mss: mss, smoothedRTT: smoothedRTT, now: now)
         updateTCPWindow(bytesAcked: bytesAcked, mss: mss)
-        if congestionWindow < WCubicNext {
+        if state.congestionWindow < WCubicNext {
             // Either concave or convex region
             // Total increase in 1RTT is (W(t+RTT) - congestionWindow).
             // To get increase per ACK, multiply by (bytesAcked / congestionWindow)
             let incr =
-                Double((WCubicNext - congestionWindow))
-                * (Double(totalAcked) / Double(congestionWindow))
-            congestionWindow += min(UInt64(incr), Cubic.initialCongestionWindow(mss))
+                Double((WCubicNext - state.congestionWindow))
+                * (Double(totalAcked) / Double(state.congestionWindow))
+            state.congestionWindow += min(UInt64(incr), Cubic.initialCongestionWindow(mss))
             totalAcked = 0
         }
-        if congestionWindow < tcpCongestionWindow {
+        if state.congestionWindow < tcpCongestionWindow {
             // TCP friendly region
-            congestionWindow = tcpCongestionWindow
+            state.congestionWindow = tcpCongestionWindow
             // When the congestionWindow is set based on TF region,
             // we should reset the totalAcked counter as we
             // have already used bytes acked equivalent to
@@ -218,11 +212,11 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         // Set WMax to congestionWindow to keep updating our current estimate of WMax
         // as we are probing for new limits at the start of connection
         if numCongestionEvents == 0 {
-            maxCongestionWindow = congestionWindow
+            maxCongestionWindow = state.congestionWindow
         }
     }
 
-    private mutating func updatePacerState(path: QUICPath?, smoothedRTT: NetworkDuration) {
+    private func updatePacerState(state: CongestionControlState, path: QUICPath?, smoothedRTT: NetworkDuration) {
         guard let path, path.pacer.enabled else {
             return
         }
@@ -234,7 +228,8 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             smoothedRTT.microseconds == 0 ? pacingInitialRTT.microseconds : smoothedRTT.microseconds
 
         // Use 200% rate when in slow start
-        let pacedWindow = congestionWindow < slowStartThreshold ? congestionWindow * 2 : congestionWindow
+        let pacedWindow =
+            state.congestionWindow < state.slowStartThreshold ? state.congestionWindow * 2 : state.congestionWindow
         let rateInBytesPerSecond =
             pacedWindow * System.Time.USEC_PER_SEC / UInt64(smoothedRTTInMicroseconds)
         let burstSize = rateInBytesPerSecond >> burstQueueShift
@@ -245,6 +240,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
 
     @discardableResult
     mutating func packetLost(
+        state: inout CongestionControlState,
         path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
@@ -253,28 +249,34 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) -> Bool {
-        decrementBytesInFlight(UInt64(bytesLost))
+        state.decrementBytesInFlight(UInt64(bytesLost), log: log)
         let reducedCongestionWindow = congestionEvent(
+            state: &state,
             sentTime: largestLostSentTime,
             mss: mss,
             now: now,
             qlog: qlog
         )
-        updatePacerState(path: path, smoothedRTT: smoothedRTT)
+        updatePacerState(state: state, path: path, smoothedRTT: smoothedRTT)
         return reducedCongestionWindow
     }
 
-    mutating func enterRecovery(mss: Int, now: NetworkClock.Instant, qlog: QLog? = nil) {
-        log.datapath("Entering Recovery: current cwin=\(congestionWindow)")
-        recoveryStartTime = now
+    mutating func enterRecovery(
+        state: inout CongestionControlState,
+        mss: Int,
+        now: NetworkClock.Instant,
+        qlog: QLog? = nil
+    ) {
+        log.datapath("Entering Recovery: current cwin=\(state.congestionWindow)")
+        state.recoveryStartTime = now
         lastMaxCongestionWindow = maxCongestionWindow
-        maxCongestionWindow = congestionWindow
-        congestionWindow = UInt64(Double(lossFlightSize) * Cubic.beta)
-        if _slowPath(congestionWindow < Cubic.minCongestionWindow(mss)) {
-            congestionWindow = UInt64(Cubic.minCongestionWindow(mss))
+        maxCongestionWindow = state.congestionWindow
+        state.congestionWindow = UInt64(Double(state.lossFlightSize(log: log)) * Cubic.beta)
+        if _slowPath(state.congestionWindow < Cubic.minCongestionWindow(mss)) {
+            state.congestionWindow = UInt64(Cubic.minCongestionWindow(mss))
         }
-        prevSlowStartThreshold = slowStartThreshold
-        slowStartThreshold = congestionWindow
+        state.prevSlowStartThreshold = state.slowStartThreshold
+        state.slowStartThreshold = state.congestionWindow
         // If Fast Convergence is supported, release more bandwidth
         // if saturation point is getting reduced due to new flows
         if maxCongestionWindow < lastMaxCongestionWindow {
@@ -288,20 +290,21 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         // Compute epoch period K(s) that the window will take to increase
         // to last_max again after backoff due to loss.
         // Note that K = 0 if we enter congestion avoidance without loss.
-        setK(mss: mss)
+        setK(state: state, mss: mss)
         // Set the start of current congestion avoidance and the origin point
         epochStart = now
         originPoint = maxCongestionWindow
         // Reset tcpCongestionWindow to be in sync with cubic
-        tcpCongestionWindow = congestionWindow
+        tcpCongestionWindow = state.congestionWindow
         tcpTotalAcked = 0
         numCongestionEvents += 1
-        initPipeAckSamples()
-        logUpdate(qlog: qlog)
+        state.initPipeAckSamples()
+        state.logUpdate(log: log, qlog: qlog)
         logState(qlog: qlog, state: .recovery, trigger: nil)
     }
 
     mutating func ackEnd(
+        state: inout CongestionControlState,
         rtt: borrowing RTT,
         path: QUICPath?,
         mss: Int,
@@ -314,37 +317,39 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             // this ACK processing
             return
         }
-        if bytesAcked == 0 {
+        if state.bytesAcked == 0 {
             // When we are in recovery period or received new CE counts
             return
         }
         let smoothedRTT = rtt.smoothedRTT
-        if !revalidateCongestionWindow(smoothedRTT: smoothedRTT, now: now) {
-            bytesAcked = 0
+        if !state.revalidateCongestionWindow(smoothedRTT: smoothedRTT, now: now, log: log) {
+            state.bytesAcked = 0
             return
         }
-        if congestionWindow < slowStartThreshold {
-            congestionWindow += min(
-                bytesAcked,
+        if state.congestionWindow < state.slowStartThreshold {
+            state.congestionWindow += min(
+                state.bytesAcked,
                 Cubic.slowStartCongestionWindow(mss)
             )
         } else {
             processAckCongestionAvoidance(
-                bytesAcked: bytesAcked,
+                state: &state,
+                bytesAcked: state.bytesAcked,
                 smoothedRTT: smoothedRTT,
                 mss: mss,
                 now: now
             )
         }
         // Should be a minimum of 2*MSS
-        if _slowPath(congestionWindow < Cubic.minCongestionWindow(mss)) {
-            congestionWindow = Cubic.minCongestionWindow(mss)
+        if _slowPath(state.congestionWindow < Cubic.minCongestionWindow(mss)) {
+            state.congestionWindow = Cubic.minCongestionWindow(mss)
         }
-        updatePacerState(path: path, smoothedRTT: smoothedRTT)
-        logUpdate(qlog: qlog)
+        updatePacerState(state: state, path: path, smoothedRTT: smoothedRTT)
+        state.logUpdate(log: log, qlog: qlog)
     }
 
     mutating func processECN(
+        state: inout CongestionControlState,
         path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
@@ -356,128 +361,122 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
-        if _slowPath(ceCount < ecnCECounter) {
+        if _slowPath(ceCount < state.ecnCECounter) {
             log.fault(
-                "New CE count \(ceCount) can't be less than current CE count \(ecnCECounter)"
+                "New CE count \(ceCount) can't be less than current CE count \(state.ecnCECounter)"
             )
         }
         // Update packets acked and marked on every ACK, even if it
         // is not used by CUBIC. This state is relevant
         // for Prague and needs to be updated by other CCs
         // esp. LEDBAT.
-        packetsMarked = UInt64(ceCount)
-        self.packetsAcked = UInt64(packetsAcked)
+        state.packetsMarked = UInt64(ceCount)
+        state.packetsAcked = UInt64(packetsAcked)
 
-        if ceCount == ecnCECounter {
+        if ceCount == state.ecnCECounter {
             // No change in CE
             return
         }
         log.datapath(
-            "\(bytesAcked) bytes were ACKed with \(ecnCECounter) packets newly CE marked"
+            "\(state.bytesAcked) bytes were ACKed with \(state.ecnCECounter) packets newly CE marked"
         )
 
         /* Update CE count even if we are already in CWR */
-        ecnCECounter = ceCount
+        state.ecnCECounter = ceCount
 
         // Received an ACK with new CE counts, reset bytesAcked so
         // we that we don't increase congestionWindow during ackEnd
-        bytesAcked = 0
+        state.bytesAcked = 0
 
-        if !rttElapsed(
-            largestSentPN: self.largestSentPN,
+        if !state.rttElapsed(
+            largestSentPN: state.largestSentPN,
             largestAckedPN: largestAckedPN
         ) {
             // Haven't elapsed one RTT yet from last CWR
             return
         }
-        congestionEvent(sentTime: largestAckedSentTime, mss: mss, now: now, qlog: qlog)
+        congestionEvent(state: &state, sentTime: largestAckedSentTime, mss: mss, now: now, qlog: qlog)
         // Update pacer state as congestionWindow has changed
-        updatePacerState(path: path, smoothedRTT: smoothedRTT)
+        updatePacerState(state: state, path: path, smoothedRTT: smoothedRTT)
         // Start new round for CWR
-        self.largestSentPN = largestSentPN
+        state.largestSentPN = largestSentPN
     }
 
-    mutating func idleTimeout(mss: Int, qlog: QLog? = nil) {
+    mutating func idleTimeout(state: inout CongestionControlState, mss: Int, qlog: QLog? = nil) {
         // We want to ideally begin with slow start after idle period.
         // Set it to the larger of its current value, MAX (congestionWindow * Beta, IW)
-        slowStartThreshold = Cubic.idleTimeout(
-            slowStartThreshold: slowStartThreshold,
-            congestionWindow: congestionWindow,
+        state.slowStartThreshold = Cubic.idleTimeout(
+            slowStartThreshold: state.slowStartThreshold,
+            congestionWindow: state.congestionWindow,
             mss: mss
         )
         // Set congestionWindow to initial congestion window
-        congestionWindow = min(congestionWindow, Cubic.initialCongestionWindow(mss))
-        logUpdate(qlog: qlog)
-        resetInternal()
+        state.congestionWindow = min(state.congestionWindow, Cubic.initialCongestionWindow(mss))
+        state.logUpdate(log: log, qlog: qlog)
+        resetInternal(state: &state)
     }
 
-    mutating func persistentCongestion(mss: Int, qlog: QLog? = nil) {
-        slowStartThreshold = Cubic.persistentCongestion(
-            congestionWindow: congestionWindow,
+    mutating func persistentCongestion(state: inout CongestionControlState, mss: Int, qlog: QLog? = nil) {
+        state.slowStartThreshold = Cubic.persistentCongestion(
+            congestionWindow: state.congestionWindow,
             mss: mss
         )
         // Set the minimum congestion window
-        congestionWindow = Cubic.minCongestionWindow(mss)
-        logUpdate(qlog: qlog)
+        state.congestionWindow = Cubic.minCongestionWindow(mss)
+        state.logUpdate(log: log, qlog: qlog)
         logState(qlog: qlog, state: .slowStart, trigger: .persistentCongestion)
     }
 
-    mutating func spuriousRetransmit(qlog: QLog? = nil) {
-        guard maxCongestionWindow > 0 && prevSlowStartThreshold > 0 else { return }
+    mutating func spuriousRetransmit(state: inout CongestionControlState, qlog: QLog? = nil) {
+        guard maxCongestionWindow > 0 && state.prevSlowStartThreshold > 0 else { return }
         // Revert to the state before loss was detected
-        congestionWindow = max(maxCongestionWindow, congestionWindow)
-        slowStartThreshold = prevSlowStartThreshold
-        logUpdate(qlog: qlog)
+        state.congestionWindow = max(maxCongestionWindow, state.congestionWindow)
+        state.slowStartThreshold = state.prevSlowStartThreshold
+        state.logUpdate(log: log, qlog: qlog)
     }
 
-    private mutating func resetInternal() {
-        recoveryStartTime = .zero
-        prevSlowStartThreshold = UInt64.max
+    private mutating func resetInternal(state: inout CongestionControlState) {
+        state.recoveryStartTime = .zero
+        state.prevSlowStartThreshold = UInt64.max
         numCongestionEvents = 0
         K = 0
         totalAcked = 0
         epochStart = .zero
         originPoint = 0
         lastMaxCongestionWindow = 0
-        maxCongestionWindow = congestionWindow
+        maxCongestionWindow = state.congestionWindow
         // CWV state
-        pipeAckSampleEnd = .zero
-        initPipeAckSamples()
+        state.pipeAckSampleEnd = .zero
+        state.initPipeAckSamples()
     }
 
-    func filloutDataTransferSnapshot(dataTransferSnapshot: inout DataTransferSnapshot) {
-        dataTransferSnapshot.transportCongestionWindow = congestionWindow
-        dataTransferSnapshot.transportSlowStartThreshold = slowStartThreshold
+    func filloutDataTransferSnapshot(state: CongestionControlState, dataTransferSnapshot: inout DataTransferSnapshot) {
+        dataTransferSnapshot.transportCongestionWindow = state.congestionWindow
+        dataTransferSnapshot.transportSlowStartThreshold = state.slowStartThreshold
     }
 
-    mutating func reset(mss: Int, qlog: QLog? = nil) {
-        congestionWindow = Cubic.initialCongestionWindow(mss)
-        slowStartThreshold = UInt64.max
-        resetInternal()
-        logUpdate(qlog: qlog)
+    mutating func reset(state: inout CongestionControlState, mss: Int, qlog: QLog? = nil) {
+        state.congestionWindow = Cubic.initialCongestionWindow(mss)
+        state.slowStartThreshold = UInt64.max
+        resetInternal(state: &state)
+        state.logUpdate(log: log, qlog: qlog)
     }
 
-    mutating func inherit(from: CongestionControl, mss: Int, qlog: QLog?) {
+    mutating func inherit(
+        from: CongestionControlState,
+        state: inout CongestionControlState,
+        mss: Int,
+        qlog: QLog? = nil
+    ) {
         // For Cubic, the old state will be stale and
         // as it will ramp up quickly in slow start, it
         // is best to start fresh. For congestion window
         // we can use the higher of last congestionWindow and initialCongestionWindow
-        switch from {
-        case .cubic(let cubic):
-            self.bytesInFlight = cubic.bytesInFlight
-            self.congestionWindow = max(cubic.congestionWindow, Cubic.initialCongestionWindow(mss))
-        #if !NETWORK_EMBEDDED
-        case .ledbat(let ledbat):
-            self.bytesInFlight = ledbat.bytesInFlight
-            self.congestionWindow = max(ledbat.congestionWindow, Cubic.initialCongestionWindow(mss))
-        case .prague(let prague):
-            self.bytesInFlight = prague.bytesInFlight
-            self.congestionWindow = max(prague.congestionWindow, Cubic.initialCongestionWindow(mss))
-        #endif
-        }
-        slowStartThreshold = UInt64.max
-        resetInternal()
-        logUpdate(qlog: qlog)
+        state.bytesInFlight = from.bytesInFlight
+        state.congestionWindow = max(from.congestionWindow, Cubic.initialCongestionWindow(mss))
+        state.slowStartThreshold = UInt64.max
+        resetInternal(state: &state)
+        state.logUpdate(log: log, qlog: qlog)
     }
 }
 #endif

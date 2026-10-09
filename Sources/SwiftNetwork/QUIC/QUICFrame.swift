@@ -17,6 +17,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -773,8 +776,24 @@ struct FramePadding: ~Copyable, QUICFrameProtocol {
     private static func countLeadingZeroBytes(_ bytes: RawSpan) -> Int {
         let count = bytes.byteCount
         let wordSize = MemoryLayout<UInt64>.size
+        let vectorSize = 32
         var offset = 0
 
+        // 1. Speed through the zeros via vectorization.
+        while offset &+ vectorSize <= count {
+            var orResult: UInt8 = 0
+            // This loop is auto-vectorized.
+            for idx in 0..<vectorSize {
+                orResult |= bytes.unsafeLoad(fromUncheckedByteOffset: offset &+ idx, as: UInt8.self)
+            }
+            if orResult == 0 {
+                offset &+= vectorSize
+            } else {
+                break
+            }
+        }
+
+        // 2. Read the rest of the bytes in chunks of words.
         while offset &+ wordSize <= count {
             let word = bytes.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt64.self)
 
@@ -785,6 +804,7 @@ struct FramePadding: ~Copyable, QUICFrameProtocol {
             }
         }
 
+        // 3. Scan the remaining bytes one by one.
         while offset < count, bytes[offset] == 0x00 {
             offset &+= 1
         }
@@ -1111,6 +1131,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         stats.increment(.txStreamResetFrames)
     }
 
+    @inline(never)
     func process(
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
@@ -1301,6 +1322,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         stats.increment(.txStreamStopSendingFrames)
     }
 
+    @inline(never)
     func process(
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
@@ -2964,6 +2986,7 @@ struct FrameHandshakeDone: ~Copyable, QUICFrameProtocol {
         try validateSerializationResult(result)
     }
 
+    @inline(never)
     func process(
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext

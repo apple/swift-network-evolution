@@ -435,6 +435,23 @@ final class PacketTests: XCTestCase {
         }
     }
 
+    func testQUICStatelessResetIsSmallerThanTriggeringPacket() throws {
+        // RFC 9000 §10.3.3: every Stateless Reset must be smaller than the packet that triggered it.
+        // Otherwise two endpoints answering each other's resets loop forever.
+        let token = QUICStatelessResetToken([UInt8](repeating: 0x01, count: 16))!
+        for triggeringPacketLength in (Constants.minimumPacketSize + 1)...100 {
+            let packet = try QUICConnectionUtilities.createStatelessResetPacket(
+                token: token,
+                triggeringPacketLength: triggeringPacketLength
+            )
+            XCTAssertLessThan(
+                packet.count,
+                triggeringPacketLength,
+                "Stateless Reset for a \(triggeringPacketLength)-byte packet is not smaller"
+            )
+        }
+    }
+
     func testQUICVersionNegotiationPacket() throws {
 
         let destinationConnectionID = QUICConnectionID([0xAA, 0xBB, 0xCC, 0xDD])!
