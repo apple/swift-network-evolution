@@ -53,7 +53,7 @@ jobs:
       # and the fuzzers start from empty.
       - name: Restore fuzz corpus cache
         if: inputs.persist_corpus
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: fuzz-corpus
           key: fuzz-corpus-${{ github.run_id }}
@@ -85,7 +85,7 @@ jobs:
       # so the failing input can be downloaded and replayed locally.
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashes-${{ github.run_id }}
           path: |
@@ -100,7 +100,7 @@ jobs:
       # regression check once it's fixed.
       - name: Save fuzz corpus cache
         if: always() && inputs.persist_corpus
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: fuzz-corpus
           key: fuzz-corpus-${{ github.run_id }}

@@ -12,9 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Synchronization
 import XCTest
 
-#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux))
+#if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux) || os(Android))
 
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
@@ -43,6 +44,9 @@ import Crypto
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -64,10 +68,10 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
         // it from the server.
 
         var hasSpinBit = true
-        var observedSpinBitValues: Set<Bool> = []
+        let observedSpinBitValues = Mutex<Set<Bool>>([])
         let observeFirstByteHandler: BridgeObserveFirstByteHandler = { firstByte in
             guard (firstByte & 0xC0) == 0x40 else { return }
-            observedSpinBitValues.insert((firstByte & 0x20) != 0)
+            observedSpinBitValues.withLock { values -> Void in values.insert((firstByte & 0x20) != 0) }
         }
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
@@ -99,11 +103,11 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
                 harness.context.async {
                     defer { expectation.fulfill() }
                     XCTAssertFalse(
-                        observedSpinBitValues.isEmpty,
+                        observedSpinBitValues.withLock { $0.isEmpty },
                         "BridgeDatagramProtocol should have observed short-header packets with spin bit values"
                     )
                     XCTAssertTrue(
-                        observedSpinBitValues.contains(true),
+                        observedSpinBitValues.withLock { $0.contains(true) },
                         "BridgeDatagramProtocol should have observed at least one packet with spin bit set"
                     )
                 }

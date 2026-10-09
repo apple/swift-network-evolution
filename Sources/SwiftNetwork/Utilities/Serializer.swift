@@ -490,7 +490,7 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
 
     /// Writes a fixed-size value across span boundaries.
     @inlinable
-    @inline(always)
+    @inline(never)
     mutating func writeFragmented<T: BitwiseCopyable>(_ value: T) throws(SerializationError) {
         let length = MemoryLayout<T>.size
         precondition(length <= 16)
@@ -648,6 +648,38 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
         try fixedLengthUTF8(value, byteCount: utf8.count)
     }
 
+    /// Writes across span boundaries, refilling from the factory as each span is exhausted.
+    @usableFromInline
+    @inline(never)
+    mutating func spanFragmented(_ source: RawSpan, length: Int) throws(SerializationError) {
+        var written = 0
+        while written < length {
+            let available = min(remaining, length &- written)
+            if available > 0 {
+                source.withUnsafeBytes { srcBuffer in
+                    currentSpan.withUnsafeMutableBytes { dstBuffer in
+                        let dst = UnsafeMutableRawBufferPointer(
+                            start: dstBuffer.baseAddress! + cursor,
+                            count: available
+                        )
+                        let src = UnsafeRawBufferPointer(
+                            start: srcBuffer.baseAddress! + written,
+                            count: available
+                        )
+                        dst.copyMemory(from: src)
+                    }
+                }
+                try moveCursor(available)
+                written &+= available
+            }
+            if written < length {
+                guard refill() else {
+                    try invalidate(.bufferTooShort)
+                }
+            }
+        }
+    }
+
     @_optimize(speed)
     @inlinable
     @inline(always)
@@ -658,34 +690,7 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
         }
 
         guard hasRoom(length) else {
-            // Fragmented path: the write straddles a span boundary, so copy
-            // in chunks, refilling from the factory as each span is exhausted.
-            var written = 0
-            while written < length {
-                let available = min(remaining, length &- written)
-                if available > 0 {
-                    source.withUnsafeBytes { srcBuffer in
-                        currentSpan.withUnsafeMutableBytes { dstBuffer in
-                            let dst = UnsafeMutableRawBufferPointer(
-                                start: dstBuffer.baseAddress! + cursor,
-                                count: available
-                            )
-                            let src = UnsafeRawBufferPointer(
-                                start: srcBuffer.baseAddress! + written,
-                                count: available
-                            )
-                            dst.copyMemory(from: src)
-                        }
-                    }
-                    try moveCursor(available)
-                    written &+= available
-                }
-                if written < length {
-                    guard refill() else {
-                        try invalidate(.bufferTooShort)
-                    }
-                }
-            }
+            try spanFragmented(source, length: length)
             return
         }
         // Fast path, only a single span

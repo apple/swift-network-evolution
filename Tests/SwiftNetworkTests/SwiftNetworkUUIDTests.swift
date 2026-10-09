@@ -31,6 +31,8 @@ import Foundation
 #if canImport(Glibc)
 import Glibc
 internal import SwiftNetworkLinuxShim
+#elseif canImport(Android)
+import Android
 #elseif canImport(Musl)
 import Musl
 internal import SwiftNetworkLinuxShim
