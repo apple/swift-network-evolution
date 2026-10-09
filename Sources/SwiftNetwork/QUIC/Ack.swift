@@ -1176,7 +1176,7 @@ struct AckBitstring: ~Copyable {
 }
 
 // Reusable storage for xor word processing.
-// This must be a class right now because AckBitstringSequence conforms to Sequence
+// This must be a class right now because AckBitstringSequence conforms to Sequence.
 @available(Network 0.1.0, *)
 final class AckBitstringXORBuffer {
     var words = [UInt64]()
@@ -1214,12 +1214,15 @@ struct AckBitstringIterator: IteratorProtocol {
     let startingWord: UInt64
     let initialWord: UInt64
     let buffer: AckBitstringXORBuffer!
+    // Bits remaining in buffer.words
+    var pendingBits: UInt64
 
     @inlinable
     @inline(always)
     init(_ sequence: AckBitstringSequence) {
         self.buffer = sequence.buffer
         self.currentWord = 0
+        self.pendingBits = 0
         self.size = sequence.size
         self.startingWord = sequence.startingWord
         self.initialWord = sequence.initialWord
@@ -1230,9 +1233,11 @@ struct AckBitstringIterator: IteratorProtocol {
     mutating func next() -> PacketNumber? {
         var index: UInt64 = 0
         while currentWord < size {
-            let result = buffer.words[Int(currentWord)]
+            if pendingBits == 0 {
+                pendingBits = buffer.words[Int(currentWord)]
+            }
             // N.B.: safe because packet numbers are only 62-bit.
-            index = result.indexOfFirstSetBit
+            index = pendingBits.indexOfFirstSetBit
             if index <= 0 {
                 currentWord += 1
             } else {
@@ -1242,9 +1247,13 @@ struct AckBitstringIterator: IteratorProtocol {
         if currentWord >= size {
             return nil
         }
-        buffer.words[Int(currentWord)] &= ~(1 << (index - 1))
+        pendingBits &= ~(1 << (index - 1))
         var packetNumber = index - 1 + ((startingWord + currentWord) * 64)
         packetNumber += initialWord * 64
+
+        if pendingBits == 0 {
+            currentWord += 1
+        }
 
         return PacketNumber(packetNumber)
     }
