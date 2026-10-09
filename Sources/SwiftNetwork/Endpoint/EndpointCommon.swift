@@ -126,10 +126,7 @@ protocol EndpointProtocol: CustomStringConvertible {
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-// `cnames` and `parentEndpoint` hold `Endpoint`, a mutable class, so the sendability of this
-// struct is only as good as the confinement of those endpoints. The package builds in a language
-// mode that checks this; libnetcore does not, which is why it carries the same fields unannotated.
-public struct EndpointCommon: Equatable, Hashable, @unchecked Sendable {
+public struct EndpointCommon: Equatable, Hashable {
     var interface: Interface?
     var alternatePort: UInt16?
     var cnames: [Endpoint]?
@@ -190,6 +187,17 @@ public struct EndpointCommon: Equatable, Hashable, @unchecked Sendable {
         lhs.isEqual(to: rhs, flags: .all)
     }
 }
+
+// Every field, including the `Endpoint` values held by `cnames` and `parentEndpoint`, is an
+// immutable-on-copy value type, so this is checked `Sendable`. `EndpointCommon_Private` is not
+// visible to this package, so that configuration keeps the conformance unchecked.
+#if NETWORK_PRIVATE
+@available(Network 0.1.0, *)
+extension EndpointCommon: @unchecked Sendable {}
+#else
+@available(Network 0.1.0, *)
+extension EndpointCommon: Sendable {}
+#endif
 
 /// Exposes every ``EndpointCommon`` field on the conforming type as if it were
 /// declared there directly, so that adding a field to `EndpointCommon` (or to

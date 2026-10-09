@@ -16,27 +16,17 @@
 import Foundation
 #endif
 
-#if !NETWORK_PRIVATE
-@_spi(Essentials)
-@available(Network 0.1.0, *)
-public class EndpointParent: Hashable, Equatable {
-    public func hash(into hasher: inout Hasher) {}
-    static public func == (lhs: EndpointParent, rhs: EndpointParent) -> Bool {
-        false
-    }
-    public var description: String { "" }
-    var redactedDescription: String { "" }
-    public var hash: Int { 0 }
-}
-#endif
-
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 #if !NETWORK_EMBEDDED
 @dynamicMemberLookup
 #endif
-public final class Endpoint: EndpointParent, EndpointProtocol {
-    public enum EndpointType: Sendable {
+public struct Endpoint: EndpointProtocol, Hashable, Sendable {
+    /// The payload is boxed (`indirect`) because every endpoint type reaches back
+    /// to `Endpoint` through ``EndpointCommon/parentEndpoint``; that would make
+    /// this a recursive value type otherwise. Boxing also keeps `Endpoint` itself
+    /// pointer-sized regardless of which case it holds.
+    public indirect enum EndpointType: Sendable {
         case address(AddressEndpoint)
         case applicationService(ApplicationServiceEndpoint)
         case bonjour(BonjourEndpoint)
@@ -47,13 +37,7 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
 
     public var type: EndpointType
 
-    /// Mutates `type` in place. This takes exclusive access to `type` for the
-    /// duration of `body`, so `body` must not read this same endpoint.
-    func modifyType(_ body: (inout EndpointType) -> Void) {
-        body(&type)
-    }
-
-    #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
+    #if NETWORK_DRIVERKIT
     var endpointPrivate = Endpoint.EndpointPrivate()
     #endif
 
@@ -62,17 +46,10 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
     /// The common state shared by every endpoint type, forwarded to whichever
     /// case `type` currently holds (unwrapped by `EndpointType.common`). All
     /// individual common fields are reached through the `dynamicMember`
-    /// subscript below rather than through per-field switches, and writes go
-    /// through `modifyCommon` so they modify `type` in place.
+    /// subscript below rather than through per-field switches.
     var common: EndpointCommon {
         get { type.common }
-        set { modifyType { $0.common = newValue } }
-    }
-
-    /// Mutates the common state in place. As with `modifyType`, `body` must not
-    /// read this same endpoint.
-    func modifyCommon(_ body: (inout EndpointCommon) -> Void) {
-        modifyType { body(&$0.common) }
+        set { type.common = newValue }
     }
 
     #if !NETWORK_EMBEDDED
@@ -80,39 +57,38 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
     /// e.g. `endpoint.alternatePort` or `endpoint.parentEndpoint`.
     public subscript<Value>(dynamicMember keyPath: WritableKeyPath<EndpointCommon, Value>) -> Value {
         get { common[keyPath: keyPath] }
-        set { modifyCommon { $0[keyPath: keyPath] = newValue } }
+        set { common[keyPath: keyPath] = newValue }
     }
     #else
     // Embedded Swift has no key paths; forward the common fields explicitly.
     var alternatePort: UInt16? {
         get { common.alternatePort }
-        set { modifyCommon { $0.alternatePort = newValue } }
+        set { common.alternatePort = newValue }
     }
     var cnames: [Endpoint]? {
         get { common.cnames }
-        set { modifyCommon { $0.cnames = newValue } }
+        set { common.cnames = newValue }
     }
     public var parentEndpoint: Endpoint? {
         get { common.parentEndpoint }
-        set { modifyCommon { $0.parentEndpoint = newValue } }
+        set { common.parentEndpoint = newValue }
     }
     var ethernetAddress: EthernetAddress? {
         get { common.ethernetAddress }
-        set { modifyCommon { $0.ethernetAddress = newValue } }
+        set { common.ethernetAddress = newValue }
     }
     #endif
 
     // MARK: -- Initializers --
     public init(_ address: AddressEndpoint) {
         self.type = .address(address)
-        super.init()
     }
 
-    public convenience init(address: IPv4Address, port: UInt16, interface: Interface? = nil) {
+    public init(address: IPv4Address, port: UInt16, interface: Interface? = nil) {
         self.init(AddressEndpoint(address: address, port: port, interface: interface))
     }
 
-    public convenience init(address: IPv6Address, port: UInt16, interface: Interface? = nil) {
+    public init(address: IPv6Address, port: UInt16, interface: Interface? = nil) {
         self.init(AddressEndpoint(address: address, port: port, interface: interface))
     }
 
@@ -130,7 +106,7 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
     }
     #endif
 
-    public convenience init(hostname: String, port: UInt16) {
+    public init(hostname: String, port: UInt16) {
         self.init(HostEndpoint(name: hostname, port: port))
     }
 
@@ -142,12 +118,12 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
         self.type = .url(url)
     }
 
-    convenience init?(url: URL) {
+    init?(url: URL) {
         guard let urlEndpoint = URLEndpoint(url: url) else { return nil }
         self.init(urlEndpoint)
     }
 
-    public convenience init?(urlString: String) {
+    public init?(urlString: String) {
         guard let urlEndpoint = URLEndpoint(string: urlString) else { return nil }
         self.init(urlEndpoint)
     }
@@ -158,7 +134,7 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
 
     // MARK: -- Serialization --
 
-    required init?(serializedData: inout [UInt8]) {
+    init?(serializedData: inout [UInt8]) {
         // First two fields:
         // endpointLength: UInt8
         // endpointFamily: UInt8
@@ -184,7 +160,6 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
             guard let address = IPv4Address(address) else { return nil }
             let endpoint = AddressEndpoint(address: address, port: port)
             self.type = .address(endpoint)
-            super.init()
         case AddressFamily.ipv6.rawValue:
             guard length == 28 else { return nil }
             var port: UInt16 = 0
@@ -201,7 +176,6 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
             var endpoint = AddressEndpoint(address: address, port: port)
             endpoint.scope = scope
             self.type = .address(endpoint)
-            super.init()
         case AddressFamily.unix.rawValue:
             guard length > 2 else { return nil }
             var path: String = ""
@@ -211,12 +185,10 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
             guard result.isValid else { return nil }
             guard let endpoint = AddressEndpoint(path) else { return nil }
             self.type = .address(endpoint)
-            super.init()
         case AddressFamily.unspecified.rawValue:
             #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
             guard let endpointType = Self.deserializeEndpointPrivate(&serializedData) else { return nil }
             self.type = endpointType
-            super.init()
             #else
             // Other endpoint type, not handled yet
             return nil
@@ -282,7 +254,7 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
 
     // MARK: -- Description --
 
-    public override var description: String {
+    public var description: String {
         #if !NETWORK_EMBEDDED
         return switch self.type {
         case .address(let endpoint): endpoint.description
@@ -298,7 +270,7 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
     }
 
     #if !NETWORK_PRIVATE
-    override var redactedDescription: String {
+    var redactedDescription: String {
         #if !NETWORK_EMBEDDED
         return switch self.type {
         case .address(let endpoint): endpoint.redactedDescription
@@ -335,7 +307,7 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
 
     var interface: Interface? {
         get { common.interface }
-        set { modifyCommon { $0.interface = newValue } }
+        set { common.interface = newValue }
     }
 
     // MARK: -- Hashing --
@@ -357,7 +329,11 @@ public final class Endpoint: EndpointParent, EndpointProtocol {
         }
     }
 
-    public override var hash: Int {
+    public var hash: Int {
         hashInternal
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(hashInternal)
     }
 }
