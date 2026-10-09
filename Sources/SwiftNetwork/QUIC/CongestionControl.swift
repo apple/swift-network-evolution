@@ -163,6 +163,7 @@ struct CongestionControlState {
     }
 
     mutating func setPipeAckSample(sample: UInt64) {
+        assert(Self.congestionWindowValidationSamples == 3, "pipeAckSamples count should be 3")
         pipeAckSamples[pipeAckIndex] = sample
         pipeAckIndex &+= 1
         pipeAckIndex = pipeAckIndex % Self.congestionWindowValidationSamples
@@ -174,6 +175,7 @@ struct CongestionControlState {
     }
 
     mutating func updatePipeAckSamples() {
+        assert(Self.congestionWindowValidationSamples == 3, "pipeAckSamples count should be 3")
         setPipeAckSample(sample: pipeAckAcked)
         pipeAckValue = pipeAckAcked
         for index in 0..<Self.congestionWindowValidationSamples {
