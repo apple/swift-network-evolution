@@ -132,6 +132,63 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
         )
     }
 
+    func testQUICServerApplicationCloseBeforeHandshakeComplete() throws {
+        // Drop all packets to the server after the first. The client completes the handshake, but the
+        // server never sees the client's Finished, so it closes while its key state is still .handshake
+        QUICTestHarness().runQUICTest(
+            clientDrops: .init(1...Int.max),
+            waitForServerConnected: false,
+            afterHandshake: { harness in
+                let expectation = XCTestExpectation(description: "Wait for client disconnect")
+                harness.context.async {
+                    harness.state?.clientHarness.waitForDisconnected {
+                        // RFC 9000 §10.2.3: APPLICATION_CLOSE must not be sent in a Handshake packet
+                        XCTAssertNotEqual(
+                            harness.state?.clientInstance.closeFrameType,
+                            .applicationClose,
+                            "Server sent APPLICATION_CLOSE in a Handshake packet"
+                        )
+                        expectation.fulfill()
+                    }
+                    harness.state?.serverHarness.stop(error: .init(quicApplicationError: 10, reason: "test"))
+                }
+                // Well below the 30 s idle timeout the client falls back to if it loses the close
+                self.wait(for: [expectation], timeout: 5.0)
+            }
+        )
+    }
+
+    func testQUICClientClosesOnFrameNotAllowedDuringHandshake() throws {
+        // Same setup as above, so the server still sends Handshake packets. RFC 9000 §12.4: a frame
+        // that is not permitted in a Handshake packet is a PROTOCOL_VIOLATION for the client
+        QUICTestHarness().runQUICTest(
+            clientDrops: .init(1...Int.max),
+            waitForServerConnected: false,
+            afterHandshake: { harness in
+                let expectation = XCTestExpectation(description: "Wait for the client to handle the packet")
+                harness.context.async {
+                    if let server = harness.state?.serverInstance {
+                        server.fromExternal { eventContext in
+                            // HANDSHAKE_DONE is only allowed in 1-RTT packets
+                            server.withPendingItems(for: .handshake) { $0.handshakeDone = true }
+                            server.sendFrames(in: &eventContext)
+                        }
+                    }
+                    // Queued behind the delivery of that packet. A later check would pass even without
+                    // closing on the violation, because the next server packet also closes the client
+                    harness.context.async {
+                        XCTAssertTrue(
+                            harness.state?.clientHarness.receivedDisconnected ?? false,
+                            "Client did not close on a frame not allowed in a Handshake packet"
+                        )
+                        expectation.fulfill()
+                    }
+                }
+                self.wait(for: [expectation], timeout: 5.0)
+            }
+        )
+    }
+
     func testQUICStatelessResetTokenWithSCID() throws {
         // This test seeds the stateless reset token and the SCID on the server.
         // Then sends a stateless reset packet to the client with the seeded token and verifies the connection closes.

@@ -1506,15 +1506,26 @@ extension FrameApplicationClose: SendableItem {
             )
             return
         }
-        let errorCode = UInt64(error.code)
-        let errorReason = error.reason
-        try write(
-            frame: &frame,
-            stats: &stats,
-            errorCode: errorCode,
-            reason: errorReason
-        )
-        shorthandFrames?.append(toShorthandLogEntry(errorCode: errorCode, reason: errorReason))
+        switch pendingItems.packetNumberSpace {
+        case .initial, .handshake:
+            // RFC 9000 §10.2.3: Initial and Handshake packets must not reveal application state, so
+            // send a CONNECTION_CLOSE with APPLICATION_ERROR and no reason instead
+            let errorCode = UInt64(QUICTransportError.QUICTransportErrorCode.applicationError.rawValue)
+            try FrameConnectionClose.write(frame: &frame, stats: &stats, errorCode: errorCode, frameType: nil)
+            shorthandFrames?.append(
+                FrameConnectionClose.toShorthandLogEntry(errorCode: errorCode, frameType: nil, reason: "")
+            )
+        case .applicationData:
+            let errorCode = UInt64(error.code)
+            let errorReason = error.reason
+            try write(
+                frame: &frame,
+                stats: &stats,
+                errorCode: errorCode,
+                reason: errorReason
+            )
+            shorthandFrames?.append(toShorthandLogEntry(errorCode: errorCode, reason: errorReason))
+        }
     }
 }
 
