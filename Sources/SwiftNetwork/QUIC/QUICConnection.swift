@@ -203,7 +203,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private var largestSentLocalCIDSequenceNumber: UInt64 = 1
 
     // All the CIDs advertised by the peer
-    var remoteCIDs = QUICConnectionIDList()
+    var remoteCIDs = QUICConnectionIDList(remembersHeldSequenceNumbers: true)
 
     // The largest "retire prior to" value received
     private var retiredRemoteCIDSequenceNumberThreshold: UInt64 = 0
@@ -6995,6 +6995,7 @@ extension QUICConnection {
         // connection ID, unless it has already done so for that sequence number.
         if frame.retirePriorToSequence > retiredRemoteCIDSequenceNumberThreshold {
             retiredRemoteCIDSequenceNumberThreshold = frame.retirePriorToSequence
+            remoteCIDs.markHeld(priorTo: frame.retirePriorToSequence)
         }
         if frame.sequence < retiredRemoteCIDSequenceNumberThreshold {
             // Send a frame to retire the connection ID
@@ -7010,7 +7011,12 @@ extension QUICConnection {
         // If we have not seen this frame before and haven't reached the
         // active CID limit, add it to the CID table.
         let cidLimit = remoteCIDs.activeConnectionIDLimit
-        if remoteCIDs.count < cidLimit {
+        if remoteCIDs.hasHeld(sequenceNumber: frame.sequence) {
+            // The lookup by connection ID above misses a connection ID that we have retired ourselves,
+            // so a repeat of its frame is recognized by sequence number. It must not be added again,
+            // and must not count against the limit.
+            log.debug("Ignoring NEW_CONNECTION_ID with already seen sequence \(frame.sequence)")
+        } else if remoteCIDs.count < cidLimit {
             do {
                 try remoteCIDs.insert(
                     sequenceNumber: frame.sequence,
@@ -7040,7 +7046,14 @@ extension QUICConnection {
                 )
             }
         } else {
-            log.info("Attempt to add new CID that exceeds the configured cid limit (\(cidLimit))")
+            // RFC 9000: 5.1.1:
+            // After processing a NEW_CONNECTION_ID frame and adding and retiring active connection IDs, if the
+            // number of active connection IDs exceeds the value advertised in its active_connection_id_limit
+            // transport parameter, an endpoint MUST close the connection with an error of type
+            // CONNECTION_ID_LIMIT_ERROR.
+            log.error("Attempt to add new CID that exceeds the configured cid limit (\(cidLimit))")
+            close(with: .connectionIDLimitError, "NEW_CONNECTION_ID: CID limit exceeded", in: &eventContext)
+            return false
         }
 
         // Re-point the path only after the insert above: the CID this frame supplies may be

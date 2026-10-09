@@ -120,6 +120,135 @@ final class ConnectionIDRotationTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 5.0)
     }
+
+    // RFC 9000 5.1.1: a NEW_CONNECTION_ID frame that takes the active CID count past the advertised
+    // active_connection_id_limit, without retiring anything, must close the connection with
+    // CONNECTION_ID_LIMIT_ERROR. Filling the pool to the limit, or repeating a frame, must not.
+    func testNewConnectionIDOverLimitClosesConnection() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let path = self.makePath(dcid: QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!, sequenceNumber: 0, used: true)
+            self.connection.currentPath = path
+            self.connection.remoteCIDs.activeConnectionIDLimit = 2
+
+            let atLimit = FrameNewConnectionID(
+                sequence: 1,
+                retirePriorToSequence: 0,
+                connectionID: QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+            let overLimit = FrameNewConnectionID(
+                sequence: 2,
+                retirePriorToSequence: 0,
+                connectionID: QUICConnectionID([0xC1, 0xC2, 0xC3, 0xC4])!,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+
+            self.connection.fromExternal { eventContext in
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(atLimit, in: &eventContext))
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(atLimit, in: &eventContext))
+            }
+            XCTAssertNil(self.connection.closeError, "Reaching the limit, or a repeated frame, is not an error")
+            XCTAssertEqual(self.connection.remoteCIDs.count, 2)
+
+            self.connection.fromExternal { eventContext in
+                XCTAssertFalse(self.connection.processNewConnectionIDFrame(overLimit, in: &eventContext))
+            }
+            XCTAssertEqual(
+                self.connection.closeError?.code,
+                QUICTransportError.QUICTransportErrorCode.connectionIDLimitError.rawValue,
+                "Exceeding the limit should close with CONNECTION_ID_LIMIT_ERROR"
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // RFC 9000 section 5.1.1: a peer may send a connection ID that temporarily exceeds the limit if the
+    // frame's Retire Prior To retires the excess. Retirement must be counted before the limit is.
+    func testNewConnectionIDAtLimitWithRetirePriorToIsAccepted() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let path = self.makePath(dcid: QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!, sequenceNumber: 0, used: true)
+            self.connection.currentPath = path
+            self.connection.remoteCIDs.activeConnectionIDLimit = 2
+
+            let atLimit = FrameNewConnectionID(
+                sequence: 1,
+                retirePriorToSequence: 0,
+                connectionID: QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+            let replacesAll = FrameNewConnectionID(
+                sequence: 2,
+                retirePriorToSequence: 2,
+                connectionID: QUICConnectionID([0xC1, 0xC2, 0xC3, 0xC4])!,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+
+            self.connection.fromExternal { eventContext in
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(atLimit, in: &eventContext))
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(replacesAll, in: &eventContext))
+            }
+            XCTAssertNil(self.connection.closeError, "Retiring the excess in the same frame is not an error")
+            XCTAssertEqual(self.connection.remoteCIDs.count, 1)
+            XCTAssertNotNil(self.connection.remoteCIDs.find(sequenceNumber: 2))
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // RFC 9000 19.15: receiving the same NEW_CONNECTION_ID frame more than once must not be treated
+    // as a connection error. A CID we retired ourselves is gone from remoteCIDs, so a late
+    // retransmission of its frame has to be recognized by sequence number. It must not be added
+    // back, and must not count against the limit once the peer has replaced the retired CID.
+    func testRepeatedNewConnectionIDForLocallyRetiredCIDIsIgnored() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let retiredCID = QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!
+            let path = self.makePath(dcid: QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!, sequenceNumber: 0, used: true)
+            self.connection.currentPath = path
+            self.connection.remoteCIDs.activeConnectionIDLimit = 2
+
+            // A second path used seq 1 and went away, as after a migration.
+            let oldPath = self.makePath(dcid: retiredCID, sequenceNumber: 1, used: true)
+            self.connection.retireOutboundCID(forPathGoingAway: oldPath)
+            XCTAssertEqual(self.connection.remoteCIDs.count, 1, "Seq 1 should be retired")
+
+            let repeated = FrameNewConnectionID(
+                sequence: 1,
+                retirePriorToSequence: 0,
+                connectionID: retiredCID,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+            let replacement = FrameNewConnectionID(
+                sequence: 2,
+                retirePriorToSequence: 0,
+                connectionID: QUICConnectionID([0xC1, 0xC2, 0xC3, 0xC4])!,
+                statelessResetToken: QUICStatelessResetToken()
+            )
+
+            self.connection.fromExternal { eventContext in
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(repeated, in: &eventContext))
+            }
+            XCTAssertNil(
+                self.connection.remoteCIDs.find(connectionID: retiredCID),
+                "A retired CID must not be added back"
+            )
+
+            self.connection.fromExternal { eventContext in
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(replacement, in: &eventContext))
+                XCTAssertTrue(self.connection.processNewConnectionIDFrame(repeated, in: &eventContext))
+            }
+            XCTAssertNil(self.connection.closeError, "A repeated frame for a retired CID is not an error")
+            XCTAssertEqual(self.connection.remoteCIDs.count, 2)
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
 }
 
 #endif
