@@ -112,7 +112,7 @@ public struct IPv4Address: IPAddress, Hashable, CustomDebugStringConvertible {
         address
     }
 
-    var rawValue: UInt32 {
+    public var rawValue: UInt32 {
         self.address
     }
 
