@@ -719,7 +719,8 @@ class QUICTestHarness {
     private func echoDatagrams(
         dataGenerator: TestDataGenerator,
         datagramFlow: DatagramUpperHarness,
-        timeout: TimeInterval = 5.0
+        timeout: TimeInterval = 5.0,
+        shouldBatchSends: Bool = false
     ) {
         guard let state else {
             XCTFail("State must be non-nil")
@@ -754,10 +755,16 @@ class QUICTestHarness {
         // Write on the client flow
         context.async {
             var chunkCount = 1
+            if shouldBatchSends {
+                state.clientHarness.invokeApplicationEvent(.outboundDataBatchStart)
+            }
             for dataChunk in dataGenerator {
                 let writeResult = clientDatagramFlow.write(dataChunk)
                 XCTAssertTrue(writeResult)
                 chunkCount += 1
+            }
+            if shouldBatchSends {
+                state.clientHarness.invokeApplicationEvent(.outboundDataBatchEnd)
             }
         }
 
@@ -1108,7 +1115,8 @@ class QUICTestHarness {
                 echoDatagrams(
                     dataGenerator: generator,
                     datagramFlow: datagramFlow,
-                    timeout: timeout
+                    timeout: timeout,
+                    shouldBatchSends: shouldBatchSends
                 )
             } else {
                 XCTAssertTrue(dataBlock == nil && blockSize == 0 && blockCount == 0)
