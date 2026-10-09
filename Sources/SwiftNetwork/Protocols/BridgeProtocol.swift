@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -28,7 +31,7 @@ internal import Synchronization
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct DatagramDrops: Equatable {
+public struct DatagramDrops: Equatable, Sendable {
     private var dropRanges: [ClosedRange<Int>]
     private var datagramCount = 0
     public var blockPacketGeneration = false
@@ -66,8 +69,8 @@ public struct DatagramDrops: Equatable {
     }
 }
 
-public typealias BridgeObserveFirstByteHandler = ((UInt8) -> Void)?
-public typealias BridgeObserveFrameHandler = ((UInt8, Int) -> Void)?
+public typealias BridgeObserveFirstByteHandler = (@Sendable (_ firstByte: UInt8) -> Void)?
+public typealias BridgeObserveFrameHandler = (@Sendable (_ firstByte: UInt8, _ byteCount: Int) -> Void)?
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
@@ -76,7 +79,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
     public typealias Metadata = BridgeMetadata
     public typealias Instance = BridgeInstance
 
-    public struct BridgeOptions: PerProtocolOptions {
+    public struct BridgeOptions: PerProtocolOptions, Sendable {
         public var linkDelay: NetworkDuration = .zero
         public var observeFirstByteHandler: BridgeObserveFirstByteHandler = nil
         public var observeFrameHandler: BridgeObserveFrameHandler = nil
@@ -395,7 +398,7 @@ public struct BridgeStreamProtocol: NetworkProtocol {
     public typealias Metadata = BridgeMetadata
     public typealias Instance = BridgeInstance
 
-    public struct BridgeOptions: PerProtocolOptions {
+    public struct BridgeOptions: PerProtocolOptions, Sendable {
         init() {}
 
         init?(from serializedBytes: [UInt8]) {

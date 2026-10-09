@@ -19,6 +19,9 @@ import Dispatch
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -369,10 +372,18 @@ extension NetworkContext {
         init(globals: Globals) {
             self.globals = globals
         }
+        /// A task for the context's queue to run.
+        ///
+        /// Tasks are not `Sendable`; the queue serializes them, which is the guarantee `NetworkContext` rests on
+        /// for its own `@unchecked Sendable` conformance.
+        private struct QueuedTask: @unchecked Sendable {
+            let run: () -> Void
+        }
         /// Runs an immediate task. This task must not be run directly on the caller's stack, but otherwise
         /// no assumptions are made about how the task is run.
         func runImmediate(_ task: @escaping (() -> Void)) {
-            globals.queue.async(execute: DispatchWorkItem(block: task))
+            let queued = QueuedTask(run: task)
+            globals.queue.async { queued.run() }
         }
         /// Schedules a task to run after a delay, using a reference.
         func schedule(_ task: @escaping (() -> Void), after delay: NetworkDuration, reference: TimerReference) {

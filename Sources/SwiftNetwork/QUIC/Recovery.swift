@@ -22,6 +22,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -129,7 +132,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             if frontNumber == target { return 0 }
             if frontNumber > target { return nil }
 
-            var right = entryCount - 1
+            var right = entryCount &- 1
             let backNumber = outstandingPackets[right].packet.number.value
             if backNumber == target { return right }
             if backNumber < target { return nil }
@@ -137,24 +140,24 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             // Both ends are strictly inside the range now, so narrow the window
             // using the density bounds described above.
             var left = 1
-            let fromFront = target - frontNumber
+            let fromFront = target &- frontNumber
             if fromFront < Int64(right) {
                 right = Int(fromFront)
             }
-            let fromBack = backNumber - target
-            if fromBack < Int64(entryCount - 1 - left) {
-                left = entryCount - 1 - Int(fromBack)
+            let fromBack = backNumber &- target
+            if fromBack < Int64(entryCount &- 1 &- left) {
+                left = entryCount &- 1 &- Int(fromBack)
             }
 
             while left <= right {
-                let middle = left + (right - left) / 2
+                let middle = left &+ (right &- left) / 2
                 let middleNumber = outstandingPackets[middle].packet.number.value
                 if middleNumber == target {
                     return middle
                 } else if middleNumber < target {
-                    left = middle + 1
+                    left = middle &+ 1
                 } else {
-                    right = middle - 1
+                    right = middle &- 1
                 }
             }
             return nil
@@ -172,7 +175,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     ? outstandingPackets.removeFirst()
                     : outstandingPackets.remove(at: index)
                 if removedEntry.packet.largerPacket, largerPacketCount > 0 {
-                    largerPacketCount -= 1
+                    largerPacketCount &-= 1
                 }
                 return removedEntry
             }
@@ -543,10 +546,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     newlyECTAcked += 1
                 }
 
-                guard let sentPath = connection.path(for: ackedEntry.packet.sentPath) else {
+                let sentPath: QUICPath
+                if ackedEntry.packet.sentPath == path.pathIdentifier {
+                    sentPath = path
+                } else if let lookedUpPath = connection.path(for: ackedEntry.packet.sentPath) {
+                    sentPath = lookedUpPath
+                } else {
                     continue
                 }
-
                 if ackedEntry.lostTime != .zero {
                     let sRTT = sentPath.rtt.smoothedRTT
                     let latestRTT = sentPath.rtt.latestRTT
