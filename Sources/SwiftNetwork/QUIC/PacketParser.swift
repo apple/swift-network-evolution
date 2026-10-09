@@ -226,6 +226,36 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         stats: inout Statistics,
         in eventContext: inout NetworkContext.EventContext
     ) -> Packet? {
+        // RFC 9000 Section 12.2: a packet that cannot be decrypted is discarded on its own, and the
+        // packets coalesced after it MUST still be processed.
+        while true {
+            var skippedPacket = false
+            let packet = parseNextPacket(
+                frame: &frame,
+                connection: connection,
+                ecn: ecn,
+                ack: &ack,
+                protector: &protector,
+                stats: &stats,
+                skippedPacket: &skippedPacket,
+                in: &eventContext
+            )
+            if !skippedPacket {
+                return packet
+            }
+        }
+    }
+
+    private mutating func parseNextPacket(
+        frame: inout Frame,
+        connection: QUICConnection,
+        ecn: IPProtocol.ECN,
+        ack: inout Ack,
+        protector: inout Protector,
+        stats: inout Statistics,
+        skippedPacket: inout Bool,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> Packet? {
         let originalLength = frame.unclaimedLength
         if _slowPath(originalLength < Constants.minimumPacketSize) {
             connection.log.error("Dropping short packet, len=\(frame.unclaimedLength)")
@@ -285,6 +315,12 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             }
             packet.tagLength = tagSize
             guard openHeader(connection: connection, packet: &packet, frame: &frame, protector: &protector) else {
+                // A long header carries the packet's length in the clear, so the packet can be
+                // stepped over without its keys to reach whatever is coalesced after it.
+                let packetLength = Int(packet.headerLength) + Int(packet.payloadLength)
+                if packet.longHeader, packetLength < originalLength, frame.claim(fromStart: packetLength) {
+                    skippedPacket = true
+                }
                 return nil
             }
 
