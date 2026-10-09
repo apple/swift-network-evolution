@@ -157,6 +157,7 @@ struct CongestionControlState {
     }
 
     mutating func initPipeAckSamples() {
+        assert(Self.congestionWindowValidationSamples == 3, "pipeAckSamples count should be 3")
         pipeAckSamples = .init(repeating: 0)
         pipeAckIndex = 0
         pipeAckValue = 0
