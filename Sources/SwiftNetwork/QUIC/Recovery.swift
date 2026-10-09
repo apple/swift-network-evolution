@@ -63,6 +63,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         var lossTime = NetworkClock.Instant.zero
         var currentAckBitstring = AckBitstring()
         var prevAckBitstring = AckBitstring()
+        let ackXorBuffer = AckBitstringXORBuffer()
         var largerPacketCount = 0
 
         // Persistent Congestion Detection Variables
@@ -516,7 +517,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             return prevAckBitstring.xor(
                 other: &currentAckBitstring,
                 firstPN: oldestSentPacketNumber,
-                lastPN: ackFrame.largest
+                lastPN: ackFrame.largest,
+                buffer: ackXorBuffer
             )
         }
 
