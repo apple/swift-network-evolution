@@ -302,6 +302,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var lastShorthandTimestamp: NetworkClock.Instant = .zero
 
     var idleTimerID: Timer.TimerID?
+    // Sends an ACK that is due, but has no packet to ride on, once the bundling delay is up
+    var ackBundlingTimerID: Timer.TimerID?
+    var ackBundlingTimerScheduled = false
     var logIDNumber: Int = 0
     let signpostID = QUICSignpost.makeSignpostID()
     var signpostConnectInterval: QUICSignpost.IntervalState?
@@ -511,6 +514,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 self.fireDelayedAckTimer(at: firedAt, in: &timerState)
             }
             self.ack = Ack(connection: self, timerID: ackTimerID, logPrefixer: logPrefixer)
+
+            ackBundlingTimerID = timer.insert(
+                description: "ACK bundling",
+                timerNow: self.now,
+                in: &eventContext
+            ) { _, timerState in
+                self.fireAckBundlingTimer(in: &timerState)
+            }
 
             let recoveryTimerID = timer.insert(
                 description: "Recovery",
@@ -3323,6 +3334,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
+    func fireAckBundlingTimer(in eventContext: inout NetworkContext.EventContext) {
+        ackBundlingTimerScheduled = false
+        // A packet may have carried the ACK in the meantime
+        guard applicationPendingItems.isAckOnly else {
+            return
+        }
+        sendFrames(delayedACK: true, in: &eventContext)
+
+        // As for the delayed ACK timer, sending an ACK-only packet leaves nothing behind
+        // that would observe the connection going idle.
+        checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
+    }
+
     // Adds recovery and applicationPendingItems to avoid extra begin/end acccess checking overhead
     @discardableResult
     /// Sends pending frames using an event context the caller already holds.
@@ -3372,6 +3396,18 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         guard !applicationPendingItems.isAckOnly || delayedACK || ack.immediateAcks > 0 else {
             // Make sure the ack-delay timer is armed if returning early
             ack.scheduleDelayedAck(in: &eventContext)
+            // This ACK was due now, so it only waits for a packet to ride on for the bundling
+            // delay: a peer whose congestion window is waiting on it would otherwise stall
+            // for the max ACK delay.
+            if !ackBundlingTimerScheduled, let ackBundlingTimerID, let path = currentPath {
+                ackBundlingTimerScheduled = true
+                timer.reschedule(
+                    identifier: ackBundlingTimerID,
+                    fromNow: ack.bundlingDelay(on: path),
+                    timerNow: now,
+                    in: &eventContext
+                )
+            }
             return false
         }
         guard let path = currentPath else {

@@ -603,6 +603,31 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         )
     }
 
+    // A receiver with nothing to send has no packet for its ACKs to ride on. An ACK that is
+    // due must still go out after the bundling delay rather than the max ACK delay, or a
+    // sender whose congestion window is waiting on it stalls. Stretching the max ACK delay
+    // makes such a stall outlast the test.
+    func testQUICOneWayTransferDoesNotWaitForMaxAckDelay() {
+        QUICTestHarness().runQUICTest(
+            blockSize: 10240,
+            blockCount: 100,
+            sendFIN: false,
+            shouldEchoData: false,
+            afterHandshake: { harness in
+                let expectation = XCTestExpectation(description: "Wait for max ACK delay to be extended")
+                harness.context.async {
+                    harness.state?.serverInstance.ack.maxDelay = .seconds(30)
+                    // Keep the client's view of the server's ACK delay consistent, otherwise
+                    // its PTO fires while an ACK is held and the probe restarts the transfer.
+                    harness.state?.clientInstance.currentPath?.rtt.remoteMaxAckDelay = .seconds(30)
+                    expectation.fulfill()
+                }
+                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
+                XCTAssertEqual(waitResult, .completed, "Max ACK delay should be extended")
+            }
+        )
+    }
+
     #if !NETWORK_PRIVATE
     // Note: These tests takes too long to in for automation
     // Changed to 30 seconds to give it leeway to run locally

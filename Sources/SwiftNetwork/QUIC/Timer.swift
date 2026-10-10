@@ -117,8 +117,9 @@ final class Timer: PrefixedLoggable {
     /// ignored. Tightening it trades re-arms for precision and wants a benchmark behind it.
     ///
     /// It also decides whether that coalescing is attempted at all. A deadline nearer than this
-    /// always re-arms, because tolerating up to a millisecond of error would dominate it: half a
-    /// millisecond out, a coalesced wakeup could land after the deadline had already passed.
+    /// re-arms whenever it moves, because tolerating up to a millisecond of error would dominate
+    /// it: half a millisecond out, a coalesced wakeup could land after the deadline had already
+    /// passed.
     static let timerThreshold = NetworkDuration.milliseconds(1)
 
     init(
@@ -232,6 +233,13 @@ final class Timer: PrefixedLoggable {
         // Don't allow times in the past
         if delta < .zero {
             delta = .zero
+        }
+
+        // The pending wakeup is already for this deadline, so there is nothing to re-arm. The
+        // check below does not cover a deadline within the threshold, and while one is that
+        // near every reschedule of another timer would re-arm the wakeup for the same instant.
+        if case .armed(let nextDeadline) = wakeup, delta > .zero, nextDeadline == earliestDeadline {
+            return
         }
 
         // If the timer is over one millisecond in the future,
