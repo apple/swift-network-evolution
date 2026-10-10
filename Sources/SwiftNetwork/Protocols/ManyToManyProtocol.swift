@@ -2192,6 +2192,20 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         )
     }
 
+    /// Fetches a single datagram to send using an event context the caller already holds.
+    public func getDatagramToSend(
+        path pathID: MultiplexingPathIdentifier,
+        minimumDatagramSize: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Frame? {
+        guard let path = self.path(for: pathID) else { throw NetworkError.posix(EINVAL) }
+        return try path.lower.invokeGetDatagramToSend(
+            minimumDatagramSize: minimumDatagramSize,
+            for: path.identifier,
+            in: &eventContext
+        )
+    }
+
     public func enqueueOutboundDatagrams(
         path pathID: MultiplexingPathIdentifier,
         datagrams: consuming FrameArray

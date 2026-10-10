@@ -410,6 +410,16 @@ public protocol OutboundDatagramLinkage: OutboundDataLinkage where PairedUpperLi
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray?
 
+    /// Returns a single datagram frame the upper protocol can use to send.
+    ///
+    /// Linkages whose protocols can hand back one frame without building a container should implement this
+    /// function; the default implementation asks `getDatagramsToSend` for a batch of one.
+    func getDatagramToSend(
+        minimumDatagramSize: Int,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Frame?
+
     func sendDatagrams(
         _ datagrams: consuming FrameArray,
         from instance: InstanceIdentifier,
@@ -445,6 +455,48 @@ extension OutboundDatagramLinkage {
                 for: instance,
                 in: &eventContext
             )
+        }
+    }
+
+    public func getDatagramToSend(
+        minimumDatagramSize: Int,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Frame? {
+        try getDatagramToSendFromBatch(minimumDatagramSize: minimumDatagramSize, for: instance, in: &eventContext)
+    }
+
+    /// Takes a single frame from `getDatagramsToSend`, for protocols with no way to hand one back directly.
+    func getDatagramToSendFromBatch(
+        minimumDatagramSize: Int,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Frame? {
+        guard
+            var datagrams = try getDatagramsToSend(
+                maximumDatagramCount: 1,
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
+        else {
+            return nil
+        }
+        let datagram = datagrams.popFirst()
+        // A batch of one must hold at most one frame; anything left here would trap in
+        // `Frame.deinit` instead of reaching the driver.
+        precondition(datagrams.isEmpty)
+        return datagram
+    }
+
+    public func invokeGetDatagramToSend(
+        minimumDatagramSize: Int,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Frame? {
+        guard !identifier.isNone else { return nil }
+        return try identifier.handleCallFromUpperProtocol(in: &eventContext) { eventContext throws(NetworkError) in
+            try self.getDatagramToSend(minimumDatagramSize: minimumDatagramSize, for: instance, in: &eventContext)
         }
     }
 

@@ -4140,13 +4140,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             outFrame = batchFrame
         } else {
             guard
-                var outFrames = try? getDatagramsToSend(
+                let newFrame = try? getDatagramToSend(
                     path: path.pathIdentifier,
-                    maximumDatagramCount: 1,
                     minimumDatagramSize: requestedFrameLength,
                     in: &eventContext
-                ),
-                let newFrame = outFrames.popFirst()
+                )
             else {
                 // Note: handleOutboundRoomAvailableEvent will restart sending
                 log.debug("QUIC path failed to get a frame")
