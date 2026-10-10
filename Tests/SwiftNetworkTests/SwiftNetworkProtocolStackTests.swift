@@ -22,8 +22,8 @@ import XCTest
 final class SwiftNetworkProtocolStackTests: NetTestCase {
     func testIPOptions() {
         let ipOptions = IPProtocol.definition.protocolOptions()
-        ipOptions.perProtocolOptions?.version = .v6
-        ipOptions.perProtocolOptions?.hopLimit = 10
+        ipOptions.modifyPerProtocolOptions { $0.version = .v6 }
+        ipOptions.modifyPerProtocolOptions { $0.hopLimit = 10 }
 
         XCTAssertTrue(ipOptions.matches(definition: IPProtocol.definition), "Invalid protocol definition")
 
@@ -50,8 +50,8 @@ final class SwiftNetworkProtocolStackTests: NetTestCase {
             "Invalid protocol definition on internet protocol"
         )
 
-        ipOptions.perProtocolOptions?.version = .v6
-        ipOptions.perProtocolOptions?.hopLimit = 10
+        ipOptions.modifyPerProtocolOptions { $0.version = .v6 }
+        ipOptions.modifyPerProtocolOptions { $0.hopLimit = 10 }
         XCTAssertEqual(ipOptions.perProtocolOptions?.hopLimit, 10, "Failed to set hop limit")
         XCTAssertEqual(ipOptions.perProtocolOptions?.version, .v6, "Failed to set version")
 
@@ -77,7 +77,7 @@ final class SwiftNetworkProtocolStackTests: NetTestCase {
         let stack = ProtocolStack()
 
         let udpOptions = UDPProtocol.definition.protocolOptions()
-        udpOptions.perProtocolOptions?.insert(.noMetadata)
+        udpOptions.modifyPerProtocolOptions { $0.formUnion(.noMetadata) }
         stack.transport = .udp(udpOptions)
 
         let _ = ProtocolStack(deepCopy: stack)

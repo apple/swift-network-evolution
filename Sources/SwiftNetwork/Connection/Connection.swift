@@ -729,8 +729,10 @@ public struct TLS: StreamProtocol {
     /// ```swift
     /// TLS { NoTransport { CustomLink().tx(txHandler).rx(rxHandler) } }
     ///     .customOptions { options in
-    ///         options.perProtocolOptions?.clientAuthRequired = true
-    ///         options.perProtocolOptions?.tlsOptions.privateKey = .opaqueReference(sepBackedKey)
+    ///         options.modifyPerProtocolOptions { tlsOptions in
+    ///             tlsOptions.clientAuthRequired = true
+    ///             tlsOptions.tlsOptions.privateKey = .opaqueReference(sepBackedKey)
+    ///         }
     ///     }
     /// ```
     @_spi(ProtocolProvider)
