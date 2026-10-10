@@ -43,7 +43,6 @@ enum RTTControlType: UInt8 {
 
 @available(Network 0.1.0, *)
 struct Prague: CongestionControlProtocol, CubicLikeProtocol {
-    let log: LogPrefixer
 
     private static let alphaShift = 20
     private static let gShift = 4
@@ -110,9 +109,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         UInt64(min(10 * mss, max(2 * mss, 14720)))
     }
 
-    init(state: inout CongestionControlState, pacer: inout Pacer, mss: Int, qlog: QLog? = nil, logPrefixer: LogPrefixer)
-    {
-        self.log = logPrefixer
+    init(state: inout CongestionControlState, pacer: inout Pacer, mss: Int, qlog: QLog? = nil) {
         state.congestionWindow = Prague.initialCongestionWindow(mss)
         state.slowStartThreshold = UInt64.max
         scaledAlpha = Prague.maxAlpha << Prague.gShift
@@ -124,7 +121,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
             pacer.setInitialState(startupRate, UInt32(truncatingIfNeeded: startupBurstSize))
             pacer.reset()
         }
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
         logState(qlog: qlog, state: .slowStart, trigger: nil)
     }
 
@@ -318,12 +315,12 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
-        log.datapath("Entering Recovery: current cwin=\(state.congestionWindow)")
+        state.log(.datapath, "Entering Recovery: current cwin=\(state.congestionWindow)")
         state.recoveryStartTime = now
         cubicLastMaxCongestionWindow = cubicMaxCongestionWindow
         cubicMaxCongestionWindow = state.congestionWindow
 
-        state.congestionWindow = UInt64(Double(state.lossFlightSize(log: log)) * Prague.beta)
+        state.congestionWindow = UInt64(Double(state.lossFlightSize()) * Prague.beta)
         if _slowPath(state.congestionWindow < Prague.minCongestionWindow(mss)) {
             state.congestionWindow = Prague.minCongestionWindow(mss)
         }
@@ -356,7 +353,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         numCongestionEventsLoss += 1
         reducedDueToCE = false
         state.initPipeAckSamples()
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
         logState(qlog: qlog, state: .recovery, trigger: nil)
     }
 
@@ -392,7 +389,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
 
         reducedDueToCE = true
 
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
         logState(qlog: qlog, state: .cwr, trigger: nil)
     }
 
@@ -406,7 +403,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
     ) {
         if !state.rttElapsed(largestSentPN: largestSentPNForAlpha, largestAckedPN: largestAckedPN) {
             // One RTT hasn't elapsed yet, don't update alpha
-            log.datapath("One RTT hasn't elapsed, not updating alpha")
+            state.log(.datapath, "One RTT hasn't elapsed, not updating alpha")
             return
         }
 
@@ -420,7 +417,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         if packetsAcked > state.packetsAcked {
             newlyAcked = packetsAcked - state.packetsAcked
         } else {
-            log.error("No new packets were ACK'ed, we shouldn't be called")
+            state.log(.error, "No new packets were ACK'ed, we shouldn't be called")
         }
 
         var scaledAlphaValue = scaledAlpha
@@ -481,7 +478,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) -> Bool {
-        state.decrementBytesInFlight(UInt64(bytesLost), log: log)
+        state.decrementBytesInFlight(UInt64(bytesLost))
         let reducedCongestionWindow = pragueCongestionEvent(
             state: &state,
             sentTime: largestLostSentTime,
@@ -514,7 +511,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         }
 
         let smoothedRTT = rtt.smoothedRTT
-        if !state.revalidateCongestionWindow(smoothedRTT: smoothedRTT, now: now, log: log) {
+        if !state.revalidateCongestionWindow(smoothedRTT: smoothedRTT, now: now) {
             state.bytesAcked = 0
             return
         }
@@ -540,7 +537,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
             state.congestionWindow = Prague.minCongestionWindow(mss)
         }
         updatePacerState(state: state, path: path, smoothedRTT: smoothedRTT)
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
     }
 
     mutating func processECN(
@@ -557,7 +554,8 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         qlog: QLog? = nil
     ) {
         if _slowPath(ceCount < state.ecnCECounter) {
-            log.fault(
+            state.log(
+                .error,
                 "New CE count \(ceCount) can't be less than current CE count \(state.ecnCECounter)"
             )
         }
@@ -579,7 +577,8 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
             return
         }
 
-        log.datapath(
+        state.log(
+            .datapath,
             "\(state.bytesAcked) bytes were ACKed with \(ceCount - state.ecnCECounter) packets newly CE marked"
         )
 
@@ -605,7 +604,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
 
         if !state.rttElapsed(largestSentPN: state.largestSentPN, largestAckedPN: largestAckedPN) {
             // Haven't elapsed one RTT yet from last CWR
-            log.datapath("Haven't elapsed one RTT yet from last CWR")
+            state.log(.datapath, "Haven't elapsed one RTT yet from last CWR")
             return
         }
 
@@ -625,7 +624,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         // Revert to the state before loss was detected
         state.congestionWindow = max(cubicMaxCongestionWindow, state.congestionWindow)
         state.slowStartThreshold = state.prevSlowStartThreshold
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
     }
 
     mutating func persistentCongestion(state: inout CongestionControlState, mss: Int, qlog: QLog? = nil) {
@@ -633,7 +632,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         let newCWND = Prague.minCongestionWindow(mss)
         state.slowStartThreshold = max(UInt64(Double(state.congestionWindow) * Prague.beta), newCWND)
         state.congestionWindow = newCWND
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
         logState(qlog: qlog, state: .slowStart, trigger: .persistentCongestion)
     }
 
@@ -669,7 +668,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         )
         // Set cwnd to initial cwnd
         state.congestionWindow = min(state.congestionWindow, Prague.initialCongestionWindow(mss))
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
         resetInternal(state: &state)
     }
 
@@ -683,7 +682,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         state.slowStartThreshold = UInt64.max
         scaledAlpha = Prague.maxAlpha << Prague.gShift
         resetInternal(state: &state)
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
     }
 
     mutating func inherit(
@@ -701,7 +700,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         state.slowStartThreshold = UInt64.max
         scaledAlpha = Prague.maxAlpha << Prague.gShift
         resetInternal(state: &state)
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
     }
 }
 #endif

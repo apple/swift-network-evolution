@@ -47,8 +47,36 @@ struct CongestionControlState {
     var pipeAckSampleEnd = NetworkClock.Instant.zero
     var pipeAckAcked = UInt64(0)
     var pipeAckIndex = 0
+    #if DatapathLogging || (!DisableDebugLogging && !DisableDebugLogging)
+    let log: LogPrefixer
+    #endif
 
     static let congestionWindowValidationSamples = 3
+
+    func log(
+        _ type: LogType,
+        _ message: @autoclosure () -> String,
+        callingFunction: StaticString = #function
+    ) {
+        switch type {
+        case .datapath:
+            #if DatapathLogging
+            log.datapath(message(), callingFunction: callingFunction)
+            #endif
+        case .debug:
+            #if !DisableDebugLogging
+            log.debug(message(), callingFunction: callingFunction)
+            #endif
+        case .info:
+            #if !DisableDebugLogging
+            log.info(message(), callingFunction: callingFunction)
+            #endif
+        case .error:
+            #if !DisableErrorLogging
+            log.error(message(), callingFunction: callingFunction)
+            #endif
+        }
+    }
 
     var availableCongestionWindow: UInt64 {
         if congestionWindow > bytesInFlight {
@@ -58,7 +86,7 @@ struct CongestionControlState {
         }
     }
 
-    func congestionWindowValidated(log: LogPrefixer) -> Bool {
+    func congestionWindowValidated() -> Bool {
         if pipeAckValue == 0 {
             return true
         }
@@ -67,7 +95,8 @@ struct CongestionControlState {
         if congestionWindow < slowStartThreshold {
             let congestionWindowLimit = congestionWindow >> 2
             if pipeAckValue < congestionWindowLimit {
-                log.datapath(
+                log(
+                    .datapath,
                     "Congestion window not validated in slow-start, pipeack: \(pipeAckValue), congestionWindow \(congestionWindow)"
                 )
                 return false
@@ -75,7 +104,8 @@ struct CongestionControlState {
         } else {
             let congestionWindowLimit = congestionWindow >> 1
             if pipeAckValue < congestionWindowLimit {
-                log.datapath(
+                log(
+                    .datapath,
                     "Congestion window not validated in congestion-avoidance, pipeack: \(pipeAckValue), congestionWindow: \(congestionWindow) "
                 )
                 return false
@@ -85,30 +115,30 @@ struct CongestionControlState {
         return true
     }
 
-    func lossFlightSize(log: LogPrefixer) -> UInt64 {
-        if !congestionWindowValidated(log: log) {
+    func lossFlightSize() -> UInt64 {
+        if !congestionWindowValidated() {
             return max(pipeAckValue, bytesInFlight)
         } else {
             return congestionWindow
         }
     }
 
-    mutating func incrementBytesInFlight(_ bytesSent: Int, log: LogPrefixer) {
+    mutating func incrementBytesInFlight(_ bytesSent: Int) {
         bytesInFlight += UInt64(bytesSent)
-        log.datapath("Bytes in flight updated to \(bytesInFlight)")
+        log(.datapath, "Bytes in flight updated to \(bytesInFlight)")
 
         QUICSignpost.bytesInFlight(bytesInFlight: Int(bytesInFlight))
     }
 
-    mutating func decrementBytesInFlight(_ bytes: UInt64, log: LogPrefixer) {
+    mutating func decrementBytesInFlight(_ bytes: UInt64) {
         let result = bytesInFlight.subtractingReportingOverflow(bytes)
         if result.overflow {
-            log.fault("Undeflow, \(bytes) decremented from \(bytesInFlight)")
+            log(.error, "Undeflow, \(bytes) decremented from \(bytesInFlight)")
             bytesInFlight = 0
         } else {
             bytesInFlight = result.partialValue
         }
-        log.datapath("Bytes in flight updated to \(bytesInFlight)")
+        log(.datapath, "Bytes in flight updated to \(bytesInFlight)")
         QUICSignpost.bytesInFlight(bytesInFlight: Int(bytesInFlight))
     }
 
@@ -120,31 +150,31 @@ struct CongestionControlState {
         bytesAcked = 0
     }
 
-    mutating func packetsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant, log: LogPrefixer) {
+    mutating func packetsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant) {
         let bytesAcked = UInt64(bytesAcked)
-        decrementBytesInFlight(bytesAcked, log: log)
+        decrementBytesInFlight(bytesAcked)
         if packetInRecovery(sentTime: sentTime) {
             // Dont update the congestion window
-            log.datapath("Packet was sent before recovery, ignore")
+            log(.datapath, "Packet was sent before recovery, ignore")
             return
         }
         // Congestion window is updated later in ackEnd
         self.bytesAcked += bytesAcked
     }
 
-    mutating func packetSent(bytesSent: Int, log: LogPrefixer, qlog: QLog? = nil) {
-        incrementBytesInFlight(bytesSent, log: log)
-        logUpdate(log: log, qlog: qlog)
+    mutating func packetSent(bytesSent: Int, qlog: QLog? = nil) {
+        incrementBytesInFlight(bytesSent)
+        logUpdate(qlog: qlog)
     }
 
-    mutating func packetDiscarded(bytesSent: Int, log: LogPrefixer, qlog: QLog? = nil) {
-        decrementBytesInFlight(UInt64(bytesSent), log: log)
-        logUpdate(log: log, qlog: qlog)
+    mutating func packetDiscarded(bytesSent: Int, qlog: QLog? = nil) {
+        decrementBytesInFlight(UInt64(bytesSent))
+        logUpdate(qlog: qlog)
     }
 
-    mutating func mssChanged(mss: Int, log: LogPrefixer, qlog: QLog? = nil) {
+    mutating func mssChanged(mss: Int, qlog: QLog? = nil) {
         congestionWindow = max(congestionWindow, UInt64(mss))
-        logUpdate(log: log, qlog: qlog)
+        logUpdate(qlog: qlog)
     }
 
     // Compute if 1RTT or 1 round has elapsed by measuring if the
@@ -189,7 +219,6 @@ struct CongestionControlState {
     mutating func revalidateCongestionWindow(
         smoothedRTT: NetworkDuration,
         now: NetworkClock.Instant,
-        log: LogPrefixer
     ) -> Bool {
         if pipeAckSampleEnd == .zero {
             pipeAckNewRound(target: now.advanced(by: smoothedRTT))
@@ -209,17 +238,19 @@ struct CongestionControlState {
             updatePipeAckSamples()
             pipeAckNewRound(target: now + smoothedRTT)
         }
-        return congestionWindowValidated(log: log)
+        return congestionWindowValidated()
     }
 
-    func canSend(packetLength: Int, log: LogPrefixer) -> Bool {
+    func canSend(packetLength: Int) -> Bool {
         if availableCongestionWindow >= packetLength {
-            log.datapath(
+            log(
+                .datapath,
                 "Can send packet because bytesInFlight \(bytesInFlight) + packetLength \(packetLength) <= congestionWindow \(congestionWindow)"
             )
             return true
         } else {
-            log.datapath(
+            log(
+                .datapath,
                 "Congestion limited because bytesInFlight \(bytesInFlight) + packetLength \(packetLength) > congestionWindow \(congestionWindow)"
             )
             QUICSignpost.congestionWindowLimited(
@@ -230,9 +261,9 @@ struct CongestionControlState {
         }
     }
 
-    func logUpdate(log: LogPrefixer, qlog: QLog?) {
+    func logUpdate(qlog: QLog?) {
         if congestionWindow != UInt64.max {
-            log.datapath("Congestion window set to \(congestionWindow) bytes, bytes in flight \(bytesInFlight)")
+            log(.datapath, "Congestion window set to \(congestionWindow) bytes, bytes in flight \(bytesInFlight)")
             QUICSignpost.congestionWindow(congestionWindow: Int(congestionWindow))
         }
         #if QlogOutput
@@ -243,6 +274,12 @@ struct CongestionControlState {
                 slowStartThresh: slowStartThreshold
             )
         }
+        #endif
+    }
+
+    init(logPrefixer: LogPrefixer) {
+        #if DatapathLogging || (!DisableDebugLogging && !DisableDebugLogging)
+        self.log = logPrefixer
         #endif
     }
 }
@@ -259,22 +296,11 @@ struct CongestionControl: ~Copyable {
     }
 
     var state: CongestionControlState
-    var log: LogPrefixer
     var algorithm: Algorithm
 
-    init(state: CongestionControlState = CongestionControlState(), algorithm: Algorithm) {
+    init(state: CongestionControlState, algorithm: Algorithm) {
         self.state = state
         self.algorithm = algorithm
-        switch algorithm {
-        case .cubic(let cubic):
-            self.log = cubic.log
-        #if !NETWORK_EMBEDDED
-        case .ledbat(let ledbat):
-            self.log = ledbat.log
-        case .prague(let prague):
-            self.log = prague.log
-        #endif
-        }
     }
 
     var congestionWindow: UInt64 {
@@ -303,19 +329,19 @@ struct CongestionControl: ~Copyable {
     }
 
     func canSend(packetLength: Int) -> Bool {
-        state.canSend(packetLength: packetLength, log: log)
+        state.canSend(packetLength: packetLength)
     }
 
     mutating func packetSent(bytesSent: Int, qlog: QLog? = nil) {
-        state.packetSent(bytesSent: bytesSent, log: log, qlog: qlog)
+        state.packetSent(bytesSent: bytesSent, qlog: qlog)
     }
 
     mutating func packetsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant) {
-        state.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime, log: log)
+        state.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
     }
 
     mutating func packetDiscarded(bytesSent: Int, qlog: QLog? = nil) {
-        state.packetDiscarded(bytesSent: bytesSent, log: log, qlog: qlog)
+        state.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
     }
 
     mutating func ackBegin() {
@@ -323,7 +349,7 @@ struct CongestionControl: ~Copyable {
     }
 
     mutating func mssChanged(mss: Int) {
-        state.mssChanged(mss: mss, log: log, qlog: nil)
+        state.mssChanged(mss: mss, qlog: nil)
     }
 
     mutating func persistentCongestion(mss: Int, qlog: QLog? = nil) {
@@ -526,7 +552,7 @@ struct CongestionControl: ~Copyable {
 }
 
 @available(Network 0.1.0, *)
-protocol CongestionControlProtocol: PrefixedLoggable {
+protocol CongestionControlProtocol {
     mutating func inherit(
         from: CongestionControlState,
         state: inout CongestionControlState,
@@ -577,11 +603,11 @@ protocol CongestionControlProtocol: PrefixedLoggable {
 @available(Network 0.1.0, *)
 extension CongestionControlProtocol {
     mutating func packetSent(state: inout CongestionControlState, bytesSent: Int, qlog: QLog? = nil) {
-        state.packetSent(bytesSent: bytesSent, log: log, qlog: qlog)
+        state.packetSent(bytesSent: bytesSent, qlog: qlog)
     }
 
     mutating func packetDiscarded(state: inout CongestionControlState, bytesSent: Int, qlog: QLog? = nil) {
-        state.packetDiscarded(bytesSent: bytesSent, log: log, qlog: qlog)
+        state.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
     }
 
     mutating func ackBegin(state: inout CongestionControlState) {
@@ -589,15 +615,15 @@ extension CongestionControlProtocol {
     }
 
     mutating func packetsAcked(state: inout CongestionControlState, bytesAcked: Int, sentTime: NetworkClock.Instant) {
-        state.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime, log: log)
+        state.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
     }
 
     mutating func mssChanged(state: inout CongestionControlState, mss: Int, qlog: QLog? = nil) {
-        state.mssChanged(mss: mss, log: log, qlog: qlog)
+        state.mssChanged(mss: mss, qlog: qlog)
     }
 
     func canSend(state: CongestionControlState, packetLength: Int) -> Bool {
-        state.canSend(packetLength: packetLength, log: log)
+        state.canSend(packetLength: packetLength)
     }
 
     /// `sentTime` is when the packet went out, `now` when its loss was detected.
@@ -625,7 +651,8 @@ extension CongestionControlProtocol {
         qlog: QLog? = nil
     ) {
         congestionEvent(state: &state, sentTime: largestAckSentTime, mss: mss, now: now, qlog: qlog)
-        log.debug(
+        state.log(
+            .debug,
             "Link was flow controlled, reduced congestion window is \(state.congestionWindow) bytes"
         )
     }

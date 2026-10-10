@@ -31,15 +31,14 @@ final class LedbatTests: XCTestCase {
     var rtt: RTT!
     let mss = Constants.initialMSS
     var ledbat: Ledbat!
-    var state = CongestionControlState()
+    let logPrefixer = LogPrefixer("[LedbatTests]")
+    var state = CongestionControlState(logPrefixer: LogPrefixer("[LedbatTests]"))
     // These tests drive the algorithm directly, with no path to pace.
     let noPath: QUICPath? = nil
     let defaultCongestionWindow = UInt64(2400)
 
     override func setUp() {
-        let logPrefixer = LogPrefixer("[LedbatTests]")
-        state = CongestionControlState()
-        ledbat = Ledbat(state: &state, mss: mss, logPrefixer: logPrefixer)
+        ledbat = Ledbat(state: &state, mss: mss)
         rtt = RTT(logPrefixer: logPrefixer)
         rtt.baseRTT = .milliseconds(100)
     }

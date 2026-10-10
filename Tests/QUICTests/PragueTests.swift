@@ -32,16 +32,15 @@ final class PragueTests: XCTestCase {
     var rtt: RTT!
     let mss = Constants.initialMSS
     var prague: Prague!
-    var state = CongestionControlState()
+    let logPrefixer = LogPrefixer("[PragueTests]")
+    var state = CongestionControlState(logPrefixer: LogPrefixer("[PragueTests]"))
     // These tests drive the algorithm directly, with no path to pace.
     let noPath: QUICPath? = nil
     var pacer: Pacer = Pacer(enabled: true)
     let defaultCongestionWindow = UInt64(12000)
 
     override func setUp() {
-        let logPrefixer = LogPrefixer("[PragueTests]")
-        state = CongestionControlState()
-        prague = Prague(state: &state, pacer: &pacer, mss: mss, logPrefixer: logPrefixer)
+        prague = Prague(state: &state, pacer: &pacer, mss: mss)
         rtt = RTT(logPrefixer: logPrefixer)
     }
 

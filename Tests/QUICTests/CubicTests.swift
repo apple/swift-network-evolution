@@ -32,16 +32,15 @@ final class CubicTests: XCTestCase {
     var rtt: RTT!
     let mss = Constants.initialMSS
     var cubic: Cubic!
-    var state = CongestionControlState()
+    let logPrefixer = LogPrefixer("[CubicTests]")
+    var state = CongestionControlState(logPrefixer: LogPrefixer("[CubicTests]"))
     // These tests drive the algorithm directly, with no path to pace.
     let noPath: QUICPath? = nil
     var pacer: Pacer = Pacer(enabled: true)
     let defaultCongestionWindow = UInt64(12000)
 
     override func setUp() {
-        let logPrefixer = LogPrefixer("[CubicTests]")
-        state = CongestionControlState()
-        cubic = Cubic(state: &state, pacer: &pacer, mss: mss, logPrefixer: logPrefixer)
+        cubic = Cubic(state: &state, pacer: &pacer, mss: mss)
         rtt = RTT(logPrefixer: logPrefixer)
     }
 

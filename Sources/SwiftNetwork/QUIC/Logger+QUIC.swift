@@ -25,6 +25,14 @@ internal import Logging
 internal import os
 #endif
 
+@available(Network 0.1.0, *)
+enum LogType {
+    case info
+    case debug
+    case datapath
+    case error
+}
+
 // This class won't be shared across thread boundaries.
 @available(Network 0.1.0, *)
 final class LogPrefixer: @unchecked Sendable {

@@ -29,7 +29,6 @@ internal import os
 
 @available(Network 0.1.0, *)
 struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
-    let log: LogPrefixer
 
     private var prevCongestionWindow = UInt64(0)
     private var slowDownTimestamp = NetworkClock.Instant.zero
@@ -45,12 +44,11 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         UInt64(min(2 * mss, Ledbat.defaultCongestionWindow))
     }
 
-    init(state: inout CongestionControlState, mss: Int, qlog: QLog? = nil, logPrefixer: LogPrefixer) {
-        self.log = logPrefixer
+    init(state: inout CongestionControlState, mss: Int, qlog: QLog? = nil) {
         state.congestionWindow = Ledbat.initialCongestionWindow(mss)
         state.slowStartThreshold = UInt64.max
         reset(state: &state, mss: mss, qlog: qlog)
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
     }
 
     // GAIN is proportional to the ratio of base_delay
@@ -78,7 +76,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) -> Bool {
-        state.decrementBytesInFlight(UInt64(bytesLost), log: log)
+        state.decrementBytesInFlight(UInt64(bytesLost))
         let reducedCongestionWindow = congestionEvent(
             state: &state,
             sentTime: largestLostSentTime,
@@ -97,14 +95,14 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
     ) {
         state.recoveryStartTime = now
         prevCongestionWindow = state.congestionWindow
-        state.congestionWindow = UInt64(Double(state.lossFlightSize(log: log)) * Ledbat.beta)
+        state.congestionWindow = UInt64(Double(state.lossFlightSize()) * Ledbat.beta)
         if _slowPath(state.congestionWindow < Ledbat.minCongestionWindow(mss)) {
             state.congestionWindow = Ledbat.minCongestionWindow(mss)
         }
         state.prevSlowStartThreshold = state.slowStartThreshold
         state.slowStartThreshold = state.congestionWindow
         state.initPipeAckSamples()
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
         logState(qlog: qlog, state: .recovery, trigger: nil)
     }
 
@@ -127,14 +125,14 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
             return
         }
         let smoothedRTT = rtt.smoothedRTT
-        if !state.revalidateCongestionWindow(smoothedRTT: smoothedRTT, now: now, log: log) {
+        if !state.revalidateCongestionWindow(smoothedRTT: smoothedRTT, now: now) {
             state.bytesAcked = 0
             return
         }
         let baseRTT = rtt.baseRTT
         let currentRTT = rtt.adjustedRTT
         guard currentRTT >= baseRTT else {
-            log.fault("currentRTT lower than baseRTT")
+            state.log(.error, "currentRTT lower than baseRTT")
             return
         }
         let qDelay = currentRTT - baseRTT
@@ -223,7 +221,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
             // ssthresh should be at least 2*MSS as well
             state.slowStartThreshold = max(state.slowStartThreshold, state.congestionWindow)
         }
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
     }
 
     mutating func processECN(
@@ -240,7 +238,8 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         qlog: QLog? = nil
     ) {
         if _slowPath(ceCount < state.ecnCECounter) {
-            log.fault(
+            state.log(
+                .error,
                 "New CE count \(ceCount) can't be less than current CE count \(state.ecnCECounter)"
             )
         }
@@ -255,7 +254,8 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
             // No change in CE
             return
         }
-        log.datapath(
+        state.log(
+            .datapath,
             "\(state.bytesAcked) bytes were ACKed with \(state.ecnCECounter) packets newly CE marked"
         )
         // Update CE count even if we are already in CWR
@@ -280,7 +280,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         // Revert to the state before loss was detected
         state.congestionWindow = max(prevCongestionWindow, state.congestionWindow)
         state.slowStartThreshold = state.prevSlowStartThreshold
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
     }
 
     mutating func persistentCongestion(state: inout CongestionControlState, mss: Int, qlog: QLog? = nil) {
@@ -288,7 +288,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         let newCWND = Ledbat.minCongestionWindow(mss)
         state.slowStartThreshold = max(UInt64(Double(state.congestionWindow) * Ledbat.beta), newCWND)
         state.congestionWindow = newCWND
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
         logState(qlog: qlog, state: .slowStart, trigger: .persistentCongestion)
     }
 
@@ -317,7 +317,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         // Set cwnd to initial cwnd
         state.congestionWindow = min(state.congestionWindow, Ledbat.initialCongestionWindow(mss))
         resetInternal(state: &state)
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
     }
 
     func filloutDataTransferSnapshot(state: CongestionControlState, dataTransferSnapshot: inout DataTransferSnapshot) {
@@ -329,7 +329,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         state.congestionWindow = Ledbat.initialCongestionWindow(mss)
         state.slowStartThreshold = UInt64.max
         resetInternal(state: &state)
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
     }
 
     mutating func inherit(
@@ -344,7 +344,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         // its own cwnd and previous controller's cwnd.
         state.bytesInFlight = from.bytesInFlight
         state.congestionWindow = min(from.congestionWindow, state.congestionWindow)
-        state.logUpdate(log: log, qlog: qlog)
+        state.logUpdate(qlog: qlog)
         resetInternal(state: &state)
     }
 }
