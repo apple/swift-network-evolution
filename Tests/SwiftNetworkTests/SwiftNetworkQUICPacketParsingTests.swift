@@ -255,8 +255,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
         var result: IdleServer?
 
         harness.context.async {
-            var serverParameters = Parameters()
-            serverParameters.context = harness.context
+            var serverParameters = Parameters(context: harness.context)
             serverParameters.isServer = true
 
             var (serverQUICStreamListener, _, serverQUICMultipath) = harness.storage.createTestQUICInstance()

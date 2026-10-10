@@ -179,8 +179,7 @@ class QUICTestHarness {
         // Async onto the context to attach the protocol stack and start the handshake
         context.async {
             // Setup client parameters
-            var clientParameters = Parameters()
-            clientParameters.context = self.context
+            var clientParameters = Parameters(context: self.context)
             clientParameters.isServer = false
 
             // Build the QUIC connection through storage so its listener/multipath linkages are
@@ -229,8 +228,7 @@ class QUICTestHarness {
             }
 
             // Setup server parameters
-            var serverParameters = Parameters()
-            serverParameters.context = self.context
+            var serverParameters = Parameters(context: self.context)
             serverParameters.isServer = true
 
             var (serverQUICStreamListener, serverQUICDatagramListener, serverQUICMultipath) =
@@ -495,8 +493,7 @@ class QUICTestHarness {
             return nil
         }
         var upperHarnessConnected = false
-        var parameters = Parameters()
-        parameters.context = context
+        let parameters = Parameters(context: context)
 
         var upperHarness: StreamUpperHarness<TestStreamLinkageFamily>?
         let newStreamExpectation = XCTestExpectation(description: "Wait for new QUIC stream to be ready")
@@ -578,8 +575,7 @@ class QUICTestHarness {
             return nil
         }
         var upperHarnessConnected = false
-        var parameters = Parameters()
-        parameters.context = context
+        let parameters = Parameters(context: context)
 
         var upperHarness: DatagramUpperHarness<TestDatagramLinkageFamily>?
         let newFlowExpectation = XCTestExpectation(description: "Wait for new QUIC datagram flow to be ready")
@@ -2030,8 +2026,7 @@ class QUICTestHarness {
         let maxStreamsUpdateExpectation = XCTestExpectation(description: "Wait for MAX_STREAMS update to be processed")
         context.async {
             // Create a new stream by hand, this should put us over the remote max streams limit
-            var parameters = Parameters()
-            parameters.context = self.context
+            let parameters = Parameters(context: self.context)
             let options = QUICProtocol.options()
             options.setLogID(
                 prefix: identifier,

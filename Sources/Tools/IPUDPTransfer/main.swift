@@ -130,8 +130,7 @@ final class IPUDPTransfer {
                 }
 
                 // Server
-                var serverParameters = Parameters()
-                serverParameters.context = context
+                let serverParameters = Parameters(context: context)
                 let serverPath = PathProperties(parameters: serverParameters)
                 let (serverIPUpper, serverIPLower) = storage.createTestIPInstance()
                 let serverIPOptions = IPProtocol.options()

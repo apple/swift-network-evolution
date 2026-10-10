@@ -66,6 +66,10 @@ let package = Package(
             name: "SwiftNetworkBenchmarks",
             targets: ["SwiftNetworkBenchmarks"]
         ),
+        .library(
+            name: "SwiftNetworkTestSupport",
+            targets: ["SwiftNetworkTestSupport"]
+        ),
     ],
     traits: [
         .trait(
@@ -155,15 +159,20 @@ let package = Package(
             ],
             swiftSettings: availabilityMacros + settings
         ),
+        .target(
+            name: "SwiftNetworkTestSupport",
+            dependencies: ["SwiftNetwork"],
+            swiftSettings: availabilityMacros + settings
+        ),
         .testTarget(
             name: "SwiftNetworkTests",
-            dependencies: ["SwiftNetwork", "SwiftNetworkTestHarness"],
+            dependencies: ["SwiftNetwork", "SwiftNetworkTestHarness", "SwiftNetworkTestSupport"],
             swiftSettings: availabilityMacros + settings,
             linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
         .testTarget(
             name: "QUICTests",
-            dependencies: ["SwiftNetwork", "SwiftNetworkTestHarness"],
+            dependencies: ["SwiftNetwork", "SwiftNetworkTestHarness", "SwiftNetworkTestSupport"],
             swiftSettings: availabilityMacros + settings,
             linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
