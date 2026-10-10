@@ -1592,10 +1592,12 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                             innerState.log.datapath("Using ack delay \(ack.delay)")
                             ack.setDelay(0)
                         }
+                        // RFC 9000 Section 19.3: the ACK Delay field is decoded by multiplying it
+                        // by 2 to the power of the peer's ack_delay_exponent.
                         sentPath.rtt.processNewSample(
                             ackDuration: largestAckedEntry.sentTime.duration(to: timeNow),
                             packetAckedTime: timeNow,
-                            ackDelay: .microseconds(ack.delay)
+                            ackDelay: .microseconds(ack.delay << connection.ack.remoteDelayExponent)
                         )
                         #if QlogOutput
                         if let qLog = connection.qLog {
