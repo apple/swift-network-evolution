@@ -376,8 +376,11 @@ enum Event {
 @available(Network 0.1.0, *)
 struct EventFrame {
     var frame: QUICShorthandFrame
-    init(frame: QUICShorthandFrame) {
+    // The ack_delay_exponent of the endpoint that sent the frame.
+    var ackDelayExponent: Int
+    init(frame: QUICShorthandFrame, ackDelayExponent: Int) {
         self.frame = frame
+        self.ackDelayExponent = ackDelayExponent
     }
 
     func dumpData() -> [String: Any] {
@@ -390,7 +393,9 @@ struct EventFrame {
             data["frame_type"] = "ping"
         case .ack(let frame):
             data["frame_type"] = "ack"
-            data["ack_delay"] = frame.delay
+            // RFC 9000 Section 19.3: the ACK Delay field is decoded by multiplying it by 2 to
+            // the power of the sender's ack_delay_exponent.
+            data["ack_delay"] = frame.delay << ackDelayExponent
             if let ecnCounter = frame.ecnCounter {
                 data["ect0"] = ecnCounter.ect0
                 data["ect1"] = ecnCounter.ect1
@@ -487,10 +492,10 @@ struct EventFrames {
     var frames: [EventFrame] = []
 
     init() {}
-    init(packet: borrowing Packet) {
+    init(packet: borrowing Packet, ackDelayExponent: Int) {
         if let shorthandFrames = packet.shorthandFrames {
             for shorthandFrame in shorthandFrames {
-                self.frames.append(.init(frame: shorthandFrame))
+                self.frames.append(.init(frame: shorthandFrame, ackDelayExponent: ackDelayExponent))
             }
         }
     }
@@ -640,10 +645,10 @@ final class QLog {
         }
     }
 
-    func packetSent(_ packet: borrowing Packet, timestamp: NetworkClock.Instant) {
+    func packetSent(_ packet: borrowing Packet, ackDelayExponent: Int, timestamp: NetworkClock.Instant) {
         let packetType = PacketType(packet: packet)
         let packetHeader = PacketHeader(packet: packet)
-        let frameList = EventFrames(packet: packet)
+        let frameList = EventFrames(packet: packet, ackDelayExponent: ackDelayExponent)
         let packetEvent = EventPacket(
             packetType: packetType,
             packetHeader: packetHeader,
@@ -658,12 +663,13 @@ final class QLog {
     func packetReceived(
         _ packet: borrowing Packet,
         coalesced isCoalesced: Bool,
+        ackDelayExponent: Int,
         timestamp: NetworkClock.Instant
     ) {
         let packetEvent = EventPacket(
             packetType: PacketType(packet: packet),
             packetHeader: PacketHeader(packet: packet),
-            frameList: EventFrames(packet: packet),
+            frameList: EventFrames(packet: packet, ackDelayExponent: ackDelayExponent),
             isCoalesced: isCoalesced,
             trigger: .sentReceivedTrigger(.unknown)
         )
