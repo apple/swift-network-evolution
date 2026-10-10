@@ -18,22 +18,6 @@
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
-@available(Network 0.1.0, *)
-extension NetworkClock.Instant {
-    /// A fixed instant to seed tests that need one.
-    ///
-    /// The value is arbitrary, but it does have to be fixed: seeding from the real clock makes
-    /// every duration depend on how long the test itself took to run.
-    ///
-    /// Non-zero because much of the stack treats `.zero` as "unset". Built by advancing from
-    /// `.zero` rather than with `Instant(milliseconds:)`, which is internal to `SwiftNetwork`.
-    @_spi(Essentials)
-    public static var testBase: NetworkClock.Instant {
-        NetworkClock.Instant.zero.advanced(by: .milliseconds(1000))
-    }
-
-}
-
 /// A context on a clock the test owns, and the scheduler that drives it.
 ///
 /// Tests need both halves: the context to hand to `Parameters`, and the scheduler to drain queued
