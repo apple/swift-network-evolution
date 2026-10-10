@@ -3622,6 +3622,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     func scheduleReportReady(in eventContext: inout NetworkContext.EventContext) {
         schedule(.reportReady, defaultResult: (), in: &eventContext) { eventContext in
             self.reportReady(in: &eventContext)
+            // pendingItems are scheduled in reportReady so when this is scheduled make sure to flush them with sendFrames too
             self.sendFrames(in: &eventContext)
         }
     }
