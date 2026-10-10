@@ -514,6 +514,43 @@ final class QUICConnectionTests: XCTestCase {
             )
         }
     }
+
+    func testSnapshotTimestampDuration() {
+        // Verify that two snapshots with different timestamps can compute a duration
+        var first = DataTransferSnapshot()
+        first.snapshotTimestamp = NetworkClock.Instant(nanoseconds: 1_000_000_000) // 1s
+
+        var second = DataTransferSnapshot()
+        second.snapshotTimestamp = NetworkClock.Instant(nanoseconds: 3_500_000_000) // 3.5s
+
+        let duration = first.snapshotTimestamp.duration(to: second.snapshotTimestamp)
+        XCTAssertEqual(duration, .milliseconds(2500), "Duration between snapshots should be 2.5 seconds")
+
+        // Verify snapshots remain independently equal to themselves
+        XCTAssertEqual(first, first)
+        XCTAssertEqual(second, second)
+        XCTAssertNotEqual(first, second)
+    }
+
+    func testSnapshotPreservesInterfaceType() {
+        // Verify that path and interface information round-trips through a snapshot
+        var snapshot = DataTransferSnapshot()
+        snapshot.pathIdentifier = 42
+        snapshot.interfaceType = .wifi
+        snapshot.snapshotTimestamp = NetworkClock.Instant(nanoseconds: 500_000_000)
+
+        XCTAssertEqual(snapshot.pathIdentifier, 42)
+        XCTAssertEqual(snapshot.interfaceType, .wifi)
+
+        // Verify different interface types are distinguishable
+        var cellularSnapshot = DataTransferSnapshot()
+        cellularSnapshot.pathIdentifier = 43
+        cellularSnapshot.interfaceType = .cellular
+        cellularSnapshot.snapshotTimestamp = NetworkClock.Instant(nanoseconds: 600_000_000)
+
+        XCTAssertNotEqual(snapshot.interfaceType, cellularSnapshot.interfaceType)
+        XCTAssertNotEqual(snapshot, cellularSnapshot)
+    }
 }
 
 #endif
