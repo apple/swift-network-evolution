@@ -1922,7 +1922,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             accessReceivedDatagrams(path: pathID) { (datagrams, path) in
                 let connectionState = state
                 let isServerConnection: Bool = isServer
-                if connectionState.isTerminal {
+                if connectionState.isTerminal || receivedConnectionClose || receivedApplicationClose {
                     log.debug(
                         "Ignoring incoming packets for connection in terminal state"
                     )
@@ -2072,7 +2072,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 break
             }
 
-            if closeError != nil || state.isTerminal {
+            if closeError != nil || state.isTerminal || receivedConnectionClose || receivedApplicationClose {
                 // Besides a locally-detected error (closeError), the peer may
                 // have gracefully closed the connection (CONNECTION_CLOSE
                 // with NO_ERROR, or an APPLICATION_CLOSE frame, neither of
@@ -2143,7 +2143,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 packetNumberSpace: transferredPacket.numberSpace,
                 flag: ecnFlags
             )
-            guard !transferredPacket.versionNegotiation, !transferredPacket.retry else {
+            guard !transferredPacket.versionNegotiation, !transferredPacket.retry, !transferredPacket.failedDecryption
+            else {
                 return transferredPacket
             }
             if transferredPacket.longHeader {
@@ -2256,7 +2257,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             if !processFrame(quicFrame, packetNumberSpace: packet.numberSpace, path: path, in: &eventContext) {
                 break
             }
-            if state.isTerminal {
+            if state.isTerminal || receivedConnectionClose || receivedApplicationClose {
                 // Some frame handlers (e.g. CONNECTION_CLOSE, APPLICATION_CLOSE)
                 // call close() - which tears down crypto and other per-connection
                 // state - but still report success (return true) for the frame
@@ -3592,13 +3593,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         case .sendFramesFromRecovery(let pathID, let ignoreCongestionWindow, let retransmission):
             guard let path = path(for: pathID) else { return }
             var discardInitialRecoveryState = false
-            _ = sendFramesFromRecovery(
+            var sentPackets = sendFramesFromRecovery(
                 on: path,
                 ignoreCongestionWindow: ignoreCongestionWindow,
                 retransmission: retransmission,
                 discardInitialRecoveryState: &discardInitialRecoveryState,
                 in: &eventContext
             )
+            recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
             if discardInitialRecoveryState {
                 recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
                 recovery.resetPTOCount(path: path)
@@ -3622,6 +3624,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     /// CRYPTO frame is still being processed  inside handleInboundPacket
     func scheduleReportReady(in eventContext: inout NetworkContext.EventContext) {
         schedule(.reportReady, defaultResult: (), in: &eventContext) { eventContext in
+            guard self.closeError == nil, self.state != .closing else { return }
             self.reportReady(in: &eventContext)
             // pendingItems are scheduled in reportReady so when this is scheduled make sure to flush them with sendFrames too
             self.sendFrames(in: &eventContext)
@@ -3630,6 +3633,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     /// Runs close() through the scheduler so it never executes nested inside an active receiveFrames  operation
     func scheduleClose(sendCloseFrame: Bool = true, in eventContext: inout NetworkContext.EventContext) {
+        guard !state.isTerminal else { return }
         schedule(.closeConnection(sendCloseFrame: sendCloseFrame), defaultResult: (), in: &eventContext) {
             eventContext in
             self.close(sendCloseFrame: sendCloseFrame, in: &eventContext)
@@ -5189,6 +5193,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     func updateEarlyDataAccepted(_ accepted: Bool, in eventContext: inout NetworkContext.EventContext) {
+        scheduleDiscardEarlyDataKeys(in: &eventContext)
         if accepted {
             earlyDataAccepted = true
         } else {
@@ -5205,7 +5210,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 )
             }
         }
-        scheduleDiscardEarlyDataKeys(in: &eventContext)
     }
 
     // The TLS handshake has reported that it is complete
@@ -6115,9 +6119,10 @@ extension QUICConnection {
         _ frame: consuming FrameApplicationClose,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        // Detect graceful close and the error case
+        receivedApplicationClose = true
         if frame.errorCode != 0 {
             self.applicationCloseError = QUICApplicationError(frame.errorCode, frame.reason)
-            receivedApplicationClose = true
         }
         log.info("Received APPLICATION_CLOSE code: \(frame.errorCode), reason: '\(frame.reason)'")
         scheduleClose(in: &eventContext)
@@ -6129,9 +6134,10 @@ extension QUICConnection {
         _ frame: consuming FrameConnectionClose,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        // Detect graceful close and the error case
+        receivedConnectionClose = true
         if frame.errorCode != 0 {
             self.closeError = QUICTransportError(frame.errorCode, frame.reason)
-            receivedConnectionClose = true
         }
         log.info("Received CONNECTION_CLOSE code: \(frame.errorCode), reason: '\(frame.reason)'")
         scheduleClose(in: &eventContext)
