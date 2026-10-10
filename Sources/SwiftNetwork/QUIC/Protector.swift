@@ -18,6 +18,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging

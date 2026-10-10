@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -181,11 +184,11 @@ public struct CustomLinkProtocol: NetworkProtocol {
 extension ProtocolOptions<CustomLinkProtocol> {
     public var tx: (@Sendable (_ bytes: Span<UInt8>) -> Void)? {
         get { perProtocolOptions!.tx }
-        set { perProtocolOptions!.tx = newValue }
+        set { modifyPerProtocolOptions { $0.tx = newValue } }
     }
 
     public var rx: (@Sendable (_ inject: @escaping (_ bytes: Span<UInt8>) -> Void) -> Void)? {
         get { perProtocolOptions!.rx }
-        set { perProtocolOptions!.rx = newValue }
+        set { modifyPerProtocolOptions { $0.rx = newValue } }
     }
 }

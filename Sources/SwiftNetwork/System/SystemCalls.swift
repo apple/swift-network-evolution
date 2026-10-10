@@ -12,13 +12,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if os(Linux)
+#if os(Linux) || os(Android)
 #if canImport(Glibc)
 import Glibc
+internal import SwiftNetworkLinuxShim
+#elseif canImport(Android)
+import Android
 #elseif canImport(Musl)
 import Musl
-#endif
 internal import SwiftNetworkLinuxShim
+#endif
 #elseif !NETWORK_STANDALONE
 import Darwin
 #endif
@@ -42,15 +45,22 @@ let sysConnectx = connectx
 let sysWrite = write
 let sysRead = read
 let sysBind = bind
+#if canImport(Android)
+let sysRecvMsg: @convention(c) (CInt, UnsafeMutablePointer<msghdr>, CInt) -> ssize_t = recvmsg
+let sysSendMsg: @convention(c) (CInt, UnsafePointer<msghdr>, CInt) -> ssize_t = sendmsg
+#else
 let sysRecvMsg: @convention(c) (CInt, UnsafeMutablePointer<msghdr>?, CInt) -> ssize_t = recvmsg
 let sysSendMsg: @convention(c) (CInt, UnsafePointer<msghdr>?, CInt) -> ssize_t = sendmsg
 let sysIfNameToIndex: @convention(c) (UnsafePointer<CChar>?) -> CUnsignedInt = if_nametoindex
+#endif
 #endif
 
 #if os(Linux)
 // if_indextoname is not in the Glibc Swift interface so it's bridged from c
 let sysIfIndexToName: @convention(c) (CInt, UnsafeMutablePointer<CChar>?) -> UnsafeMutablePointer<CChar>? =
     SwiftNetworkLinuxShim_if_indextoname
+#elseif canImport(Android) && !NETWORK_STANDALONE
+// No need for this alias on Android
 #elseif !NETWORK_STANDALONE || NETWORK_DRIVERKIT
 let sysIfIndexToName: @convention(c) (UInt32, UnsafeMutablePointer<CChar>?) -> UnsafeMutablePointer<CChar>? =
     if_indextoname

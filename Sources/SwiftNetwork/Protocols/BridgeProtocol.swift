@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -369,22 +372,22 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
 extension ProtocolOptions<BridgeDatagramProtocol> {
     public var linkDelay: NetworkDuration {
         get { perProtocolOptions!.linkDelay }
-        set { perProtocolOptions!.linkDelay = newValue }
+        set { modifyPerProtocolOptions { $0.linkDelay = newValue } }
     }
 
     public var observeFirstByteHandler: BridgeObserveFirstByteHandler {
         get { perProtocolOptions!.observeFirstByteHandler }
-        set { perProtocolOptions!.observeFirstByteHandler = newValue }
+        set { modifyPerProtocolOptions { $0.observeFirstByteHandler = newValue } }
     }
 
     public var observeFrameHandler: BridgeObserveFrameHandler {
         get { perProtocolOptions!.observeFrameHandler }
-        set { perProtocolOptions!.observeFrameHandler = newValue }
+        set { modifyPerProtocolOptions { $0.observeFrameHandler = newValue } }
     }
 
     public var datagramDrops: DatagramDrops? {
         get { perProtocolOptions!.datagramDrops }
-        set { perProtocolOptions!.datagramDrops = newValue }
+        set { modifyPerProtocolOptions { $0.datagramDrops = newValue } }
     }
 }
 

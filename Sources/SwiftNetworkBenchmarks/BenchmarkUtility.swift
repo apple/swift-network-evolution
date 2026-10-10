@@ -27,6 +27,9 @@ internal import Crypto
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -308,11 +311,11 @@ public final class QUICBenchmarkUtility {
 #endif
 
 @_spi(ProtocolProvider)
-#if !(os(Linux) || NETWORK_EMBEDDED)
+#if !(os(Linux) || os(Android) || NETWORK_EMBEDDED)
 @available(macOS 11, iOS 14, tvOS 14, watchOS 7, *)
 #endif
 public struct LoggingHandle: CustomStringConvertible {
-    #if os(Linux) || NETWORK_EMBEDDED
+    #if os(Linux) || os(Android) || NETWORK_EMBEDDED
     let logger = Logger(label: "com.apple.network.benchmarks")
     #else
     #if canImport(os)

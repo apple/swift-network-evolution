@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -89,6 +92,6 @@ public struct CustomIPProtocol: NetworkProtocol {
 extension ProtocolOptions<CustomIPProtocol> {
     var ipProtocolNumber: UInt8 {
         get { perProtocolOptions!.ipProtocolNumber }
-        set { perProtocolOptions!.ipProtocolNumber = newValue }
+        set { modifyPerProtocolOptions { $0.ipProtocolNumber = newValue } }
     }
 }

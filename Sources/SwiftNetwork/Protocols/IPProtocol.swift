@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -2338,22 +2341,22 @@ public struct IPProtocol: NetworkProtocol {
 extension ProtocolOptions<IPProtocol> {
     var version: IPProtocol.Version {
         get { perProtocolOptions!.version }
-        set { perProtocolOptions!.version = newValue }
+        set { modifyPerProtocolOptions { $0.version = newValue } }
     }
     var localAddressPreference: IPProtocol.AddressPreference {
         get { perProtocolOptions!.localAddressPreference }
-        set { perProtocolOptions!.localAddressPreference = newValue }
+        set { modifyPerProtocolOptions { $0.localAddressPreference = newValue } }
     }
     public var dscpValue: UInt8? {
         get { perProtocolOptions!.dscpValue }
-        set { perProtocolOptions!.dscpValue = newValue }
+        set { modifyPerProtocolOptions { $0.dscpValue = newValue } }
     }
     public var flags: IPProtocol.IPOptions.Flags {
         get { perProtocolOptions!.flags }
-        set { perProtocolOptions!.flags = newValue }
+        set { modifyPerProtocolOptions { $0.flags = newValue } }
     }
     public var hopLimit: UInt8? {
         get { perProtocolOptions!.hopLimit }
-        set { perProtocolOptions!.hopLimit = newValue }
+        set { modifyPerProtocolOptions { $0.hopLimit = newValue } }
     }
 }

@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -438,74 +441,74 @@ public struct TCPProtocol: NetworkProtocol {
 extension ProtocolOptions<TCPProtocol> {
     public var reduceBuffering: Bool {
         get { perProtocolOptions!.reduceBuffering }
-        set { perProtocolOptions!.reduceBuffering = newValue }
+        set { modifyPerProtocolOptions { $0.reduceBuffering = newValue } }
     }
     public var noDelay: Bool {
         get { perProtocolOptions!.noDelay }
-        set { perProtocolOptions!.noDelay = newValue }
+        set { modifyPerProtocolOptions { $0.noDelay = newValue } }
     }
     public var noTimewait: Bool {
         get { perProtocolOptions!.noTimewait }
-        set { perProtocolOptions!.noTimewait = newValue }
+        set { modifyPerProtocolOptions { $0.noTimewait = newValue } }
     }
     public var noPush: Bool {
         get { perProtocolOptions!.noPush }
-        set { perProtocolOptions!.noPush = newValue }
+        set { modifyPerProtocolOptions { $0.noPush = newValue } }
     }
     public var noOptions: Bool {
         get { perProtocolOptions!.noOptions }
-        set { perProtocolOptions!.noOptions = newValue }
+        set { modifyPerProtocolOptions { $0.noOptions = newValue } }
     }
     public var enableKeepalive: Bool {
         get { perProtocolOptions!.enableKeepalive }
-        set { perProtocolOptions!.enableKeepalive = newValue }
+        set { modifyPerProtocolOptions { $0.enableKeepalive = newValue } }
     }
     public var enableKeepaliveOffload: Bool {
         get { perProtocolOptions!.enableKeepaliveOffload }
-        set { perProtocolOptions!.enableKeepaliveOffload = newValue }
+        set { modifyPerProtocolOptions { $0.enableKeepaliveOffload = newValue } }
     }
     public var disableAckStretching: Bool {
         get { perProtocolOptions!.disableAckStretching }
-        set { perProtocolOptions!.disableAckStretching = newValue }
+        set { modifyPerProtocolOptions { $0.disableAckStretching = newValue } }
     }
     public var disableBlackholeDetection: Bool {
         get { perProtocolOptions!.disableBlackholeDetection }
-        set { perProtocolOptions!.disableBlackholeDetection = newValue }
+        set { modifyPerProtocolOptions { $0.disableBlackholeDetection = newValue } }
     }
     public var enableBackgroundTrafficManagement: Bool {
         get { perProtocolOptions!.enableBackgroundTrafficManagement }
-        set { perProtocolOptions!.enableBackgroundTrafficManagement = newValue }
+        set { modifyPerProtocolOptions { $0.enableBackgroundTrafficManagement = newValue } }
     }
     public var retransmitFinDrop: Bool {
         get { perProtocolOptions!.retransmitFinDrop }
-        set { perProtocolOptions!.retransmitFinDrop = newValue }
+        set { modifyPerProtocolOptions { $0.retransmitFinDrop = newValue } }
     }
     public var enableFastOpen: Bool {
         get { perProtocolOptions!.enableFastOpen }
-        set { perProtocolOptions!.enableFastOpen = newValue }
+        set { modifyPerProtocolOptions { $0.enableFastOpen = newValue } }
     }
     public var noFastOpenCookie: Bool {
         get { perProtocolOptions!.noFastOpenCookie }
-        set { perProtocolOptions!.noFastOpenCookie = newValue }
+        set { modifyPerProtocolOptions { $0.noFastOpenCookie = newValue } }
     }
     public var fastOpenForceEnable: Bool {
         get { perProtocolOptions!.fastOpenForceEnable }
-        set { perProtocolOptions!.fastOpenForceEnable = newValue }
+        set { modifyPerProtocolOptions { $0.fastOpenForceEnable = newValue } }
     }
     public var disableECN: Bool {
         get { perProtocolOptions!.disableECN }
-        set { perProtocolOptions!.disableECN = newValue }
+        set { modifyPerProtocolOptions { $0.disableECN = newValue } }
     }
     public var resetLocalPort: Bool {
         get { perProtocolOptions!.resetLocalPort }
-        set { perProtocolOptions!.resetLocalPort = newValue }
+        set { modifyPerProtocolOptions { $0.resetLocalPort = newValue } }
     }
     public var keepaliveIdleTime: UInt32 {
         get { perProtocolOptions!.keepaliveIdleTime }
-        set { perProtocolOptions!.keepaliveIdleTime = newValue }
+        set { modifyPerProtocolOptions { $0.keepaliveIdleTime = newValue } }
     }
     public var keepaliveInterval: UInt32 {
         get { perProtocolOptions!.keepaliveInterval }
-        set { perProtocolOptions!.keepaliveInterval = newValue }
+        set { modifyPerProtocolOptions { $0.keepaliveInterval = newValue } }
     }
 }

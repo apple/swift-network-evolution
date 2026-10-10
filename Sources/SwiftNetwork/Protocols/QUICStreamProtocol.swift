@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -389,22 +392,22 @@ public struct QUICStreamProtocol: NetworkProtocol {
 extension ProtocolOptions<QUICProtocol> {
     var isDatagram: Bool {
         get { perProtocolOptions!.isDatagram }
-        set { perProtocolOptions!.isDatagram = newValue }
+        set { modifyPerProtocolOptions { $0.isDatagram = newValue } }
     }
 
     public var isUnidirectional: Bool {
         get { perProtocolOptions!.isUnidirectional }
-        set { perProtocolOptions!.isUnidirectional = newValue }
+        set { modifyPerProtocolOptions { $0.isUnidirectional = newValue } }
     }
     public var connectionOptions: QUICConnectionProtocol.QUICConnectionOptions {
         get { perProtocolOptions!.quicConnectionOptions }
-        set { perProtocolOptions!.quicConnectionOptions = newValue }
+        set { modifyPerProtocolOptions { $0.quicConnectionOptions = newValue } }
     }
 
     #if !NETWORK_PRIVATE
     public var tlsOptions: TLSProtocol.Options {
         get { perProtocolOptions!.quicConnectionOptions.tlsOptions!.perProtocolOptions! }
-        set { perProtocolOptions!.quicConnectionOptions.tlsOptions!.perProtocolOptions = newValue }
+        set { perProtocolOptions?.quicConnectionOptions.tlsOptions?.replacePerProtocolOptions(newValue) }
     }
     #endif
 }

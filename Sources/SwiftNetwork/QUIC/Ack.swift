@@ -22,6 +22,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -40,7 +43,7 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
     var largestTimestamp: NetworkClock.Instant = .zero
     var delay = UInt64(0)
     var lastCECount = 0
-    var lastGenerationCountUpdate = 0  // Last time we updated the gen count.
+    var lastGenerationCountUpdate: NetworkClock.Instant = .zero
     var largestAckElicitingPNReceived: PacketNumber = .none
     var largestPNReceived: PacketNumber = .none
     var generationCount = 0
@@ -453,7 +456,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     static let defaultMaxDelay: NetworkDuration = .milliseconds(25)
 
     static let maxDelayExponent = 20  // Values above 20 are invalid
-    static let maxDelayMilliseconds = (1 << 14) * System.Time.USEC_PER_MSEC  // Values above 2^14ms are invalid
+    static let maxDelay: NetworkDuration = .milliseconds(1 << 14)  // Values above 2^14ms are invalid
 
     private var initialAckSpace: AckSpace
     private var handshakeAckSpace: AckSpace
@@ -886,7 +889,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
     mutating func getGenerationCount(
         for packetNumberSpace: PacketNumberSpace,
-        now: Int
+        now: NetworkClock.Instant
     ) -> Int {
         guard QUICPreferences.shared.ackCompressionEnabled && !disableAckCompression else {
             return 0
@@ -899,14 +902,14 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
             // The generation counter needs to be updated at
             // least every 5 ms.
-            let updateInterval = Int(5 * System.Time.USEC_PER_MSEC)
-            if ackSpace.lastGenerationCountUpdate != 0
+            let updateInterval: NetworkDuration = .milliseconds(5)
+            if ackSpace.lastGenerationCountUpdate != .zero
                 && now >= ackSpace.lastGenerationCountUpdate + updateInterval
             {
                 ackSpace.generationCount += 1
                 generationCount = ackSpace.generationCount
                 ackSpace.lastGenerationCountUpdate = now
-            } else if ackSpace.lastGenerationCountUpdate == 0 {
+            } else if ackSpace.lastGenerationCountUpdate == .zero {
                 ackSpace.lastGenerationCountUpdate = now
             }
             generationCount = ackSpace.generationCount

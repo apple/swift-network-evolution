@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -22,7 +25,7 @@ internal import Logging
 internal import os
 #endif
 
-#if os(Linux) || (NETWORK_EMBEDDED && !NETWORK_DRIVERKIT)
+#if os(Linux) || os(Android) || (NETWORK_EMBEDDED && !NETWORK_DRIVERKIT)
 extension Logger {
 
     #if DisableDebugLogging
@@ -107,7 +110,7 @@ extension Logger {
 // `DisableErrorLogging` and `DisableDebugLogging` empty the body and switch the helper to
 // `@inline(always)`, so a disabled level leaves nothing at all behind.
 
-#if os(Linux) || (NETWORK_EMBEDDED && !NETWORK_DRIVERKIT) || canImport(os) || NETWORK_DRIVERKIT
+#if os(Linux) || os(Android) || (NETWORK_EMBEDDED && !NETWORK_DRIVERKIT) || canImport(os) || NETWORK_DRIVERKIT
 #if DisableErrorLogging
 @inline(always)
 #else

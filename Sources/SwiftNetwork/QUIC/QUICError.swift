@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -295,6 +298,6 @@ enum QUICError: Error {
 }
 #endif
 
-#if os(Linux)
+#if os(Linux) || os(Android)
 typealias CryptoKitMetaError = any Error
 #endif
