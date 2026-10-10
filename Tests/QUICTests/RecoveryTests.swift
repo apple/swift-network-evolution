@@ -479,6 +479,65 @@ final class RecoveryTests: XCTestCase {
 
     }
 
+    /// Sends one packet and acknowledges it with the given ACK Delay field, at pinned clock
+    /// times relative to `start`.
+    private func sendAndAck(
+        _ number: Int64,
+        start: NetworkClock.Instant,
+        sentAt: NetworkDuration,
+        ackedAt: NetworkDuration,
+        delay: UInt64
+    ) {
+        connection.pinnedClock = .init(continuous: start + sentAt, absolute: start + sentAt)
+        recordSparsePackets([number])
+        connection.pinnedClock = .init(continuous: start + ackedAt, absolute: start + ackedAt)
+        connection.recovery.receivedAck(
+            ack: FrameAck(
+                packetNumberSpace: .applicationData,
+                largest: PacketNumber(number),
+                delay: delay,
+                ranges: [FrameAckRange(gap: 0, range: 0)]
+            ),
+            ackedPath: connection.currentPath!,
+            connection: connection,
+            in: &connection.context.eventContext
+        )
+    }
+
+    // RFC 9000 Section 19.3: the ACK Delay field is decoded by multiplying it by 2 to the
+    // power of the ack_delay_exponent the peer advertised.
+    func testAckDelayIsScaledByRemoteDelayExponent() {
+        let start = connection.now
+        defer { connection.pinnedClock = nil }
+        path.rtt.remoteMaxAckDelay = .milliseconds(25)
+        connection.ack.remoteDelayExponent = 5
+
+        // The first sample only seeds the estimator, so it leaves the minimum RTT at 10 ms.
+        sendAndAck(1, start: start, sentAt: .zero, ackedAt: .milliseconds(10), delay: 0)
+        // 625 on the wire is 625 << 5 = 20,000 microseconds.
+        sendAndAck(2, start: start, sentAt: .milliseconds(10), ackedAt: .milliseconds(110), delay: 625)
+
+        XCTAssertEqual(path.rtt.latestRTT, .milliseconds(100))
+        XCTAssertEqual(path.rtt.adjustedRTT, .milliseconds(80))
+    }
+
+    // RFC 9002 Section 5.3: the acknowledgment delay is limited to the peer's max_ack_delay,
+    // and that comparison takes the decoded delay.
+    func testDecodedAckDelayAboveRemoteMaxAckDelayIsLimited() {
+        let start = connection.now
+        defer { connection.pinnedClock = nil }
+        path.rtt.remoteMaxAckDelay = .milliseconds(25)
+        connection.ack.remoteDelayExponent = 5
+
+        sendAndAck(1, start: start, sentAt: .zero, ackedAt: .milliseconds(10), delay: 0)
+        // 1,000 on the wire is 1,000 << 5 = 32,000 microseconds, above the 25 ms maximum. The
+        // undecoded 1,000 microseconds would be below it.
+        sendAndAck(2, start: start, sentAt: .milliseconds(10), ackedAt: .milliseconds(110), delay: 1000)
+
+        XCTAssertEqual(path.rtt.latestRTT, .milliseconds(100))
+        XCTAssertEqual(path.rtt.adjustedRTT, .milliseconds(75))
+    }
+
     func testResetPNSpaceAndDiscard() {
         var packet = SentPacketRecord()
         packet.identifier = .init(space: .applicationData, number: 3)
