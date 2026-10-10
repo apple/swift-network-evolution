@@ -695,9 +695,10 @@ extension FrameStreamSendMetadata: SendableItem {
             let retransmitStreamIsFinal = pendingItems.retransmitStreams[0].isFinal
             let retransmitStreamStreamID = pendingItems.retransmitStreams[0].streamID
 
-            guard stream.isOpen else {
+            // Make sure not to retransmit a write if a RESET_STREAM is sent
+            guard !stream.resetSent, stream.isOpen else {
                 connection.log.info(
-                    "Not retransmitting data for closed flow \(retransmitStreamFlowID)"
+                    "Not retransmitting data for reset or closed flow \(retransmitStreamFlowID)"
                 )
                 _ = pendingItems.retransmitStreams.popFirst()
                 continue

@@ -160,6 +160,219 @@ public enum QUICConnectionState: CustomStringConvertible {
     }
 }
 
+/// NOTE: This type does not schedule new blocks of work on the context, its just handles running a block of work at the appropriate time.
+@available(Network 0.1.0, *)
+struct QUICConnectionScheduler: ~Copyable {
+    /// Operation to run on the connection's send or receive path
+    enum Operation {
+        // Run from just about anywhere in the stack we need to send data
+        case sendFrames(
+            path: MultiplexingPathIdentifier?,
+            ignoreCongestionWindow: Bool,
+            delayedACK: Bool,
+            retransmission: Bool
+        )
+        // Receive path only, called typically from the protocol stack
+        case receiveFrames(path: MultiplexingPathIdentifier)
+        // ACK timer being fired for delayed ACK processing
+        case ackTimer(firedAt: NetworkClock.Instant)
+        // Recovery sending packets to be retransmitted
+        case sendFramesFromRecovery(
+            path: MultiplexingPathIdentifier,
+            ignoreCongestionWindow: Bool,
+            retransmission: Bool
+        )
+        // Crypto reporting ready to the connection
+        case reportReady
+        // Close connection sequence from close()
+        case closeConnection(sendCloseFrame: Bool)
+        // Discard keys
+        case discardEarlyDataKeys
+        // PMTUD blackhole-detection probe timer, building and sending a probe packet
+        case pmtudProbe(path: MultiplexingPathIdentifier, firedAt: NetworkClock.Instant)
+    }
+
+    // Collection handling all of the queued operations
+    private var operationQueue = NetworkUniqueDeque<Operation>()
+
+    struct Flags: OptionSet {
+        init(rawValue: Self.RawValue) {
+            self.rawValue = rawValue
+        }
+        var rawValue: UInt8
+        static let sendActive = Flags(rawValue: 1 << 0)
+        static let receiveActive = Flags(rawValue: 1 << 1)
+        static let sendFramesFromRecoveryActive = Flags(rawValue: 1 << 2)
+        static let reportReadyActive = Flags(rawValue: 1 << 3)
+        static let closeConnectionActive = Flags(rawValue: 1 << 4)
+        static let discardEarlyDataKeysActive = Flags(rawValue: 1 << 5)
+        static let pmtudProbeActive = Flags(rawValue: 1 << 6)
+    }
+    private var flags = Flags()
+
+    // Handles operations such as sendFrames and ackTimer
+    private var isSendActive: Bool {
+        get { flags.contains(.sendActive) }
+        set { if newValue { flags.insert(.sendActive) } else { flags.remove(.sendActive) } }
+    }
+    // Handles sending from Recovery
+    private var isSendFramesFromRecoveryActive: Bool {
+        get { flags.contains(.sendFramesFromRecoveryActive) }
+        set {
+            if newValue {
+                flags.insert(.sendFramesFromRecoveryActive)
+            } else {
+                flags.remove(.sendFramesFromRecoveryActive)
+            }
+        }
+    }
+    private var isReceiveActive: Bool {
+        get { flags.contains(.receiveActive) }
+        set { if newValue { flags.insert(.receiveActive) } else { flags.remove(.receiveActive) } }
+    }
+    // Called through the receive path, makes sure the stack unwinds before reporting ready.
+    private var isReportReadyActive: Bool {
+        get { flags.contains(.reportReadyActive) }
+        set { if newValue { flags.insert(.reportReadyActive) } else { flags.remove(.reportReadyActive) } }
+    }
+    // Called through the receive path, unwinds and calls the send path
+    private var isCloseConnectionActive: Bool {
+        get { flags.contains(.closeConnectionActive) }
+        set {
+            if newValue {
+                flags.insert(.closeConnectionActive)
+            } else {
+                flags.remove(.closeConnectionActive)
+            }
+        }
+    }
+    // Called through the receive path when processing crypto
+    private var isDiscardEarlyDataKeysActive: Bool {
+        get { flags.contains(.discardEarlyDataKeysActive) }
+        set {
+            if newValue {
+                flags.insert(.discardEarlyDataKeysActive)
+            } else {
+                flags.remove(.discardEarlyDataKeysActive)
+            }
+        }
+    }
+    private var isPMTUDProbeActive: Bool {
+        get { flags.contains(.pmtudProbeActive) }
+        set { if newValue { flags.insert(.pmtudProbeActive) } else { flags.remove(.pmtudProbeActive) } }
+    }
+
+    init() {
+        operationQueue.reserveCapacity(4)
+    }
+
+    /// Returns true when the call may run  immediately. Returns false when
+    /// another operation using the same flag is already running somewhere up the call stack.
+    /// In that case operation is recorded to run later and the caller must return without
+    /// touching any connection state, to avoid overlapping access to non-copyable storage.
+    @inline(always)
+    mutating func enqueue(_ operation: Operation) -> Bool {
+        switch operation {
+        case .receiveFrames:
+            guard !isReceiveActive else {
+                operationQueue.append(operation)
+                return false
+            }
+            isReceiveActive = true
+            return true
+        case .reportReady:
+            guard !isReceiveActive && !isReportReadyActive else {
+                operationQueue.append(operation)
+                return false
+            }
+            isReportReadyActive = true
+            return true
+        case .closeConnection:
+            guard !isReceiveActive && !isCloseConnectionActive else {
+                operationQueue.append(operation)
+                return false
+            }
+            isCloseConnectionActive = true
+            return true
+        case .discardEarlyDataKeys:
+            guard !isReceiveActive && !isDiscardEarlyDataKeysActive else {
+                operationQueue.append(operation)
+                return false
+            }
+            isDiscardEarlyDataKeysActive = true
+            return true
+        case .sendFramesFromRecovery:
+            guard !isSendFramesFromRecoveryActive && !isPMTUDProbeActive else {
+                operationQueue.append(operation)
+                return false
+            }
+            isSendFramesFromRecoveryActive = true
+            return true
+        case .sendFrames, .ackTimer:
+            guard !isSendActive && !isSendFramesFromRecoveryActive && !isPMTUDProbeActive else {
+                operationQueue.append(operation)
+                return false
+            }
+            isSendActive = true
+            return true
+        case .pmtudProbe:
+            guard !isPMTUDProbeActive && !isSendActive && !isSendFramesFromRecoveryActive else {
+                operationQueue.append(operation)
+                return false
+            }
+            isPMTUDProbeActive = true
+            return true
+        }
+    }
+
+    var isReceivePathActive: Bool { isReceiveActive }
+
+    @inline(always)
+    mutating func finishOperation(_ operation: Operation) {
+        switch operation {
+        case .receiveFrames: isReceiveActive = false
+        case .reportReady: isReportReadyActive = false
+        case .closeConnection: isCloseConnectionActive = false
+        case .discardEarlyDataKeys: isDiscardEarlyDataKeysActive = false
+        case .sendFramesFromRecovery: isSendFramesFromRecoveryActive = false
+        case .sendFrames, .ackTimer: isSendActive = false
+        case .pmtudProbe: isPMTUDProbeActive = false
+        }
+    }
+
+    /// Pops the next operation queued while its lane was busy, if any.
+    @inline(always)
+    mutating func dequeue() -> Operation? {
+        operationQueue.popFirst()
+    }
+
+    /// Marks `operation` finished and immediately pops the next queued operation, in one access
+    /// to the scheduler's storage instead of the two separate `finishOperation`/`dequeue` calls.
+    @inline(always)
+    mutating func finishAndDequeue(_ operation: Operation) -> Operation? {
+        finishOperation(operation)
+        return operationQueue.popFirst()
+    }
+
+    /// Activates the send-path where Recovery is exclusively borrowed
+    /// to process a received ACK frame. All sendFrame attempts will be queued.
+    @inline(always)
+    mutating func beginSendPathActive() -> Bool {
+        let wasRunning = isSendActive
+        isSendActive = true
+        return wasRunning
+    }
+
+    /// Deactivates the send path active flag and, if this was the outermost claim, immediately
+    /// pops the next queued operation, in one access instead of two separate calls.
+    @inline(always)
+    mutating func endSendPathActiveAndDequeue(wasRunning: Bool) -> Operation? {
+        isSendActive = wasRunning
+        guard !wasRunning else { return nil }
+        return operationQueue.popFirst()
+    }
+}
+
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public final class QUICConnection: ManyToManyApplicationStreamProtocol,
@@ -225,6 +438,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var recovery: Recovery
     private(set) var migration = Migration()
     private(set) var crypto: QUICCrypto
+
+    var scheduler = QUICConnectionScheduler()
 
     var protector: Protector
 
@@ -392,11 +607,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     private var pendOutboundData = false  // Don't immediately process application sends
 
-    // Set while Recovery or Ack is exclusively borrowed for ACK-related work: either
-    // processing a received ACK frame  or firing the delayed-ACK timers
-    private var isBorrowingRecoveryAckState = false
-    private var deferredSendFramesRequested = false
-
     // false == IPv6, true == IPv4
     private(set) var initialAddressIsIPv4 = false
 
@@ -517,7 +727,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 timerNow: self.now,
                 in: &eventContext
             ) { firedAt, timerState in
-                self.recovery.timerFired(at: firedAt, in: &timerState)
+                self.withSendPathBorrow(in: &timerState) { timerState in
+                    self.recovery.timerFired(at: firedAt, in: &timerState)
+                }
             }
             self.recovery = Recovery(
                 connection: self,
@@ -1675,6 +1887,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         path pathID: MultiplexingPathIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        schedule(.receiveFrames(path: pathID), defaultResult: (), in: &eventContext) { eventContext in
+            self.runServiceReceivedDatagrams(path: pathID, in: &eventContext)
+        }
+    }
+
+    @inline(always)
+    private func runServiceReceivedDatagrams(
+        path pathID: MultiplexingPathIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         let inboundInterval = QUICSignpost.inboundStarting(id: signpostID)
 
         // Pin the clock so the whole batch is timed against one value rather than reading the
@@ -1700,7 +1922,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             accessReceivedDatagrams(path: pathID) { (datagrams, path) in
                 let connectionState = state
                 let isServerConnection: Bool = isServer
-                if connectionState.isTerminal {
+                if connectionState.isTerminal || receivedConnectionClose || receivedApplicationClose {
                     log.debug(
                         "Ignoring incoming packets for connection in terminal state"
                     )
@@ -1712,14 +1934,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 let receivedPackets: Int = datagrams.count
                 datagrams.iterateMutableFrames { frame in
                     receivedBytes &+= frame.unclaimedLength
-                    handleInbound(
-                        frame: &frame,
-                        from: path,
-                        inConnectedState: inConnectedState,
-                        isServerConnection: isServerConnection,
-                        packetParser: &packetParser,
-                        in: &eventContext
-                    )
+                    // Claim the send path here so that any calls inside of handleInbound are queued up.
+                    withSendPathBorrow(in: &eventContext) { eventContext in
+                        handleInbound(
+                            frame: &frame,
+                            from: path,
+                            inConnectedState: inConnectedState,
+                            isServerConnection: isServerConnection,
+                            packetParser: &packetParser,
+                            in: &eventContext
+                        )
+                    }
                     return .removeFrameAndContinue
                 }
                 recordRxPackets(
@@ -1847,7 +2072,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 break
             }
 
-            if closeError != nil || state.isTerminal {
+            if closeError != nil || state.isTerminal || receivedConnectionClose || receivedApplicationClose {
                 // Besides a locally-detected error (closeError), the peer may
                 // have gracefully closed the connection (CONNECTION_CLOSE
                 // with NO_ERROR, or an APPLICATION_CLOSE frame, neither of
@@ -1857,7 +2082,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 // must not hand any further coalesced packets in this
                 // datagram to that torn-down state.
                 frame.finalize(success: false)
-                close(in: &eventContext)
+                scheduleClose(in: &eventContext)
                 return
             }
 
@@ -1909,10 +2134,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             )
             // Dont proceed if long header with vn / retry / or a packet that cannot be decrypted
             guard let transferredPacket = parsedPacket.take() else { return nil }
-            guard !transferredPacket.versionNegotiation, !transferredPacket.retry, !transferredPacket.failedDecryption
-            else {
-                return transferredPacket
-            }
             // Process ECN for all packets, this should be done
             // before packet is appended for ACK below.
             ceMarked = ECN.processIPCodpoint(
@@ -1922,6 +2143,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 packetNumberSpace: transferredPacket.numberSpace,
                 flag: ecnFlags
             )
+            guard !transferredPacket.versionNegotiation, !transferredPacket.retry, !transferredPacket.failedDecryption
+            else {
+                return transferredPacket
+            }
             if transferredPacket.longHeader {
                 continueProcessing = handleInboundLongHeader(
                     transferredPacket,
@@ -1947,7 +2172,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 log.info("Unable to parse packet (decryption keys may not be ready)")
             }
             if self.closeError != nil {
-                close(in: &eventContext)
+                scheduleClose(in: &eventContext)
                 return false
             }
             return false
@@ -1957,9 +2182,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Make sure to always clean up any unprocessed frames when exiting
             packetParser.cleanupReceivedFrames()
         }
-
-        log(packet: &packet, coalesced: coalesced, outbound: false)
-        path.updateBDP(length: packet.totalLength, now: self.now)
 
         /*
          * Both VN and Retry packets are special.
@@ -1971,12 +2193,21 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
          * parameters.
          */
         if packet.versionNegotiation {
+            log(packet: &packet, coalesced: coalesced, outbound: false)
+            path.updateBDP(length: packet.totalLength, now: self.now)
             handleInboundVersionNegotiation(packet, in: &eventContext)
             return true
         } else if packet.retry {
+            log(packet: &packet, coalesced: coalesced, outbound: false)
+            path.updateBDP(length: packet.totalLength, now: self.now)
             handleInboundRetry(packet, in: &eventContext)
             return true
-        } else if packet.failedDecryption {
+        }
+
+        log(packet: &packet, coalesced: coalesced, outbound: false)
+        path.updateBDP(length: packet.totalLength, now: self.now)
+
+        if packet.failedDecryption {
             failedDecryption(packet, in: &eventContext)
             return false
         }
@@ -2026,7 +2257,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             if !processFrame(quicFrame, packetNumberSpace: packet.numberSpace, path: path, in: &eventContext) {
                 break
             }
-            if state.isTerminal {
+            if state.isTerminal || receivedConnectionClose || receivedApplicationClose {
                 // Some frame handlers (e.g. CONNECTION_CLOSE, APPLICATION_CLOSE)
                 // call close() - which tears down crypto and other per-connection
                 // state - but still report success (return true) for the frame
@@ -3303,27 +3534,152 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    // Safe-guard Ack and Recovery overlapping access with isBorrowingRecoveryAckState
+    /// Runs a datapath operation right now if nothing else is running, otherwise records it to run once
+    /// the stack unwinds. This protects sendFrames / ackTimer / serviceReceivedDatagrams etc..
+    @discardableResult
+    @inline(always)
+    private func schedule<T: ~Copyable>(
+        _ operation: QUICConnectionScheduler.Operation,
+        defaultResult: consuming T,
+        in eventContext: inout NetworkContext.EventContext,
+        body: (inout NetworkContext.EventContext) -> T
+    ) -> T {
+        guard scheduler.enqueue(operation) else {
+            return defaultResult
+        }
+        let result = body(&eventContext)
+        if let next = scheduler.finishAndDequeue(operation) {
+            runOperation(next, in: &eventContext)
+        }
+        return result
+    }
+
+    /// Checks the scheduler to run one operation after the completion of a previously run operation.
+    /// This is essentially the item that was enqueued and deferred.
+    @inline(always)
+    private func drainScheduler(in eventContext: inout NetworkContext.EventContext) {
+        guard let operation = scheduler.dequeue() else { return }
+        runOperation(operation, in: &eventContext)
+    }
+
+    /// Runs a single operation popped from the scheduler's queue.
+    @inline(always)
+    private func runOperation(
+        _ operation: QUICConnectionScheduler.Operation,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        switch operation {
+        case .sendFrames(let pathID, let ignoreCongestionWindow, let delayedACK, let retransmission):
+            if let pathID, let path = path(for: pathID) {
+                sendFrames(
+                    on: path,
+                    ignoreCongestionWindow: ignoreCongestionWindow,
+                    retransmission: retransmission,
+                    in: &eventContext
+                )
+            } else {
+                sendFrames(ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK, in: &eventContext)
+            }
+        case .receiveFrames(let pathID):
+            serviceReceivedDatagrams(path: pathID, in: &eventContext)
+        case .reportReady:
+            scheduleReportReady(in: &eventContext)
+        case .closeConnection(let sendCloseFrame):
+            scheduleClose(sendCloseFrame: sendCloseFrame, in: &eventContext)
+        case .discardEarlyDataKeys:
+            scheduleDiscardEarlyDataKeys(in: &eventContext)
+        case .ackTimer(let firedAt):
+            fireDelayedAckTimer(at: firedAt, in: &eventContext)
+        case .sendFramesFromRecovery(let pathID, let ignoreCongestionWindow, let retransmission):
+            guard let path = path(for: pathID) else { return }
+            var discardInitialRecoveryState = false
+            var sentPackets = sendFramesFromRecovery(
+                on: path,
+                ignoreCongestionWindow: ignoreCongestionWindow,
+                retransmission: retransmission,
+                discardInitialRecoveryState: &discardInitialRecoveryState,
+                in: &eventContext
+            )
+            recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
+            if discardInitialRecoveryState {
+                recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
+                recovery.resetPTOCount(path: path)
+            }
+        case .pmtudProbe(let pathID, let firedAt):
+            guard let path = path(for: pathID) else { return }
+            sendPMTUDProbe(on: path, firedAt: firedAt, in: &eventContext)
+        }
+    }
+
+    /// Runs the ack-touching half of early-data key discarding through the scheduler so it
+    /// never executes nested inside an active .receiveFrames operation
+    func scheduleDiscardEarlyDataKeys(in eventContext: inout NetworkContext.EventContext) {
+        schedule(.discardEarlyDataKeys, defaultResult: (), in: &eventContext) { eventContext in
+            self.discardKeys(keyState: .earlyData, ack: &self.ack, protector: &self.protector)
+        }
+    }
+
+    /// Runs reportReady() through the scheduler so it never executes nested inside an active
+    /// .receiveFrames operation. TLS reports the handshake connected synchronously while a
+    /// CRYPTO frame is still being processed  inside handleInboundPacket
+    func scheduleReportReady(in eventContext: inout NetworkContext.EventContext) {
+        schedule(.reportReady, defaultResult: (), in: &eventContext) { eventContext in
+            guard self.closeError == nil, self.state != .closing else { return }
+            self.reportReady(in: &eventContext)
+            // pendingItems are scheduled in reportReady so when this is scheduled make sure to flush them with sendFrames too
+            self.sendFrames(in: &eventContext)
+        }
+    }
+
+    /// Runs close() through the scheduler so it never executes nested inside an active receiveFrames  operation
+    func scheduleClose(sendCloseFrame: Bool = true, in eventContext: inout NetworkContext.EventContext) {
+        guard !state.isTerminal else { return }
+        schedule(.closeConnection(sendCloseFrame: sendCloseFrame), defaultResult: (), in: &eventContext) {
+            eventContext in
+            self.close(sendCloseFrame: sendCloseFrame, in: &eventContext)
+        }
+    }
+
+    /// Runs a body with the send path claimed so that any calls that come in while body() is running are queued
+    @inline(always)
+    func withSendPathBorrow(
+        in eventContext: inout NetworkContext.EventContext,
+        _ body: (inout NetworkContext.EventContext) -> Void
+    ) {
+        let wasRunning = scheduler.beginSendPathActive()
+        body(&eventContext)
+        if let next = scheduler.endSendPathActiveAndDequeue(wasRunning: wasRunning) {
+            runOperation(next, in: &eventContext)
+        }
+    }
+
     func fireDelayedAckTimer(
         at firedAt: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        let wasBorrowing = isBorrowingRecoveryAckState
-        isBorrowingRecoveryAckState = true
-        ack.timerFired(at: firedAt, in: &eventContext)
-        isBorrowingRecoveryAckState = wasBorrowing
-        if !wasBorrowing, deferredSendFramesRequested {
-            deferredSendFramesRequested = false
-            sendFrames(delayedACK: true, in: &eventContext)
+        schedule(.ackTimer(firedAt: firedAt), defaultResult: (), in: &eventContext) { eventContext in
+            self.ack.timerFired(at: firedAt, in: &eventContext)
+        }
+        // `timerFired`'s own idle check runs while the ACK frame is still scheduled but not yet
+        // sent (that send may have only just been replayed by the `schedule` call above), so
+        // check again now that any flush has actually cleared the pending ACK.
+        checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
+    }
 
-            // `timerFired`'s own idle check ran before this deferred flush, while the ACK
-            // frame was still scheduled but not yet sent, so it couldn't observe idleness.
-            // Check again now that the flush has actually cleared the pending ACK.
-            checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
+    func sendPMTUDProbe(
+        on path: QUICPath,
+        firedAt: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        schedule(
+            .pmtudProbe(path: path.pathIdentifier, firedAt: firedAt),
+            defaultResult: (),
+            in: &eventContext
+        ) { eventContext in
+            path.pmtudState.timerFired(at: firedAt, path: path, in: &eventContext)
         }
     }
 
-    // Adds recovery and applicationPendingItems to avoid extra begin/end acccess checking overhead
     @discardableResult
     /// Sends pending frames using an event context the caller already holds.
     func sendFrames(
@@ -3331,21 +3687,27 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         delayedACK: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        // Guard with isBorrowingRecoveryAckState because Recovery and Ack to prevent overlapping access
-        if isBorrowingRecoveryAckState {
-            deferredSendFramesRequested = true
-            return false
-        }
-        return sendFrames(
-            ignoreCongestionWindow: ignoreCongestionWindow,
-            delayedACK: delayedACK,
-            sentPackets: &sentPackets,
-            recovery: &recovery,
-            initialPendingItems: &initialPendingItems,
-            handshakePendingItems: &handshakePendingItems,
-            applicationPendingItems: &applicationPendingItems,
+        schedule(
+            .sendFrames(
+                path: nil,
+                ignoreCongestionWindow: ignoreCongestionWindow,
+                delayedACK: delayedACK,
+                retransmission: false
+            ),
+            defaultResult: false,
             in: &eventContext
-        )
+        ) { eventContext in
+            self.sendFrames(
+                ignoreCongestionWindow: ignoreCongestionWindow,
+                delayedACK: delayedACK,
+                sentPackets: &self.sentPackets,
+                recovery: &self.recovery,
+                initialPendingItems: &self.initialPendingItems,
+                handshakePendingItems: &self.handshakePendingItems,
+                applicationPendingItems: &self.applicationPendingItems,
+                in: &eventContext
+            )
+        }
     }
 
     @discardableResult
@@ -3432,29 +3794,40 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         retransmission: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        self.sentPackets.reserveCapacity(
-            capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
-        )
-        var discardInitialRecoveryState = false
-        let success = sendFramesInternal(
-            path: path,
-            ignoreCongestionWindow: ignoreCongestionWindow,
-            retransmission: retransmission,
-            sentPackets: &self.sentPackets,
-            initialPendingItems: &initialPendingItems,
-            handshakePendingItems: &handshakePendingItems,
-            applicationPendingItems: &applicationPendingItems,
-            discardInitialRecoveryState: &discardInitialRecoveryState,
+        schedule(
+            .sendFrames(
+                path: path.pathIdentifier,
+                ignoreCongestionWindow: ignoreCongestionWindow,
+                delayedACK: false,
+                retransmission: retransmission
+            ),
+            defaultResult: false,
             in: &eventContext
-        )
-        recovery.recordSentPackets(&self.sentPackets, connection: self, in: &eventContext)
-        self.shrinkSentPacketsIfNecessary(sentPackets: &sentPackets)
-        if discardInitialRecoveryState {
-            recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
-            recovery.resetPTOCount(path: path)
+        ) { eventContext in
+            self.sentPackets.reserveCapacity(
+                self.capacityForPacketNumberSpace(applicationPendingItems: &self.applicationPendingItems)
+            )
+            var discardInitialRecoveryState = false
+            let success = self.sendFramesInternal(
+                path: path,
+                ignoreCongestionWindow: ignoreCongestionWindow,
+                retransmission: retransmission,
+                sentPackets: &self.sentPackets,
+                initialPendingItems: &self.initialPendingItems,
+                handshakePendingItems: &self.handshakePendingItems,
+                applicationPendingItems: &self.applicationPendingItems,
+                discardInitialRecoveryState: &discardInitialRecoveryState,
+                in: &eventContext
+            )
+            self.recovery.recordSentPackets(&self.sentPackets, connection: self, in: &eventContext)
+            self.shrinkSentPacketsIfNecessary(sentPackets: &self.sentPackets)
+            if discardInitialRecoveryState {
+                self.recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
+                self.recovery.resetPTOCount(path: path)
+            }
+            self.deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
+            return success
         }
-        deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
-        return success
     }
 
     @discardableResult
@@ -3465,16 +3838,26 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         discardInitialRecoveryState: inout Bool,
         in eventContext: inout NetworkContext.EventContext
     ) -> NetworkUniqueDeque<SentPacketRecord> {
-        sendFramesFromRecovery(
-            on: path,
-            ignoreCongestionWindow: ignoreCongestionWindow,
-            retransmission: retransmission,
-            initialPendingItems: &initialPendingItems,
-            handshakePendingItems: &handshakePendingItems,
-            applicationPendingItems: &applicationPendingItems,
-            discardInitialRecoveryState: &discardInitialRecoveryState,
+        schedule(
+            .sendFramesFromRecovery(
+                path: path.pathIdentifier,
+                ignoreCongestionWindow: ignoreCongestionWindow,
+                retransmission: retransmission
+            ),
+            defaultResult: NetworkUniqueDeque<SentPacketRecord>(),
             in: &eventContext
-        )
+        ) { eventContext in
+            self.sendFramesFromRecovery(
+                on: path,
+                ignoreCongestionWindow: ignoreCongestionWindow,
+                retransmission: retransmission,
+                initialPendingItems: &self.initialPendingItems,
+                handshakePendingItems: &self.handshakePendingItems,
+                applicationPendingItems: &self.applicationPendingItems,
+                discardInitialRecoveryState: &discardInitialRecoveryState,
+                in: &eventContext
+            )
+        }
     }
 
     // Sends with pending items attached
@@ -3538,7 +3921,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         _ block: (inout NetworkUniqueDeque<SentPacketRecord>, inout NetworkContext.EventContext) -> Void
     ) {
         block(&self.sentPackets, &eventContext)
-        recovery.recordSentPackets(&self.sentPackets, connection: self, in: &eventContext)
+        withSendPathBorrow(in: &eventContext) { eventContext in
+            self.recovery.recordSentPackets(&self.sentPackets, connection: self, in: &eventContext)
+        }
         self.shrinkSentPacketsIfNecessary(sentPackets: &self.sentPackets)
     }
 
@@ -3663,6 +4048,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         protector: inout Protector,
         stats: inout Statistics,
         ecn: inout ECN,
+        ack: inout Ack,
         applicationPendingItems: inout PendingItems,
         totalTxBytes: inout Int,
         totalTxPackets: inout Int,
@@ -3685,6 +4071,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     protector: &protector,
                     stats: &stats,
                     ecn: &ecn,
+                    ack: &ack,
                     totalTxBytes: &totalTxBytes,
                     totalTxPackets: &totalTxPackets,
                     in: &eventContext
@@ -3804,6 +4191,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
+            ack: &ack,
             applicationPendingItems: &applicationPendingItems,
             totalTxBytes: &totalTxBytes,
             totalTxPackets: &totalTxPackets,
@@ -3874,6 +4262,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 protector: &protector,
                 stats: &stats,
                 ecn: &ecn,
+                ack: &ack,
                 totalTxBytes: &totalTxBytes,
                 totalTxPackets: &totalTxPackets,
                 in: &eventContext
@@ -3932,6 +4321,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         protector: &protector,
                         stats: &stats,
                         ecn: &ecn,
+                        ack: &ack,
                         totalTxBytes: &totalTxBytes,
                         totalTxPackets: &totalTxPackets,
                         in: &eventContext
@@ -3972,6 +4362,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     protector: &protector,
                     stats: &stats,
                     ecn: &ecn,
+                    ack: &ack,
                     totalTxBytes: &totalTxBytes,
                     totalTxPackets: &totalTxPackets,
                     in: &eventContext
@@ -4006,6 +4397,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
+            ack: &ack,
             applicationPendingItems: &applicationPendingItems,
             totalTxBytes: &totalTxBytes,
             totalTxPackets: &totalTxPackets,
@@ -4034,6 +4426,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         protector: inout Protector,
         stats: inout Statistics,
         ecn: inout ECN,
+        ack: inout Ack,
         totalTxBytes: inout Int,
         totalTxPackets: inout Int,
         in eventContext: inout NetworkContext.EventContext
@@ -4662,7 +5055,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 }
                 log.info("Received valid stateless reset token")
                 errorToReport = NetworkError.posix(ECONNRESET)
-                close(in: &eventContext)
+                scheduleClose(in: &eventContext)
             }
         }
     }
@@ -4805,7 +5198,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     func updateEarlyDataAccepted(_ accepted: Bool, in eventContext: inout NetworkContext.EventContext) {
-        discardKeys(keyState: .earlyData, ack: &ack, protector: &protector)
+        scheduleDiscardEarlyDataKeys(in: &eventContext)
         if accepted {
             earlyDataAccepted = true
         } else {
@@ -5705,30 +6098,24 @@ extension QUICConnection {
             return false
         }
 
-        // Acknowledging a packet can close a stream, and closing a stream wants
-        // to flush frames. Suppress those nested flushes for the duration of the
-        // `recovery` borrow below, then perform one flush afterwards if any were
-        // requested.
-        let wasBorrowing = isBorrowingRecoveryAckState
-        isBorrowingRecoveryAckState = true
+        // Acknowledging a packet can close a stream, and closing a stream will attempt to flush
+        // frames. Drain the scheduler at the end to make sure everything to flushed properly.
+        let wasSendPathRunning = scheduler.beginSendPathActive()
         recovery.receivedAck(
             ack: frame,
             ackedPath: path,
             connection: self,
             in: &eventContext
         )
+        if let next = scheduler.endSendPathActiveAndDequeue(wasRunning: wasSendPathRunning) {
+            runOperation(next, in: &eventContext)
+        }
 
         // Check if we need to send probes
         var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
         path.pmtudState.tryToSend(on: path, sentPackets: &sentPackets, in: &eventContext)
         recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
 
-        // The borrow of `recovery` has ended, so it is safe to flush again.
-        isBorrowingRecoveryAckState = wasBorrowing
-        if !wasBorrowing, deferredSendFramesRequested {
-            deferredSendFramesRequested = false
-            sendFrames(in: &eventContext)
-        }
         return true
     }
 
@@ -5737,12 +6124,13 @@ extension QUICConnection {
         _ frame: consuming FrameApplicationClose,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        // Detect graceful close and the error case
+        receivedApplicationClose = true
         if frame.errorCode != 0 {
             self.applicationCloseError = QUICApplicationError(frame.errorCode, frame.reason)
-            receivedApplicationClose = true
         }
         log.info("Received APPLICATION_CLOSE code: \(frame.errorCode), reason: '\(frame.reason)'")
-        close(in: &eventContext)
+        scheduleClose(in: &eventContext)
         return true
     }
 
@@ -5751,12 +6139,13 @@ extension QUICConnection {
         _ frame: consuming FrameConnectionClose,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        // Detect graceful close and the error case
+        receivedConnectionClose = true
         if frame.errorCode != 0 {
             self.closeError = QUICTransportError(frame.errorCode, frame.reason)
-            receivedConnectionClose = true
         }
         log.info("Received CONNECTION_CLOSE code: \(frame.errorCode), reason: '\(frame.reason)'")
-        close(in: &eventContext)
+        scheduleClose(in: &eventContext)
         return true
     }
 }
@@ -7157,6 +7546,34 @@ extension QUICConnection {
         return true
     }
 }
+
+#if Fuzzing
+// Helper for fuzzing
+@available(Network 0.1.0, *)
+extension QUICConnection {
+    func serviceReceivedFramesForFuzzing(
+        _ frame: inout Frame,
+        from path: QUICPath,
+        inConnectedState: Bool,
+        isServerConnection: Bool,
+        packetParser: inout PacketParser,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        schedule(.receiveFrames(path: path.pathIdentifier), defaultResult: (), in: &eventContext) { eventContext in
+            self.withSendPathBorrow(in: &eventContext) { eventContext in
+                self.handleInbound(
+                    frame: &frame,
+                    from: path,
+                    inConnectedState: inConnectedState,
+                    isServerConnection: isServerConnection,
+                    packetParser: &packetParser,
+                    in: &eventContext
+                )
+            }
+        }
+    }
+}
+#endif
 
 // MARK: Stats Proccesing
 

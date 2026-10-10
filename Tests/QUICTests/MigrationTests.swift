@@ -193,6 +193,34 @@ final class MigrationTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 5.0)
     }
+
+    // Adding a PATH_CHALLENGE re-arms the migration timer, which sends whatever is due on every
+    // path. With a second path still waiting for its first challenge, that must not start a send
+    // on it while the send on the first path is still running.
+    func testChallengeWhileAnotherPathWaitsForItsFirstChallenge() {
+        let probeCID = QUICConnectionID([0xC1, 0xC2, 0xC3, 0xC4])!
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            let firstPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
+            let secondPath = self.makePath(dcid: probeCID, sequenceNumber: 3, validated: false)
+            self.connection.currentPath = currentPath
+            for path in [currentPath, firstPath, secondPath] {
+                self.connection.multiplexingPaths[path.pathIdentifier] = path
+            }
+
+            self.connection.fromExternal { eventContext in
+                firstPath.beginValidation(in: &eventContext)
+                secondPath.beginValidation(in: &eventContext)
+                self.connection.sendFrames(on: firstPath, in: &eventContext)
+            }
+
+            XCTAssertEqual(firstPath.challengesSent, 1)
+            XCTAssertEqual(secondPath.challengesSent, 1)
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
 }
 
 #endif

@@ -144,11 +144,7 @@ struct PMTUDState: ~Copyable {
             ) { firedAt, timerState in
                 let innerPath = connection.path(for: pathID)
                 guard let innerPath else { return }
-                innerPath.pmtudState.timerFired(
-                    at: firedAt,
-                    path: innerPath,
-                    in: &timerState
-                )
+                connection.sendPMTUDProbe(on: innerPath, firedAt: firedAt, in: &timerState)
             }
         }
 

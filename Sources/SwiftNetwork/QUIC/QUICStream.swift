@@ -626,7 +626,12 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     }
 
     func close(errorCode: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
-        self.sendBuffer.empty()
+        // Only clean the buffer when an error has been reached or RESET was sent.
+        // Likewise empty the buffer if all data has been ACK'd
+        let sendSideHasUnacknowledgedData = sendState == .send || sendState == .dataSent
+        if errorCode != nil || resetSent || !sendSideHasUnacknowledgedData {
+            self.sendBuffer.empty()
+        }
         parentProtocol.handleStreamClose(stream: self, error: errorCode, in: &eventContext)
     }
 

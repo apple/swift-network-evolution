@@ -142,7 +142,9 @@ struct Migration: ~Copyable {
             )
         }
         path.spinValue = connection.initialSpinValue
-        connection.recovery.resetTimer(now: connection.now, connection: connection, in: &eventContext)
+        connection.withSendPathBorrow(in: &eventContext) { eventContext in
+            connection.recovery.resetTimer(now: connection.now, connection: connection, in: &eventContext)
+        }
         path.resetPacer()
         path.pmtudState.start(on: path, in: &eventContext)
         connection.applyToAllPaths { otherPath in

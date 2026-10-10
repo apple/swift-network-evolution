@@ -552,7 +552,8 @@ extension QUICCrypto: TopStreamProtocol {
         guard let parentConnection else { return }
         inScope(of: parentConnection, in: &eventContext) { eventContext in
             parentConnection.log.info("Connected: TLS finished")
-            parentConnection.reportReady(in: &eventContext)
+            // Route report ready through the scheduler to ensure the previous stack in unwound first
+            parentConnection.scheduleReportReady(in: &eventContext)
         }
     }
 
