@@ -1134,7 +1134,8 @@ struct AckBitstring: ~Copyable {
     mutating func xor(
         other: inout AckBitstring,
         firstPN: PacketNumber,
-        lastPN: PacketNumber
+        lastPN: PacketNumber,
+        buffer: AckBitstringXORBuffer
     ) -> AckBitstringSequence {
         guard initialWord == other.initialWord else {
             let initialWord = self.initialWord
@@ -1161,7 +1162,8 @@ struct AckBitstring: ~Copyable {
             startingWord: startingWord,
             endingWord: endingWord,
             bitstring: self.bitstring,
-            otherBitstring: other.bitstring
+            otherBitstring: other.bitstring,
+            buffer: buffer
         )
 
         if startingWord > 0 && startingWord - 1 > size / 2 {
@@ -1173,6 +1175,36 @@ struct AckBitstring: ~Copyable {
     }
 }
 
+// Reusable storage for xor word processing.
+// This must be a class right now because AckBitstringSequence conforms to Sequence.
+@available(Network 0.1.0, *)
+final class AckBitstringXORBuffer {
+    var words = [UInt64]()
+    init() {}
+
+    @inline(always)
+    func fill(
+        startingWord: Int,
+        endingWord: UInt64,
+        bitstring: borrowing NetworkUniqueArray<UInt64>,
+        otherBitstring: borrowing NetworkUniqueArray<UInt64>
+    ) -> Int {
+        let size = Int(endingWord) - startingWord + 1
+        if words.count < size {
+            words.append(contentsOf: repeatElement(0, count: size - words.count))
+        }
+        // We are converting to base 0 indexing and overwriting only the necessary words.
+        var index = startingWord
+        var i = 0
+        while index <= endingWord {
+            words[i] = bitstring[index] ^ otherBitstring[index]
+            index &+= 1
+            i &+= 1
+        }
+        return size
+    }
+}
+
 @available(Network 0.1.0, *)
 struct AckBitstringIterator: IteratorProtocol {
     typealias Element = PacketNumber
@@ -1181,13 +1213,16 @@ struct AckBitstringIterator: IteratorProtocol {
     let size: Int
     let startingWord: UInt64
     let initialWord: UInt64
-    var bitstringXored: ArraySlice<UInt64>
+    let buffer: AckBitstringXORBuffer!
+    // Bits remaining in buffer.words
+    var pendingBits: UInt64
 
     @inlinable
     @inline(always)
     init(_ sequence: AckBitstringSequence) {
-        self.bitstringXored = sequence.bitstringXored[...]
+        self.buffer = sequence.buffer
         self.currentWord = 0
+        self.pendingBits = 0
         self.size = sequence.size
         self.startingWord = sequence.startingWord
         self.initialWord = sequence.initialWord
@@ -1198,9 +1233,11 @@ struct AckBitstringIterator: IteratorProtocol {
     mutating func next() -> PacketNumber? {
         var index: UInt64 = 0
         while currentWord < size {
-            let result = bitstringXored[Int(currentWord)]
+            if pendingBits == 0 {
+                pendingBits = buffer.words[Int(currentWord)]
+            }
             // N.B.: safe because packet numbers are only 62-bit.
-            index = result.indexOfFirstSetBit
+            index = pendingBits.indexOfFirstSetBit
             if index <= 0 {
                 currentWord += 1
             } else {
@@ -1210,9 +1247,13 @@ struct AckBitstringIterator: IteratorProtocol {
         if currentWord >= size {
             return nil
         }
-        bitstringXored[Int(currentWord)] &= ~(1 << (index - 1))
+        pendingBits &= ~(1 << (index - 1))
         var packetNumber = index - 1 + ((startingWord + currentWord) * 64)
         packetNumber += initialWord * 64
+
+        if pendingBits == 0 {
+            currentWord += 1
+        }
 
         return PacketNumber(packetNumber)
     }
@@ -1223,15 +1264,20 @@ struct AckBitstringSequence: Sequence {
     let initialWord: UInt64
     let startingWord: UInt64
     let size: Int
-    var bitstringXored = [UInt64]()
+    let buffer: AckBitstringXORBuffer!
 
-    static let empty = AckBitstringSequence(
-        initialWord: 0,
-        startingWord: 0,
-        endingWord: 0,
-        bitstring: NetworkUniqueArray<UInt64>(repeating: 0, count: 1),
-        otherBitstring: NetworkUniqueArray<UInt64>(repeating: 0, count: 1)
-    )
+    // Computed to relax Sendability on AckBitstringXORBuffer
+    static var empty: AckBitstringSequence {
+        AckBitstringSequence()
+    }
+
+    @inline(always)
+    private init() {
+        self.initialWord = 0
+        self.startingWord = 0
+        self.size = 0
+        self.buffer = nil
+    }
 
     @inlinable
     @inline(always)
@@ -1240,18 +1286,18 @@ struct AckBitstringSequence: Sequence {
         startingWord: UInt64,
         endingWord: UInt64,
         bitstring: borrowing NetworkUniqueArray<UInt64>,
-        otherBitstring: borrowing NetworkUniqueArray<UInt64>
+        otherBitstring: borrowing NetworkUniqueArray<UInt64>,
+        buffer: AckBitstringXORBuffer
     ) {
         self.initialWord = initialWord
         self.startingWord = startingWord
-        self.size = Int(endingWord - startingWord + 1)
-        self.bitstringXored.reserveCapacity(size)
-        // We are converting to base 0 indexing and copying only the necessary words.
-        var index = Int(startingWord)
-        while index <= endingWord {
-            self.bitstringXored.append(bitstring[index] ^ otherBitstring[index])
-            index &+= 1
-        }
+        self.buffer = buffer
+        self.size = buffer.fill(
+            startingWord: Int(startingWord),
+            endingWord: endingWord,
+            bitstring: bitstring,
+            otherBitstring: otherBitstring
+        )
     }
 
     @inlinable

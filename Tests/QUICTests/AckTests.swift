@@ -554,8 +554,9 @@ final class AckTests: XCTestCase {
 
         var bitstring1 = AckBitstring(frame: frame1, oldestPN: 0)
         var bitstring2 = AckBitstring(frame: frame2, oldestPN: 0)
+        let xorBuffer = AckBitstringXORBuffer()
         var numPackets = 0
-        for packetNumber in bitstring1.xor(other: &bitstring2, firstPN: 0, lastPN: frame2.largest) {
+        for packetNumber in bitstring1.xor(other: &bitstring2, firstPN: 0, lastPN: frame2.largest, buffer: xorBuffer) {
             XCTAssert(packetNumber >= 11 && packetNumber <= 12)
             numPackets += 1
         }
@@ -578,8 +579,9 @@ final class AckTests: XCTestCase {
 
         var bitstring1 = AckBitstring(frame: frame1, oldestPN: 0)
         var bitstring2 = AckBitstring(frame: frame2, oldestPN: 0)
+        let xorBuffer = AckBitstringXORBuffer()
         var numPackets = 0
-        for packetNumber in bitstring1.xor(other: &bitstring2, firstPN: 0, lastPN: frame2.largest) {
+        for packetNumber in bitstring1.xor(other: &bitstring2, firstPN: 0, lastPN: frame2.largest, buffer: xorBuffer) {
             XCTAssert(packetNumber >= 10000 && packetNumber <= 10002)
             numPackets += 1
         }
@@ -602,8 +604,9 @@ final class AckTests: XCTestCase {
 
         var bitstring1 = AckBitstring(frame: frame1, oldestPN: 0)
         var bitstring2 = AckBitstring(frame: frame2, oldestPN: 0)
+        let xorBuffer = AckBitstringXORBuffer()
         var numPackets = 0
-        for packetNumber in bitstring1.xor(other: &bitstring2, firstPN: 0, lastPN: frame2.largest) {
+        for packetNumber in bitstring1.xor(other: &bitstring2, firstPN: 0, lastPN: frame2.largest, buffer: xorBuffer) {
             XCTAssert(packetNumber == 64)
             numPackets += 1
         }
@@ -628,8 +631,9 @@ final class AckTests: XCTestCase {
 
         var bitstring1 = AckBitstring(frame: frame1, oldestPN: 0)
         var bitstring2 = AckBitstring(frame: frame2, oldestPN: 0)
+        let xorBuffer = AckBitstringXORBuffer()
         var numPackets = 0
-        for packetNumber in bitstring1.xor(other: &bitstring2, firstPN: 0, lastPN: frame2.largest) {
+        for packetNumber in bitstring1.xor(other: &bitstring2, firstPN: 0, lastPN: frame2.largest, buffer: xorBuffer) {
             XCTAssert(packetNumber > 20 && packetNumber <= 100)
             numPackets += 1
         }
@@ -652,8 +656,9 @@ final class AckTests: XCTestCase {
 
         var bitstring1 = AckBitstring(frame: frame1, oldestPN: 0)
         var bitstring2 = AckBitstring(frame: frame2, oldestPN: 0)
+        let xorBuffer = AckBitstringXORBuffer()
         var numPackets = 0
-        for packetNumber in bitstring1.xor(other: &bitstring2, firstPN: 0, lastPN: frame2.largest) {
+        for packetNumber in bitstring1.xor(other: &bitstring2, firstPN: 0, lastPN: frame2.largest, buffer: xorBuffer) {
             XCTAssert(packetNumber >= 10000 && packetNumber <= 10002)
             numPackets += 1
         }
@@ -670,7 +675,8 @@ final class AckTests: XCTestCase {
         for packetNumber in bitstring1.xor(
             other: &bitstring2,
             firstPN: 1024,
-            lastPN: frame3.largest
+            lastPN: frame3.largest,
+            buffer: xorBuffer
         ) {
             XCTAssert(packetNumber >= 10000 && packetNumber <= 10004)
             numPackets += 1
@@ -683,6 +689,7 @@ final class AckTests: XCTestCase {
         var oldestPN = PacketNumber(0)
         var bitstring1 = AckBitstring()
         var bitstring2 = AckBitstring()
+        let xorBuffer = AckBitstringXORBuffer()
 
         for packetNumber in stride(from: 1, through: 100_000, by: 2) {
             let frame = FrameAck(
@@ -696,7 +703,8 @@ final class AckTests: XCTestCase {
             for innerPacketNumber in bitstring1.xor(
                 other: &bitstring2,
                 firstPN: oldestPN,
-                lastPN: frame.largest
+                lastPN: frame.largest,
+                buffer: xorBuffer
             ) {
                 XCTAssert(
                     innerPacketNumber >= PacketNumber(Int64(packetNumber - 1))
