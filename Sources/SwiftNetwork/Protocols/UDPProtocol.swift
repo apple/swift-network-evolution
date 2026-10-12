@@ -558,10 +558,12 @@ extension ProtocolOptions<UDPProtocol> {
     public var preferNoChecksum: Bool {
         get { perProtocolOptions!.contains(.preferNoChecksum) }
         set {
-            if newValue {
-                perProtocolOptions!.insert(.preferNoChecksum)
-            } else {
-                perProtocolOptions!.remove(.preferNoChecksum)
+            modifyPerProtocolOptions { udpOptions in
+                if newValue {
+                    udpOptions.insert(.preferNoChecksum)
+                } else {
+                    udpOptions.remove(.preferNoChecksum)
+                }
             }
         }
     }
@@ -569,10 +571,12 @@ extension ProtocolOptions<UDPProtocol> {
     public var noMetadata: Bool {
         get { perProtocolOptions!.contains(.noMetadata) }
         set {
-            if newValue {
-                perProtocolOptions!.insert(.noMetadata)
-            } else {
-                perProtocolOptions!.remove(.noMetadata)
+            modifyPerProtocolOptions { udpOptions in
+                if newValue {
+                    udpOptions.insert(.noMetadata)
+                } else {
+                    udpOptions.remove(.noMetadata)
+                }
             }
         }
     }
@@ -580,10 +584,12 @@ extension ProtocolOptions<UDPProtocol> {
     public var ignoreInboundChecksum: Bool {
         get { perProtocolOptions!.contains(.ignoreInboundChecksum) }
         set {
-            if newValue {
-                perProtocolOptions!.insert(.ignoreInboundChecksum)
-            } else {
-                perProtocolOptions!.remove(.ignoreInboundChecksum)
+            modifyPerProtocolOptions { udpOptions in
+                if newValue {
+                    udpOptions.insert(.ignoreInboundChecksum)
+                } else {
+                    udpOptions.remove(.ignoreInboundChecksum)
+                }
             }
         }
     }
@@ -591,10 +597,12 @@ extension ProtocolOptions<UDPProtocol> {
     public var useQUICStats: Bool {
         get { perProtocolOptions!.contains(.useQUICStats) }
         set {
-            if newValue {
-                perProtocolOptions!.insert(.useQUICStats)
-            } else {
-                perProtocolOptions!.remove(.useQUICStats)
+            modifyPerProtocolOptions { udpOptions in
+                if newValue {
+                    udpOptions.insert(.useQUICStats)
+                } else {
+                    udpOptions.remove(.useQUICStats)
+                }
             }
         }
     }
@@ -602,10 +610,12 @@ extension ProtocolOptions<UDPProtocol> {
     public var fullChecksumOffload: Bool {
         get { perProtocolOptions!.contains(.fullChecksumOffload) }
         set {
-            if newValue {
-                perProtocolOptions!.insert(.fullChecksumOffload)
-            } else {
-                perProtocolOptions!.remove(.fullChecksumOffload)
+            modifyPerProtocolOptions { udpOptions in
+                if newValue {
+                    udpOptions.insert(.fullChecksumOffload)
+                } else {
+                    udpOptions.remove(.fullChecksumOffload)
+                }
             }
         }
     }
