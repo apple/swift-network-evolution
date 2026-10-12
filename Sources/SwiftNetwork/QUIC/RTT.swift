@@ -44,7 +44,8 @@ struct RTT: ~Copyable, PrefixedLoggable {
     // Base RTT history samples
     private var baseRTTs = [NetworkDuration](repeatElement(RTT.invalidRTT, count: RTT.nbaseHistory))
 
-    // Last time when a new minute interval began
+    // Start of the current history interval. Always a whole number of
+    // `historyInterval`s after the first sample.
     private var lastRolloverTimestamp: NetworkClock.Instant? = nil
 
     // Smallest measured base rtt for specified history
@@ -93,16 +94,26 @@ struct RTT: ~Copyable, PrefixedLoggable {
         }
         if now > lastRollover && lastRollover.duration(to: now) > RTT.historyInterval {
             let timeSinceLastRollover = lastRollover.duration(to: now)
-            let rolloverIndex = timeSinceLastRollover / RTT.historyInterval
-            let times = Int(baseRTTIndex) + Int(rolloverIndex)
+            // Number of whole history intervals elapsed since the start of the
+            // current interval.
+            let rolloverIndex = Int(timeSinceLastRollover / RTT.historyInterval)
+            let times = baseRTTIndex + rolloverIndex
 
-            // Set the base rtt to invalid for idle periods
-            for i in stride(from: Int(baseRTTIndex + 1), to: Int(times), by: 1) {
+            // Set the base rtt to invalid for idle periods. The slots strictly
+            // between the old and new index had no samples. Once the gap
+            // reaches nbaseHistory every slot (including the old index) is
+            // stale, so cap the work instead of wrapping over the ring again
+            // for each idle minute.
+            let slotsToClear = min(rolloverIndex - 1, RTT.nbaseHistory)
+            for i in stride(from: baseRTTIndex + 1, through: baseRTTIndex + slotsToClear, by: 1) {
                 baseRTTs[i % RTT.nbaseHistory] = RTT.invalidRTT
             }
             baseRTTIndex = times % RTT.nbaseHistory
             baseRTTs[baseRTTIndex] = currentRTT
-            lastRolloverTimestamp = now
+            // Advance by whole intervals so boundaries stay aligned to fixed
+            // steps from the first sample, rather than drifting to whenever a
+            // sample happens to arrive.
+            lastRolloverTimestamp = lastRollover.advanced(by: RTT.historyInterval * rolloverIndex)
 
             baseRTT = baseRTTs[0]
             for i in 0..<RTT.nbaseHistory {
