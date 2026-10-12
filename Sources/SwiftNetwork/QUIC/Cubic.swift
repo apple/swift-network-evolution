@@ -27,6 +27,26 @@ internal import Logging
 internal import os
 #endif
 
+// The state before the most recent congestion event, restored if the
+// event turns out to be spurious (RFC 9438 Section 4.9).
+// This is used by Cubic and Prague, but LEDBAT doesn't use it.
+@available(Network 0.1.0, *)
+internal struct CubicUndoState {
+    var congestionWindow: UInt64
+    var slowStartThreshold: UInt64
+    var recoveryStartTime: NetworkClock.Instant
+    var K: Double
+    var totalAcked: UInt64
+    var tcpTotalAcked: UInt64
+    var lastMaxCongestionWindow: UInt64
+    var maxCongestionWindow: UInt64
+    var originPoint: UInt64
+    var epochStart: NetworkClock.Instant
+    var tcpCongestionWindow: UInt64
+    var numCongestionEvents: Int
+    var reducedDueToCE = false  // Used by Prague only.
+}
+
 protocol CubicLikeProtocol {
     static var beta: Double { get }
     static func minCongestionWindow(_ mss: Int) -> UInt64
@@ -57,6 +77,7 @@ extension CubicLikeProtocol {
 struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
     var log: LogPrefixer
 
+    var undoState: CubicUndoState? = nil
     var K: Double = 0
     var numCongestionEvents = 0
     var totalAcked = UInt64(0) /* total bytes acked for cubic */
@@ -267,7 +288,21 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
-        log.datapath("Entering Recovery: current cwin=\(state.congestionWindow)")
+        log.datapath("Entering Recovery, current window=\(state.congestionWindow)")
+        undoState = CubicUndoState(
+            congestionWindow: state.congestionWindow,
+            slowStartThreshold: state.slowStartThreshold,
+            recoveryStartTime: state.recoveryStartTime,
+            K: K,
+            totalAcked: totalAcked,
+            tcpTotalAcked: tcpTotalAcked,
+            lastMaxCongestionWindow: lastMaxCongestionWindow,
+            maxCongestionWindow: maxCongestionWindow,
+            originPoint: originPoint,
+            epochStart: epochStart,
+            tcpCongestionWindow: tcpCongestionWindow,
+            numCongestionEvents: numCongestionEvents
+        )
         state.recoveryStartTime = now
         lastMaxCongestionWindow = maxCongestionWindow
         maxCongestionWindow = state.congestionWindow
@@ -417,6 +452,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
     }
 
     mutating func persistentCongestion(state: inout CongestionControlState, mss: Int, qlog: QLog? = nil) {
+        undoState = nil
         state.slowStartThreshold = Cubic.persistentCongestion(
             congestionWindow: state.congestionWindow,
             mss: mss
@@ -428,14 +464,27 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
     }
 
     mutating func spuriousRetransmit(state: inout CongestionControlState, qlog: QLog? = nil) {
-        guard maxCongestionWindow > 0 && state.prevSlowStartThreshold > 0 else { return }
-        // Revert to the state before loss was detected
-        state.congestionWindow = max(maxCongestionWindow, state.congestionWindow)
-        state.slowStartThreshold = state.prevSlowStartThreshold
+        guard let undo = undoState else { return }
+        defer { undoState = nil }
+        log.datapath("Undoing spurious congestion event: window \(state.congestionWindow) -> \(undo.congestionWindow)")
+        state.congestionWindow = max(state.congestionWindow, undo.congestionWindow)
+        state.slowStartThreshold = max(state.slowStartThreshold, undo.slowStartThreshold)
+        state.prevSlowStartThreshold = undo.slowStartThreshold
+        state.recoveryStartTime = undo.recoveryStartTime
+        K = undo.K
+        totalAcked = undo.totalAcked
+        tcpTotalAcked = undo.tcpTotalAcked
+        lastMaxCongestionWindow = undo.lastMaxCongestionWindow
+        maxCongestionWindow = undo.maxCongestionWindow
+        originPoint = undo.originPoint
+        epochStart = undo.epochStart
+        tcpCongestionWindow = undo.tcpCongestionWindow
+        numCongestionEvents = undo.numCongestionEvents
         state.logUpdate(log: log, qlog: qlog)
     }
 
     private mutating func resetInternal(state: inout CongestionControlState) {
+        undoState = nil
         state.recoveryStartTime = .zero
         state.prevSlowStartThreshold = UInt64.max
         numCongestionEvents = 0
@@ -473,6 +522,8 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         // is best to start fresh. For congestion window
         // we can use the higher of last congestionWindow and initialCongestionWindow
         state.bytesInFlight = from.bytesInFlight
+        // The CE count is cumulative, so keep it to only react to new marks.
+        state.ecnCECounter = from.ecnCECounter
         state.congestionWindow = max(from.congestionWindow, Cubic.initialCongestionWindow(mss))
         state.slowStartThreshold = UInt64.max
         resetInternal(state: &state)
