@@ -91,6 +91,39 @@ final class SwiftNetworkAddressTests: NetTestCase {
         )
     }
 
+    func testIPv4AddressStringParsing() throws {
+        XCTAssertEqual(IPv4Address("10.0.0.1"), IPv4Address([10, 0, 0, 1]))
+        XCTAssertEqual(IPv4Address("0.0.0.0"), IPv4Address.any)
+        XCTAssertEqual(IPv4Address("255.255.255.255"), IPv4Address.broadcast)
+
+        for invalid in [
+            "010.0.0.1", "1.2.3.00", "+1.2.3.4", "1.-2.3.4", "1.2.3.256", "1.2.3", "1.2.3.4.5", "1..3.4", "",
+        ] {
+            XCTAssertNil(IPv4Address(invalid), "\(invalid) should be rejected")
+        }
+    }
+
+    func testIPv6AddressStringParsing() throws {
+        let mapped = try XCTUnwrap(IPv6Address("::ffff:192.0.2.1"))
+        XCTAssertEqual(mapped, IPv6Address([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 0, 2, 1]))
+        XCTAssertEqual(IPv6Address(mapped.debugDescription), mapped, "debugDescription should parse back")
+        XCTAssertEqual(
+            IPv6Address("1:2:3:4:5:6:1.2.3.4"),
+            IPv6Address([0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 1, 2, 3, 4])
+        )
+        XCTAssertEqual(IPv6Address("2001:0db8::0001"), IPv6Address("2001:db8::1"))
+        XCTAssertEqual(IPv6Address("1:2:3:4:5:6:7::"), IPv6Address("1:2:3:4:5:6:7:0"))
+        XCTAssertEqual(IPv6Address("::"), IPv6Address.any)
+
+        for invalid in [
+            "::ffff:1.2.3.4:5", "1.2.3.4::1", "::1.2.3.4:ffff", "::ffff:01.2.3.4",
+            "1:2:3:4:5:6:7:1.2.3.4", "+1:2:3:4:5:6:7:8", "1:2:3:4:5:6:7:-8",
+            "1:2:3:4:5:6:7:8::", "::1:2:3:4:5:6:7:8", "1::2::3", ":::", "12345::",
+        ] {
+            XCTAssertNil(IPv6Address(invalid), "\(invalid) should be rejected")
+        }
+    }
+
     func testCreateAddrRoundTrip() throws {
 
         var sinAddr4 = sockaddr_in()
