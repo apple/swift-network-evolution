@@ -65,8 +65,10 @@ final class QUICLayoutTests: XCTestCase {
 
     func testStreamLayout() {
         // Note that stream size can have a major impact memory usage in server use cases
+        #if !canImport(Android)
         let streamSize = malloc_size(Unmanaged.passUnretained(stream as AnyObject).toOpaque())
         XCTAssertEqual(streamSize, 512, "QUICStreamInstance's allocated size regressed back 512")
+        #endif
         XCTAssertEqual(MemoryLayout<QUICSendState>.size, 81)
         XCTAssertEqual(MemoryLayout<QUICReceiveState>.size, 90)
         XCTAssertEqual(MemoryLayout<StreamSendBuffer>.size, 80)
