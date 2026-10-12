@@ -4434,9 +4434,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         #if QlogOutput
         if let qLog {
             if outbound {
-                qLog.packetSent(packet, timestamp: self.now)
+                qLog.packetSent(packet, ackDelayExponent: ack.localDelayExponent, timestamp: self.now)
             } else {
-                qLog.packetReceived(packet, coalesced: coalesced, timestamp: self.now)
+                qLog.packetReceived(
+                    packet,
+                    coalesced: coalesced,
+                    ackDelayExponent: ack.remoteDelayExponent,
+                    timestamp: self.now
+                )
             }
         }
         #endif
