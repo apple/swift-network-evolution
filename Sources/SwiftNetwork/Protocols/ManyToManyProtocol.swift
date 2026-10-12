@@ -1424,13 +1424,14 @@ open class MultiplexedStreamFlow<
     public var upperSendQueue = FrameArray()
     public var upperReceiveQueue = FrameArray()
     public var maximumStreamDataSize: Int = Int.max
-    public var blockUpperSendQueue: Bool = false
 
     public var log = NetworkLoggerState()
 
     public var flowIdentifier: MultiplexedFlowIdentifier
 
     public var identifier: InstanceIdentifier
+
+    public var blockUpperSendQueue: Bool = false
 
     public func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext) {
         parentProtocol.serviceStreamDataToSend(flow: flowIdentifier, in: &eventContext)

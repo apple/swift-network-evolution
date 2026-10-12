@@ -703,7 +703,7 @@ extension FrameStreamSendMetadata: SendableItem {
                 continue
             }
 
-            guard stream.sendBuffer.storageStartOffset <= retransmitStreamOffset else {
+            guard stream.send.buffer.storageStartOffset <= retransmitStreamOffset else {
                 connection.log.datapath(
                     "Not retransmitting data at offset \(retransmitStreamOffset), already acked"
                 )
@@ -781,7 +781,7 @@ extension FrameStreamSendMetadata: SendableItem {
             }
 
             // Already completely written, ignore
-            guard !stream.sendState.dataHasAlreadyBeenSent else {
+            guard !stream.send.state.dataHasAlreadyBeenSent else {
                 pendingItems.popServicedStream()
                 stream.listMembership.remove(.sendable)
                 continue
@@ -825,11 +825,14 @@ extension FrameStreamSendMetadata: SendableItem {
             )
             let hasMoreDataToService = remainingStreamLength > UInt64(lengthWritten)
 
+            let streamFlowIdentifier = stream.flowIdentifier
+            let currentStreamID = stream.streamID!
+
             if lengthWritten < lengthToSend {
                 // Incomplete write. Save what was transmitted, and record what is left.
                 let writtenStream = TransmittedItems.SentStream(
-                    flowID: stream.flowIdentifier,
-                    streamID: stream.streamID!,
+                    flowID: streamFlowIdentifier,
+                    streamID: currentStreamID,
                     offset: offset,
                     length: UInt64(lengthWritten),
                     isFinal: false
@@ -853,8 +856,8 @@ extension FrameStreamSendMetadata: SendableItem {
             } else {
                 // Complete write. Save it to transmitted items for a record.
                 let writtenStream = TransmittedItems.SentStream(
-                    flowID: stream.flowIdentifier,
-                    streamID: stream.streamID!,
+                    flowID: streamFlowIdentifier,
+                    streamID: currentStreamID,
                     offset: offset,
                     length: UInt64(lengthWritten),
                     isFinal: isFinal
@@ -2572,9 +2575,9 @@ struct PendingItems: ~Copyable {
     var transmittedStreams = NetworkUniqueDeque<TransmittedItems.SentStream>()
 
     func canAddStreamToService(_ stream: QUICStreamInstance) -> Bool {
-        !stream.sendState.dataHasAlreadyBeenSent
+        !stream.send.state.dataHasAlreadyBeenSent
             && ((stream.hasMoreSendDataToService && stream.availableRemoteReceiveWindow(for: stream.parentProtocol) > 0)
-                || stream.sendBuffer.hasLast)
+                || stream.send.buffer.hasLast)
     }
 
     mutating func rotateFirstStreamToService() {

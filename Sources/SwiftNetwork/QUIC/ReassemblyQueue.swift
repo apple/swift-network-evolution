@@ -58,8 +58,25 @@ struct ReassemblyQueue: ~Copyable {
     private(set) var availableToDequeue = 0  // number of bytes that can be dequeued
     private(set) var size = 0  // reassq size
     private(set) var finOffset = Int.max  // one higher than largest byte offset sent on stream
-    private(set) var headOfLineBlocked = false
     private(set) var items = NetworkUniqueDeque<ReassemblyQueueItem>()
+    struct Flags: OptionSet {
+        init(rawValue: Self.RawValue) {
+            self.rawValue = rawValue
+        }
+        var rawValue: UInt8
+        static let headOfLineBlocked = Flags(rawValue: 1 << 0)
+    }
+    private var flags = Flags()
+    var headOfLineBlocked: Bool {
+        get { flags.contains(.headOfLineBlocked) }
+        set {
+            if newValue {
+                flags.insert(.headOfLineBlocked)
+            } else {
+                flags.remove(.headOfLineBlocked)
+            }
+        }
+    }
     var hasFin: Bool {
         finOffset != Int.max
     }

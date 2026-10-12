@@ -518,7 +518,7 @@ extension QUICStreamInstance {
     var shouldSendInboundFlowControlCredit: Bool {
         // We only need to send flow control updates before we receive
         // the FIN bit and before we receive a RESET_STREAM.
-        guard self.receiveState == .receive else {
+        guard self.receive.state == .receive else {
             return false
         }
 
@@ -547,7 +547,7 @@ extension QUICStreamInstance {
     func sendInboundFlowControlCreditForStreamDataBlocked(connection: QUICConnection) {
         // Ignore STREAM_DATA_BLOCKED once we have received a FIN
         // or a RESET_STREAM.
-        guard !receiveState.isSizeKnown else {
+        guard !receive.state.isSizeKnown else {
             return
         }
 
@@ -673,35 +673,42 @@ extension QUICStreamInstance {
         let delta: UInt64 = newLastReceivedOffset - currentValue
 
         flowControlState.largestInboundByteOffsetReceived = newLastReceivedOffset
-        guard flowControlState.largestInboundByteOffsetReceived <= flowControlState.inboundMaxData
-        else {
-            log.error(
-                "Received final size \(newLastReceivedOffset) which had exceeds stream flow control limits"
-            )
+
+        var closeReason: String?
+
+        validation: repeat {
+            guard flowControlState.largestInboundByteOffsetReceived <= flowControlState.inboundMaxData
+            else {
+                log.error(
+                    "Received final size \(newLastReceivedOffset) which had exceeds stream flow control limits"
+                )
+                closeReason = "exceeded stream flow control limits"
+                break validation
+            }
+
+            let connectionMaxData = connection.flowControlState.inboundMaxData
+            let connectionCurrentLargestData = connection.flowControlState
+                .largestInboundByteOffsetReceived
+            guard connectionMaxData >= connectionCurrentLargestData,
+                (connectionMaxData - connectionCurrentLargestData) >= delta
+            else {
+                log.error(
+                    "Received final size \(newLastReceivedOffset) which had exceeds connection flow control limits"
+                )
+                closeReason = "exceeded flow control limits"
+                break validation
+            }
+        } while false
+
+        if let closeReason {
             connection.close(
                 with: .flowControlError,
-                "exceeded stream flow control limits",
+                closeReason,
                 in: &eventContext
             )
             return nil
         }
 
-        let connectionMaxData = connection.flowControlState.inboundMaxData
-        let connectionCurrentLargestData = connection.flowControlState
-            .largestInboundByteOffsetReceived
-        guard connectionMaxData >= connectionCurrentLargestData,
-            (connectionMaxData - connectionCurrentLargestData) >= delta
-        else {
-            log.error(
-                "Received final size \(newLastReceivedOffset) which had exceeds connection flow control limits"
-            )
-            connection.close(
-                with: .flowControlError,
-                "exceeded flow control limits",
-                in: &eventContext
-            )
-            return nil
-        }
         // This cannot overflow, since the value has been just checked
         connection.flowControlState.largestInboundByteOffsetReceived += delta
         return delta
@@ -717,7 +724,6 @@ extension QUICStreamInstance {
 
     // Updates inbound flow control credit, and recalculates
     // `maximumUnreadInboundBytesAllowed` values.
-    @inline(always)
     func updateInboundFlowControlCredit(
         dataLengthAdded: UInt64,
         connection: QUICConnection,
@@ -736,7 +742,7 @@ extension QUICStreamInstance {
         var connectionOnly = connectionOnly
         if !connectionOnly {
             // Check for the conditions in which stream flow control can be skipped
-            if self.receiveState.isSizeKnown {
+            if self.receive.state.isSizeKnown {
                 connectionOnly = true
             }
         }

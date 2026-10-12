@@ -34,17 +34,18 @@ typealias StreamLength = UInt64
 struct StreamSendBuffer: ~Copyable {
     private var storage = FrameArrayQueue()
     private(set) var storageStartOffset: StreamOffset = 0
-    private(set) var hasLast = false
 
     struct Cursor: ~Copyable {
-        var previousCursorIndex: Int = 0
         var previousCursorFrameStartOffset: StreamOffset = 0
         var previousCursorResumeOffset: StreamOffset = 0
+        // An index into the buffered-frame queue, bounded by the number of in-flight frames
+        var previousCursorIndex: Int32 = 0
         var previousCursorValid: Bool = false
     }
 
     // Used to save the previous index and offset for resuming at a position in the frame array
     private var cursor: Cursor = Cursor()
+    private(set) var hasLast = false
 
     mutating func addSendData(_ data: consuming Frame, isLast: Bool) {
         if isLast {
@@ -137,7 +138,7 @@ struct StreamSendBuffer: ~Copyable {
         var startIndex = 0
         var currentFrameOffset: StreamOffset = storageStartOffset
         if cursor.previousCursorValid, cursor.previousCursorResumeOffset == requestedOffset {
-            startIndex = cursor.previousCursorIndex
+            startIndex = Int(cursor.previousCursorIndex)
             currentFrameOffset = cursor.previousCursorFrameStartOffset
         }
 
@@ -190,7 +191,7 @@ struct StreamSendBuffer: ~Copyable {
         }
         // Save where we ended so the next call can resume without
         // traversing the frame array from the start.
-        cursor.previousCursorIndex = lastVisitedIndex
+        cursor.previousCursorIndex = Int32(lastVisitedIndex)
         cursor.previousCursorFrameStartOffset = lastVisitedFrameStartOffset
         cursor.previousCursorResumeOffset = requestedOffset + totalLengthCopied
         cursor.previousCursorValid = true
