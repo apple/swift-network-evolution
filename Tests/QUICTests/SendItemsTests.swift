@@ -294,6 +294,16 @@ final class SendItemsTests: XCTestCase {
         let flow = QUICDatagramFlow(parent: connection, inbound: true)
         flow.setup(datagramFlowID: flowID, contextID: contextID, logPrefixer: LogPrefixer())
         connection.multiplexedSecondaryFlows[flow.flowIdentifier] = flow
+        defer {
+            connection.context.onQueue {
+                connection.fromExternal { eventContext in
+                    flow.upperSendQueue.finalizeAllFramesAsFailed()
+                    flow.unregisterEventManager(in: &eventContext)
+                }
+                connection.multiplexedSecondaryFlows.removeValue(forKey: flow.flowIdentifier)
+                connection.destroyFromExternalTest()
+            }
+        }
 
         let payload = [UInt8](repeating: 0xAB, count: 256)
         flow.usableDatagramSize = payload.count

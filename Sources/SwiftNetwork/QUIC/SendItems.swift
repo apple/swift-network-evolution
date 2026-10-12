@@ -1636,10 +1636,17 @@ extension FrameDatagram: SendableItem {
                             return error
                         }
                     }
-                    if writeError != nil {
-                        connection.log.datapath(
-                            "Datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
-                        )
+                    if let error = writeError {
+                        if case .frameWrite(.smallBuffer) = error {
+                            connection.log.datapath(
+                                "Datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
+                            )
+                        } else {
+                            connection.log.error(
+                                "Unable to write datagram for flow \(firstFlowID.debugDescription): "
+                                    + "\(error.info.description), code \(error.info.code)"
+                            )
+                        }
                         break
                     }
                     sentDatagram = true
