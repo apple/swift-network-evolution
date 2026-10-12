@@ -1184,9 +1184,10 @@ extension MultiplexedFlow {
     /// Flows whose upper linkage can deliver more event kinds (unidirectional aborts, say)
     /// override this to route those too.
     public func drainQueuedEventsForUpperProtocol(in eventContext: inout NetworkContext.EventContext) {
-        guard self.identifier.hasQueuedEventsForUpperProtocol(in: &eventContext) else { return }
+        let selfIdentifier = self.identifier
+        guard selfIdentifier.hasQueuedEventsForUpperProtocol(in: &eventContext) else { return }
         let upperProtocol = upper
-        self.identifier.reassignQueuedPendingEventsForUpperProtocol(
+        selfIdentifier.reassignQueuedPendingEventsForUpperProtocol(
             to: upperProtocol.identifier,
             in: &eventContext,
             block: { eventContext, from in
@@ -2005,15 +2006,16 @@ extension ManyToManyProtocolHandler {
     ) {
         switch flowID {
         case .allFlows:
+            let selfInstance = self.identifier
             inboundFlowLinkage.deliverNetworkProtocolEvent(
-                originalInstance: self.identifier,
-                selfInstance: self.identifier,
+                originalInstance: selfInstance,
+                selfInstance: selfInstance,
                 event: event,
                 in: &eventContext
             )
             applyToAllFlows { flow in
                 flow.upper.deliverNetworkProtocolEvent(
-                    originalInstance: self.identifier,
+                    originalInstance: selfInstance,
                     selfInstance: flow.identifier,
                     event: event,
                     in: &eventContext
@@ -2021,9 +2023,10 @@ extension ManyToManyProtocolHandler {
             }
         default:
             guard let flow = self.flow(for: flowID) else { return }
+            let flowInstance = flow.identifier
             flow.upper.deliverNetworkProtocolEvent(
-                originalInstance: flow.identifier,
-                selfInstance: flow.identifier,
+                originalInstance: flowInstance,
+                selfInstance: flowInstance,
                 event: event,
                 in: &eventContext
             )
@@ -2112,15 +2115,16 @@ extension HeterogeneousManyToManyProtocolHandler {
     ) {
         switch flowID {
         case .allFlows:
+            let selfInstance = self.identifier
             inboundFlowLinkage.deliverNetworkProtocolEvent(
-                originalInstance: self.identifier,
-                selfInstance: self.identifier,
+                originalInstance: selfInstance,
+                selfInstance: selfInstance,
                 event: event,
                 in: &eventContext
             )
             applyToAllFlows { flow in
                 flow.upper.deliverNetworkProtocolEvent(
-                    originalInstance: self.identifier,
+                    originalInstance: selfInstance,
                     selfInstance: flow.identifier,
                     event: event,
                     in: &eventContext
@@ -2128,7 +2132,7 @@ extension HeterogeneousManyToManyProtocolHandler {
             }
             applyToAllSecondaryFlows { flow in
                 flow.upper.deliverNetworkProtocolEvent(
-                    originalInstance: self.identifier,
+                    originalInstance: selfInstance,
                     selfInstance: flow.identifier,
                     event: event,
                     in: &eventContext
@@ -2136,17 +2140,19 @@ extension HeterogeneousManyToManyProtocolHandler {
             }
         default:
             if let flow = self.flow(for: flowID) {
+                let flowInstance = flow.identifier
                 flow.upper.deliverNetworkProtocolEvent(
-                    originalInstance: flow.identifier,
-                    selfInstance: flow.identifier,
+                    originalInstance: flowInstance,
+                    selfInstance: flowInstance,
                     event: event,
                     in: &eventContext
                 )
             }
             if let flow = self.secondaryFlow(for: flowID) {
+                let flowInstance = flow.identifier
                 flow.upper.deliverNetworkProtocolEvent(
-                    originalInstance: flow.identifier,
-                    selfInstance: flow.identifier,
+                    originalInstance: flowInstance,
+                    selfInstance: flowInstance,
                     event: event,
                     in: &eventContext
                 )

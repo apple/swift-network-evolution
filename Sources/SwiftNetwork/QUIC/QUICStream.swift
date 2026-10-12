@@ -473,7 +473,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     private var outboundApplicationErrorStorage: UInt64 = .max
     // QUICStreamID.maxValid is 2^62-1 and will reject anything above it so we use this to denote nil
     private var streamIDStorage: UInt64 = .max
-
+    @inline(always)
     var finalSize: UInt64? {
         get { finalSizeStorage == .max ? nil : finalSizeStorage }
         set { finalSizeStorage = newValue ?? .max }
@@ -482,6 +482,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     /// The application error code for the inbound (receive) direction.
     ///
     /// Used for the `STOP_SENDING` frame.
+    @inline(always)
     var inboundApplicationError: UInt64? {
         get { inboundApplicationErrorStorage == .max ? nil : inboundApplicationErrorStorage }
         set { inboundApplicationErrorStorage = newValue ?? .max }
@@ -489,10 +490,12 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     /// The application error code for the outbound (send) direction.
     ///
     /// Used for the `RESET_STREAM` frame.
+    @inline(always)
     var outboundApplicationError: UInt64? {
         get { outboundApplicationErrorStorage == .max ? nil : outboundApplicationErrorStorage }
         set { outboundApplicationErrorStorage = newValue ?? .max }
     }
+    @inline(always)
     private(set) var streamID: QUICStreamID? {
         get { streamIDStorage == .max ? nil : QUICStreamID(streamIDStorage)! }
         set { streamIDStorage = newValue?.value ?? .max }
@@ -664,14 +667,16 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
 
     public func abortOutbound(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
         self.outboundApplicationError = UInt64(error?.quicApplicationError ?? 0)
-        _ = parentProtocol.handleStopWrite(for: self)
-        parentProtocol.sendFrames(in: &eventContext)
+        let parent = parentProtocol
+        _ = parent.handleStopWrite(for: self)
+        parent.sendFrames(in: &eventContext)
     }
 
     public func abortInbound(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
         self.inboundApplicationError = UInt64(error?.quicApplicationError ?? 0)
-        parentProtocol.handleStopRead(for: self)
-        parentProtocol.sendFrames(in: &eventContext)
+        let parent = parentProtocol
+        parent.handleStopRead(for: self)
+        parent.sendFrames(in: &eventContext)
     }
 
     func emptyPendingData(connection: QUICConnection) {
@@ -982,20 +987,22 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     override public func upperReceiveQueueDrainedBytes(_ bytes: Int, in eventContext: inout NetworkContext.EventContext)
     {
 
+        let parent = parentProtocol
+
         // Record with flow control that bytes have been delivered, and update flow credits.
-        deliveredInboundBytes(consumedLength: bytes, connection: parentProtocol)
+        deliveredInboundBytes(consumedLength: bytes, connection: parent)
 
         // This notification is delivered from the application's read, which runs after the
         // inbound batch has already been serviced and flushed. If the read opened up the
         // receive window, we should send the credit here.
-        if parentProtocol.applicationPendingItems.maxData
-            || parentProtocol.applicationPendingItems.maxStreamData
+        if parent.applicationPendingItems.maxData
+            || parent.applicationPendingItems.maxStreamData
         {
-            parentProtocol.sendFrames(in: &eventContext)
+            parent.sendFrames(in: &eventContext)
         }
 
         if let streamID {
-            QUICSignpost.dataDelivered(id: parentProtocol.signpostID, streamID: streamID.value, nbytes: bytes)
+            QUICSignpost.dataDelivered(id: parent.signpostID, streamID: streamID.value, nbytes: bytes)
         }
 
         // If all data has now been read, move to the data read state
@@ -1043,17 +1050,19 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     }
 
     func inboundStreamReady() {
-        receive.state.change(logIDString: log.logPrefix, to: .receive)
+        let logPrefix = log.logPrefix
+        receive.state.change(logIDString: logPrefix, to: .receive)
         if !unidirectional {
-            send.state.change(logIDString: log.logPrefix, to: .ready)
+            send.state.change(logIDString: logPrefix, to: .ready)
         }
     }
 
     func outboundStreamReady() {
+        let logPrefix = log.logPrefix
         if !self.unidirectional {
-            self.receive.state.change(logIDString: log.logPrefix, to: .receive)
+            self.receive.state.change(logIDString: logPrefix, to: .receive)
         }
-        self.send.state.change(logIDString: log.logPrefix, to: .ready)
+        self.send.state.change(logIDString: logPrefix, to: .ready)
     }
 
     func outboundStreamPending(
