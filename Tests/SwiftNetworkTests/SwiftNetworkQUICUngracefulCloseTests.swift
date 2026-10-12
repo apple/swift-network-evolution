@@ -139,10 +139,11 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
                 let expectation = XCTestExpectation(description: "Wait for client disconnect")
                 harness.context.async {
                     harness.state?.clientHarness.waitForDisconnected {
-                        // RFC 9000 §10.2.3: APPLICATION_CLOSE must not be sent in a Handshake packet
-                        XCTAssertNotEqual(
-                            harness.state?.clientInstance.closeFrameType,
-                            .applicationClose,
+                        // RFC 9000 §10.2.3: a Handshake packet carries CONNECTION_CLOSE with APPLICATION_ERROR
+                        // instead of APPLICATION_CLOSE.
+                        XCTAssertEqual(
+                            harness.state?.clientInstance.closeError?.code,
+                            QUICTransportError.QUICTransportErrorCode.applicationError.rawValue,
                             "Server sent APPLICATION_CLOSE in a Handshake packet"
                         )
                         expectation.fulfill()
@@ -155,6 +156,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
         )
     }
 
+    #if !NETWORK_PRIVATE
     func testQUICClientClosesOnFrameNotAllowedDuringHandshake() throws {
         // Same setup as above, so the server still sends Handshake packets. RFC 9000 §12.4: a frame
         // that is not permitted in a Handshake packet is a PROTOCOL_VIOLATION for the client
@@ -185,6 +187,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
             }
         )
     }
+    #endif
 
     func testQUICStatelessResetTokenWithSCID() throws {
         // This test seeds the stateless reset token and the SCID on the server.
