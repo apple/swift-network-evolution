@@ -793,6 +793,17 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICTest(datagram: true, blockSize: 1000, blockCount: 10)
     }
 
+    func testQUICDatagram10Batched() {
+        // The batch is flushed at once, and two of these datagrams don't fit in one packet, so the
+        // rest have to wait for the next packets rather than being dropped
+        QUICTestHarness().runQUICTest(
+            datagram: true,
+            blockSize: 1000,
+            blockCount: 10,
+            shouldBatchSends: true
+        )
+    }
+
     func testQUICDatagramWithLargeInitialPacketSize() {
         let clientOptions = QUICProtocol.options()
         clientOptions.connectionOptions.initialPacketSize = 1400
