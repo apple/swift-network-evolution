@@ -75,6 +75,7 @@ enum TransportParameterDecodeErrors: Int, Error {
     case invalidSize
     case outOfBounds
     case unknownType
+    case duplicateParameter
 }
 
 enum TransportParameterEncodeErrors: Int, Error {
@@ -551,7 +552,8 @@ enum TransportParameter: Equatable {
             try read.buffer(&statelessResetToken, length: QUICStatelessResetToken.size)
         }
         let connectionID = QUICConnectionID(storage: connectionIDStorage, size: Int(cidLength))
-        guard case .success = result,
+        // The connection ID length must account for every byte of the parameter.
+        guard case .success(_, let remainingBytes) = result, remainingBytes == 0,
             let statelessResetToken = QUICStatelessResetToken(statelessResetToken)
         else {
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
@@ -596,7 +598,8 @@ enum TransportParameter: Equatable {
             try read.buffer(&statelessResetToken, length: QUICStatelessResetToken.size)
         }
         let connectionID = QUICConnectionID(storage: connectionIDStorage, size: Int(cidLength))
-        guard case .success = result,
+        // The connection ID length must account for every byte of the parameter.
+        guard case .success(_, let remainingBytes) = result, remainingBytes == 0,
             let statelessResetToken = QUICStatelessResetToken(statelessResetToken)
         else {
             throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
@@ -652,6 +655,10 @@ enum TransportParameter: Equatable {
         case .maxAckDelay:
             parameter = try .maxAckDelay(duration: deserializeMaxAckDelay(buffer.span))
         case .disableActiveMigration:
+            // This parameter has no value (RFC 9000, Section 18.2).
+            guard buffer.isEmpty else {
+                throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
+            }
             parameter = .disableActiveMigration()
         case .preferredAddress:
             parameter = try .preferredAddress(preferredAddress: deserializePreferredAddress(buffer))
@@ -713,6 +720,10 @@ enum TransportParameter: Equatable {
         case .maxAckDelay:
             parameter = try .maxAckDelay(duration: deserializeMaxAckDelay(buffer))
         case .disableActiveMigration:
+            // This parameter has no value (RFC 9000, Section 18.2).
+            guard buffer.isEmpty else {
+                throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.invalidSize)
+            }
             parameter = .disableActiveMigration()
         case .preferredAddress:
             parameter = try .preferredAddress(preferredAddress: deserializePreferredAddress(buffer))
@@ -771,6 +782,10 @@ public struct TransportParameters: PrefixedLoggable {
     // the transport parameter can have.
     public static let maxUDPPayloadSize = 65527
     public static let maxDatagramFrameSize: UInt64 = 65535
+    // RFC 9000, Section 18.2: active_connection_id_limit MUST be at least 2.
+    static let minActiveConnectionIDLimit: UInt64 = 2
+    // RFC 9000, Section 4.6: stream limits cannot exceed 2^60.
+    static let maxStreamsLimit: UInt64 = 1 << 60
     private var parameters: [TransportParameter?]
 
     init(logPrefixer: LogPrefixer = .init()) {
@@ -873,6 +888,14 @@ public struct TransportParameters: PrefixedLoggable {
                 continue
             }
 
+            // RFC 9000, Section 7.4: a parameter MUST NOT be sent more than once.
+            if parameters[parameter.type] != nil {
+                parameters.log.error("\(parameter.type) appears more than once")
+                throw QUICError.transportParametersDecode(
+                    TransportParameterDecodeErrors.duplicateParameter
+                )
+            }
+
             if case .maxUDPPayloadSize(_, let value) = parameter,
                 value < TransportParameters.minUDPPayloadSize
                     || value > TransportParameters.maxUDPPayloadSize
@@ -888,6 +911,34 @@ public struct TransportParameters: PrefixedLoggable {
                 throw
                     QUICError
                     .transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
+            }
+
+            if case .activeConnectionIDLimit(_, let value) = parameter,
+                value < TransportParameters.minActiveConnectionIDLimit
+            {
+                parameters.log.error(
+                    "active_connection_id_limit \(value) is less than \(TransportParameters.minActiveConnectionIDLimit)"
+                )
+                throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
+            }
+
+            switch parameter {
+            case .initialMaxStreamsBidirectional(let type, let value),
+                .initialMaxStreamsUnidirectional(let type, let value):
+                if value > TransportParameters.maxStreamsLimit {
+                    parameters.log.error("\(type) \(value) is greater than 2^60")
+                    throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
+                }
+            default:
+                break
+            }
+
+            // RFC 9000, Section 18.2: a preferred address MUST NOT use a zero-length connection ID.
+            if case .preferredAddress(_, let preferredAddress) = parameter,
+                preferredAddress.connectionID.length == 0
+            {
+                parameters.log.error("preferred_address has a zero-length connection ID")
+                throw QUICError.transportParametersDecode(TransportParameterDecodeErrors.outOfBounds)
             }
 
             // N.B.: the 2^14 ms bound on max_ack_delay is enforced while parsing.
