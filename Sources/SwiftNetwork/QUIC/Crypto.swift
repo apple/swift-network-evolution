@@ -22,6 +22,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -145,7 +148,7 @@ final class QUICCrypto {
             protocolLogIDNumber: 0
         )
         tlsOptions.setProtocolInstance(tlsInstance.identifier)
-        tlsOptions.perProtocolOptions = mutableTLSOptions
+        tlsOptions.replacePerProtocolOptions(mutableTLSOptions)
 
         var tlsParameters = Parameters()
         tlsParameters.isServer = parentConnection.isServer

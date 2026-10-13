@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -69,7 +72,7 @@ public struct IPProtocol: NetworkProtocol {
         1280
     }
 
-    public enum Version: UInt8 {
+    public enum Version: UInt8, Sendable {
         /// Allows any IP version.
         case any = 0
         /// Uses only IP version 4 (IPv4).
@@ -78,7 +81,7 @@ public struct IPProtocol: NetworkProtocol {
         case v6 = 6
     }
 
-    public enum AddressPreference: UInt8 {
+    public enum AddressPreference: UInt8, Sendable {
         case any = 0
         case temporary = 1
         case stable = 2
@@ -110,7 +113,7 @@ public struct IPProtocol: NetworkProtocol {
         }
     }
 
-    public struct IPOptions: PerProtocolOptions {
+    public struct IPOptions: PerProtocolOptions, Sendable {
         var version: Version = .any
         var localAddressPreference: AddressPreference = .any
 
@@ -2338,22 +2341,22 @@ public struct IPProtocol: NetworkProtocol {
 extension ProtocolOptions<IPProtocol> {
     var version: IPProtocol.Version {
         get { perProtocolOptions!.version }
-        set { perProtocolOptions!.version = newValue }
+        set { modifyPerProtocolOptions { $0.version = newValue } }
     }
     var localAddressPreference: IPProtocol.AddressPreference {
         get { perProtocolOptions!.localAddressPreference }
-        set { perProtocolOptions!.localAddressPreference = newValue }
+        set { modifyPerProtocolOptions { $0.localAddressPreference = newValue } }
     }
     public var dscpValue: UInt8? {
         get { perProtocolOptions!.dscpValue }
-        set { perProtocolOptions!.dscpValue = newValue }
+        set { modifyPerProtocolOptions { $0.dscpValue = newValue } }
     }
     public var flags: IPProtocol.IPOptions.Flags {
         get { perProtocolOptions!.flags }
-        set { perProtocolOptions!.flags = newValue }
+        set { modifyPerProtocolOptions { $0.flags = newValue } }
     }
     public var hopLimit: UInt8? {
         get { perProtocolOptions!.hopLimit }
-        set { perProtocolOptions!.hopLimit = newValue }
+        set { modifyPerProtocolOptions { $0.hopLimit = newValue } }
     }
 }

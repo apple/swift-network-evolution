@@ -723,142 +723,142 @@ final class AckTests: XCTestCase {
 
     // Initial values for ACK gen count
     func testAckGenCountInitial() {
-        XCTAssertEqual(ack.getGenerationCount(for: .initial, now: 0), 0)
-        XCTAssertEqual(ack.getGenerationCount(for: .handshake, now: 0), 0)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .initial, now: .zero), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .handshake, now: .zero), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 0)
     }
 
     // ACK gen count is always 0 during the handshake
     func testAckGenCountHandshake() {
         ack.append(packetNumberSpace: .initial, packetNumber: 1)
-        XCTAssertEqual(ack.getGenerationCount(for: .initial, now: 0), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .initial, now: .zero), 0)
         ack.append(packetNumberSpace: .initial, packetNumber: 2)
-        XCTAssertEqual(ack.getGenerationCount(for: .initial, now: 0), 0)
-        XCTAssertEqual(ack.getGenerationCount(for: .handshake, now: 0), 0)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .initial, now: .zero), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .handshake, now: .zero), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 0)
     }
 
     func testAckGenCountTrivial() {
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 0)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 0)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 1)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 2)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 3)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 4)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 5)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
     }
 
     // Tests the generation count with a single gap
     func testAckGenCountGap() {
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 0)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 0)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 1)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 2)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 4)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 2)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 2)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 5)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 2)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 2)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 6)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 2)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 2)
     }
 
     // Tests the generation count after adding another ACK block
     func testAckGenCountMultiGap() {
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 0)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 0)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 1)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 2)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 4)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 2)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 2)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 5)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 2)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 2)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 7)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 3)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 3)
     }
 
     // Tests the generation count after removing an ACK block
     func testAckGenCountGapRemoved() {
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 0)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 0)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 1)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 2)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 4)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 2)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 2)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 5)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 2)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 2)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 7)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 3)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 3)
         ack.acknowledged(packetNumberSpace: .applicationData, between: 0, and: 2)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 4)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 4)
     }
 
     // Tests the generation count after removing all ACK blocks
     func testAckGenCountEmptyBlock() {
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 0)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 0)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 0)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 1)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 2)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 4)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 2)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 2)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 5)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 2)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 2)
         ack.acknowledged(packetNumberSpace: .applicationData, between: 0, and: 2)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 3)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 3)
         ack.acknowledged(packetNumberSpace: .applicationData, between: 4, and: 5)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 4)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 4)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 7)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 5)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 5)
     }
     // Tests that we increment the generation count every 5ms
     func testAckGenCount5ms() {
         XCTAssertEqual(
-            ack.getGenerationCount(for: .applicationData, now: Int(5 * System.Time.USEC_PER_MSEC)),
+            ack.getGenerationCount(for: .applicationData, now: NetworkClock.Instant(milliseconds: 5)),
             0
         )
         ack.append(packetNumberSpace: .applicationData, packetNumber: 0)
         XCTAssertEqual(
-            ack.getGenerationCount(for: .applicationData, now: Int(5 * System.Time.USEC_PER_MSEC)),
+            ack.getGenerationCount(for: .applicationData, now: NetworkClock.Instant(milliseconds: 5)),
             1
         )
         ack.append(packetNumberSpace: .applicationData, packetNumber: 1)
         XCTAssertEqual(
-            ack.getGenerationCount(for: .applicationData, now: Int(5 * System.Time.USEC_PER_MSEC)),
+            ack.getGenerationCount(for: .applicationData, now: NetworkClock.Instant(milliseconds: 5)),
             1
         )
         ack.append(packetNumberSpace: .applicationData, packetNumber: 2)
         XCTAssertEqual(
-            ack.getGenerationCount(for: .applicationData, now: Int(5 * System.Time.USEC_PER_MSEC)),
+            ack.getGenerationCount(for: .applicationData, now: NetworkClock.Instant(milliseconds: 5)),
             1
         )
         ack.append(packetNumberSpace: .applicationData, packetNumber: 3)
         XCTAssertEqual(
-            ack.getGenerationCount(for: .applicationData, now: Int(10 * System.Time.USEC_PER_MSEC)),
+            ack.getGenerationCount(for: .applicationData, now: NetworkClock.Instant(milliseconds: 10)),
             2
         )
         XCTAssertEqual(
-            ack.getGenerationCount(for: .applicationData, now: Int(13 * System.Time.USEC_PER_MSEC)),
+            ack.getGenerationCount(for: .applicationData, now: NetworkClock.Instant(milliseconds: 13)),
             2
         )
         XCTAssertEqual(
-            ack.getGenerationCount(for: .applicationData, now: Int(20 * System.Time.USEC_PER_MSEC)),
+            ack.getGenerationCount(for: .applicationData, now: NetworkClock.Instant(milliseconds: 20)),
             3
         )
     }
@@ -872,10 +872,10 @@ final class AckTests: XCTestCase {
         ack.append(packetNumberSpace: .applicationData, packetNumber: 5)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 6)
         ack.append(packetNumberSpace: .applicationData, packetNumber: 7)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 1)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 1)
         let ecnCounter = ECNCounter(ect0: 0, ect1: 0, ce: 1)
         let _ = ack.size(for: .applicationData, ecnCounter: ecnCounter)
-        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: 0), 2)
+        XCTAssertEqual(ack.getGenerationCount(for: .applicationData, now: .zero), 2)
     }
 
     #if NETWORK_PERF_TESTS

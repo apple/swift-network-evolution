@@ -194,7 +194,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     ///
     /// Call this method when `hasRoom` fails but `internalResult` is still valid.
     @inlinable
-    @inline(always)
+    @inline(never)
     mutating func readFragmented<T: BitwiseCopyable>(_ value: inout T) throws(DeserializationError) {
         let length = MemoryLayout<T>.size
         precondition(length <= 16)
@@ -715,6 +715,45 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         moveCursorUnchecked(length)
     }
 
+    /// Compares across span boundaries, refilling from the factory as each span is exhausted.
+    @usableFromInline
+    @inline(never)
+    mutating func spanExpectFragmented(expect value: RawSpan, length: Int) throws(DeserializationError) {
+        // Fast fail if total available bytes across all spans is insufficient
+        guard availableByteCount - totalBytesParsed >= length else {
+            try invalidate(.bufferTooShort)
+        }
+
+        var matched = 0
+        while matched < length {
+            let available = min(remaining, length - matched)
+            if available > 0 {
+                let matches = value.withUnsafeBytes { expectedBytes in
+                    let slice = UnsafeRawBufferPointer(
+                        start: expectedBytes.baseAddress! + matched,
+                        count: available
+                    )
+                    return Deserializer.valueMatches(
+                        lhs: slice,
+                        rhs: currentSpan,
+                        rhsOffset: cursor,
+                        count: available
+                    )
+                }
+                guard matches else {
+                    try invalidate(.validationFailed)
+                }
+                try moveCursor(available)
+                matched += available
+            }
+            if matched < length {
+                guard refill() else {
+                    try invalidate(.bufferTooShort)
+                }
+            }
+        }
+    }
+
     @inlinable
     @inline(always)
     public mutating func span(expect value: RawSpan) throws(DeserializationError) {
@@ -724,40 +763,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         }
 
         guard hasRoom(length) else {
-            // Fast fail if total available bytes across all spans is insufficient
-            guard availableByteCount - totalBytesParsed >= length else {
-                try invalidate(.bufferTooShort)
-            }
-
-            // Compare across span boundaries
-            var matched = 0
-            while matched < length {
-                let available = min(remaining, length - matched)
-                if available > 0 {
-                    let matches = value.withUnsafeBytes { expectedBytes in
-                        let slice = UnsafeRawBufferPointer(
-                            start: expectedBytes.baseAddress! + matched,
-                            count: available
-                        )
-                        return Deserializer.valueMatches(
-                            lhs: slice,
-                            rhs: currentSpan,
-                            rhsOffset: cursor,
-                            count: available
-                        )
-                    }
-                    guard matches else {
-                        try invalidate(.validationFailed)
-                    }
-                    try moveCursor(available)
-                    matched += available
-                }
-                if matched < length {
-                    guard refill() else {
-                        try invalidate(.bufferTooShort)
-                    }
-                }
-            }
+            try spanExpectFragmented(expect: value, length: length)
             return
         }
 
@@ -769,6 +775,38 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         }
 
         moveCursorUnchecked(length)
+    }
+
+    /// Reads across span boundaries directly into the destination.
+    @usableFromInline
+    @inline(never)
+    mutating func spanFragmented(
+        _ value: inout MutableSpan<UInt8>,
+        lengthToCopy: Int
+    ) throws(DeserializationError) {
+        var filled = 0
+        while filled < lengthToCopy {
+            let available = min(remaining, lengthToCopy - filled)
+            if available > 0 {
+                let source = currentSpan.extracting(unchecked: cursor..<(cursor &+ available))
+                source.withUnsafeBytes { fromBuffer in
+                    value.withUnsafeMutableBytes { toBuffer in
+                        let dest = UnsafeMutableRawBufferPointer(
+                            start: toBuffer.baseAddress! + filled,
+                            count: available
+                        )
+                        dest.copyMemory(from: fromBuffer)
+                    }
+                }
+                try moveCursor(available)
+                filled += available
+            }
+            if filled < lengthToCopy {
+                guard refill() else {
+                    try invalidate(.bufferTooShort)
+                }
+            }
+        }
     }
 
     @_optimize(speed)
@@ -790,30 +828,7 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
         }
 
         guard hasRoom(lengthToCopy) else {
-            // Read across spans directly into the destination
-            var filled = 0
-            while filled < lengthToCopy {
-                let available = min(remaining, lengthToCopy - filled)
-                if available > 0 {
-                    let source = currentSpan.extracting(unchecked: cursor..<(cursor &+ available))
-                    source.withUnsafeBytes { fromBuffer in
-                        value.withUnsafeMutableBytes { toBuffer in
-                            let dest = UnsafeMutableRawBufferPointer(
-                                start: toBuffer.baseAddress! + filled,
-                                count: available
-                            )
-                            dest.copyMemory(from: fromBuffer)
-                        }
-                    }
-                    try moveCursor(available)
-                    filled += available
-                }
-                if filled < lengthToCopy {
-                    guard refill() else {
-                        try invalidate(.bufferTooShort)
-                    }
-                }
-            }
+            try spanFragmented(&value, lengthToCopy: lengthToCopy)
             return
         }
 

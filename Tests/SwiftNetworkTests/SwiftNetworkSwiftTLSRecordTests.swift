@@ -38,6 +38,9 @@ import Crypto
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(os)
 internal import os
 #endif

@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -1219,7 +1222,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
                 log.info("Failed to set DONTFRAG: \(error)")
             }
         }
-        #elseif canImport(Glibc) || canImport(Musl)
+        #elseif canImport(Glibc) || canImport(Musl) || canImport(Android)
         if let fragmentationEnabled = opts.fragmentationEnabled {
             let disc: CInt = fragmentationEnabled ? CInt(IP_PMTUDISC_DONT) : CInt(IP_PMTUDISC_DO)
             do {

@@ -22,6 +22,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -1047,11 +1050,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // The peer's max_ack_delay is stored in the RTT struct where it's most
         // often used.
         if let remoteMaxAckDelay = remoteTransportParameters[.maxAckDelay] {
-            currentPath?.rtt.remoteMaxAckDelay = .milliseconds(remoteMaxAckDelay.value)
+            currentPath?.rtt.remoteMaxAckDelay = remoteMaxAckDelay.duration
         } else {
-            currentPath?.rtt.remoteMaxAckDelay = .milliseconds(
-                TransportParameter.defaultValue(forType: .maxAckDelay)!
-            )
+            currentPath?.rtt.remoteMaxAckDelay = Ack.defaultMaxDelay
         }
 
         if let ackDelayExponent = remoteTransportParameters[.ackDelayExponent] {
@@ -4431,9 +4432,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         #if QlogOutput
         if let qLog {
             if outbound {
-                qLog.packetSent(packet, timestamp: self.now)
+                qLog.packetSent(packet, ackDelayExponent: ack.localDelayExponent, timestamp: self.now)
             } else {
-                qLog.packetReceived(packet, coalesced: coalesced, timestamp: self.now)
+                qLog.packetReceived(
+                    packet,
+                    coalesced: coalesced,
+                    ackDelayExponent: ack.remoteDelayExponent,
+                    timestamp: self.now
+                )
             }
         }
         #endif
@@ -5280,6 +5286,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 extension QUICConnection {
 
     // Process an incoming NEW_TOKEN frame
+    @inline(never)
     func processNewTokenFrame(
         _ frame: consuming FrameNewToken,
         in eventContext: inout NetworkContext.EventContext
@@ -5370,6 +5377,7 @@ extension QUICConnection {
     }
 
     // Process incoming CRYPTO frame
+    @inline(never)
     func processCryptoFrame(
         _ frame: consuming FrameCrypto,
         packetNumberSpace: PacketNumberSpace,
@@ -5499,6 +5507,7 @@ extension QUICConnection {
     }
 
     // Handle incoming data blocked frame and notify application protocol if needed
+    @inline(never)
     func processDataBlocked(frame: consuming FrameDataBlocked) -> Bool {
         log.info(
             "Received DATA_BLOCKED (max=\(frame.limit)), previous max data:  \(flowControlState.inboundMaxData)"
@@ -5508,6 +5517,7 @@ extension QUICConnection {
     }
 
     // Handle incoming stream data blocked frame and notify application protocol if needed
+    @inline(never)
     func processStreamDataBlocked(frame: consuming FrameStreamDataBlocked) -> Bool {
         guard let stream = streamFromStreamID(frame.id) else {
             log.datapath("Invalid streamID: \(frame.id)")
@@ -5593,6 +5603,7 @@ extension QUICConnection {
     }
 
     // Handle the incoming maxStreamsBidirectional and update remoteMaxStreams if needed
+    @inline(never)
     func processMaxStreamsBidirectionalFrame(
         _ frame: consuming FrameMaxStreamsBidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5605,6 +5616,7 @@ extension QUICConnection {
     }
 
     // Handle the incoming maxStreamsUnidirectional and update remoteMaxStreams if needed
+    @inline(never)
     func processMaxStreamsUnidirectionalFrame(
         _ frame: consuming FrameMaxStreamsUnidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5616,6 +5628,7 @@ extension QUICConnection {
         )
     }
 
+    @inline(never)
     func processStreamsBlockedBidirectionalFrame(
         _ frame: consuming FrameStreamsBlockedBidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5639,6 +5652,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processStreamsBlockedUnidirectionalFrame(
         _ frame: consuming FrameStreamsBlockedUnidirectional,
         in eventContext: inout NetworkContext.EventContext
@@ -5662,6 +5676,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processAckFrame(
         _ frame: consuming FrameAck,
         packetNumberSpace: PacketNumberSpace,
@@ -5715,6 +5730,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processApplicationCloseFrame(
         _ frame: consuming FrameApplicationClose,
         in eventContext: inout NetworkContext.EventContext
@@ -5728,6 +5744,7 @@ extension QUICConnection {
         return true
     }
 
+    @inline(never)
     func processConnectionCloseFrame(
         _ frame: consuming FrameConnectionClose,
         in eventContext: inout NetworkContext.EventContext
@@ -6457,6 +6474,11 @@ extension QUICConnection {
 
 @available(Network 0.1.0, *)
 extension QUICConnection {
+    // Every frame handler except those on the bulk data path (STREAM, DATAGRAM, MAX_DATA,
+    // MAX_STREAM_DATA, PADDING, PING) must be `@inline(never)`. Production code calls each handler
+    // only from here, so the optimizer would otherwise inline them all, and this function's stack
+    // frame would reserve every handler's locals at once. That frame stays live while CRYPTO input
+    // runs the whole TLS handshake, which has to fit in a 64 KB stack on embedded targets.
     func processFrame(
         _ frame: consuming QUICFrame,
         packetNumberSpace: PacketNumberSpace,
@@ -6883,6 +6905,7 @@ extension QUICConnection {
         }
     }
 
+    @inline(never)
     func processNewConnectionIDFrame(
         _ frame: FrameNewConnectionID,
         in eventContext: inout NetworkContext.EventContext
@@ -6932,6 +6955,39 @@ extension QUICConnection {
                 "Received NEW_CONNECTION_ID frame on with retire prior to field larger than seq field"
             )
             close(with: .protocolViolation, "NEW_CONNECTION_ID: invalid retire prior field", in: &eventContext)
+            return false
+        }
+
+        // RFC 9000 §5.1.2:
+        //
+        // An endpoint SHOULD allow for sending and tracking a number of
+        // RETIRE_CONNECTION_ID frames of at least twice the value of the
+        // active_connection_id_limit transport parameter. An endpoint MUST
+        // NOT forget a connection ID without retiring it, though it MAY choose
+        // to treat having connection IDs in need of retirement that exceed this
+        // limit as a connection error of type CONNECTION_ID_LIMIT_ERROR.
+        //
+        // RETIRE_CONNECTION_ID frames only leave the queue once they are sent.
+        // Count what this frame would queue below before queueing any of it:
+        // one for each connection ID under its Retire Prior To, and one for
+        // its own connection ID if an earlier frame already retired that
+        // sequence number. A frame that queues nothing is always accepted.
+        let queuedRetireCount = withPendingItemsForKeyState { $0.retireConnectionIDs.count }
+        var newRetireCount = remoteCIDs.managedConnectionIDs.count(where: {
+            $0.sequenceNumber < frame.retirePriorToSequence
+        })
+        if frame.sequence < retiredRemoteCIDSequenceNumberThreshold {
+            newRetireCount += 1
+        }
+        if newRetireCount > 0 && queuedRetireCount + newRetireCount > 2 * remoteCIDs.activeConnectionIDLimit {
+            log.error(
+                "Received NEW_CONNECTION_ID frame retiring \(newRetireCount) connection IDs with \(queuedRetireCount) RETIRE_CONNECTION_ID frames queued"
+            )
+            close(
+                with: .connectionIDLimitError,
+                "NEW_CONNECTION_ID: too many connection IDs to retire",
+                in: &eventContext
+            )
             return false
         }
 
@@ -7092,6 +7148,7 @@ extension QUICConnection {
         sendFrames(in: &eventContext)
     }
 
+    @inline(never)
     func processRetireConnectionIDFrame(
         _ frame: FrameRetireConnectionID,
         in eventContext: inout NetworkContext.EventContext
@@ -7144,6 +7201,7 @@ extension QUICConnection {
 @available(Network 0.1.0, *)
 extension QUICConnection {
     @discardableResult
+    @inline(never)
     func handlePathChallengeFrame(
         _ frame: FramePathChallenge,
         path: QUICPath,
@@ -7154,6 +7212,7 @@ extension QUICConnection {
     }
 
     @discardableResult
+    @inline(never)
     func handlePathChallengeResponseFrame(
         _ frame: FramePathResponse,
         path: QUICPath,

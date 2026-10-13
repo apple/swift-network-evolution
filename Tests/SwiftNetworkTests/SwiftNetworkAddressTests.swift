@@ -13,6 +13,9 @@
 //===----------------------------------------------------------------------===//
 
 import XCTest
+#if canImport(Android)
+import Android
+#endif
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 
 @available(Network 0.1.0, *)

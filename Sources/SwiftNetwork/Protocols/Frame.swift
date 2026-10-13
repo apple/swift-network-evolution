@@ -20,6 +20,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -288,9 +291,7 @@ public struct Frame: ~Copyable {
     public mutating func claim(fromStart: Int, fromEnd: Int = 0, adjustSingleIPAggregate: Bool = true) -> Bool {
         if adjustSingleIPAggregate && isSingleIPAggregate {
             guard fromEnd == 0 else {
-                #if !DisableErrorLogging
-                Logger.proto.error("Trying to claim at the end \(fromEnd) bytes from a single-IP aggregate")
-                #endif
+                outlinedProtoLogError("Trying to claim bytes at the end of a single-IP aggregate", fromEnd)
                 return false
             }
             aggregateBufferLength -= fromStart
@@ -300,11 +301,12 @@ public struct Frame: ~Copyable {
         let newEnd = endOffset + fromEnd
         guard newStart <= effectiveBufferLength - newEnd else {
             let effectiveLength = effectiveBufferLength
-            #if !DisableErrorLogging
-            Logger.proto.error(
-                "Claiming bytes failed because start (\(newStart)) is beyond end (\(effectiveLength) - \(newEnd))"
+            outlinedProtoLogError(
+                "Claiming bytes failed, start is beyond end; start, effective length, end",
+                newStart,
+                effectiveLength,
+                newEnd
             )
-            #endif
             return false
         }
 
@@ -321,9 +323,7 @@ public struct Frame: ~Copyable {
     public mutating func unclaim(fromStart: Int, fromEnd: Int = 0, adjustSingleIPAggregate: Bool = true) -> Bool {
         if adjustSingleIPAggregate && isSingleIPAggregate {
             guard fromEnd == 0 else {
-                #if !DisableErrorLogging
-                Logger.proto.error("Trying to unclaim at the end \(fromEnd) bytes from a single-IP aggregate")
-                #endif
+                outlinedProtoLogError("Trying to unclaim bytes at the end of a single-IP aggregate", fromEnd)
                 return false
             }
             aggregateBufferLength += fromStart
@@ -331,17 +331,13 @@ public struct Frame: ~Copyable {
 
         guard fromStart <= startOffset else {
             let startOffset = startOffset
-            #if !DisableErrorLogging
-            Logger.proto.error("Frame cannot unclaim \(fromStart) start bytes (has \(startOffset) left)")
-            #endif
+            outlinedProtoLogError("Frame cannot unclaim start bytes; requested, remaining", fromStart, startOffset)
             return false
         }
 
         guard fromEnd <= endOffset else {
             let endOffset = endOffset
-            #if !DisableErrorLogging
-            Logger.proto.error("Frame cannot unclaim \(fromEnd) end bytes (has \(endOffset) left)")
-            #endif
+            outlinedProtoLogError("Frame cannot unclaim end bytes; requested, remaining", fromEnd, endOffset)
             return false
         }
 
@@ -642,14 +638,14 @@ public struct Frame: ~Copyable {
     var packetChainTotalLength: Int {
         get {
             guard isSingleIPAggregate else {
-                Logger.proto.fault("Attempt to get aggregate buffer length on a non-single IP aggregate")
+                outlinedProtoLogFault("Attempt to get aggregate buffer length on a non-single IP aggregate")
                 return 0
             }
             return aggregateBufferLength
         }
         set {
             guard isSingleIPAggregate else {
-                Logger.proto.fault("Attempt to set aggregate buffer length on a non-single IP aggregate")
+                outlinedProtoLogFault("Attempt to set aggregate buffer length on a non-single IP aggregate")
                 return
             }
             aggregateBufferLength = newValue
@@ -666,9 +662,7 @@ public struct Frame: ~Copyable {
                 return
             }
             guard newValue < 64 else {
-                #if !DisableErrorLogging
-                Logger.proto.error("Cannot set DSCP value of \(newValue)")
-                #endif
+                outlinedProtoLogError("Cannot set DSCP value", newValue)
                 return
             }
             if ipPacketValues == nil {
@@ -856,7 +850,11 @@ public struct Frame: ~Copyable {
             guard length >= 0 else { return }
             guard length <= aggregateBufferLength else {
                 let existingLength = aggregateBufferLength
-                Logger.proto.fault("Aggregate buffer length \(existingLength) cannot remove \(length)")
+                outlinedProtoLogFault(
+                    "Aggregate buffer length cannot remove requested bytes; existing, requested",
+                    existingLength,
+                    length
+                )
                 aggregateBufferLength = 0
                 return
             }

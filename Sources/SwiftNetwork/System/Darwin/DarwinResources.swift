@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if (!os(Linux) || (!NETWORK_PRIVATE && canImport(Darwin))) && !NETWORK_EMBEDDED
+#if canImport(Darwin) && !NETWORK_EMBEDDED
 import Darwin
 
 /// A set of Darwin system APIs for interacting with the system resources.

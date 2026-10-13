@@ -12,14 +12,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if os(Linux)
+#if os(Linux) || os(Android)
 #if canImport(Glibc)
 import Glibc
+internal import SwiftNetworkLinuxShim
+#elseif canImport(Android)
+import Android
 #elseif canImport(Musl)
 import Musl
+internal import SwiftNetworkLinuxShim
 #endif
 internal import Logging
-internal import SwiftNetworkLinuxShim
 
 /// A set of Linux system APIs for interacting with the system interface.
 internal enum SystemInterface {
@@ -45,6 +48,24 @@ internal enum SystemInterface {
         static let IFNAMSIZ = 16
     }
 
+    #if canImport(Android)
+    @inline(never)
+    static func if_indextoname(
+        _ index: CUnsignedInt,
+        _ name: UnsafeMutablePointer<CChar>?
+    ) throws -> UnsafeMutablePointer<CChar>? {
+        try System.syscallOptional {
+            Android.if_indextoname(index, name!)
+        }
+    }
+
+    @inline(never)
+    internal static func if_nametoindex(_ name: UnsafePointer<CChar>?) throws -> CUnsignedInt {
+        try System.syscall(blocking: false) {
+            Android.if_nametoindex(name!)
+        }.result
+    }
+    #else
     @inline(never)
     static func if_indextoname(
         _ index: CInt,
@@ -61,6 +82,7 @@ internal enum SystemInterface {
             sysIfNameToIndex(name!)
         }.result
     }
+    #endif
 
     /// Gets the MTU from the interface.
     ///
@@ -219,11 +241,19 @@ internal enum SystemInterface {
                 Logger.system.error("if_indextoname failed for interface index \(index): \(error)")
                 throw NetworkError.posix(error)
             }
+            #if canImport(Android)
+            guard let nameBuffer = try SystemInterface.if_indextoname(index, bufferAddress) else {
+                let error = errno
+                Logger.system.error("Android if_indextoname failed for interface index \(index): \(error)")
+                throw NetworkError.posix(error)
+            }
+            #else
             guard let nameBuffer = try SystemInterface.if_indextoname(CInt(index), bufferAddress) else {
                 let error = errno
                 Logger.system.error("if_indextoname failed for interface index \(index): \(error)")
                 throw NetworkError.posix(error)
             }
+            #endif
             return String(cString: nameBuffer)
         }
     }

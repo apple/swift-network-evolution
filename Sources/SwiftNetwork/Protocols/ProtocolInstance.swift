@@ -20,6 +20,9 @@ internal import DequeModule
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -303,7 +306,7 @@ public struct NetworkLoggerState: ~Copyable {
     public func notice(_ message: @autoclosure () -> String, callingFunction: StaticString = #function) {
         let logPrefix = logPrefix
         let message = message()
-        #if os(Linux)
+        #if os(Linux) || os(Android)
         Logger.proto.notice("\(callingFunction) \(logPrefix) \(message)")
         #else
         Logger.proto.log("\(callingFunction) \(logPrefix) \(message)")

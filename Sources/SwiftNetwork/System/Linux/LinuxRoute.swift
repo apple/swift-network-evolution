@@ -542,7 +542,7 @@ internal enum SystemRoute {
         }
     }
 }
-#elseif os(Linux)
+#elseif os(Linux) || os(Android)
 internal enum SystemRoute {
     static func routeGetInterfaceIndex(dst: any IPAddress, scopedIndex: UInt32 = 0) throws -> UInt32 {
         0

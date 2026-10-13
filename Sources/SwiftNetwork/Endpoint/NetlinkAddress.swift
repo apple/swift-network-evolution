@@ -16,6 +16,9 @@
 import Glibc
 internal import Logging
 internal import SwiftNetworkLinuxShim
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging

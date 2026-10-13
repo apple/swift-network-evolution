@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -41,7 +44,7 @@ extension FixedWidthInteger {
     @available(macOS 11, iOS 14, tvOS 14, watchOS 7, *)
     var variableLengthSize: Int {
         guard let size = self.safeVariableLengthSize else {
-            Logger.proto.error("Integer value too large to encode into a 8-byte VLE")
+            outlinedProtoLogError("Integer value too large to encode into a 8-byte VLE")
             return 8
         }
         return size
@@ -63,7 +66,7 @@ extension UInt64 {
     @inline(always)
     var variableLengthSize: Int {
         guard let size = self.safeVariableLengthSize else {
-            Logger.proto.error("Integer value too large to encode into a 8-byte VLE")
+            outlinedProtoLogError("Integer value too large to encode into a 8-byte VLE")
             return 8
         }
         return size
@@ -75,7 +78,7 @@ extension UInt64 {
     func variableLengthEncodeInto(_ buffer: inout [UInt8]) {
         guard let length = self.safeVariableLengthSize else {
             // Too big, encode the max UInt62 value instead
-            Logger.proto.error("Integer value too large to encode into a 8-byte VLE, setting to UInt62 max")
+            outlinedProtoLogError("Integer value too large to encode into a 8-byte VLE, setting to UInt62 max")
             UInt64(4_611_686_018_427_387_903).variableLengthEncodeInto(&buffer)
             return
         }

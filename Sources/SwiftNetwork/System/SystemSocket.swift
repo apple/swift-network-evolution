@@ -15,6 +15,9 @@
 #if canImport(Glibc)
 import Glibc
 internal import Logging
+#elseif canImport(Android)
+import Android
+internal import Logging
 #elseif canImport(Musl)
 import Musl
 internal import Logging
@@ -365,7 +368,7 @@ class SystemSocket {
     /// Set TCP_NOTSENT_LOWAT — reduce send-side buffering for latency-sensitive
     /// flows. Portable (Darwin and Linux both define TCP_NOTSENT_LOWAT).
     public func setNotSentLowWatermark(_ bytes: UInt32) throws(NetworkError) {
-        #if canImport(Darwin) || canImport(Glibc)
+        #if canImport(Darwin) || canImport(Glibc) || canImport(Android)
         try setSocketOption(level: CInt(IPPROTO_TCP), name: TCP_NOTSENT_LOWAT, value: CInt(bytes))
         #else
         throw NetworkError.posix(ENOTSUP)
@@ -443,6 +446,8 @@ extension IPAddress {
                 sockaddr6.sin6_addr.__in6_u.__u6_addr32 = v6Address.address
                 #elseif canImport(Musl)
                 sockaddr6.sin6_addr.__in6_union.__s6_addr32 = v6Address.address
+                #elseif canImport(Android)
+                sockaddr6.sin6_addr.in6_u.u6_addr32 = v6Address.address
                 #elseif canImport(Darwin)
                 sockaddr6.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
                 sockaddr6.sin6_addr.__u6_addr.__u6_addr32 = v6Address.address

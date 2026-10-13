@@ -113,7 +113,7 @@ let package = Package(
         .target(
             name: "SwiftNetwork",
             dependencies: [
-                .product(name: "Logging", package: "swift-log", condition: .when(platforms: [.linux])),
+                .product(name: "Logging", package: "swift-log", condition: .when(platforms: [.linux, .android])),
                 .target(name: "SwiftNetworkLinuxShim", condition: .when(platforms: [.linux])),
                 .product(name: "DequeModule", package: "swift-collections"),
                 .product(name: "BasicContainers", package: "swift-collections"),
@@ -138,7 +138,7 @@ let package = Package(
             name: "SwiftNetworkTestHarness",
             dependencies: [
                 "SwiftNetwork",
-                .product(name: "Logging", package: "swift-log", condition: .when(platforms: [.linux])),
+                .product(name: "Logging", package: "swift-log", condition: .when(platforms: [.linux, .android])),
                 .product(name: "DequeModule", package: "swift-collections"),
                 .product(name: "BasicContainers", package: "swift-collections"),
             ],
@@ -151,7 +151,7 @@ let package = Package(
                 "SwiftNetworkTestHarness",
                 .product(name: "SwiftTLS", package: "swift-tls"),
                 .product(name: "Crypto", package: "swift-crypto"),
-                .product(name: "Logging", package: "swift-log", condition: .when(platforms: [.linux])),
+                .product(name: "Logging", package: "swift-log", condition: .when(platforms: [.linux, .android])),
             ],
             swiftSettings: availabilityMacros + settings
         ),

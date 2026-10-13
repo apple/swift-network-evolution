@@ -14,10 +14,13 @@
 
 #if !NETWORK_NO_SWIFT_QUIC
 
+// `@testable` requires `-enable-testing`, which is only set under the Fuzzing trait.
+#if Fuzzing
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 #elseif canImport(Network)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
+#endif
 #endif
 
 import Foundation

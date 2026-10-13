@@ -48,7 +48,10 @@ public struct FrameArray: ~Copyable {
     }
 
     public mutating func add(frames: consuming FrameArray) {
-        if self.frames.isEmpty {
+        // Taking the incoming storage is only a win when this side would have to grow to hold
+        // the incoming frames. A drained queue that kept its capacity has room already, and
+        // adopting a smaller buffer would throw that capacity away.
+        if self.frames.isEmpty, self.frames.capacity < frames.count {
             self.frames = frames.frames
         } else {
             while let first = frames.frames.popFirst() {
@@ -63,6 +66,11 @@ public struct FrameArray: ~Copyable {
 
     public var count: Int {
         frames.count
+    }
+
+    /// The number of frames the array can hold before its storage has to grow.
+    var capacity: Int {
+        frames.capacity
     }
 
     #if !NETWORK_EMBEDDED
