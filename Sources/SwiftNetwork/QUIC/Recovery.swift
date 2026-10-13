@@ -350,7 +350,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     }
 
                     if entry.packet.isECNValidationPacket, let path = connection.path(for: entry.packet.sentPath) {
-                        path.ecnState?.validationPacketLost()
+                        path.ecnState.validationPacketLost()
                     }
 
                     if largestLostPacketNumber + 1 != entry.packet.number {
@@ -593,20 +593,19 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 previousLargestAcked = largestAckedPacketNumber
             }
 
-            let ceCount =
-                path.ecnState?.validateAck(
-                    ecn: connection.ecn,
-                    frame: ackFrame,
-                    previousLargestAcked: previousLargestAcked,
-                    newlyAckedECNPackets: newlyECTAcked
-                ) ?? 0
+            let ceCount = path.ecnState.validateAck(
+                ecn: connection.ecn,
+                frame: ackFrame,
+                previousLargestAcked: previousLargestAcked,
+                newlyAckedECNPackets: newlyECTAcked
+            )
             connection.stats.increment(
                 .ecnCapablePacketsAcknowledged,
                 by: Int(newlyECTAcked)
             )
             connection.stats.increment(.ecnCapablePacketsMarked, by: ceCount)
             // Process ECN only after we reach capable
-            if path.ecnState?.state == .capable {
+            if path.ecnState.state == .capable {
                 if packetNumberSpace == .applicationData {
                     log.fault("We got validated before applicationData")
                 }

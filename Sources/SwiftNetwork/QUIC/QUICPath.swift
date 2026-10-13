@@ -165,7 +165,7 @@ public final class QUICPath: MultiplexingDatagramPath<
 
     var pmtudState = PMTUDState()
     var recoveryState = Recovery.PathState()
-    var ecnState: ECNPathState?
+    var ecnState = ECNPathState()
     var pathStatistics = Statistics()
 
     var initialMSS = 0
@@ -270,8 +270,7 @@ public final class QUICPath: MultiplexingDatagramPath<
     }
 
     func withECNState(_ block: (inout ECNPathState) -> Void) {
-        guard ecnState != nil else { return }
-        block(&self.ecnState!)
+        block(&self.ecnState)
     }
 
     func changeState(to newState: QUICPathState) {
@@ -508,11 +507,25 @@ public final class QUICPath: MultiplexingDatagramPath<
         // Account for Developer / Carrier settings
         self.l4sEnabled = l4sEnabled
         if l4sEnabled {
-            // Setup the pacer. Prague always has pacing enabled
+            // Setup the pacer: Prague always has pacing enabled.
             pacer = Pacer(enabled: true)
-            // Add Prague congestion control for L4S
-            self.resetPacer()
+            #if !NETWORK_EMBEDDED
+            var congestionControlState = CongestionControlState()
+            let prague = Prague(
+                state: &congestionControlState,
+                pacer: &self.pacer,
+                mss: self.initialMSS,
+                qlog: parentProtocol.qLog,
+                logPrefixer: self.log
+            )
+            self.congestionControl = CongestionControl(
+                state: congestionControlState,
+                algorithm: .prague(algorithm: prague)
+            )
+            #else
+            // Prague isn't available; rebuild the current controller so it seeds the new pacer.
             resetCongestionControl()
+            #endif
         }
     }
 

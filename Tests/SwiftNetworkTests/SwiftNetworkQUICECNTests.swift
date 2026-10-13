@@ -109,6 +109,44 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             }
         )
     }
+
+    // L4S is applied to the initial path in `connect()`, after the path's own setup has
+    // installed its default pacer and congestion control.
+    func testQUICTestL4SUsesPrague() throws {
+        let clientOptions = QUICProtocol.options()
+        clientOptions.connectionOptions.enableL4S = true
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello World!".utf8),
+            clientOptions: clientOptions,
+            afterData: { harness in
+                let expectation = XCTestExpectation(description: "Wait to validate L4S")
+                harness.context.async {
+                    let path = harness.state?.clientInstance.currentPath
+                    XCTAssertEqual(path?.l4sEnabled, true, "Client path should have L4S enabled")
+                    XCTAssertEqual(path?.congestionControlName, "PRAGUE", "L4S should use Prague")
+                    XCTAssertEqual(path?.pacer.enabled, true, "Prague always paces")
+                    expectation.fulfill()
+                }
+                self.wait(for: [expectation], timeout: 5.0)
+            }
+        )
+    }
+
+    func testQUICTestL4SDisabledByDefault() throws {
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello World!".utf8),
+            afterData: { harness in
+                let expectation = XCTestExpectation(description: "Wait to validate L4S")
+                harness.context.async {
+                    let path = harness.state?.clientInstance.currentPath
+                    XCTAssertEqual(path?.l4sEnabled, false, "Client path should not have L4S enabled")
+                    XCTAssertEqual(path?.congestionControlName, "CUBIC", "Default should use CUBIC")
+                    expectation.fulfill()
+                }
+                self.wait(for: [expectation], timeout: 5.0)
+            }
+        )
+    }
 }
 #endif
 #endif
