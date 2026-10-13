@@ -1842,11 +1842,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 packetParser: &packetParser,
                 in: &eventContext
             )
-            if !continueProcessing {
-                frame.finalize(success: true)
-                break
-            }
 
+            // Check the errors first and close the connection in that case.
             if closeError != nil || state.isTerminal {
                 // Besides a locally-detected error (closeError), the peer may
                 // have gracefully closed the connection (CONNECTION_CLOSE
@@ -1858,6 +1855,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 // datagram to that torn-down state.
                 frame.finalize(success: false)
                 close(in: &eventContext)
+                return
+            }
+
+            if !continueProcessing {
+                frame.finalize(success: true)
                 return
             }
 
@@ -1945,10 +1947,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 log.error("Unable to parse packet")
             } else {
                 log.info("Unable to parse packet (decryption keys may not be ready)")
-            }
-            if self.closeError != nil {
-                close(in: &eventContext)
-                return false
             }
             return false
         }
@@ -6957,6 +6955,39 @@ extension QUICConnection {
                 "Received NEW_CONNECTION_ID frame on with retire prior to field larger than seq field"
             )
             close(with: .protocolViolation, "NEW_CONNECTION_ID: invalid retire prior field", in: &eventContext)
+            return false
+        }
+
+        // RFC 9000 §5.1.2:
+        //
+        // An endpoint SHOULD allow for sending and tracking a number of
+        // RETIRE_CONNECTION_ID frames of at least twice the value of the
+        // active_connection_id_limit transport parameter. An endpoint MUST
+        // NOT forget a connection ID without retiring it, though it MAY choose
+        // to treat having connection IDs in need of retirement that exceed this
+        // limit as a connection error of type CONNECTION_ID_LIMIT_ERROR.
+        //
+        // RETIRE_CONNECTION_ID frames only leave the queue once they are sent.
+        // Count what this frame would queue below before queueing any of it:
+        // one for each connection ID under its Retire Prior To, and one for
+        // its own connection ID if an earlier frame already retired that
+        // sequence number. A frame that queues nothing is always accepted.
+        let queuedRetireCount = withPendingItemsForKeyState { $0.retireConnectionIDs.count }
+        var newRetireCount = remoteCIDs.managedConnectionIDs.count(where: {
+            $0.sequenceNumber < frame.retirePriorToSequence
+        })
+        if frame.sequence < retiredRemoteCIDSequenceNumberThreshold {
+            newRetireCount += 1
+        }
+        if newRetireCount > 0 && queuedRetireCount + newRetireCount > 2 * remoteCIDs.activeConnectionIDLimit {
+            log.error(
+                "Received NEW_CONNECTION_ID frame retiring \(newRetireCount) connection IDs with \(queuedRetireCount) RETIRE_CONNECTION_ID frames queued"
+            )
+            close(
+                with: .connectionIDLimitError,
+                "NEW_CONNECTION_ID: too many connection IDs to retire",
+                in: &eventContext
+            )
             return false
         }
 

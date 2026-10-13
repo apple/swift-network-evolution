@@ -45,7 +45,7 @@ struct RTT: ~Copyable, PrefixedLoggable {
     private var baseRTTs = [NetworkDuration](repeatElement(RTT.invalidRTT, count: RTT.nbaseHistory))
 
     // Last time when a new minute interval began
-    private var lastRollover: NetworkClock.Instant? = nil
+    private var lastRolloverTimestamp: NetworkClock.Instant? = nil
 
     // Smallest measured base rtt for specified history
     var baseRTT = RTT.invalidRTT
@@ -85,10 +85,10 @@ struct RTT: ~Copyable, PrefixedLoggable {
             baseRTTIndex = 0
             baseRTTs[baseRTTIndex] = currentRTT
             baseRTT = currentRTT
-            lastRollover = now
+            lastRolloverTimestamp = now
             return
         }
-        guard var lastRollover = lastRollover else {
+        guard let lastRollover = lastRolloverTimestamp else {
             return
         }
         if now > lastRollover && lastRollover.duration(to: now) > RTT.historyInterval {
@@ -102,7 +102,7 @@ struct RTT: ~Copyable, PrefixedLoggable {
             }
             baseRTTIndex = times % RTT.nbaseHistory
             baseRTTs[baseRTTIndex] = currentRTT
-            lastRollover = now
+            lastRolloverTimestamp = now
 
             baseRTT = baseRTTs[0]
             for i in 0..<RTT.nbaseHistory {
