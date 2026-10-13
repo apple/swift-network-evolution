@@ -461,6 +461,139 @@ final class CubicTests: XCTestCase {
         XCTAssertEqual(state.availableCongestionWindow, 9000)
     }
 
+    /// Checks that after undoing a spurious loss, CUBIC grows as if the loss never happened.
+    func testCubicSpuriousRetransmitRestoresCubicState() {
+        let t0 = NetworkClock.Instant.testBase
+        // A real loss leaves CUBIC with a W_max, K and an epoch.
+        for _ in 0..<12 {
+            cubic.packetSent(state: &state, bytesSent: 1000)
+        }
+        cubic.ackBegin(state: &state)
+        XCTAssertTrue(
+            cubic.packetLost(
+                state: &state,
+                path: noPath,
+                bytesLost: 1000,
+                largestLostSentTime: t0,
+                mss: mss,
+                smoothedRTT: rtt.smoothedRTT,
+                now: t0 + .milliseconds(10)
+            )
+        )
+        for _ in 0..<11 {
+            cubic.packetsAcked(state: &state, bytesAcked: 1000, sentTime: t0)
+        }
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: true, now: t0 + .milliseconds(10))
+        XCTAssertEqual(state.congestionWindow, 8400)
+        cubic.exchange(
+            state: &state,
+            rtt: rtt,
+            mss: mss,
+            packets: 8,
+            sentTime: t0 + .milliseconds(20),
+            ackTime: t0 + .milliseconds(50)
+        )
+
+        var control = cubic!
+        var controlState = state
+        cubic.spuriousLoss(
+            state: &state,
+            rtt: rtt,
+            mss: mss,
+            sentTime: t0 + .milliseconds(60),
+            now: t0 + .milliseconds(70)
+        )
+        XCTAssertNil(cubic.undoState)
+        XCTAssertEqual(state.congestionWindow, controlState.congestionWindow)
+        XCTAssertEqual(state.slowStartThreshold, controlState.slowStartThreshold)
+        XCTAssertEqual(state.recoveryStartTime, controlState.recoveryStartTime)
+        XCTAssertEqual(cubic.K, control.K)
+        XCTAssertEqual(cubic.numCongestionEvents, control.numCongestionEvents)
+        XCTAssertEqual(cubic.totalAcked, control.totalAcked)
+        XCTAssertEqual(cubic.tcpTotalAcked, control.tcpTotalAcked)
+        XCTAssertEqual(cubic.lastMaxCongestionWindow, control.lastMaxCongestionWindow)
+        XCTAssertEqual(cubic.maxCongestionWindow, control.maxCongestionWindow)
+        XCTAssertEqual(cubic.originPoint, control.originPoint)
+        XCTAssertEqual(cubic.epochStart, control.epochStart)
+        XCTAssertEqual(cubic.tcpCongestionWindow, control.tcpCongestionWindow)
+
+        let undoneWindow = state.congestionWindow
+        for round in 1...5 {
+            let sentTime = t0 + .milliseconds(100 * round)
+            let ackTime = sentTime + .milliseconds(50)
+            cubic.exchange(state: &state, rtt: rtt, mss: mss, packets: 8, sentTime: sentTime, ackTime: ackTime)
+            control.exchange(state: &controlState, rtt: rtt, mss: mss, packets: 8, sentTime: sentTime, ackTime: ackTime)
+            XCTAssertEqual(state.congestionWindow, controlState.congestionWindow, "round \(round)")
+            XCTAssertEqual(state.slowStartThreshold, controlState.slowStartThreshold, "round \(round)")
+        }
+        XCTAssertGreaterThan(state.congestionWindow, undoneWindow)
+    }
+
+    /// Checks that a genuine loss of a packet sent before an undone loss still reduces the window.
+    func testCubicGenuineLossAfterSpuriousRetransmit() {
+        let t0 = NetworkClock.Instant.testBase
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.spuriousLoss(
+            state: &state,
+            rtt: rtt,
+            mss: mss,
+            sentTime: t0 + .milliseconds(10),
+            now: t0 + .milliseconds(20)
+        )
+        XCTAssertEqual(state.congestionWindow, defaultCongestionWindow)
+        XCTAssertEqual(state.slowStartThreshold, UInt64.max)
+
+        // The undo only applies once.
+        cubic.spuriousRetransmit(state: &state)
+        XCTAssertEqual(state.congestionWindow, defaultCongestionWindow)
+
+        // The first packet, sent before the undone loss, is really lost.
+        cubic.ackBegin(state: &state)
+        XCTAssertTrue(
+            cubic.packetLost(
+                state: &state,
+                path: noPath,
+                bytesLost: 1000,
+                largestLostSentTime: t0,
+                mss: mss,
+                smoothedRTT: rtt.smoothedRTT,
+                now: t0 + .milliseconds(30)
+            )
+        )
+        XCTAssertLessThan(state.congestionWindow, defaultCongestionWindow)
+    }
+
+    /// Checks that persistent congestion discards the undo state.
+    func testCubicSpuriousRetransmitAfterPersistentCongestion() {
+        let t0 = NetworkClock.Instant.testBase
+        cubic.packetSent(state: &state, bytesSent: 1000)
+        cubic.ackBegin(state: &state)
+        XCTAssertTrue(
+            cubic.packetLost(
+                state: &state,
+                path: noPath,
+                bytesLost: 1000,
+                largestLostSentTime: t0,
+                mss: mss,
+                smoothedRTT: rtt.smoothedRTT,
+                now: t0 + .milliseconds(10)
+            )
+        )
+        cubic.persistentCongestion(state: &state, mss: mss)
+        XCTAssertNil(cubic.undoState)
+        let window = state.congestionWindow
+        cubic.spuriousRetransmit(state: &state)
+        XCTAssertEqual(state.congestionWindow, window)
+    }
+
+    /// Checks that inheriting from another controller keeps the cumulative CE count.
+    func testCubicInheritKeepsCECount() {
+        var from = CongestionControlState()
+        from.ecnCECounter = 5
+        cubic.inherit(from: from, state: &state, mss: mss)
+        XCTAssertEqual(state.ecnCECounter, 5)
+    }
+
     // Tests that we can enter CA without any loss after idle period
     func testCubicCongestionAvoidance() {
         let time = NetworkClock.Instant.testBase
