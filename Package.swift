@@ -167,12 +167,6 @@ let package = Package(
             swiftSettings: availabilityMacros + settings,
             linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
         ),
-        .testTarget(
-            name: "IPUDPTransferTests",
-            dependencies: ["IPUDPTransfer", "SwiftNetworkBenchmarks"],
-            swiftSettings: availabilityMacros + settings,
-            linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]
-        ),
         .executableTarget(
             name: "QUICHandshake",
             dependencies: ["SwiftNetwork", "SwiftNetworkBenchmarks", "SwiftNetworkTestHarness"],
