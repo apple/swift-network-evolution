@@ -347,7 +347,8 @@ final class RTTTests: XCTestCase {
             rtt: rtt
         )
 
-        // 10 mins have passed, we should get rid of first minute.
+        // 10 mins have passed, we should get rid of first minute. The third
+        // minute's 40us (adjusted) sample is only 510s old, so it is retained.
         rtt.processNewSample(
             ackDuration: .microseconds(100),
             packetAckedTime: NetworkClock.Instant(.seconds(660)),
@@ -356,7 +357,7 @@ final class RTTTests: XCTestCase {
 
         verifyRTTMeasurements(
             expectedMinRTT: .microseconds(40),
-            expectedBaseRTT: .microseconds(90),
+            expectedBaseRTT: .microseconds(40),
             expectedLatestRTT: .microseconds(100),
             expectedAdjustedRTT: .microseconds(90),
             expectedSmoothedRTT: .microseconds(106),
@@ -364,6 +365,44 @@ final class RTTTests: XCTestCase {
             expectedHasInitialMeasurement: true,
             rtt: rtt
         )
+    }
+
+    // Verifies that the rollover timestamp advances on every minute rollover.
+    // If it doesn't, every sample taken more than one history interval after the
+    // first sample is treated as a new rollover, which advances the base RTT
+    // index on each sample and prematurely evicts older minimums.
+    func testRTTBaseRolloverTimestampAdvances() {
+        // Minute 0: lowest base RTT is 40us.
+        rtt.processNewSample(
+            ackDuration: .microseconds(40),
+            packetAckedTime: NetworkClock.Instant(.seconds(0)),
+            ackDelay: .microseconds(0)
+        )
+        XCTAssertEqual(rtt.baseRTT, .microseconds(40))
+
+        // Minute 1: a single rollover, followed by more samples within the same
+        // minute. There are enough samples to wrap the whole history if each
+        // one were wrongly treated as a rollover.
+        for i in 0..<(RTT.nbaseHistory + 1) {
+            rtt.processNewSample(
+                ackDuration: .microseconds(100),
+                packetAckedTime: NetworkClock.Instant(.seconds(61) + .milliseconds(Double(i) * 100)),
+                ackDelay: .microseconds(0)
+            )
+            // The minute 0 minimum must still be within the history window.
+            XCTAssertEqual(rtt.baseRTT, .microseconds(40), "sample \(i)")
+        }
+
+        // Nine intervals after the minute 1 rollover, the history wraps around:
+        // the minute 0 minimum is evicted, and the base RTT becomes the minimum
+        // of the remaining minutes.
+        rtt.processNewSample(
+            ackDuration: .microseconds(90),
+            packetAckedTime: NetworkClock.Instant(.seconds(602)),
+            ackDelay: .microseconds(0)
+        )
+        XCTAssertEqual(rtt.baseRTT, .microseconds(90))
+        XCTAssertEqual(rtt.minRTT, .microseconds(40))
     }
 }
 
