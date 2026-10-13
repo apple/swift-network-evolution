@@ -39,10 +39,10 @@ import Crypto
 
 // Tests conditions that QUICConnectionScheduler should prevent
 @available(Network 0.1.0, *)
-let schedulerReentrancyTestsLogPrefixer: LogPrefixer = LogPrefixer("[SchedulerReentrancyTests]")
+let QUICConnectionStateMachineTestsLogPrefixer: LogPrefixer = LogPrefixer("[QUICConnectionStateMachineTests]")
 
 @available(Network 0.1.0, *)
-final class SchedulerReentrancyTests: XCTestCase {
+final class QUICConnectionStateMachineTests: XCTestCase {
     var connection = QUICConnection(context: .implicitContext)
     // The base linkages are storage-backed, so lower harnesses have to come from storage
     // rather than being wrapped in a bare linkage.
@@ -56,7 +56,7 @@ final class SchedulerReentrancyTests: XCTestCase {
         let expectation = XCTestExpectation()
         connection.context.async {
             try? self.connection.setup(remote: nil, local: nil, parameters: nil, path: nil)
-            self.connection.recovery = Recovery(logPrefixer: schedulerReentrancyTestsLogPrefixer)
+            self.connection.recovery = Recovery(logPrefixer: QUICConnectionStateMachineTestsLogPrefixer)
             self.connection.recovery.connection = self.connection
             expectation.fulfill()
         }
@@ -357,7 +357,7 @@ final class SchedulerReentrancyTests: XCTestCase {
         let expectation = XCTestExpectation()
         connection.context.async {
             try? connection.setup(remote: nil, local: nil, parameters: parameters, path: nil)
-            connection.recovery = Recovery(logPrefixer: schedulerReentrancyTestsLogPrefixer)
+            connection.recovery = Recovery(logPrefixer: QUICConnectionStateMachineTestsLogPrefixer)
             connection.recovery.connection = connection
 
             let currentPath = makeLocalPath(dcid: Self.pathACID, sequenceNumber: 1, validated: false)
@@ -389,7 +389,7 @@ final class SchedulerReentrancyTests: XCTestCase {
                 secret: secret,
                 isWrite: false
             )
-            var peerTransportParameters = TransportParameters(logPrefixer: schedulerReentrancyTestsLogPrefixer)
+            var peerTransportParameters = TransportParameters(logPrefixer: QUICConnectionStateMachineTestsLogPrefixer)
             peerTransportParameters.append(.initialSCID(connectionID: Self.pathACID))
             peerTransportParameters.append(.initialMaxStreamsBidirectional(value: 4))
             peerTransportParameters.append(.initialMaxStreamsUnidirectional(value: 4))
