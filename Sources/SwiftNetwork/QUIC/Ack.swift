@@ -521,24 +521,23 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     mutating func timerFired(at timeNow: NetworkClock.Instant, in eventContext: inout NetworkContext.EventContext) {
-        log.datapath("Delayed ACK timer fired")
-        if let connection = connection {
-            if sendPending(
-                isAckSet: connection.isAckSet,
-                setAckFrame: connection.scheduleAckFrame,
-                ecn: connection.ecn,
-                now: timeNow,
-                in: &eventContext
-            ) {
-                connection.sendFrames(delayedACK: true, in: &eventContext)
+        _ = flushDelayedAckOnTimerFired(at: timeNow, in: &eventContext)
+    }
 
-                // An ACK-only packet is not ack-eliciting, so once it is sent
-                // there is nothing left in pending items or in recovery to
-                // observe. This is the only place that can return the
-                // connection to idle after a delayed ACK.
-                connection.checkConnectionIdle(unackedPacketCount: unackedPacketCount, in: &eventContext)
-            }
-        }
+    /// Returns whether the caller should flush a delayed ACK.
+    mutating func flushDelayedAckOnTimerFired(
+        at timeNow: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> Bool {
+        log.datapath("Delayed ACK timer fired")
+        guard let connection else { return false }
+        return sendPending(
+            isAckSet: connection.isAckSet,
+            setAckFrame: connection.scheduleAckFrame,
+            ecn: connection.ecn,
+            now: timeNow,
+            in: &eventContext
+        )
     }
 
     @discardableResult

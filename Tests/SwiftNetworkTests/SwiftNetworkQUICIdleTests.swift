@@ -171,6 +171,20 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                     let client = harness.state?.clientInstance
                     XCTAssertNotNil(client, "Client instance needs to be present to proceed")
                     if let client, let path = client.currentPath {
+                        client.fromExternal { eventContext in
+                            if client.ack.unackedPacketCount == 0 {
+                                // The echoed data's ACK can race with other ack-eliciting
+                                // traffic (e.g. a flow-control update sent alongside the
+                                // echo) and get flushed immediately rather than deferred,
+                                // depending on exact packet counts and timing. Synthesize
+                                // the "owed ACK" state deterministically so the test
+                                // reliably exercises the delayed ACK + PMTUD probe
+                                // interaction under test, regardless of that race.
+                                client.ack.unackedPacketCount = 1
+                                client.ack.shouldTransmit(packetNumberSpace: .applicationData)
+                                client.ack.scheduleDelayedAck(in: &eventContext)
+                            }
+                        }
                         XCTAssertGreaterThan(
                             client.ack.unackedPacketCount,
                             0,

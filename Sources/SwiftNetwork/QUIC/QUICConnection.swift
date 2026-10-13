@@ -160,9 +160,9 @@ public enum QUICConnectionState: CustomStringConvertible {
     }
 }
 
-/// NOTE: This type does not schedule new blocks of work on the context, its just handles running a block of work at the appropriate time.
+/// NOTE: This type does not schedule timers etc, it just tracks how operations are run and when they are run.
 @available(Network 0.1.0, *)
-struct QUICConnectionScheduler: ~Copyable {
+struct QUICConnectionStateMachine: ~Copyable {
     /// Operation to run on the connection's send or receive path
     enum Operation {
         // Run from just about anywhere in the stack we need to send data
@@ -172,16 +172,16 @@ struct QUICConnectionScheduler: ~Copyable {
             delayedACK: Bool,
             retransmission: Bool
         )
-        // Receive path only, called typically from the protocol stack
-        case receiveFrames(path: MultiplexingPathIdentifier)
-        // ACK timer being fired for delayed ACK processing
-        case ackTimer(firedAt: NetworkClock.Instant)
         // Recovery sending packets to be retransmitted
         case sendFramesFromRecovery(
             path: MultiplexingPathIdentifier,
             ignoreCongestionWindow: Bool,
             retransmission: Bool
         )
+        // Receive path only, called typically from the protocol stack
+        case receiveFrames(path: MultiplexingPathIdentifier)
+        // ACK timer being fired for delayed ACK processing
+        case ackTimer(firedAt: NetworkClock.Instant)
         // Crypto reporting ready to the connection
         case reportReady
         // Close connection sequence from close()
@@ -301,19 +301,19 @@ struct QUICConnectionScheduler: ~Copyable {
             }
             isDiscardEarlyDataKeysActive = true
             return true
-        case .sendFramesFromRecovery:
-            guard !isSendFramesFromRecoveryActive && !isPMTUDProbeActive else {
-                operationQueue.append(operation)
-                return false
-            }
-            isSendFramesFromRecoveryActive = true
-            return true
         case .sendFrames, .ackTimer:
             guard !isSendActive && !isSendFramesFromRecoveryActive && !isPMTUDProbeActive else {
                 operationQueue.append(operation)
                 return false
             }
             isSendActive = true
+            return true
+        case .sendFramesFromRecovery:
+            guard !isSendFramesFromRecoveryActive && !isPMTUDProbeActive else {
+                operationQueue.append(operation)
+                return false
+            }
+            isSendFramesFromRecoveryActive = true
             return true
         case .pmtudProbe:
             guard !isPMTUDProbeActive && !isSendActive && !isSendFramesFromRecoveryActive else {
@@ -334,8 +334,8 @@ struct QUICConnectionScheduler: ~Copyable {
         case .reportReady: isReportReadyActive = false
         case .closeConnection: isCloseConnectionActive = false
         case .discardEarlyDataKeys: isDiscardEarlyDataKeysActive = false
-        case .sendFramesFromRecovery: isSendFramesFromRecoveryActive = false
         case .sendFrames, .ackTimer: isSendActive = false
+        case .sendFramesFromRecovery: isSendFramesFromRecoveryActive = false
         case .pmtudProbe: isPMTUDProbeActive = false
         }
     }
@@ -347,7 +347,7 @@ struct QUICConnectionScheduler: ~Copyable {
     }
 
     /// Marks `operation` finished and immediately pops the next queued operation, in one access
-    /// to the scheduler's storage instead of the two separate `finishOperation`/`dequeue` calls.
+    /// to the stateMachines's storage instead of the two separate `finishOperation`/`dequeue` calls.
     @inline(always)
     mutating func finishAndDequeue(_ operation: Operation) -> Operation? {
         finishOperation(operation)
@@ -439,7 +439,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var migration = Migration()
     private(set) var crypto: QUICCrypto
 
-    var scheduler = QUICConnectionScheduler()
+    var stateMachine = QUICConnectionStateMachine()
 
     var protector: Protector
 
@@ -3541,33 +3541,33 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     @discardableResult
     @inline(always)
     private func schedule<T: ~Copyable>(
-        _ operation: QUICConnectionScheduler.Operation,
+        _ operation: QUICConnectionStateMachine.Operation,
         defaultResult: consuming T,
         in eventContext: inout NetworkContext.EventContext,
         body: (inout NetworkContext.EventContext) -> T
     ) -> T {
-        guard scheduler.enqueue(operation) else {
+        guard stateMachine.enqueue(operation) else {
             return defaultResult
         }
         let result = body(&eventContext)
-        if let next = scheduler.finishAndDequeue(operation) {
+        if let next = stateMachine.finishAndDequeue(operation) {
             runOperation(next, in: &eventContext)
         }
         return result
     }
 
-    /// Checks the scheduler to run one operation after the completion of a previously run operation.
+    /// Checks the stateMachine to run one operation after the completion of a previously run operation.
     /// This is essentially the item that was enqueued and deferred.
     @inline(always)
-    private func drainScheduler(in eventContext: inout NetworkContext.EventContext) {
-        guard let operation = scheduler.dequeue() else { return }
+    private func drainStateMachine(in eventContext: inout NetworkContext.EventContext) {
+        guard let operation = stateMachine.dequeue() else { return }
         runOperation(operation, in: &eventContext)
     }
 
-    /// Runs a single operation popped from the scheduler's queue.
+    /// Runs a single operation popped from the stateMachine's queue.
     @inline(always)
     private func runOperation(
-        _ operation: QUICConnectionScheduler.Operation,
+        _ operation: QUICConnectionStateMachine.Operation,
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch operation {
@@ -3613,7 +3613,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    /// Runs the ack-touching half of early-data key discarding through the scheduler so it
+    /// Runs the ack-touching half of early-data key discarding through the stateMachine so it
     /// never executes nested inside an active .receiveFrames operation
     func scheduleDiscardEarlyDataKeys(in eventContext: inout NetworkContext.EventContext) {
         schedule(.discardEarlyDataKeys, defaultResult: (), in: &eventContext) { eventContext in
@@ -3621,7 +3621,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    /// Runs reportReady() through the scheduler so it never executes nested inside an active
+    /// Runs reportReady() through the stateMachine so it never executes nested inside an active
     /// .receiveFrames operation. TLS reports the handshake connected synchronously while a
     /// CRYPTO frame is still being processed  inside handleInboundPacket
     func scheduleReportReady(in eventContext: inout NetworkContext.EventContext) {
@@ -3633,7 +3633,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    /// Runs close() through the scheduler so it never executes nested inside an active receiveFrames  operation
+    /// Runs close() through the stateMachine so it never executes nested inside an active receiveFrames  operation
     func scheduleClose(sendCloseFrame: Bool = true, in eventContext: inout NetworkContext.EventContext) {
         guard !state.isTerminal else { return }
         schedule(.closeConnection(sendCloseFrame: sendCloseFrame), defaultResult: (), in: &eventContext) {
@@ -3648,9 +3648,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         in eventContext: inout NetworkContext.EventContext,
         _ body: (inout NetworkContext.EventContext) -> Void
     ) {
-        let wasRunning = scheduler.beginSendPathActive()
+        let wasRunning = stateMachine.beginSendPathActive()
         body(&eventContext)
-        if let next = scheduler.endSendPathActiveAndDequeue(wasRunning: wasRunning) {
+        if let next = stateMachine.endSendPathActiveAndDequeue(wasRunning: wasRunning) {
             runOperation(next, in: &eventContext)
         }
     }
@@ -3660,11 +3660,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         in eventContext: inout NetworkContext.EventContext
     ) {
         schedule(.ackTimer(firedAt: firedAt), defaultResult: (), in: &eventContext) { eventContext in
-            self.ack.timerFired(at: firedAt, in: &eventContext)
+            if self.ack.flushDelayedAckOnTimerFired(at: firedAt, in: &eventContext) {
+                self.sendFrames(delayedACK: true, in: &eventContext)
+            }
         }
-        // `timerFired`'s own idle check runs while the ACK frame is still scheduled but not yet
-        // sent (that send may have only just been replayed by the `schedule` call above), so
-        // check again now that any flush has actually cleared the pending ACK.
+        // An ACK-only packet is not ack-eliciting, so once it is sent there is nothing left
+        // in pending items or in recovery to observe. This is the only place that can return
+        // the connection to idle after a delayed ACK.
         checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
     }
 
@@ -4503,13 +4505,18 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 }
             }
             let receivedIPECNCounter = ecn.counters[packetNumberSpace].rxECNPackets
-            let _ = ack.assemble(
+            let didAssembleAck = ack.assemble(
                 for: packetNumberSpace,
                 isAckSet: false,  // it was just checked
                 setAckFrame: scheduleAckFrame,
                 ecnCounter: receivedIPECNCounter,
                 now: self.now
             )
+            // Opportunistically bundling an ACK here still discharges the obligation it
+            // tracks, same as the dedicated delayed-ACK send path.
+            if didAssembleAck {
+                ack.sent(self.now)
+            }
         }
 
         // Request a full size frame, up to the available congestion window,
@@ -6101,15 +6108,15 @@ extension QUICConnection {
         }
 
         // Acknowledging a packet can close a stream, and closing a stream will attempt to flush
-        // frames. Drain the scheduler at the end to make sure everything to flushed properly.
-        let wasSendPathRunning = scheduler.beginSendPathActive()
+        // frames. Drain the stateMachine at the end to make sure everything to flushed properly.
+        let wasSendPathRunning = stateMachine.beginSendPathActive()
         recovery.receivedAck(
             ack: frame,
             ackedPath: path,
             connection: self,
             in: &eventContext
         )
-        if let next = scheduler.endSendPathActiveAndDequeue(wasRunning: wasSendPathRunning) {
+        if let next = stateMachine.endSendPathActiveAndDequeue(wasRunning: wasSendPathRunning) {
             runOperation(next, in: &eventContext)
         }
 
