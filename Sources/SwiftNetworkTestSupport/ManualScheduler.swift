@@ -22,6 +22,8 @@
 internal import Darwin
 #elseif canImport(Glibc)
 internal import Glibc
+#elseif canImport(Android)
+internal import Android
 #elseif canImport(Musl)
 internal import Musl
 #endif
