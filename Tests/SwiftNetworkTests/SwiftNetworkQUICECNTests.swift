@@ -109,6 +109,87 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             }
         )
     }
+
+    // L4S is applied to the initial path in `connect()`, after the path's own setup has
+    // installed its default pacer and congestion control.
+    func testQUICTestL4SUsesPrague() throws {
+        let clientOptions = QUICProtocol.options()
+        clientOptions.connectionOptions.enableL4S = true
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello World!".utf8),
+            clientOptions: clientOptions,
+            afterData: { harness in
+                let expectation = XCTestExpectation(description: "Wait to validate L4S")
+                harness.context.async {
+                    let path = harness.state?.clientInstance.currentPath
+                    XCTAssertEqual(path?.l4sEnabled, true, "Client path should have L4S enabled")
+                    XCTAssertEqual(path?.congestionControlName, "PRAGUE", "L4S should use Prague")
+                    XCTAssertEqual(path?.pacer.enabled, true, "Prague always paces")
+                    expectation.fulfill()
+                }
+                self.wait(for: [expectation], timeout: 5.0)
+            }
+        )
+    }
+
+    // A path that comes up after the connection is established gets its own L4S and pacing
+    // configuration, in the same order as the initial path: `set()` first, then `setupL4S(on:)`.
+    func testQUICTestL4SAppliedToAdditionalPath() throws {
+        let clientOptions = QUICProtocol.options()
+        clientOptions.connectionOptions.enableL4S = true
+        clientOptions.modifyConnectionOptions { $0.enablePacing = true }
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello World!".utf8),
+            clientOptions: clientOptions,
+            afterData: { harness in
+                let expectation = XCTestExpectation(description: "Wait to validate L4S on second path")
+                harness.context.async {
+                    guard let connection = harness.state?.clientInstance else {
+                        XCTFail("No client connection")
+                        expectation.fulfill()
+                        return
+                    }
+                    let newPath = QUICPath.makeFromExternalTest(parent: connection)
+                    connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+                    connection.fromExternal { eventContext in
+                        connection.handlePathChanged(
+                            path: newPath.pathIdentifier,
+                            event: .available(local: nil, remote: nil, path: nil, parameters: nil),
+                            isPrimary: false,
+                            in: &eventContext
+                        )
+                    }
+                    XCTAssertNotEqual(
+                        newPath.pathIdentifier,
+                        connection.currentPath?.pathIdentifier,
+                        "Test needs a path other than the initial one"
+                    )
+                    XCTAssertEqual(newPath.l4sEnabled, true, "Second path should have L4S enabled")
+                    XCTAssertEqual(newPath.congestionControlName, "PRAGUE", "Second path should use Prague")
+                    XCTAssertEqual(newPath.pacer.enabled, true, "Second path should be paced")
+                    XCTAssertEqual(newPath.pacePackets, true, "Second path should honor the pacing option")
+                    expectation.fulfill()
+                }
+                self.wait(for: [expectation], timeout: 5.0)
+            }
+        )
+    }
+
+    func testQUICTestL4SDisabledByDefault() throws {
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello World!".utf8),
+            afterData: { harness in
+                let expectation = XCTestExpectation(description: "Wait to validate L4S")
+                harness.context.async {
+                    let path = harness.state?.clientInstance.currentPath
+                    XCTAssertEqual(path?.l4sEnabled, false, "Client path should not have L4S enabled")
+                    XCTAssertEqual(path?.congestionControlName, "CUBIC", "Default should use CUBIC")
+                    expectation.fulfill()
+                }
+                self.wait(for: [expectation], timeout: 5.0)
+            }
+        )
+    }
 }
 #endif
 #endif

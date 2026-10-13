@@ -618,14 +618,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             maximumConcurrentUnidirectionalStreams =
                 quicConnectionOptions.maximumConcurrentUnidirectionalStreams
 
-            if let currentPath {
-                currentPath.pacePackets = pacingEnabled
-                currentPath.setupL4SState(l4sEnabled: enableL4s)
-                if currentPath.l4sEnabled && QUICPreferences.shared.ackCompressionEnabled {
-                    // Disable ACK compression when L4S is enabled.
-                    ack.disableAckCompression = true
-                }
-            }
             if !quicConnectionOptions.disableSpinBit {
                 // RFC9000: "Even when the spin bit is not disabled by
                 // the administrator, endpoints MUST disable their use
@@ -651,7 +643,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 echoEnabled: enableECNEcho,
                 markingEnabled: enableECN,
                 l4sEnabled: enableL4s,
-                connection: self,
                 logPrefixer: self.logPrefixer
             )
             setupLocalTransportParameters(quicOptions: quicOptions)
@@ -724,6 +715,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     func setInitialMSS(on path: QUICPath) {
         setMSS(initialMSS, on: path)
+    }
+
+    // Applies the connection's L4S setting to a path. Must run after `path.set()`, since the
+    // path's `setup()` replaces the pacer and congestion control that this configures.
+    func setupL4S(on path: QUICPath) {
+        path.setupL4SState(l4sEnabled: ecn.useECT1)
+        if path.l4sEnabled && QUICPreferences.shared.ackCompressionEnabled {
+            // Disable ACK compression when L4S is enabled.
+            ack.disableAckCompression = true
+        }
     }
 
     func updateMaxBidirectionalStreamsFromApplication(
@@ -1397,6 +1398,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         if currentPath == nil, let initialPath = self.somePath {
             initialPath.pacePackets = pacingEnabled
             initialPath.set(interface: self.initialInterface, priority: 0, isInitial: true)
+            setupL4S(on: initialPath)
             log.info("Packet Pacing is \(initialPath.pacePackets ? "enabled" : "disabled")")
             do {
                 try localCIDs.insertInitialConnectionID(scid, token: statelessResetToken)
@@ -2790,21 +2792,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var l4sEnabled = false
         if let path = currentPath {
             l4sEnabled = path.l4sEnabled
-            if let ecnState = path.ecnState?.state {
-                switch ecnState {
-                case .probing, .validate:
-                    clientAccurateECNState = .ecnFeatureEnabled
-                case .manglingDetected:
-                    clientAccurateECNState = .ecnNegotiationSuccessECTManglingDetected
-                case .handshakeValidationSuccess, .capable:
-                    clientAccurateECNState = .ecnNegotiationSuccess
-                case .blackholed:
-                    clientAccurateECNState = .ecnNegotiationBlackholed
-                case .unsupported:
-                    clientAccurateECNState = .ecnNotAvailable
-                default:
-                    break
-                }
+            switch path.ecnState.state {
+            case .probing, .validate:
+                clientAccurateECNState = .ecnFeatureEnabled
+            case .manglingDetected:
+                clientAccurateECNState = .ecnNegotiationSuccessECTManglingDetected
+            case .handshakeValidationSuccess, .capable:
+                clientAccurateECNState = .ecnNegotiationSuccess
+            case .blackholed:
+                clientAccurateECNState = .ecnNegotiationBlackholed
+            case .unsupported:
+                clientAccurateECNState = .ecnNotAvailable
+            default:
+                break
             }
         }
         var protocolEstablishmentReport = ProtocolEstablishmentReport(
@@ -4018,7 +4018,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
-            ecnState: &path.ecnState!,
+            ecnState: &path.ecnState,
             applicationPendingItems: &applicationPendingItems,
             totalTxBytes: &totalTxBytes,
             totalTxPackets: &totalTxPackets,
@@ -4089,7 +4089,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 protector: &protector,
                 stats: &stats,
                 ecn: &ecn,
-                ecnState: &path.ecnState!,
+                ecnState: &path.ecnState,
                 totalTxBytes: &totalTxBytes,
                 totalTxPackets: &totalTxPackets,
                 in: &eventContext
@@ -4148,7 +4148,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         protector: &protector,
                         stats: &stats,
                         ecn: &ecn,
-                        ecnState: &path.ecnState!,
+                        ecnState: &path.ecnState,
                         totalTxBytes: &totalTxBytes,
                         totalTxPackets: &totalTxPackets,
                         in: &eventContext
@@ -4189,7 +4189,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     protector: &protector,
                     stats: &stats,
                     ecn: &ecn,
-                    ecnState: &path.ecnState!,
+                    ecnState: &path.ecnState,
                     totalTxBytes: &totalTxBytes,
                     totalTxPackets: &totalTxPackets,
                     in: &eventContext
@@ -4224,7 +4224,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
-            ecnState: &path.ecnState!,
+            ecnState: &path.ecnState,
             applicationPendingItems: &applicationPendingItems,
             totalTxBytes: &totalTxBytes,
             totalTxPackets: &totalTxPackets,
@@ -5081,7 +5081,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Now that the connection is connected check if isPacing can be set
         if !isPacing {
             if let currentPath, trafficManagementBackground == false {
-                if currentPath.ecnState?.state == .capable || currentPath.pacePackets {
+                if currentPath.pacer.enabled,
+                    currentPath.ecnState.state == .capable || currentPath.pacePackets
+                {
                     isPacing = true
                 }
             }
