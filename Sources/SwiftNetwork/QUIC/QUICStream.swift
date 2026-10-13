@@ -627,7 +627,9 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
 
     func resetStreamID(streamID: QUICStreamID) {
         self.streamID = streamID
-
+        #if !DisableDebugLogging
+        self.log.logPrefix = "[S\(streamID.description)]"
+        #endif
         if streamID.isUnidirectional {
             self.unidirectional = true
         }

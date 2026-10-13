@@ -191,10 +191,14 @@ struct StreamSendBuffer: ~Copyable {
         }
         // Save where we ended so the next call can resume without
         // traversing the frame array from the start.
-        cursor.previousCursorIndex = Int32(lastVisitedIndex)
-        cursor.previousCursorFrameStartOffset = lastVisitedFrameStartOffset
-        cursor.previousCursorResumeOffset = requestedOffset + totalLengthCopied
-        cursor.previousCursorValid = true
+        if let index = Int32(exactly: lastVisitedIndex) {
+            cursor.previousCursorIndex = index
+            cursor.previousCursorFrameStartOffset = lastVisitedFrameStartOffset
+            cursor.previousCursorResumeOffset = requestedOffset + totalLengthCopied
+            cursor.previousCursorValid = true
+        } else {
+            cursor.previousCursorValid = false
+        }
         return totalLengthCopied
     }
 

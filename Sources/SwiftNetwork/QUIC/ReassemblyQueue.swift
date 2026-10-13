@@ -67,7 +67,7 @@ struct ReassemblyQueue: ~Copyable {
         static let headOfLineBlocked = Flags(rawValue: 1 << 0)
     }
     private var flags = Flags()
-    var headOfLineBlocked: Bool {
+    private(set) var headOfLineBlocked: Bool {
         get { flags.contains(.headOfLineBlocked) }
         set {
             if newValue {
