@@ -1581,6 +1581,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
+    /// Disables active migration on a connection built outside a protocol stack, for tests only.
+    func disableActiveMigrationFromExternalTest() {
+        migration.disableActiveMigration()
+    }
+
     public func disconnect(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
         if let error {
             if closeError == nil, let transportError = error.quicTransportError {

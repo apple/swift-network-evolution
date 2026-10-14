@@ -70,6 +70,14 @@ final class MigrationTests: XCTestCase {
     // registered in `remoteCIDs` so it can be retired. `validated` drives it to the
     // validated state so `migrate(to:)` will accept it.
     private func makePath(dcid: QUICConnectionID, sequenceNumber: UInt64, validated: Bool) -> QUICPath {
+        makePathWithLower(dcid: dcid, sequenceNumber: sequenceNumber, validated: validated).path
+    }
+
+    private func makePathWithLower(
+        dcid: QUICConnectionID,
+        sequenceNumber: UInt64,
+        validated: Bool
+    ) -> (path: QUICPath, lower: DatagramLowerHarness<TestDatagramLinkageFamily>) {
         let (lower, lowerLinkage) = storage.createDatagramLowerHarness(
             identifier: "\(sequenceNumber)",
             context: .implicitContext
@@ -102,7 +110,44 @@ final class MigrationTests: XCTestCase {
             connectionID: dcid,
             token: QUICStatelessResetToken(Array(repeating: UInt8(sequenceNumber & 0xff), count: 16))!
         )
-        return path
+        return (path, lower)
+    }
+
+    // A path whose lower protocol disconnects (e.g. its netif was destroyed) is marked unavailable, but
+    // stays the current path until a migration replaces it, as in libquic.
+    func testDisconnectedCurrentPathIsKeptAndMarkedUnavailable() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let (path, lower) = self.makePathWithLower(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            self.connection.currentPath = path
+            self.connection.multiplexingPaths[path.pathIdentifier] = path
+
+            lower.deliverDisconnectedEvent(error: .posix(ENOTCONN))
+
+            XCTAssertEqual(path.state, .routeUnavailable, "Disconnected path not marked unavailable")
+            XCTAssertEqual(self.connection.currentPath?.identifier, path.identifier, "Current path changed")
+            XCTAssertNotNil(self.connection.multiplexingPaths[path.pathIdentifier], "Current path removed")
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // The same holds for a client that cannot migrate, which used to ignore the event.
+    func testDisconnectedPathIsMarkedUnavailableWhenMigrationDisabled() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            self.connection.disableActiveMigrationFromExternalTest()
+            let (path, lower) = self.makePathWithLower(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            self.connection.currentPath = path
+            self.connection.multiplexingPaths[path.pathIdentifier] = path
+
+            lower.deliverDisconnectedEvent(error: .posix(ENOTCONN))
+
+            XCTAssertEqual(path.state, .routeUnavailable, "Disconnected path not marked unavailable")
+            XCTAssertEqual(self.connection.currentPath?.identifier, path.identifier, "Current path changed")
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
     }
 
     func testMigrationRemovesOldPathAndRetiresItsCID() {
