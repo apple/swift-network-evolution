@@ -405,8 +405,10 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             }
         }
 
+        // `sentPath` is nil when the path the packet was sent on has since been torn down, for
+        // example after a migration. The packet is still retired, but there is no path to credit.
         mutating func packetAcked(
-            sentPath: QUICPath,
+            sentPath: QUICPath?,
             sentEntry: borrowing PacketContainerEntry,
             connection: QUICConnection,
             in eventContext: inout NetworkContext.EventContext
@@ -432,7 +434,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
                     log.datapath("Non-Ack eliciting packet \(number) acked")
                 }
-                sentPath.congestionControlPacketsAcked(
+                sentPath?.congestionControlPacketsAcked(
                     bytesAcked: sentEntry.packet.isInFlightEligible ? sentEntry.packet.totalLength : 0,
                     sentTime: sentEntry.sentTime
                 )
@@ -549,15 +551,13 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     newlyECTAcked += 1
                 }
 
-                let sentPath: QUICPath
+                let sentPath: QUICPath?
                 if ackedEntry.packet.sentPath == path.pathIdentifier {
                     sentPath = path
-                } else if let lookedUpPath = connection.path(for: ackedEntry.packet.sentPath) {
-                    sentPath = lookedUpPath
                 } else {
-                    continue
+                    sentPath = connection.path(for: ackedEntry.packet.sentPath)
                 }
-                if ackedEntry.lostTime != .zero {
+                if let sentPath, ackedEntry.lostTime != .zero {
                     let sRTT = sentPath.rtt.smoothedRTT
                     let latestRTT = sentPath.rtt.latestRTT
                     spuriousLoss(
