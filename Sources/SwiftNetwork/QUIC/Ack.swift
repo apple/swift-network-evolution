@@ -1283,7 +1283,7 @@ struct AckBitstringSequence: Sequence {
             index &+= 1
             i &+= 1
         }
-        // Shares storage with `scratch`; no copy.
+        // Point to the current state held in `scratch`
         self.bitstringXored = scratch
     }
 
