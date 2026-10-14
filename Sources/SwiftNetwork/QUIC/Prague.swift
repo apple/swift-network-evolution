@@ -106,6 +106,12 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
     private var cubicEpochStart: NetworkClock.Instant = .zero
     private var renoCongestionWindow: UInt64 = 0
 
+    // The state before the most recent loss event, restored if the loss turns
+    // out to be spurious (RFC 9438 Section 4.9).
+    //
+    // Alpha and the CE counters aren't included, because loss doesn't change them.
+    private var undoState: CubicUndoState? = nil
+
     static func initialCongestionWindow(_ mss: Int) -> UInt64 {
         UInt64(min(10 * mss, max(2 * mss, 14720)))
     }
@@ -319,6 +325,21 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         qlog: QLog? = nil
     ) {
         log.datapath("Entering Recovery: current cwin=\(state.congestionWindow)")
+        undoState = CubicUndoState(
+            congestionWindow: state.congestionWindow,
+            slowStartThreshold: state.slowStartThreshold,
+            recoveryStartTime: state.recoveryStartTime,
+            K: cubicK,
+            totalAcked: cubicAcked,
+            tcpTotalAcked: renoAcked,
+            lastMaxCongestionWindow: cubicLastMaxCongestionWindow,
+            maxCongestionWindow: cubicMaxCongestionWindow,
+            originPoint: cubicOriginPoint,
+            epochStart: cubicEpochStart,
+            tcpCongestionWindow: renoCongestionWindow,
+            numCongestionEvents: Int(numCongestionEventsLoss),
+            reducedDueToCE: reducedDueToCE
+        )
         state.recoveryStartTime = now
         cubicLastMaxCongestionWindow = cubicMaxCongestionWindow
         cubicMaxCongestionWindow = state.congestionWindow
@@ -620,15 +641,30 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
     }
 
     mutating func spuriousRetransmit(state: inout CongestionControlState, qlog: QLog? = nil) {
-        guard cubicMaxCongestionWindow > 0 && state.prevSlowStartThreshold > 0 else { return }
-
-        // Revert to the state before loss was detected
-        state.congestionWindow = max(cubicMaxCongestionWindow, state.congestionWindow)
-        state.slowStartThreshold = state.prevSlowStartThreshold
+        guard let undo = undoState else { return }
+        defer { undoState = nil }
+        log.datapath(
+            "Undoing spurious congestion event: window \(state.congestionWindow) -> \(undo.congestionWindow)"
+        )
+        state.congestionWindow = max(state.congestionWindow, undo.congestionWindow)
+        state.slowStartThreshold = max(state.slowStartThreshold, undo.slowStartThreshold)
+        state.prevSlowStartThreshold = undo.slowStartThreshold
+        state.recoveryStartTime = undo.recoveryStartTime
+        cubicK = undo.K
+        cubicAcked = undo.totalAcked
+        renoAcked = undo.tcpTotalAcked
+        cubicLastMaxCongestionWindow = undo.lastMaxCongestionWindow
+        cubicMaxCongestionWindow = undo.maxCongestionWindow
+        cubicOriginPoint = undo.originPoint
+        cubicEpochStart = undo.epochStart
+        renoCongestionWindow = undo.tcpCongestionWindow
+        numCongestionEventsLoss = UInt16(undo.numCongestionEvents)
+        reducedDueToCE = undo.reducedDueToCE
         state.logUpdate(log: log, qlog: qlog)
     }
 
     mutating func persistentCongestion(state: inout CongestionControlState, mss: Int, qlog: QLog? = nil) {
+        undoState = nil
         // Set the minimum congestion window
         let newCWND = Prague.minCongestionWindow(mss)
         state.slowStartThreshold = max(UInt64(Double(state.congestionWindow) * Prague.beta), newCWND)
@@ -638,6 +674,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
     }
 
     private mutating func resetInternal(state: inout CongestionControlState) {
+        undoState = nil
         state.recoveryStartTime = .zero
         state.prevSlowStartThreshold = 0
         numCongestionEventsLoss = 0
@@ -697,6 +734,8 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         // is best to start fresh. For congestion window
         // we can use the higher of last cwnd and INITIAL_CWND
         state.bytesInFlight = from.bytesInFlight
+        // The CE count is cumulative, so keep it to only react to new marks.
+        state.ecnCECounter = from.ecnCECounter
         state.congestionWindow = max(from.congestionWindow, Prague.initialCongestionWindow(mss))
         state.slowStartThreshold = UInt64.max
         scaledAlpha = Prague.maxAlpha << Prague.gShift
