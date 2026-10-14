@@ -24,7 +24,7 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
             backing.storage.common = newValue
         }
     }
-    public var name: String { backing.storage.name }  // Name is informational for application-service endpoints.
+    public var name: String { applicationService + "/" + serviceID.uuidString }
     public var applicationService: String {
         get { backing.storage.applicationService }
         set {
@@ -56,12 +56,8 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
         }
         internal struct Storage: Hashable, Sendable {
             var common: EndpointCommon
-            let name: String  // Name is informational for application-service endpoints.
             var applicationService: String
             var serviceID: SystemUUID
-            #if NETWORK_PRIVATE
-            var privateStorage: PrivateStorage
-            #endif
         }
         func copy() -> Self {
             .init(storage: self.storage)
@@ -80,12 +76,10 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
         serviceID: SystemUUID
     ) {
         let common = EndpointCommon(interface: nil)
-        let name = applicationService + "/" + serviceID.uuidString
         let applicationService = applicationService
         self.backing = Backing(
             storage: AppSVCBackingClass.Storage(
                 common: common,
-                name: name,
                 applicationService: applicationService,
                 serviceID: serviceID
             )
@@ -93,7 +87,6 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
     }
 
     init?(serializedData: inout [UInt8]) {
-        var applicationService = ""
         var serviceID = SystemUUID.empty
         var data = serializedData
 
@@ -101,23 +94,27 @@ public struct ApplicationServiceEndpoint: EndpointProtocol, EndpointCommonProtoc
             return nil
         }
 
+        // The service UUID is the only inline field, matching the writer below: the
+        // service name arrives in its own TLV and the attributes in the attribute bag,
+        // both applied by the caller.
         let result = Deserializer.deserialize(&data) { read throws(DeserializationError) in
-            try read.string(&applicationService)
             try read.uuid(&serviceID)
         }
         guard result.isValid else {
             return nil
         }
         self.init(
-            applicationService,
+            "",
             serviceID: serviceID
         )
         self.common = common
     }
 
     func serialize() -> [UInt8]? {
+        // The service UUID is the only inline field. The service name follows as its
+        // own TLV and the attributes follow in the attribute bag, both written by the
+        // caller, so a reader finds the UUID at offset zero.
         let innerBuffer = Serializer.serialize { write in
-            write.fixedLengthUTF8(applicationService, byteCount: applicationService.utf8.count + 1)
             write.uuid(serviceID)
         }
 
