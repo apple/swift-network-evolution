@@ -404,6 +404,78 @@ final class RTTTests: XCTestCase {
         XCTAssertEqual(rtt.baseRTT, .microseconds(90))
         XCTAssertEqual(rtt.minRTT, .microseconds(40))
     }
+
+    // Verifies that interval boundaries stay aligned to fixed steps from the
+    // first sample when samples are sparse and irregularly spaced. If the
+    // rollover timestamp were moved to the arrival time of each sample, the
+    // fractional part of each gap would be lost, elapsed intervals would be
+    // undercounted, and old minimums would stay in the window for more than
+    // `nbaseHistory` intervals.
+    func testRTTBaseRolloverIrregularSpacing() {
+        // Interval 0 [0s, 60s): 40us.
+        rtt.processNewSample(
+            ackDuration: .microseconds(40),
+            packetAckedTime: NetworkClock.Instant(.seconds(0)),
+            ackDelay: .microseconds(0)
+        )
+        // Interval 1 [60s, 120s): 80us.
+        rtt.processNewSample(
+            ackDuration: .microseconds(80),
+            packetAckedTime: NetworkClock.Instant(.seconds(119)),
+            ackDelay: .microseconds(0)
+        )
+        // Interval 3 [180s, 240s): 90us. Three full intervals have elapsed
+        // since t=0, even though only 62s have elapsed since the last sample.
+        rtt.processNewSample(
+            ackDuration: .microseconds(90),
+            packetAckedTime: NetworkClock.Instant(.seconds(181)),
+            ackDelay: .microseconds(0)
+        )
+        XCTAssertEqual(rtt.baseRTT, .microseconds(40))
+
+        // Interval 9 [540s, 600s): the interval 0 minimum is still in the window.
+        rtt.processNewSample(
+            ackDuration: .microseconds(100),
+            packetAckedTime: NetworkClock.Instant(.seconds(599)),
+            ackDelay: .microseconds(0)
+        )
+        XCTAssertEqual(rtt.baseRTT, .microseconds(40))
+
+        // Interval 10 [600s, 660s): 10 intervals have elapsed, so interval 0's
+        // slot is reused and its 40us minimum is evicted. The base RTT becomes
+        // the minimum of intervals 1, 3, 9 and 10.
+        rtt.processNewSample(
+            ackDuration: .microseconds(120),
+            packetAckedTime: NetworkClock.Instant(.seconds(605)),
+            ackDelay: .microseconds(0)
+        )
+        XCTAssertEqual(rtt.baseRTT, .microseconds(80))
+        XCTAssertEqual(rtt.minRTT, .microseconds(40))
+    }
+
+    // Verifies that a long idle period (much longer than the history window)
+    // invalidates every slot, including the one that was current before the
+    // idle period, even when the new sample lands on a different slot.
+    func testRTTBaseRolloverLongIdle() {
+        // Interval 0, slot 0: 40us.
+        rtt.processNewSample(
+            ackDuration: .microseconds(40),
+            packetAckedTime: NetworkClock.Instant(.seconds(0)),
+            ackDelay: .microseconds(0)
+        )
+        XCTAssertEqual(rtt.baseRTT, .microseconds(40))
+
+        // About a day later: 1443 intervals have elapsed, so the new sample
+        // lands on slot 3. The slot 0 minimum is long out of the window and
+        // must not survive.
+        rtt.processNewSample(
+            ackDuration: .microseconds(100),
+            packetAckedTime: NetworkClock.Instant(.seconds(1443 * 60 + 1)),
+            ackDelay: .microseconds(0)
+        )
+        XCTAssertEqual(rtt.baseRTT, .microseconds(100))
+        XCTAssertEqual(rtt.minRTT, .microseconds(40))
+    }
 }
 
 #endif

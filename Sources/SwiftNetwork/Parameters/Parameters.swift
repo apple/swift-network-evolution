@@ -738,6 +738,12 @@ public struct Parameters: Hashable, CustomStringConvertible {
     }
     #endif
 
+    /// Creates default parameters that run on `context`, activating it.
+    public init(context: NetworkContext) {
+        self = Self.init()
+        self.context = context
+    }
+
     public var context: NetworkContext {
         get { pathParameters.context }
         set {

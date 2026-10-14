@@ -130,8 +130,7 @@ final class IPUDPTransfer {
                 }
 
                 // Server
-                var serverParameters = Parameters()
-                serverParameters.context = context
+                let serverParameters = Parameters(context: context)
                 let serverPath = PathProperties(parameters: serverParameters)
                 let (serverIPUpper, serverIPLower) = storage.createTestIPInstance()
                 let serverIPOptions = IPProtocol.options()
@@ -192,7 +191,7 @@ final class IPUDPTransfer {
                 // Transfer data
                 var transferSucceeded = true
                 for _ in 0..<packets {
-                    guard clientInput.write(payload), serverInput.read() != nil else {
+                    guard clientInput.write(payload), serverInput.read()?.count == payload.count else {
                         loggingHandle.log("Failed to transfer a payload")
                         transferSucceeded = false
                         break
@@ -282,6 +281,7 @@ if #available(anyAppleOS 26, *) {
         print("Finished all (\(iterations)) transfers in \(totalTime) seconds")
     } else {
         print("Error running all (\(iterations)) transfers, something failed")
+        exit(1)
     }
 } else {
     fatalError("This tool requires macOS 26 or newer")
