@@ -1190,6 +1190,19 @@ struct AckBitstring: ~Copyable {
         firstPN: PacketNumber,
         lastPN: PacketNumber
     ) -> AckBitstringSequence {
+        var scratch = [UInt64]()
+        return xor(other: &other, firstPN: firstPN, lastPN: lastPN, scratch: &scratch)
+    }
+
+    // Same as above, but reuses `scratch`'s storage for the XORed words.
+    // As long as the caller holds the only reference to `scratch` (i.e. the
+    // previously returned sequence is gone), no allocation takes place.
+    mutating func xor(
+        other: inout AckBitstring,
+        firstPN: PacketNumber,
+        lastPN: PacketNumber,
+        scratch: inout [UInt64]
+    ) -> AckBitstringSequence {
         guard initialWord == other.initialWord else {
             let initialWord = self.initialWord
             let otherInitialWord = other.initialWord
@@ -1215,7 +1228,8 @@ struct AckBitstring: ~Copyable {
             startingWord: startingWord,
             endingWord: endingWord,
             bitstring: self.bitstring,
-            otherBitstring: other.bitstring
+            otherBitstring: other.bitstring,
+            scratch: &scratch
         )
 
         if startingWord > 0 && startingWord - 1 > size / 2 {
@@ -1235,12 +1249,16 @@ struct AckBitstringIterator: IteratorProtocol {
     let size: Int
     let startingWord: UInt64
     let initialWord: UInt64
-    var bitstringXored: ArraySlice<UInt64>
+    let bitstringXored: [UInt64]
+    // Bits of bitstringXored[currentWord] not yet returned. Kept locally so
+    // that bitstringXored is never mutated (which would trigger a CoW copy).
+    var pendingBits: UInt64
 
     @inlinable
     @inline(always)
     init(_ sequence: AckBitstringSequence) {
-        self.bitstringXored = sequence.bitstringXored[...]
+        self.bitstringXored = sequence.bitstringXored
+        self.pendingBits = 0
         self.currentWord = 0
         self.size = sequence.size
         self.startingWord = sequence.startingWord
@@ -1252,9 +1270,11 @@ struct AckBitstringIterator: IteratorProtocol {
     mutating func next() -> PacketNumber? {
         var index: UInt64 = 0
         while currentWord < size {
-            let result = bitstringXored[Int(currentWord)]
+            if pendingBits == 0 {
+                pendingBits = bitstringXored[Int(currentWord)]
+            }
             // N.B.: safe because packet numbers are only 62-bit.
-            index = result.indexOfFirstSetBit
+            index = pendingBits.indexOfFirstSetBit
             if index <= 0 {
                 currentWord += 1
             } else {
@@ -1264,9 +1284,13 @@ struct AckBitstringIterator: IteratorProtocol {
         if currentWord >= size {
             return nil
         }
-        bitstringXored[Int(currentWord)] &= ~(1 << (index - 1))
+        pendingBits &= ~(1 << (index - 1))
         var packetNumber = index - 1 + ((startingWord + currentWord) * 64)
         packetNumber += initialWord * 64
+
+        if pendingBits == 0 {
+            currentWord += 1
+        }
 
         return PacketNumber(packetNumber)
     }
@@ -1277,15 +1301,16 @@ struct AckBitstringSequence: Sequence {
     let initialWord: UInt64
     let startingWord: UInt64
     let size: Int
-    var bitstringXored = [UInt64]()
+    let bitstringXored: [UInt64]
 
-    static let empty = AckBitstringSequence(
-        initialWord: 0,
-        startingWord: 0,
-        endingWord: 0,
-        bitstring: NetworkUniqueArray<UInt64>(repeating: 0, count: 1),
-        otherBitstring: NetworkUniqueArray<UInt64>(repeating: 0, count: 1)
-    )
+    static let empty = AckBitstringSequence()
+
+    private init() {
+        self.initialWord = 0
+        self.startingWord = 0
+        self.size = 0
+        self.bitstringXored = []
+    }
 
     @inlinable
     @inline(always)
@@ -1294,18 +1319,26 @@ struct AckBitstringSequence: Sequence {
         startingWord: UInt64,
         endingWord: UInt64,
         bitstring: borrowing NetworkUniqueArray<UInt64>,
-        otherBitstring: borrowing NetworkUniqueArray<UInt64>
+        otherBitstring: borrowing NetworkUniqueArray<UInt64>,
+        scratch: inout [UInt64]
     ) {
         self.initialWord = initialWord
         self.startingWord = startingWord
         self.size = Int(endingWord - startingWord + 1)
-        self.bitstringXored.reserveCapacity(size)
+        // Grow only if needed; words past `size` are stale and never read.
+        if scratch.count < size {
+            scratch.append(contentsOf: repeatElement(0, count: size - scratch.count))
+        }
         // We are converting to base 0 indexing and copying only the necessary words.
         var index = Int(startingWord)
+        var i = 0
         while index <= endingWord {
-            self.bitstringXored.append(bitstring[index] ^ otherBitstring[index])
+            scratch[i] = bitstring[index] ^ otherBitstring[index]
             index &+= 1
+            i &+= 1
         }
+        // Point to the current state held in `scratch`
+        self.bitstringXored = scratch
     }
 
     @inlinable
