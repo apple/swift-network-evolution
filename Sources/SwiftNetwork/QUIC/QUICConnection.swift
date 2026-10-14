@@ -6860,7 +6860,7 @@ extension QUICConnection {
         _ packet: borrowing SentPacketRecord,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
-        sentPath: QUICPath,
+        sentPath: QUICPath?,
         in eventContext: inout NetworkContext.EventContext
     ) {
         packet.transmittedItems.allAcknowledged(
@@ -6876,7 +6876,7 @@ extension QUICConnection {
         frame: TransmittedItems.TransmittedAckFrame,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
-        sentPath: QUICPath
+        sentPath: QUICPath?
     ) {
         for block in Ack.blockSequence(frame: frame) {
             ack.acknowledged(
