@@ -96,6 +96,40 @@ public struct SystemUUID: Hashable, Equatable, CustomStringConvertible, Sendable
         description
     }
 
+    /// Creates a UUID from its canonical hyphenated string form (e.g.
+    /// `E621E1F8-C36C-495A-93FC-0C247A3E6E5F`), or nil when `uuidString` is not 36
+    /// characters in the 8-4-4-4-12 hexadecimal layout.
+    public init?(uuidString: String) {
+        let ascii = Array(uuidString.utf8)
+        guard ascii.count == 36 else { return nil }
+        var storage = UUIDStorage(repeating: 0x00)
+        var byteIndex = 0
+        var i = 0
+        while i < 36 {
+            if i == 8 || i == 13 || i == 18 || i == 23 {
+                guard ascii[i] == UInt8(ascii: "-") else { return nil }
+                i += 1
+                continue
+            }
+            guard let high = SystemUUID.hexNibble(ascii[i]),
+                let low = SystemUUID.hexNibble(ascii[i + 1])
+            else { return nil }
+            storage[byteIndex] = (high << 4) | low
+            byteIndex += 1
+            i += 2
+        }
+        self.storage = storage
+    }
+
+    private static func hexNibble(_ ascii: UInt8) -> UInt8? {
+        switch ascii {
+        case UInt8(ascii: "0")...UInt8(ascii: "9"): return ascii - UInt8(ascii: "0")
+        case UInt8(ascii: "a")...UInt8(ascii: "f"): return ascii - UInt8(ascii: "a") + 10
+        case UInt8(ascii: "A")...UInt8(ascii: "F"): return ascii - UInt8(ascii: "A") + 10
+        default: return nil
+        }
+    }
+
     static internal let insecureUUIDValue = NetworkMutex<UInt128>(0)
     static var nextInsecureUUIDValue: UInt128 {
         var value: UInt128 = 0
