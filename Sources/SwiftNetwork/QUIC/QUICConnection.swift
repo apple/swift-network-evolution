@@ -548,15 +548,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             let quicOptions = quicOptions(from: parameters, for: .allFlows),
             let protocolOptions = quicOptions.perProtocolOptions
         {
+            let quicConnectionOptions = protocolOptions.quicConnectionOptions
             self.logIDNumber = quicOptions.logIDNumber ?? 0
             var enableECN = true
             var enableECNEcho = true
             var enableL4s: Bool? = nil  // Default
-            enableECN = !protocolOptions.quicConnectionOptions.disableECN
-            enableECNEcho = !protocolOptions.quicConnectionOptions.disableECNEcho
-            enableL4s = protocolOptions.quicConnectionOptions.enableL4S
+            enableECN = !quicConnectionOptions.disableECN
+            enableECNEcho = !quicConnectionOptions.disableECNEcho
+            enableL4s = quicConnectionOptions.enableL4S
             if isServer {
-                retryEnabled = protocolOptions.quicConnectionOptions.retry
+                retryEnabled = quicConnectionOptions.retry
                 // Stateless Reset Token
                 let statelessResetToken = TransportParameter.statelessResetToken(
                     statelessResetToken: QUICStatelessResetToken()
@@ -564,57 +565,57 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 localTransportParameters.append(statelessResetToken)
             } else {
                 // A client can force version negotiation by setting the initial version to the negotiationPattern (0x?a?a?a?a)
-                if protocolOptions.quicConnectionOptions.forceVersionNegotiation {
+                if quicConnectionOptions.forceVersionNegotiation {
                     self.initialVersion = .negotiationPattern
                     log.info("Setting negotiation pattern")
                 }
             }
-            if let initialSCID = protocolOptions.quicConnectionOptions.initialSourceConnectionID {
+            if let initialSCID = quicConnectionOptions.initialSourceConnectionID {
                 initialSourceConnectionID = initialSCID
             }
-            if let statelessResetToken = protocolOptions.quicConnectionOptions
+            if let statelessResetToken = quicConnectionOptions
                 .initialStatelessResetToken
             {
                 initialStatelessResetToken = statelessResetToken
             }
             disableAutomaticNewConnectionIDs =
-                protocolOptions.quicConnectionOptions.disableAutomaticNewConnectionIDs
+                quicConnectionOptions.disableAutomaticNewConnectionIDs
             resendRejectedEarlyDataAutomatically =
-                protocolOptions.quicConnectionOptions.resendRejectedEarlyDataAutomatically
-            if protocolOptions.quicConnectionOptions.keepaliveCount > 0 {
-                maxKeepaliveCount = Int(protocolOptions.quicConnectionOptions.keepaliveCount)
+                quicConnectionOptions.resendRejectedEarlyDataAutomatically
+            if quicConnectionOptions.keepaliveCount > 0 {
+                maxKeepaliveCount = Int(quicConnectionOptions.keepaliveCount)
             }
 
-            allowPMTUD = protocolOptions.quicConnectionOptions.pmtud
-            pmtudIgnoreCost = protocolOptions.quicConnectionOptions.pmtudIgnoreCost
-            pmtudInterval = protocolOptions.quicConnectionOptions.pmtudUpdateInterval
+            allowPMTUD = quicConnectionOptions.pmtud
+            pmtudIgnoreCost = quicConnectionOptions.pmtudIgnoreCost
+            pmtudInterval = quicConnectionOptions.pmtudUpdateInterval
 
             // RFC 9000 - 14.1. Initial Datagram Size
             // Datagrams containing Initial packets MAY exceed 1200 bytes if the sender
             // believes that the network path and peer both support the size that it chooses
-            let requestedInitialPacketSize = Int(protocolOptions.quicConnectionOptions.initialPacketSize)
+            let requestedInitialPacketSize = Int(quicConnectionOptions.initialPacketSize)
             if requestedInitialPacketSize > Constants.initialMSS {
                 initialMSS = requestedInitialPacketSize
             }
 
-            pacingEnabled = protocolOptions.quicConnectionOptions.enablePacing
+            pacingEnabled = quicConnectionOptions.enablePacing
 
             testSendingShortPackets =
-                protocolOptions.quicConnectionOptions.testSendingShortPackets
+                quicConnectionOptions.testSendingShortPackets
 
-            forceUnsupportedClientVersion = protocolOptions.quicConnectionOptions.forceUnsupportedClientVersion
+            forceUnsupportedClientVersion = quicConnectionOptions.forceUnsupportedClientVersion
 
-            qlogConfiguration = protocolOptions.quicConnectionOptions.qlogConfiguration
+            qlogConfiguration = quicConnectionOptions.qlogConfiguration
 
             datagramUseQuarterStreamID =
-                protocolOptions.quicConnectionOptions.datagramQuarterStreamID
-            datagramUseContextID = protocolOptions.quicConnectionOptions.datagramContextID
-            datagramEnableFlowID = protocolOptions.quicConnectionOptions.datagramEnableFlowID
+                quicConnectionOptions.datagramQuarterStreamID
+            datagramUseContextID = quicConnectionOptions.datagramContextID
+            datagramEnableFlowID = quicConnectionOptions.datagramEnableFlowID
 
             maximumConcurrentBidirectionalStreams =
-                protocolOptions.quicConnectionOptions.maximumConcurrentBidirectionalStreams
+                quicConnectionOptions.maximumConcurrentBidirectionalStreams
             maximumConcurrentUnidirectionalStreams =
-                protocolOptions.quicConnectionOptions.maximumConcurrentUnidirectionalStreams
+                quicConnectionOptions.maximumConcurrentUnidirectionalStreams
 
             if let currentPath {
                 currentPath.pacePackets = pacingEnabled
@@ -624,7 +625,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     ack.disableAckCompression = true
                 }
             }
-            if !protocolOptions.quicConnectionOptions.disableSpinBit {
+            if !quicConnectionOptions.disableSpinBit {
                 // RFC9000: "Even when the spin bit is not disabled by
                 // the administrator, endpoints MUST disable their use
                 // of the spin bit for a random selection of at least
@@ -642,7 +643,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             } else {
                 // The application has asked us to disable the spin bit.
                 spinBitEnabled = false
-                initialSpinValue = protocolOptions.quicConnectionOptions.spinBitValue
+                initialSpinValue = quicConnectionOptions.spinBitValue
             }
             // Setup ECN
             ecn = ECN(

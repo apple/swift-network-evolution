@@ -63,7 +63,7 @@ internal import os
 final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
     func testQUICServerUnreachable() throws {
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.idleTimeout = .seconds(2)
+        clientOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(2) }
 
         // Drop 100% of packets from the client to make the server unreachable
         QUICTestHarness().runQUICTest(
@@ -85,7 +85,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
             group.enter()
             queue.async {
                 let clientOptions = QUICProtocol.options()
-                clientOptions.connectionOptions.idleTimeout = .seconds(2)
+                clientOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(2) }
                 QUICTestHarness(context: context).runQUICTest(
                     expectHandshakeError: .posix(ETIMEDOUT),
                     clientDrops: .init(0...Int.max),
@@ -100,9 +100,9 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
 
     func testQUICIdleTimeout() throws {
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.idleTimeout = .seconds(2)
+        clientOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(2) }
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.idleTimeout = .seconds(2)
+        serverOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(2) }
 
         QUICTestHarness().runQUICTest(
             clientOptions: clientOptions,
@@ -122,7 +122,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
 
     func testQUICServerTimeoutAfterClientDrops() throws {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.idleTimeout = .seconds(2)
+        serverOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(2) }
 
         // Drop all packets to the server after the first
         QUICTestHarness().runQUICTest(
@@ -197,12 +197,12 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
         // Then sends a stateless reset packet to the client with the seeded token and verifies the connection closes.
         // Adding the SCID here changes which CID the token is tied to.
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        serverOptions.modifyConnectionOptions { $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08] }
         let token: [UInt8] = [
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
         ]
-        serverOptions.connectionOptions.initialStatelessResetToken = QUICStatelessResetToken(token)
+        serverOptions.modifyConnectionOptions { $0.initialStatelessResetToken = QUICStatelessResetToken(token) }
         QUICTestHarness().runQUICTest(
             serverOptions: serverOptions,
             afterHandshake: { harness in
@@ -236,7 +236,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
         ]
-        serverOptions.connectionOptions.initialStatelessResetToken = QUICStatelessResetToken(token)
+        serverOptions.modifyConnectionOptions { $0.initialStatelessResetToken = QUICStatelessResetToken(token) }
         QUICTestHarness().runQUICTest(
             serverOptions: serverOptions,
             afterHandshake: { harness in

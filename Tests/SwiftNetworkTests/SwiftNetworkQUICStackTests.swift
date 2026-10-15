@@ -97,10 +97,10 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         }
 
         let quicOptions = QUICStreamProtocol.options()
-        quicOptions.tlsOptions = tlsOptions
+        quicOptions.modifyTLSOptions { $0 = tlsOptions }
 
         if sourceConnectionIDLength > 0 {
-            quicOptions.connectionOptions.sourceConnectionIDLength = sourceConnectionIDLength
+            quicOptions.modifyConnectionOptions { $0.sourceConnectionIDLength = sourceConnectionIDLength }
         }
 
         return quicOptions

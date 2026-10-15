@@ -95,14 +95,14 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
         tlsOptions.setExternalPSK(identity: epskIdentity, epsk: epskData)
 
         let quicOptions = QUICStreamProtocol.options()
-        quicOptions.tlsOptions = tlsOptions
+        quicOptions.modifyTLSOptions { $0 = tlsOptions }
 
         if sourceConnectionIDLength > 0 {
-            quicOptions.connectionOptions.sourceConnectionIDLength = sourceConnectionIDLength
+            quicOptions.modifyConnectionOptions { $0.sourceConnectionIDLength = sourceConnectionIDLength }
         }
 
         if resendRejectedEarlyDataAutomatically {
-            quicOptions.connectionOptions.resendRejectedEarlyDataAutomatically = true
+            quicOptions.modifyConnectionOptions { $0.resendRejectedEarlyDataAutomatically = true }
         }
 
         return quicOptions

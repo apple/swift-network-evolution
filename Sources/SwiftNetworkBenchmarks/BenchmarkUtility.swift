@@ -126,20 +126,24 @@ public final class QUICBenchmarkUtility {
 
         let quicOptions = QUICStreamProtocol.options()
         quicOptions.isUnidirectional = unidirectionalStreams
-        quicOptions.tlsOptions = tlsOptions
+        quicOptions.modifyTLSOptions { $0 = tlsOptions }
 
-        if let streamOptions = quicOptions.perProtocolOptions {
-            streamOptions.quicConnectionOptions.idleTimeout = idleTimeout
-            if datagram {
-                if !server {
-                    streamOptions.isDatagram = true
-                    streamOptions.associatedStreamID = 0
+        quicOptions.modifyPerProtocolOptions { streamOptions in
+            if datagram && !server {
+                streamOptions.isDatagram = true
+                streamOptions.associatedStreamID = 0
+            }
+
+            streamOptions.modifyQUICConnectionOptions { connectionOptions in
+                connectionOptions.idleTimeout = idleTimeout
+                if datagram {
+                    connectionOptions.datagramQuarterStreamID = true
+                    connectionOptions.datagramEnableFlowID = true
+                    connectionOptions.maxDatagramFrameSize = 65535
                 }
-                streamOptions.quicConnectionOptions.datagramQuarterStreamID = true
-                streamOptions.quicConnectionOptions.datagramEnableFlowID = true
-                streamOptions.quicConnectionOptions.maxDatagramFrameSize = 65535
             }
         }
+
         return quicOptions
     }
 
