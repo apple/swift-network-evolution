@@ -146,9 +146,9 @@ public struct IPv6Address: IPAddress, Hashable, CustomDebugStringConvertible {
         )
     }
 
-    // Parses an IPv6 address string into 8 network-order UInt16 groups.
-    // Handles :: compression and full notation.
-    private static func parseToGroups(_ addr: String) -> [UInt16]? {
+    // Parses an IPv6 address string into its 8 UInt16 groups, in address order, without allocating.
+    // Handles :: compression, full notation, and a trailing dotted quad.
+    private static func parseToGroups(_ addr: String) -> [8 of UInt16]? {
         var searchIndex = addr.startIndex
 
         // Position of '::' in the string, if present. Used to expand compressed zeros.
@@ -162,26 +162,49 @@ public struct IPv6Address: IPAddress, Hashable, CustomDebugStringConvertible {
             searchIndex = nextIndex
         }
 
-        func parseHalf(_ half: String) -> [UInt16]? {
-            if half.isEmpty { return [] }
-            var result: [UInt16] = []
-            for part in half.split(separator: ":", omittingEmptySubsequences: false) {
-                guard !part.isEmpty, part.count <= 4, let value = UInt16(part, radix: 16) else { return nil }
-                result.append(value)
+        // Parses one side of a `::` into `groups`, returning how many groups it wrote.
+        // A dotted quad is only allowed as the final component of the address, so
+        // `endsAddress` is false for the half before a `::`.
+        func parseHalf(_ half: Substring, endsAddress: Bool, into groups: inout [8 of UInt16]) -> Int? {
+            if half.isEmpty { return 0 }
+            var count = 0
+            var rest = half
+            while true {
+                let part = rest.prefix { $0 != ":" }
+                let isLast = part.endIndex == rest.endIndex
+                if endsAddress, isLast, part.contains(".") {
+                    guard count <= 6, let v4 = IPv4Address.parseDottedQuad(part) else { return nil }
+                    groups[count] = UInt16(truncatingIfNeeded: v4 >> 16)
+                    groups[count + 1] = UInt16(truncatingIfNeeded: v4)
+                    count += 2
+                } else {
+                    guard count < 8, !part.isEmpty, part.count <= 4,
+                        part.allSatisfy({ $0.isASCII && $0.isHexDigit }),
+                        let value = UInt16(part, radix: 16)
+                    else { return nil }
+                    groups[count] = value
+                    count += 1
+                }
+                if isLast { return count }
+                rest = rest[rest.index(after: part.endIndex)...]
             }
-            return result
         }
 
+        var left: [8 of UInt16] = .init(repeating: 0)
         if let range = doubleColonRange {
-            guard let left = parseHalf(String(addr[addr.startIndex..<range.lowerBound])),
-                let right = parseHalf(String(addr[range.upperBound..<addr.endIndex]))
+            var right: [8 of UInt16] = .init(repeating: 0)
+            guard let leftCount = parseHalf(addr[..<range.lowerBound], endsAddress: false, into: &left),
+                let rightCount = parseHalf(addr[range.upperBound...], endsAddress: true, into: &right)
             else { return nil }
-            let zeroCount = 8 - left.count - right.count
-            guard zeroCount >= 0 else { return nil }
-            return left + [UInt16](repeating: 0, count: zeroCount) + right
+            // `::` must stand in for at least one group.
+            guard leftCount + rightCount < 8 else { return nil }
+            for k in 0..<rightCount {
+                left[8 - rightCount + k] = right[k]
+            }
+            return left
         } else {
-            guard let groups = parseHalf(addr), groups.count == 8 else { return nil }
-            return groups
+            guard parseHalf(addr[...], endsAddress: true, into: &left) == 8 else { return nil }
+            return left
         }
     }
 
