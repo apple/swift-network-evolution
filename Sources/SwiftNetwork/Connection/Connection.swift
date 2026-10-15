@@ -2490,8 +2490,8 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
     }
 
     #if !NETWORK_EMBEDDED
-    public func send(_ message: StreamMessage) async throws(NetworkError) {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, NetworkError>) in
+    public func send(_ message: StreamMessage) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             send(message) { result in
                 switch result {
                 case .success:
@@ -2547,8 +2547,8 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
     public func receive(
         atLeast minBytes: Int,
         atMost maxBytes: Int
-    ) async throws(NetworkError) -> StreamMessage {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<StreamMessage, NetworkError>) in
+    ) async throws -> StreamMessage {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<StreamMessage, Error>) in
             receive(atLeast: minBytes, atMost: maxBytes) { result in
                 switch result {
                 case .success(let message):
@@ -2614,8 +2614,8 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
     }
 
     #if !NETWORK_EMBEDDED
-    public func send(_ message: DatagramMessage) async throws(NetworkError) {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, NetworkError>) in
+    public func send(_ message: DatagramMessage) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             send(message) { result in
                 switch result {
                 case .success:
@@ -2664,9 +2664,9 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
     }
 
     #if !NETWORK_EMBEDDED
-    public func receive() async throws(NetworkError) -> DatagramMessage {
+    public func receive() async throws -> DatagramMessage {
         try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<DatagramMessage, NetworkError>) in
+            (continuation: CheckedContinuation<DatagramMessage, Error>) in
             receive { result in
                 switch result {
                 case .success(let message):
