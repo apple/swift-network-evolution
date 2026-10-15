@@ -1202,7 +1202,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
             in: &eventContext
         )
         connection.log.info(
-            "[S\(streamID.value)] received RESET_STREAM; offsets conn (inorder \(stream.receiveState), last \(connection.flowControlState.totalInOrderInboundBytesRead)), stream (inorder \(stream.flowControlState.totalInOrderInboundBytesRead), last \(stream.lastReceivedOffset)), final \(self.finalSize)"
+            "[S\(streamID.value)] received RESET_STREAM; offsets conn (inorder \(stream.receive.state), last \(connection.flowControlState.totalInOrderInboundBytesRead)), stream (inorder \(stream.flowControlState.totalInOrderInboundBytesRead), last \(stream.lastReceivedOffset)), final \(self.finalSize)"
         )
 
         // If the final size of the stream being reset is beyond the total in-order
@@ -1249,13 +1249,13 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
             return false
         }
 
-        if stream.receiveState == .receive || stream.receiveState == .sizeKnown {
-            stream.receiveState = .resetReceived
+        if stream.receive.state == .receive || stream.receive.state == .sizeKnown {
+            stream.receive.state = .resetReceived
             stream.readClosed = true
             // A receiver of RESET_STREAM can discard any data
             // that it already received on that stream.
             if streamID.isReceiveOnly(server: connection.isServer) || stream.receivedStopSending
-                || stream.sendState == .dataSent || stream.sendState == .dataReceived
+                || stream.send.state == .dataSent || stream.send.state == .dataReceived
             {
                 let error = NetworkError.posix(ECONNRESET)
                 stream.close(errorCode: error, in: &eventContext)
@@ -1374,7 +1374,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         stream.updateOutboundFlowControlCredit(connection: connection)
 
         var streamError = NetworkError.posix(ENOTCONN)
-        if stream.receiveState == .resetReceived {
+        if stream.receive.state == .resetReceived {
             streamError = NetworkError.posix(ECONNRESET)
         }
         stream.streamMetadata.applicationError = self.code
@@ -1386,7 +1386,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         // If STOP_SENDING was received the outbound write should be closed
         // An endpoint that receives a STOP_SENDING frame MUST send a
         // RESET_STREAM frame if the stream is in the "Ready" or "Send" state.
-        if stream.sendState == .ready || stream.sendState == .send {
+        if stream.send.state == .ready || stream.send.state == .send {
             let _ = connection.disconnect(flow: stream.flowIdentifier, direction: .outbound, in: &eventContext)
         }
         //
@@ -1394,8 +1394,8 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         // a RESET_STREAM frame or a STREAM+FIN frame
         // and the app has read the FIN.
         //
-        if streamID.isSendOnly(server: connection.isServer) || stream.receiveState == .resetReceived
-            || stream.receiveState == .dataRead
+        if streamID.isSendOnly(server: connection.isServer) || stream.receive.state == .resetReceived
+            || stream.receive.state == .dataRead
         {
             stream.close(errorCode: streamError, in: &eventContext)
         }
@@ -1865,7 +1865,7 @@ struct FrameStreamSendMetadata: ~Copyable, QUICFrameProtocol {
         try validateSerializationResult(result)
 
         if lengthToWrite > 0 {
-            let dataSizeWritten = stream.sendBuffer.copyOutSendData(
+            let dataSizeWritten = stream.send.buffer.copyOutSendData(
                 offset: offset,
                 length: lengthToWrite,
                 into: &frame,

@@ -461,7 +461,7 @@ if #available(anyAppleOS 26, *) {
     var loggingHandler: LoggingHandle = LoggingHandle(loggingType: .none)
     var uploadSize = 1000  // 1kb
     var downloadSize = 1000  // 1kb
-    var streamCount = 100000
+    var streamCount = 1_000_000
     var concurrentStreams = 100
     var linkDelay = NetworkDuration.zero
     let arguments = CommandLine.arguments.dropFirst(0)
