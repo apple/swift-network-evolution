@@ -1325,6 +1325,7 @@ extension SwiftTLSProtocol.SwiftTLSProtocolOptions: Sendable {}
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 extension ProtocolOptions<SwiftTLSProtocol> {
+    /// The TLS options, as a value. Change them with `modifyPerProtocolOptions`.
     public var tlsOptions: SwiftTLSProtocol.Options {
         get {
             perProtocolOptions ?? SwiftTLSProtocol.Options()

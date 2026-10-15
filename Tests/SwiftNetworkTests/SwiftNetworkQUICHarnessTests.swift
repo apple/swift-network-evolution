@@ -87,7 +87,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     func testQUICHandshakeWithShortPackets() {
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.testSendingShortPackets = true
+        clientOptions.modifyConnectionOptions { $0.testSendingShortPackets = true }
         QUICTestHarness().runQUICTest(clientOptions: clientOptions)
     }
 
@@ -100,7 +100,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         let clientOptions = QUICProtocol.options()
         var tlsOptions = clientOptions.tlsOptions
         tlsOptions.applicationProtocols = alpnList
-        clientOptions.tlsOptions = tlsOptions
+        clientOptions.modifyTLSOptions { $0 = tlsOptions }
 
         QUICTestHarness().runQUICTest(clientOptions: clientOptions)
     }
@@ -109,7 +109,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         let clientOptions = QUICProtocol.options()
         var tlsOptions = clientOptions.tlsOptions
         tlsOptions.applicationProtocols = ["bad_alpn"]
-        clientOptions.tlsOptions = tlsOptions
+        clientOptions.modifyTLSOptions { $0 = tlsOptions }
 
         QUICTestHarness().runQUICTest(
             expectHandshakeError: .init(quicTransportError: QUICTransportError(Int64(0x0100), "TLS error")!),
@@ -124,7 +124,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     // flight, so the close is deferred until the packet has been handled.
     func testQUICHandshakeWithInvalidServerTransportParameters() {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialMaxStreamsBidirectional = Constants.maxStreamLimit + 1
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = Constants.maxStreamLimit + 1 }
 
         QUICTestHarness().runQUICTest(
             expectHandshakeError: .init(
@@ -141,7 +141,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     // is still handling the connected event from TLS.
     func testQUICHandshakeWithInvalidServerTransportParametersAfterAsyncVerification() {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialMaxStreamsBidirectional = Constants.maxStreamLimit + 1
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = Constants.maxStreamLimit + 1 }
 
         let clientOptions = QUICProtocol.options()
         var tlsOptions = clientOptions.tlsOptions
@@ -156,7 +156,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
             }
             return .waiting
         }
-        clientOptions.tlsOptions = tlsOptions
+        clientOptions.modifyTLSOptions { $0 = tlsOptions }
 
         QUICTestHarness().runQUICTest(
             expectHandshakeError: .init(
@@ -173,12 +173,12 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         let clientOptions = QUICProtocol.options()
         var tlsOptions = clientOptions.tlsOptions
         tlsOptions.tlsOptions.supportedCipherSuites = [.AES128GCM_SHA256]
-        clientOptions.tlsOptions = tlsOptions
+        clientOptions.modifyTLSOptions { $0 = tlsOptions }
 
         let serverOptions = QUICProtocol.options()
         var serverTLSOptions = serverOptions.tlsOptions
         serverTLSOptions.tlsOptions.supportedCipherSuites = [.AES128GCM_SHA256]
-        serverOptions.tlsOptions = serverTLSOptions
+        serverOptions.modifyTLSOptions { $0 = serverTLSOptions }
 
         QUICTestHarness().runQUICTest(
             clientOptions: clientOptions,
@@ -190,12 +190,12 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         let clientOptions = QUICProtocol.options()
         var tlsOptions = clientOptions.tlsOptions
         tlsOptions.tlsOptions.supportedCipherSuites = [.AES256GCM_SHA384]
-        clientOptions.tlsOptions = tlsOptions
+        clientOptions.modifyTLSOptions { $0 = tlsOptions }
 
         let serverOptions = QUICProtocol.options()
         var serverTLSOptions = serverOptions.tlsOptions
         serverTLSOptions.tlsOptions.supportedCipherSuites = [.AES256GCM_SHA384]
-        serverOptions.tlsOptions = serverTLSOptions
+        serverOptions.modifyTLSOptions { $0 = serverTLSOptions }
 
         QUICTestHarness().runQUICTest(
             clientOptions: clientOptions,
@@ -207,12 +207,12 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         let clientOptions = QUICProtocol.options()
         var tlsOptions = clientOptions.tlsOptions
         tlsOptions.tlsOptions.supportedCipherSuites = [.chacha20Poly1305_SHA256]
-        clientOptions.tlsOptions = tlsOptions
+        clientOptions.modifyTLSOptions { $0 = tlsOptions }
 
         let serverOptions = QUICProtocol.options()
         var serverTLSOptions = serverOptions.tlsOptions
         serverTLSOptions.tlsOptions.supportedCipherSuites = [.chacha20Poly1305_SHA256]
-        serverOptions.tlsOptions = serverTLSOptions
+        serverOptions.modifyTLSOptions { $0 = serverTLSOptions }
 
         QUICTestHarness().runQUICTest(
             clientOptions: clientOptions,
@@ -224,12 +224,12 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         let clientOptions = QUICProtocol.options()
         var tlsOptions = clientOptions.tlsOptions
         tlsOptions.tlsOptions.supportedCipherSuites = [.chacha20Poly1305_SHA256]
-        clientOptions.tlsOptions = tlsOptions
+        clientOptions.modifyTLSOptions { $0 = tlsOptions }
 
         let serverOptions = QUICProtocol.options()
         var serverTLSOptions = serverOptions.tlsOptions
         serverTLSOptions.tlsOptions.supportedCipherSuites = [.AES256GCM_SHA384, .chacha20Poly1305_SHA256]
-        serverOptions.tlsOptions = serverTLSOptions
+        serverOptions.modifyTLSOptions { $0 = serverTLSOptions }
 
         QUICTestHarness().runQUICTest(
             clientOptions: clientOptions,
@@ -241,12 +241,12 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         let clientOptions = QUICProtocol.options()
         var tlsOptions = clientOptions.tlsOptions
         tlsOptions.tlsOptions.supportedCipherSuites = [.chacha20Poly1305_SHA256]
-        clientOptions.tlsOptions = tlsOptions
+        clientOptions.modifyTLSOptions { $0 = tlsOptions }
 
         let serverOptions = QUICProtocol.options()
         var serverTLSOptions = serverOptions.tlsOptions
         serverTLSOptions.tlsOptions.supportedCipherSuites = [.AES256GCM_SHA384]
-        serverOptions.tlsOptions = serverTLSOptions
+        serverOptions.modifyTLSOptions { $0 = serverTLSOptions }
 
         QUICTestHarness().runQUICTest(
             expectHandshakeError: .init(quicTransportError: QUICTransportError(Int64(0x0100), "TLS error")!),
@@ -258,22 +258,22 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     func testQUICHandshakeWithSCIDLength() {
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.sourceConnectionIDLength = 10
+        clientOptions.modifyConnectionOptions { $0.sourceConnectionIDLength = 10 }
         QUICTestHarness().runQUICTest(clientOptions: clientOptions)
     }
 
     func testQUICHandshakeWithInitialServerSCID() {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialSourceConnectionID = QUICConnectionID(10)
-        serverOptions.connectionOptions.initialStatelessResetToken = QUICStatelessResetToken()
+        serverOptions.modifyConnectionOptions { $0.initialSourceConnectionID = QUICConnectionID(10) }
+        serverOptions.modifyConnectionOptions { $0.initialStatelessResetToken = QUICStatelessResetToken() }
         QUICTestHarness().runQUICTest(serverOptions: serverOptions)
     }
 
     func testQUICHandshakeWithManualServerCIDs() {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialSourceConnectionID = QUICConnectionID(10)
-        serverOptions.connectionOptions.initialStatelessResetToken = QUICStatelessResetToken()
-        serverOptions.connectionOptions.disableAutomaticNewConnectionIDs = true
+        serverOptions.modifyConnectionOptions { $0.initialSourceConnectionID = QUICConnectionID(10) }
+        serverOptions.modifyConnectionOptions { $0.initialStatelessResetToken = QUICStatelessResetToken() }
+        serverOptions.modifyConnectionOptions { $0.disableAutomaticNewConnectionIDs = true }
         QUICTestHarness().runQUICTest(
             serverOptions: serverOptions,
             extraServerCIDs: [
@@ -337,7 +337,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         // Send a MAX_STREAMS frame from the server to raise the client's stream limit and start the pending stream.
         // The pending stream should then go into ready and send / receive data.
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialMaxStreamsBidirectional = 8
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = 8 }
         QUICTestHarness().runQUICServerTestForPendingBidirectional(
             dataBlock: Array("Hello World!".utf8),
             serverOptions: serverOptions
@@ -347,7 +347,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     func testQUIC50BidirectionalStreams() {
         // Server advertises that the client can open 50 bidirectional streams
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialMaxStreamsBidirectional = 50
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = 50 }
         QUICTestHarness().runQUICTest(
             streamCount: 50,
             dataBlock: Array("Hello World!".utf8),
@@ -357,7 +357,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     func testQUIC1000BidirectionalStreamsEcho1k() {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialMaxStreamsBidirectional = 1000
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = 1000 }
         QUICTestHarness().runQUICTest(
             streamCount: 1000,
             blockSize: 1000,
@@ -508,10 +508,10 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     func testQUICEcho40KiBNoPMTUD() {
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.pmtud = false
+        clientOptions.modifyConnectionOptions { $0.pmtud = false }
 
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.pmtud = false
+        serverOptions.modifyConnectionOptions { $0.pmtud = false }
 
         QUICTestHarness().runQUICTest(
             blockSize: 10240,
@@ -536,8 +536,8 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     func testQUIC13AutomaticStreams() {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialMaxStreamsBidirectional = 5
-        serverOptions.connectionOptions.maximumConcurrentBidirectionalStreams = 5
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = 5 }
+        serverOptions.modifyConnectionOptions { $0.maximumConcurrentBidirectionalStreams = 5 }
         QUICTestHarness().runQUICTest(
             streamCount: 13,
             blockSize: 10240,
@@ -548,8 +548,8 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     func testQUIC100AutomaticStreams() {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialMaxStreamsBidirectional = 8
-        serverOptions.connectionOptions.maximumConcurrentBidirectionalStreams = 8
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = 8 }
+        serverOptions.modifyConnectionOptions { $0.maximumConcurrentBidirectionalStreams = 8 }
         QUICTestHarness().runQUICTest(
             streamCount: 100,
             blockSize: 10240,
@@ -806,7 +806,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     func testQUICDatagramWithLargeInitialPacketSize() {
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.initialPacketSize = 1400
+        clientOptions.modifyConnectionOptions { $0.initialPacketSize = 1400 }
 
         let observedInitialPacketSizes = Mutex<[Int]>([])
         let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
@@ -884,7 +884,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     func testQUICHelloWorldUnidirectional50() {
         // Server advertises that the client can open 50 unidirectional streams
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialMaxStreamsUnidirectional = 50
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamsUnidirectional = 50 }
         QUICTestHarness().runQUICServerTestWithUnidirectionalStreams(
             streamCount: 50,
             dataBlock: Array("Hello World!".utf8),
@@ -906,7 +906,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         // Server advertises that the client can open 50 unidirectional streams
         let clientOptions = QUICProtocol.options()
         // Set to 51 because the test starts creating streams at index 0 (not 1 like the other tests)
-        clientOptions.connectionOptions.initialMaxStreamsUnidirectional = 51
+        clientOptions.modifyConnectionOptions { $0.initialMaxStreamsUnidirectional = 51 }
         QUICTestHarness().runQUICServerInitiatedUnidirectionalStreams(
             streamCount: 50,
             dataBlock: Array("Hello World!".utf8),

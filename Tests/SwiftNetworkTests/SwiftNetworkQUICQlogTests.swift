@@ -66,11 +66,13 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
         let harness = QUICTestHarness()
 
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.qlogConfiguration = QLogConfiguration(
-            logTitle: title,
-            logDescription: description,
-            logPath: path
-        )
+        clientOptions.modifyConnectionOptions { connectionOptions in
+            connectionOptions.qlogConfiguration = QLogConfiguration(
+                logTitle: title,
+                logDescription: description,
+                logPath: path
+            )
+        }
         harness.runQUICTest(dataBlock: dataBlock, clientOptions: clientOptions)
 
         let qlogExpectation = XCTestExpectation(description: "Loop until the qlog is written")
@@ -107,11 +109,13 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
         let harness = QUICTestHarness()
 
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.qlogConfiguration = QLogConfiguration(
-            logTitle: title,
-            logDescription: description,
-            logPath: path
-        )
+        serverOptions.modifyConnectionOptions { connectionOptions in
+            connectionOptions.qlogConfiguration = QLogConfiguration(
+                logTitle: title,
+                logDescription: description,
+                logPath: path
+            )
+        }
 
         harness.runQUICTest(dataBlock: dataBlock, serverOptions: serverOptions)
 
@@ -152,11 +156,13 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
         let harness = QUICTestHarness()
 
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.qlogConfiguration = QLogConfiguration(
-            logTitle: title,
-            logDescription: "ServerDrainingQLogDescription",
-            logPath: path
-        )
+        serverOptions.modifyConnectionOptions { connectionOptions in
+            connectionOptions.qlogConfiguration = QLogConfiguration(
+                logTitle: title,
+                logDescription: "ServerDrainingQLogDescription",
+                logPath: path
+            )
+        }
 
         // The client closes the connection with a transport error, which puts the server into
         // draining. The harness then tears down both sides, which unregisters the server's
