@@ -824,9 +824,6 @@ class QUICTestHarness {
                     let receivedFIN = serverStreamHarness.receivedFIN
                     XCTAssertTrue(receivedFIN, "Server failed to receive FIN from client")
                 }
-                if serverStreamHarness.receivedFIN {
-                    serverStreamHarness.stop(in: &state)
-                }
                 serverReadExpectation.fulfill()
                 return
             }

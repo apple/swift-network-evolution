@@ -63,6 +63,10 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
         // A connection that still owes the peer an ACK is not idle.
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
+            // Don't send a FIN: with the stretched ACK delay below, the harness's own
+            // post-echo wait for the stream to disconnect would otherwise block on the
+            // real (delayed) ACK before `afterData` ever gets to run.
+            sendFIN: false,
             afterHandshake: { harness in
                 // The test relies on the client still owing a delayed ACK for the echoed
                 // data when the idle state is evaluated, and sends that ACK explicitly.
