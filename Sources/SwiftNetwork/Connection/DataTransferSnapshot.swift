@@ -14,8 +14,11 @@
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public struct DataTransferSnapshot: Equatable {
+public struct DataTransferSnapshot: Equatable, Sendable {
+    public var snapshotTimestamp: NetworkClock.Instant = .zero
     public var interfaceIndex: UInt64?
+    public var interfaceType: InterfaceType?
+    public var pathIdentifier: UInt64?
 
     public var receivedIPPacketCount: UInt64 = 0
     public var receivedIPEct1PacketCount: UInt64 = 0
