@@ -67,7 +67,9 @@ class QUICFrameTests: XCTestCase {
     var connection: QUICConnection!
 
     override func setUp() {
-        connection = QUICConnection(context: NetworkContext.implicitContext)
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
         stats = Statistics()
     }
 
@@ -2701,193 +2703,160 @@ class QUICFrameTests: XCTestCase {
     // MARK: Datagram (0x30)
 
     func testDatagramInit() throws {
-        let bytes: [UInt8] = [
-            0x30,
-            0xaa, 0xbb, 0xcc, 0x44,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: false,
-            useContextID: false,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.flowID, nil)
-        XCTAssertEqual(quicFrame.contextID, nil)
-        XCTAssertEqual(quicFrame.length, 4)
-        XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x30,
+                0xaa, 0xbb, 0xcc, 0x44,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: false,
+                useContextID: false,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.flowID, nil)
+            XCTAssertEqual(quicFrame.contextID, nil)
+            XCTAssertEqual(quicFrame.length, 4)
+            XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramInitEmpty() throws {
-        let bytes: [UInt8] = [
-            0x30
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: false,
-            useContextID: false,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.flowID, nil)
-        XCTAssertEqual(quicFrame.contextID, nil)
-        XCTAssertEqual(quicFrame.length, 0)
-        XCTAssertEqual(quicFrame.data, [])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x30
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: false,
+                useContextID: false,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.flowID, nil)
+            XCTAssertEqual(quicFrame.contextID, nil)
+            XCTAssertEqual(quicFrame.length, 0)
+            XCTAssertEqual(quicFrame.data, [])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramFlowIDInit() throws {
-        let bytes: [UInt8] = [
-            0x30,
-            0x40, 0x4d,
-            0xaa, 0xbb, 0xcc, 0x44,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: true,
-            useContextID: false,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, nil)
-        XCTAssertEqual(quicFrame.flowID, 77)
-        XCTAssertEqual(quicFrame.length, 4)
-        XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x30,
+                0x40, 0x4d,
+                0xaa, 0xbb, 0xcc, 0x44,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: true,
+                useContextID: false,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.contextID, nil)
+            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.length, 4)
+            XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramFlowIDInitEmpty() throws {
-        let bytes: [UInt8] = [
-            0x30,
-            0x40, 0x4d,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: true,
-            useContextID: false,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, nil)
-        XCTAssertEqual(quicFrame.flowID, 77)
-        XCTAssertEqual(quicFrame.length, 0)
-        XCTAssertEqual(quicFrame.data, [])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x30,
+                0x40, 0x4d,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: true,
+                useContextID: false,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.contextID, nil)
+            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.length, 0)
+            XCTAssertEqual(quicFrame.data, [])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramContextIDInit() throws {
-        let bytes: [UInt8] = [
-            0x30,
-            0x0d,
-            0xaa, 0xbb, 0xcc, 0x44,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: false,
-            useContextID: true,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, 13)
-        XCTAssertEqual(quicFrame.flowID, nil)
-        XCTAssertEqual(quicFrame.length, 4)
-        XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x30,
+                0x0d,
+                0xaa, 0xbb, 0xcc, 0x44,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: false,
+                useContextID: true,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.contextID, 13)
+            XCTAssertEqual(quicFrame.flowID, nil)
+            XCTAssertEqual(quicFrame.length, 4)
+            XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramContextIDInitEmpty() throws {
-        let bytes: [UInt8] = [
-            0x30,
-            0x0d,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: false,
-            useContextID: true,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, 13)
-        XCTAssertEqual(quicFrame.flowID, nil)
-        XCTAssertEqual(quicFrame.length, 0)
-        XCTAssertEqual(quicFrame.data, [])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x30,
+                0x0d,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: false,
+                useContextID: true,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.contextID, 13)
+            XCTAssertEqual(quicFrame.flowID, nil)
+            XCTAssertEqual(quicFrame.length, 0)
+            XCTAssertEqual(quicFrame.data, [])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramFlowIDContextIDInit() throws {
-        let bytes: [UInt8] = [
-            0x30,
-            0x40, 0x4d,
-            0x0d,
-            0xaa, 0xbb, 0xcc, 0x44,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: true,
-            useContextID: true,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, 13)
-        XCTAssertEqual(quicFrame.flowID, 77)
-        XCTAssertEqual(quicFrame.length, 4)
-        XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
-    }
-
-    func testDatagramFlowIDContextIDInitEmpty() throws {
-        let bytes: [UInt8] = [
-            0x30,
-            0x40, 0x4d,
-            0x0d,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: true,
-            useContextID: true,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, 13)
-        XCTAssertEqual(quicFrame.flowID, 77)
-        XCTAssertEqual(quicFrame.length, 0)
-        XCTAssertEqual(quicFrame.data, [])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
-    }
-
-    func testDatagramFlowIDContextIDInitTruncated() throws {
-        let bytes: [UInt8] = [
-            0x30,
-            0x40, 0x4d,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        do {
-            _ = try FrameDatagram(
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x30,
+                0x40, 0x4d,
+                0x0d,
+                0xaa, 0xbb, 0xcc, 0x44,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
                 frame: &frame,
                 useFlowID: true,
                 useContextID: true,
@@ -2895,11 +2864,64 @@ class QUICFrameTests: XCTestCase {
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
-            XCTFail("Should have thrown error for frame creation")
+            XCTAssertEqual(quicFrame.contextID, 13)
+            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.length, 4)
+            XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
+    }
+
+    func testDatagramFlowIDContextIDInitEmpty() throws {
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x30,
+                0x40, 0x4d,
+                0x0d,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: true,
+                useContextID: true,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.contextID, 13)
+            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.length, 0)
+            XCTAssertEqual(quicFrame.data, [])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
+    }
+
+    func testDatagramFlowIDContextIDInitTruncated() throws {
+        do {
+            try connection.context.onQueue {
+                let bytes: [UInt8] = [
+                    0x30,
+                    0x40, 0x4d,
+                ]
+                var frame = Frame(copyBuffer: bytes)
+                defer {
+                    frame.finalize(success: true)
+                }
+                _ = try FrameDatagram(
+                    frame: &frame,
+                    useFlowID: true,
+                    useContextID: true,
+                    connection: connection,
+                    stats: &connection.stats,
+                    in: &connection.context.eventContext
+                )
+                XCTFail("Should have thrown error for frame creation")
+            }
         } catch {
             // Expect error
         }
-        frame.finalize(success: true)
     }
 
     func testDatagramWriting() throws {
@@ -3124,202 +3146,167 @@ class QUICFrameTests: XCTestCase {
     // MARK: DatagramWithLength (0x30)
 
     func testDatagramLengthInit() throws {
-        let bytes: [UInt8] = [
-            0x31,
-            0x04,
-            0xaa, 0xbb, 0xcc, 0x44,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: false,
-            useContextID: false,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.flowID, nil)
-        XCTAssertEqual(quicFrame.contextID, nil)
-        XCTAssertEqual(quicFrame.length, 4)
-        XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x31,
+                0x04,
+                0xaa, 0xbb, 0xcc, 0x44,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: false,
+                useContextID: false,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.flowID, nil)
+            XCTAssertEqual(quicFrame.contextID, nil)
+            XCTAssertEqual(quicFrame.length, 4)
+            XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramLengthInitEmpty() throws {
-        let bytes: [UInt8] = [
-            0x31,
-            0x00,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: false,
-            useContextID: false,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.flowID, nil)
-        XCTAssertEqual(quicFrame.contextID, nil)
-        XCTAssertEqual(quicFrame.length, 0)
-        XCTAssertEqual(quicFrame.data, [])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x31,
+                0x00,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: false,
+                useContextID: false,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.flowID, nil)
+            XCTAssertEqual(quicFrame.contextID, nil)
+            XCTAssertEqual(quicFrame.length, 0)
+            XCTAssertEqual(quicFrame.data, [])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramLengthFlowIDInit() throws {
-        let bytes: [UInt8] = [
-            0x31,
-            0x06,
-            0x40, 0x4d,
-            0xaa, 0xbb, 0xcc, 0x44,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: true,
-            useContextID: false,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, nil)
-        XCTAssertEqual(quicFrame.flowID, 77)
-        XCTAssertEqual(quicFrame.length, 4)
-        XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x31,
+                0x06,
+                0x40, 0x4d,
+                0xaa, 0xbb, 0xcc, 0x44,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: true,
+                useContextID: false,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.contextID, nil)
+            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.length, 4)
+            XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramLengthFlowIDInitEmpty() throws {
-        let bytes: [UInt8] = [
-            0x31,
-            0x02,
-            0x40, 0x4d,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: true,
-            useContextID: false,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, nil)
-        XCTAssertEqual(quicFrame.flowID, 77)
-        XCTAssertEqual(quicFrame.length, 0)
-        XCTAssertEqual(quicFrame.data, [])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x31,
+                0x02,
+                0x40, 0x4d,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: true,
+                useContextID: false,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.contextID, nil)
+            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.length, 0)
+            XCTAssertEqual(quicFrame.data, [])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramLengthContextIDInit() throws {
-        let bytes: [UInt8] = [
-            0x31,
-            0x05,
-            0x0d,
-            0xaa, 0xbb, 0xcc, 0x44,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: false,
-            useContextID: true,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, 13)
-        XCTAssertEqual(quicFrame.flowID, nil)
-        XCTAssertEqual(quicFrame.length, 4)
-        XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x31,
+                0x05,
+                0x0d,
+                0xaa, 0xbb, 0xcc, 0x44,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: false,
+                useContextID: true,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.contextID, 13)
+            XCTAssertEqual(quicFrame.flowID, nil)
+            XCTAssertEqual(quicFrame.length, 4)
+            XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramLengthContextIDInitEmpty() throws {
-        let bytes: [UInt8] = [
-            0x31,
-            0x01,
-            0x0d,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: false,
-            useContextID: true,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, 13)
-        XCTAssertEqual(quicFrame.flowID, nil)
-        XCTAssertEqual(quicFrame.length, 0)
-        XCTAssertEqual(quicFrame.data, [])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x31,
+                0x01,
+                0x0d,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: false,
+                useContextID: true,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.contextID, 13)
+            XCTAssertEqual(quicFrame.flowID, nil)
+            XCTAssertEqual(quicFrame.length, 0)
+            XCTAssertEqual(quicFrame.data, [])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramLengthFlowIDContextIDInit() throws {
-        let bytes: [UInt8] = [
-            0x31,
-            0x07,
-            0x40, 0x4d,
-            0x0d,
-            0xaa, 0xbb, 0xcc, 0x44,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: true,
-            useContextID: true,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, 13)
-        XCTAssertEqual(quicFrame.flowID, 77)
-        XCTAssertEqual(quicFrame.length, 4)
-        XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
-    }
-
-    func testDatagramLengthFlowIDContextIDInitEmpty() throws {
-        let bytes: [UInt8] = [
-            0x31,
-            0x03,
-            0x40, 0x4d,
-            0x0d,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: true,
-            useContextID: true,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
-        XCTAssertEqual(quicFrame.contextID, 13)
-        XCTAssertEqual(quicFrame.flowID, 77)
-        XCTAssertEqual(quicFrame.length, 0)
-        XCTAssertEqual(quicFrame.data, [])
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
-    }
-
-    func testDatagramLengthFlowIDContextIDInitTruncated() throws {
-        let bytes: [UInt8] = [
-            0x31,
-            0x03,
-            0x40, 0x4d,
-        ]
-        var frame = Frame(copyBuffer: bytes)
-        do {
-            _ = try FrameDatagram(
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x31,
+                0x07,
+                0x40, 0x4d,
+                0x0d,
+                0xaa, 0xbb, 0xcc, 0x44,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
                 frame: &frame,
                 useFlowID: true,
                 useContextID: true,
@@ -3327,11 +3314,66 @@ class QUICFrameTests: XCTestCase {
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
-            XCTFail("Should have thrown error for frame creation")
+            XCTAssertEqual(quicFrame.contextID, 13)
+            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.length, 4)
+            XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
+    }
+
+    func testDatagramLengthFlowIDContextIDInitEmpty() throws {
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x31,
+                0x03,
+                0x40, 0x4d,
+                0x0d,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: true,
+                useContextID: true,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.contextID, 13)
+            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.length, 0)
+            XCTAssertEqual(quicFrame.data, [])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
+    }
+
+    func testDatagramLengthFlowIDContextIDInitTruncated() throws {
+        do {
+            try connection.context.onQueue {
+                let bytes: [UInt8] = [
+                    0x31,
+                    0x03,
+                    0x40, 0x4d,
+                ]
+                var frame = Frame(copyBuffer: bytes)
+                defer {
+                    frame.finalize(success: true)
+                }
+                _ = try FrameDatagram(
+                    frame: &frame,
+                    useFlowID: true,
+                    useContextID: true,
+                    connection: connection,
+                    stats: &connection.stats,
+                    in: &connection.context.eventContext
+                )
+                XCTFail("Should have thrown error for frame creation")
+            }
         } catch {
             // Expect error
         }
-        frame.finalize(success: true)
     }
 
     func testDatagramLengthWriting() throws {
@@ -3560,37 +3602,41 @@ class QUICFrameTests: XCTestCase {
     }
 
     func testDatagramNoLengthParsing() throws {
-        // Test parsing a datagram frame without length
-        let data: [UInt8] = [0xaa, 0xbb, 0xcc, 0x44, 0xde, 0xad, 0xbe, 0xef]
-        var bytes: [UInt8] = [
-            0x30,  // Datagram frame type (no length field)
-            0x40, 0x4d,
-            0x0d,
-        ]
-        // Add the data to the end
-        for byte in data {
-            bytes.append(byte)
-        }
-        var frame = Frame(copyBuffer: bytes)
-        var quicFrame = try FrameDatagram(
-            frame: &frame,
-            useFlowID: true,
-            useContextID: true,
-            connection: connection,
-            stats: &connection.stats,
-            in: &connection.context.eventContext
-        )
+        try connection.context.onQueue {
+            // Test parsing a datagram frame without length
+            let data: [UInt8] = [0xaa, 0xbb, 0xcc, 0x44, 0xde, 0xad, 0xbe, 0xef]
+            var bytes: [UInt8] = [
+                0x30,  // Datagram frame type (no length field)
+                0x40, 0x4d,
+                0x0d,
+            ]
+            // Add the data to the end
+            for byte in data {
+                bytes.append(byte)
+            }
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useFlowID: true,
+                useContextID: true,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
 
-        XCTAssertEqual(quicFrame.flowID, 77)
-        XCTAssertEqual(quicFrame.contextID, 13)
-        XCTAssertEqual(quicFrame.length, 8)
-        XCTAssertEqual(quicFrame.data, data)
-        quicFrame.frame.finalize(success: true)
-        frame.finalize(success: true)
+            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.contextID, 13)
+            XCTAssertEqual(quicFrame.length, 8)
+            XCTAssertEqual(quicFrame.data, data)
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
     }
 
     func testDatagramBadLengthParsing() throws {
-        let connection = QUICConnection(context: NetworkContext.implicitContext)
+        let connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
 
         let bytes: [UInt8] = [
@@ -3599,23 +3645,25 @@ class QUICFrameTests: XCTestCase {
             0x00,  // flowID VLE = 0  → headerOverhead = 1
             0x00, 0x00,  // remainingBytes = 2
         ]
-        var frame = Frame(copyBuffer: bytes)
-        defer {
-            frame.finalize(success: true)
-        }
         var threwError = false
         do {
-            // Ask to parse flow ID and context ID, even though the length doesn't allow for them
-            var quicFrame = try FrameDatagram(
-                frame: &frame,
-                useFlowID: true,
-                useContextID: false,
-                connection: connection,
-                stats: &connection.stats,
-                in: &connection.context.eventContext
-            )
+            try connection.context.onQueue {
+                var frame = Frame(copyBuffer: bytes)
+                defer {
+                    frame.finalize(success: true)
+                }
+                // Ask to parse flow ID and context ID, even though the length doesn't allow for them
+                var quicFrame = try FrameDatagram(
+                    frame: &frame,
+                    useFlowID: true,
+                    useContextID: false,
+                    connection: connection,
+                    stats: &connection.stats,
+                    in: &connection.context.eventContext
+                )
 
-            quicFrame.frame.finalize(success: true)
+                quicFrame.frame.finalize(success: true)
+            }
         } catch {
             threwError = true
         }
