@@ -93,6 +93,35 @@ enum QUICSendStreamState: UInt8, CaseIterable, CustomStringConvertible {
     }
 }
 
+// Bundles the streams outbound send buffer and send-state enum into a single stored
+// property on QUICStreamInstance, so operations that touch both take one dynamic access
+// instead of two.
+@available(Network 0.1.0, *)
+struct QUICSendState: ~Copyable {
+    var buffer = StreamSendBuffer()
+    var state = QUICSendStreamState()
+
+    mutating func enqueue(_ frame: consuming Frame, isLast: Bool, logPrefix: String) {
+        if state == .ready {
+            state.change(logIDString: logPrefix, to: .send)
+        }
+        buffer.addSendData(frame, isLast: isLast)
+    }
+
+    mutating func recordSent(isFinal: Bool, logPrefix: String) {
+        if isFinal, state == .send {
+            state.change(logIDString: logPrefix, to: .dataSent)
+        }
+    }
+
+    // To be called when 0-RTT sending is rejected.
+    mutating func reset() {
+        state = .ready
+        buffer.empty()
+        buffer = StreamSendBuffer()
+    }
+}
+
 // Note: It is CaseIterable only so that tests can ensure it checks all states
 @available(Network 0.1.0, *)
 enum QUICReceiveStreamState: CaseIterable, CustomStringConvertible {
@@ -176,6 +205,104 @@ enum QUICReceiveStreamState: CaseIterable, CustomStringConvertible {
         default:
             return true
         }
+    }
+}
+
+// Bundles the streams reassembly queue and receive-state tracking into a single stored
+// property on QUICStreamInstance, so operations that touch several of them take one dynamic
+// access instead of many.
+@available(Network 0.1.0, *)
+struct QUICReceiveState: ~Copyable {
+    var reassemblyQueue = ReassemblyQueue()
+    var state = QUICReceiveStreamState()
+
+    mutating func tryAppend(
+        frame: consuming Frame,
+        offset: Int,
+        fin: Bool,
+        maximumUnreadInboundBytesAllowed: UInt64
+    ) -> ReassemblyQueue.AppendResult? {
+        guard reassemblyQueue.canAppendItemsForByteLimit(maximumUnreadInboundBytesAllowed).acceptable else {
+            var frame = frame
+            frame.finalize(success: false)
+            return nil
+        }
+        return reassemblyQueue.append(frame: frame, offset: offset, fin: fin)
+    }
+
+    mutating func markSizeKnownIfNeeded(logPrefix: String) {
+        if state != .sizeKnown {
+            state.change(logIDString: logPrefix, to: .sizeKnown)
+        }
+    }
+
+    // Returns true if newOffset is past finOffset, a protocol violation the caller must close on.
+    mutating func markDataReceivedIfReached(newOffset: Int, finOffset: Int, logPrefix: String) -> Bool {
+        if newOffset == finOffset {
+            state.change(logIDString: logPrefix, to: .dataReceived)
+        }
+        return newOffset > finOffset
+    }
+
+    mutating func dequeueReassembled(
+        markedFIN: inout Bool,
+        log: borrowing NetworkLoggerState
+    ) -> FrameArray? {
+        let totalLength = reassemblyQueue.availableToDequeue
+        log.datapath("Total available reassembled data \(totalLength)")
+        guard totalLength >= 0 else {
+            log.error("Reassembled data length cannot be negative")
+            return nil
+        }
+        if totalLength == 0 {
+            guard reassemblyQueue.finOffset == self.reassemblyQueue.currentOffset && state != .dataRead
+            else {
+                return nil
+            }
+        }
+        var frameArray = FrameArray(capacity: reassemblyQueue.items.count)
+        var writtenCount: Int = 0
+        while let item = reassemblyQueue.dequeue() {
+            if writtenCount + item.length > totalLength {
+                // This is a ReassemblyQueue bug, hopefully retransmission will recover
+                // Therefore `deliveredInboundBytes` is called below, so all the accounting is
+                // kept correct.
+                log.error("Reassembled dequeued data length > available length, dropping data")
+                break
+            }
+
+            let itemLength = item.length
+            writtenCount += itemLength
+            log.datapath("Dequeued length \(itemLength)")
+
+            var frame = item.frame
+
+            // When we receive the FIN bit in a separate frame
+            // and the reassembly queue is empty, we create a
+            // zero-length entry in the reassembly queue.
+            // Later on, we may fill the gap in the reassembly
+            // queue and deliver the FIN bit along with the data
+            // but the "fake" item in the reassembly queue still
+            // needs to be dequeued and that's the reason why
+            // we check that we're in the right state before
+            // delivering the FIN bit.
+            if item.fin && !markedFIN {
+                log.datapath("Marking FIN on received frame")
+                markedFIN = true
+                frame.metadataComplete = true
+                frame.connectionComplete = true
+            }
+
+            frameArray.add(frame: frame)
+        }
+        if writtenCount < totalLength {
+            // This is a ReassemblyQueue bug, but should be recoverable
+            log.error(
+                "Reassembled dequeued data length \(writtenCount) < available length \(totalLength)"
+            )
+        }
+
+        return frameArray
     }
 }
 #endif

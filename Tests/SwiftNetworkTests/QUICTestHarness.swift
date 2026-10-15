@@ -1997,8 +1997,8 @@ class QUICTestHarness {
             let serverFlow = serverConnection.multiplexedFlows.values.first
         {
             XCTAssertTrue(
-                serverFlow.sendState == .dataSent || serverFlow.sendState == .dataReceived,
-                "Server send side must reach a clean FIN terminal state, got \(serverFlow.sendState)"
+                serverFlow.send.state == .dataSent || serverFlow.send.state == .dataReceived,
+                "Server send side must reach a clean FIN terminal state, got \(serverFlow.send.state)"
             )
         } else {
             XCTFail("Server stream flow missing; cannot verify send state")

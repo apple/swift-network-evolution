@@ -86,7 +86,7 @@ final class FlowControlTests: XCTestCase {
             newPath.mss = 1200
             connection.currentPath = newPath
 
-            stream.receiveState.change(logIDString: "FlowControlTests", to: .receive)
+            stream.receive.state.change(logIDString: "FlowControlTests", to: .receive)
 
             stream.sendInboundFlowControlCreditIfNeeded(connection: connection)
             let initialReceiveSpace: UInt64 = 2 * 1024 * 1024
@@ -225,7 +225,7 @@ final class FlowControlTests: XCTestCase {
             remoteMaxData: window,
             localMaxData: window
         )
-        stream.receiveState.change(logIDString: "FlowControlTests", to: .receive)
+        stream.receive.state.change(logIDString: "FlowControlTests", to: .receive)
 
         _ = stream.processIncomingStream(
             connection: connection,
