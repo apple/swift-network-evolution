@@ -61,7 +61,9 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
     func testQUICInternalServerForceRetryDuringInitial() throws {
         let serverOptions = QUICProtocol.options()
         serverOptions.modifyConnectionOptions { $0.retry = true }
-        serverOptions.modifyConnectionOptions { $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08] }
+        serverOptions.modifyConnectionOptions {
+            $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        }
 
         QUICTestHarness().runQUICTest(
             serverOptions: serverOptions,
@@ -87,7 +89,9 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
     func testQUICInternalServerForceRetryDuringInitialWithGiantALPNList() throws {
         let serverOptions = QUICProtocol.options()
         serverOptions.modifyConnectionOptions { $0.retry = true }
-        serverOptions.modifyConnectionOptions { $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08] }
+        serverOptions.modifyConnectionOptions {
+            $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        }
 
         var alpnList = ["network_test"]
         for i in 0..<100 {
@@ -125,7 +129,9 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
         let dataBlock: [UInt8] = Array("Hello World!".utf8)
         let serverOptions = QUICProtocol.options()
         serverOptions.modifyConnectionOptions { $0.retry = true }
-        serverOptions.modifyConnectionOptions { $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08] }
+        serverOptions.modifyConnectionOptions {
+            $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        }
 
         QUICTestHarness().runQUICTest(
             dataBlock: dataBlock,

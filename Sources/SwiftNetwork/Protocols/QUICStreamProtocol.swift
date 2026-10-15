@@ -176,7 +176,7 @@ public struct QUICStreamProtocol: NetworkProtocol {
                 let parsedConnectionFlags: QUICConnectionProtocol.QUICConnectionOptions.Flags = QUICConnectionProtocol
                     .QUICConnectionOptions.Flags(rawValue: connectionFlags)
 
-				// nil = default = 0
+                // nil = default = 0
                 // true = enabled = 1
                 // false = disabled = 2
                 if enableL4S == 0 {

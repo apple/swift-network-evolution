@@ -122,7 +122,9 @@ final class QUICStreamLoad {
             let clientQUICOptions = QUICStreamProtocol.options()
             clientQUICOptions.modifyTLSOptions { $0 = clientTLSOptions }
             clientQUICOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = 100 }
-            clientQUICOptions.modifyConnectionOptions { $0.maximumConcurrentBidirectionalStreams = concurrentStreams * 2 }
+            clientQUICOptions.modifyConnectionOptions {
+                $0.maximumConcurrentBidirectionalStreams = concurrentStreams * 2
+            }
             clientQUICOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
             clientQUICOptions.setProtocolInstance(clientQUICStreamListener.identifier)
 
@@ -208,7 +210,9 @@ final class QUICStreamLoad {
             let serverQUICOptions = QUICStreamProtocol.options()
             serverQUICOptions.modifyTLSOptions { $0 = serverTLSOptions }
             serverQUICOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = 100 }
-            serverQUICOptions.modifyConnectionOptions { $0.maximumConcurrentBidirectionalStreams = concurrentStreams * 2 }
+            serverQUICOptions.modifyConnectionOptions {
+                $0.maximumConcurrentBidirectionalStreams = concurrentStreams * 2
+            }
             serverQUICOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
             serverQUICOptions.setProtocolInstance(serverQUICStreamListener.identifier)
             serverParameters.defaultStack.prepend(applicationProtocol: .quic(serverQUICOptions))

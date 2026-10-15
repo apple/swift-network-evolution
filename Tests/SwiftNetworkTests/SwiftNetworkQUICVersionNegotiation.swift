@@ -65,7 +65,9 @@ final class SwiftNetworkQUICVersionNegotiation: NetTestCase {
 
         let clientOptions = QUICProtocol.options()
         clientOptions.modifyConnectionOptions { $0.forceVersionNegotiation = true }
-        clientOptions.modifyConnectionOptions { $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08] }
+        clientOptions.modifyConnectionOptions {
+            $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        }
 
         QUICTestHarness().runQUICTest(
             clientOptions: clientOptions,
@@ -89,7 +91,9 @@ final class SwiftNetworkQUICVersionNegotiation: NetTestCase {
         // After this is all complete, a data exchange takes place to validate the connection.
         let clientOptions = QUICProtocol.options()
         clientOptions.modifyConnectionOptions { $0.forceVersionNegotiation = true }
-        clientOptions.modifyConnectionOptions { $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08] }
+        clientOptions.modifyConnectionOptions {
+            $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        }
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,
@@ -109,7 +113,9 @@ final class SwiftNetworkQUICVersionNegotiation: NetTestCase {
         // This test will inject an unsupported version on the client and verify that the server
         // does not recognize it and attempts to negotiate a supported version.
         let clientOptions = QUICProtocol.options()
-        clientOptions.modifyConnectionOptions { $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08] }
+        clientOptions.modifyConnectionOptions {
+            $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        }
         clientOptions.modifyConnectionOptions { $0.forceUnsupportedClientVersion = true }
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),

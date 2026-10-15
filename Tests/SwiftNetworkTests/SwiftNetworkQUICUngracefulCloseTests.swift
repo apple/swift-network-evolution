@@ -197,7 +197,9 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
         // Then sends a stateless reset packet to the client with the seeded token and verifies the connection closes.
         // Adding the SCID here changes which CID the token is tied to.
         let serverOptions = QUICProtocol.options()
-        serverOptions.modifyConnectionOptions { $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08] }
+        serverOptions.modifyConnectionOptions {
+            $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        }
         let token: [UInt8] = [
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
