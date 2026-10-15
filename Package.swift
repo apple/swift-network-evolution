@@ -232,7 +232,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "FuzzQUICPackets",
-            dependencies: ["SwiftNetwork"],
+            dependencies: ["SwiftNetwork", "SwiftNetworkTestHarness"],
             path: "Tests/Fuzzers/QUICPackets",
             swiftSettings: availabilityMacros + settings + [.unsafeFlags(["-parse-as-library"])],
             linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]

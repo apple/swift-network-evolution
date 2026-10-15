@@ -82,7 +82,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         #endif
     }
 
-    public protocol Scheduler: AnyObject {
+    public protocol Scheduler: AnyObject, Sendable {
         /// Runs an immediate task. This task must not be run directly on the caller's stack, but otherwise
         /// no assumptions are made about how the task is run.
         func runImmediate(_ task: @escaping (() -> Void))
@@ -158,7 +158,91 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
             protocolEventStates.remove(index: index)
         }
     }
-    var eventContext: EventContext
+
+    #if !NETWORK_EMBEDDED
+    public actor EventContextManager {
+        internal nonisolated let executor: SchedulerExecutor
+        nonisolated(unsafe) internal var _eventContext: EventContext
+
+        init(globals: NetworkContext.Globals, scheduler: any NetworkContext.Scheduler, schedulerIsDefault: Bool) {
+            executor = SchedulerExecutor(scheduler: scheduler, queue: globals.queue)
+            _eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
+        }
+
+        nonisolated var eventContext: EventContext {
+            _read {
+                yield _eventContext
+            }
+            _modify {
+                yield &_eventContext
+            }
+        }
+
+        func fromExternal<R>(_ handler: () -> R) -> R {
+            handler()
+        }
+
+        func fromExternal<R: Sendable>(_ handler: () -> R) -> R {
+            handler()
+        }
+
+        func fromExternal<R, E: Error>(_ handler: () throws(E) -> R) rethrows -> R {
+            try handler()
+        }
+
+        func fromExternal<R: ~Copyable, E: Error>(_ handler: () throws(E) -> R) throws(E) -> R {
+            try handler()
+        }
+
+        public nonisolated var unownedExecutor: UnownedSerialExecutor {
+            self.executor.asUnownedSerialExecutor()
+        }
+
+        final class SchedulerExecutor: SerialExecutor, @unchecked Sendable {
+            let scheduler: any NetworkContext.Scheduler
+            private let queueKey = DispatchSpecificKey<SystemUUID>()
+            private var queueVal = SystemUUID()
+
+            init(scheduler: any NetworkContext.Scheduler, queue: DispatchQueue) {
+                self.scheduler = scheduler
+                queue.setSpecific(key: queueKey, value: queueVal)
+            }
+
+            func enqueue(_ job: consuming ExecutorJob) {
+                let job = UnownedJob(job)
+                let executor = asUnownedSerialExecutor()
+                scheduler.runImmediate { job.runSynchronously(on: executor) }
+            }
+
+            func checkIsolated() {
+                if queueVal != DispatchQueue.getSpecific(key: queueKey) {
+                    fatalError("checkIsolated failure")
+                }
+            }
+        }
+    }
+    #else
+    public final class EventContextManager {
+        internal var _eventContext: EventContext
+
+        init(globals: NetworkContext.Globals, scheduler: any NetworkContext.Scheduler, schedulerIsDefault: Bool) {
+            _eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
+        }
+
+        func fromExternal<R>(_ handler: (inout EventContext) -> R) -> R {
+            handler(&_eventContext)
+        }
+
+        func fromExternal<R, E: Error>(_ handler: (inout EventContext) throws(E) -> R) throws(E) -> R {
+            try handler(&_eventContext)
+        }
+
+        func fromExternal<R: ~Copyable, E: Error>(_ handler: (inout EventContext) throws(E) -> R) throws(E) -> R {
+            try handler(&_eventContext)
+        }
+    }
+    #endif
+    var eventContextManager: EventContextManager
 
     internal init(
         identifier: String,
@@ -169,7 +253,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         self.scheduler = scheduler
         self.globals = globals
         self.identifier = identifier
-        eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
+        self.eventContextManager = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
     }
 
     public static let implicitContext: NetworkContext = NetworkContext(identifier: "context")
@@ -216,7 +300,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         self.scheduler = scheduler
         self.globals = globals
         self.identifier = identifier
-        eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: true)
+        eventContextManager = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: true)
     }
 
     public init(identifier: String, externalScheduler: any Scheduler) {
@@ -224,7 +308,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         self.scheduler = externalScheduler
         self.globals = globals
         self.identifier = identifier
-        eventContext = .init(globals: globals, scheduler: externalScheduler, schedulerIsDefault: false)
+        eventContextManager = .init(globals: globals, scheduler: externalScheduler, schedulerIsDefault: false)
     }
     #endif
 
@@ -271,7 +355,7 @@ extension NetworkContext {
         }
     }
 
-    final class Globals {
+    final class Globals: @unchecked Sendable {
         final class TimerList {
             var entries = NetworkPriorityQueue<TimerEntry>()
             var queue: DispatchQueue
@@ -367,7 +451,7 @@ extension NetworkContext {
         }
     }
 
-    final class DefaultScheduler: Scheduler {
+    final class DefaultScheduler: Scheduler, @unchecked Sendable {
         let globals: Globals
         init(globals: Globals) {
             self.globals = globals
@@ -449,6 +533,34 @@ extension NetworkContext {
     func assert() {
         eventContext.assert()
     }
+}
+
+@available(Network 0.1.0, *)
+extension NetworkContext {
+    var eventContext: EventContext {
+        _read {
+            #if !NETWORK_EMBEDDED
+            eventContextManager.executor.checkIsolated()
+            #endif
+            yield eventContextManager._eventContext
+        }
+        _modify {
+            #if !NETWORK_EMBEDDED
+            eventContextManager.executor.checkIsolated()
+            #endif
+            yield &eventContextManager._eventContext
+        }
+    }
+
+    #if !NETWORK_EMBEDDED
+    public func fromExternal<R: Sendable>(_ handler: @Sendable () -> R) async -> R {
+        await eventContextManager.fromExternal(handler)
+    }
+
+    public func fromExternal<R: Sendable, E: Error>(_ handler: @Sendable () throws(E) -> R) async rethrows -> R {
+        try await eventContextManager.fromExternal(handler)
+    }
+    #endif
 }
 
 @available(Network 0.1.0, *)
