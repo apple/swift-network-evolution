@@ -647,14 +647,3 @@ extension NetworkContext.EventContext {
     }
 }
 #endif
-
-#if !NETWORK_EMBEDDED
-@available(Network 0.1.0, *)
-extension NetworkContext.DefaultScheduler: SerialExecutor {
-    func enqueue(_ job: consuming ExecutorJob) {
-        let job = UnownedJob(job)
-        let executor = asUnownedSerialExecutor()
-        self.runImmediate { job.runSynchronously(on: executor) }
-    }
-}
-#endif
