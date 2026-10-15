@@ -22,9 +22,11 @@ import Dispatch
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+/*
 #if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
+ */
 
 @available(Network 0.1.0, *)
 extension NetworkContext {
@@ -44,7 +46,7 @@ extension NetworkContext {
     ///
     /// A context has nothing to run on until it is activated, and activating twice is harmless, so
     /// this does it rather than asking every test to remember.
-    func onQueue<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
+    public func onQueue<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
         activate()
         dispatchPrecondition(condition: .notOnQueue(queue))
 

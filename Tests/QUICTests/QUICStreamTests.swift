@@ -32,10 +32,14 @@ let quicStreamTestsLogPrefixer = LogPrefixer("[QUICStreamTests]")
 @available(Network 0.1.0, *)
 final class QUICStreamTests: XCTestCase {
     var stream: QUICStreamInstance!
-    var connection = QUICConnection(context: NetworkContext.implicitContext)
+    var connection = NetworkContext.implicitContext.onQueue {
+        QUICConnection(context: NetworkContext.implicitContext)
+    }
 
     override func setUp() {
-        stream = QUICStreamInstance(parent: connection, inbound: false)
+        stream = connection.context.onQueue {
+            QUICStreamInstance(parent: connection, inbound: false)
+        }
         stream.setup(
             streamID: QUICStreamID(0),
             logPrefixer: quicStreamTestsLogPrefixer
@@ -156,12 +160,16 @@ final class QUICStreamTests: XCTestCase {
 @available(Network 0.1.0, *)
 final class QUICStreamIDStateTests: XCTestCase {
     var streamsState = QUICStreamIDState(.unidirectional)
-    var connection = QUICConnection(context: NetworkContext.implicitContext)
+    var connection = NetworkContext.implicitContext.onQueue {
+        QUICConnection(context: NetworkContext.implicitContext)
+    }
     var stream: QUICStreamInstance!
     var logPrefix = LogPrefixer("[QUICStreamTests]")
 
     override func setUp() {
-        stream = QUICStreamInstance(parent: connection, inbound: false)
+        stream = connection.context.onQueue {
+            QUICStreamInstance(parent: connection, inbound: false)
+        }
         stream.setup(
             streamID: QUICStreamID(0),
             logPrefixer: quicStreamTestsLogPrefixer
@@ -199,7 +207,9 @@ final class QUICStreamIDStateTests: XCTestCase {
 
 @available(Network 0.1.0, *)
 final class QUICStreamListTests: XCTestCase {
-    var connection = QUICConnection(context: NetworkContext.implicitContext)
+    var connection = NetworkContext.implicitContext.onQueue {
+        QUICConnection(context: NetworkContext.implicitContext)
+    }
     var logPrefix = LogPrefixer("[QUICStreamListTests]")
 
     override func tearDown() {
