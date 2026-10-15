@@ -59,7 +59,7 @@ internal import os
 final class SwiftNetworkQUICPacer: NetTestCase {
     func testQUICClientPacingMarkedPackets() throws {
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.enablePacing = true
+        clientOptions.modifyConnectionOptions { $0.enablePacing = true }
         QUICTestHarness().runQUICTest(
             blockSize: 10240,
             blockCount: 4,
@@ -80,7 +80,7 @@ final class SwiftNetworkQUICPacer: NetTestCase {
 
     func testQUICServerPacingMarkedPackets() throws {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.enablePacing = true
+        serverOptions.modifyConnectionOptions { $0.enablePacing = true }
         QUICTestHarness().runQUICTest(
             blockSize: 10240,
             blockCount: 4,

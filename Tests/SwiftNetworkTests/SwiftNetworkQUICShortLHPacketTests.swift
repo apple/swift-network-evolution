@@ -70,7 +70,7 @@ final class SwiftNetworkQUICShortLHPacketTests: NetTestCase {
         }
 
         let quicOptions = QUICStreamProtocol.options()
-        quicOptions.tlsOptions = tlsOptions
+        quicOptions.modifyTLSOptions { $0 = tlsOptions }
 
         return quicOptions
     }

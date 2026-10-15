@@ -46,13 +46,34 @@ public struct QUICStreamProtocol: NetworkProtocol {
 
     // QUICStreamOptions -
 
-    public final class QUICStreamOptions: PerProtocolOptions {
+    public struct QUICStreamOptions: PerProtocolOptions {
         internal typealias BytesCount = UInt32
 
         public var associatedStreamID: UInt64?
         var datagramContextID: UInt64?
 
-        public var quicConnectionOptions = QUICConnectionProtocol.QUICConnectionOptions()
+        /// The connection configuration. Copies of these stream options share it, and callers that configure QUIC
+        /// through it change it in place. `deepCopy` gives the copy its own.
+        public internal(set) var sharedConnectionOptions = ProtocolOptions<QUICConnectionProtocol>(
+            protocolIdentifier: QUICConnectionProtocol.identifier,
+            perProtocolOptions: QUICConnectionProtocol.QUICConnectionOptions()
+        )
+
+        /// The connection configuration as a value. Change it with `modifyQUICConnectionOptions`.
+        public var quicConnectionOptions: QUICConnectionProtocol.QUICConnectionOptions {
+            get { self.sharedConnectionOptions.perProtocolOptions! }
+            nonmutating set { self.sharedConnectionOptions.replacePerProtocolOptions(newValue) }
+        }
+
+        /// Changes the shared connection configuration in place.
+        ///
+        /// - Parameter body: Changes the connection configuration.
+        /// - Warning: `body` must not read or change `sharedConnectionOptions`; otherwise it traps.
+        public func modifyQUICConnectionOptions(
+            _ body: (_ connectionOptions: inout QUICConnectionProtocol.QUICConnectionOptions) -> Void
+        ) {
+            self.sharedConnectionOptions.modifyPerProtocolOptions(body)
+        }
 
         #if NETWORK_PRIVATE
         var privateStorage = QUICStreamOptionsPrivateStorage()
@@ -89,6 +110,7 @@ public struct QUICStreamProtocol: NetworkProtocol {
             var associatedStreamID: UInt64 = 0
             var datagramContextID: UInt64 = 0
             var flagsByte: UInt8 = 0
+
             // connection options
             var maxUDPPayloadSize: UInt16 = 0
             var idleTimeout: UInt32 = 0
@@ -125,43 +147,52 @@ public struct QUICStreamProtocol: NetworkProtocol {
                 try read.uint8(&sourceConnectionIDLength)
                 try read.buffer(&sourceConnectionIDData, length: Int(sourceConnectionIDLength))
             }
+
+            self.init()
+
             guard result.isValid else {
                 Logger.proto.error("Deserialize result: \(result)")
                 return
             }
-            // Step 2: Set the QUICConnectionOptions values
-            self.quicConnectionOptions.maxUDPPayloadSize = maxUDPPayloadSize
-            self.quicConnectionOptions.idleTimeout = .milliseconds(idleTimeout)
-            self.quicConnectionOptions.maxDatagramFrameSize = maxDatagramFrameSize
-            self.quicConnectionOptions.initialPacketSize = initialPacketSize
-            self.quicConnectionOptions.keepaliveCount = keepaliveCount
-            self.quicConnectionOptions.pqtlsMode = pqtlsMode
 
-            // Set connection IDs
-            if destinationConnectionIDLength > 0 {
-                self.quicConnectionOptions.destinationConnectionID = destinationConnectionIDData
+            self.modifyQUICConnectionOptions { connectionOptions in
+                // Step 2: Set the QUICConnectionOptions values
+                connectionOptions.maxUDPPayloadSize = maxUDPPayloadSize
+                connectionOptions.idleTimeout = .milliseconds(idleTimeout)
+                connectionOptions.maxDatagramFrameSize = maxDatagramFrameSize
+                connectionOptions.initialPacketSize = initialPacketSize
+                connectionOptions.keepaliveCount = keepaliveCount
+                connectionOptions.pqtlsMode = pqtlsMode
+
+                // Set connection IDs
+                if destinationConnectionIDLength > 0 {
+                    connectionOptions.destinationConnectionID = destinationConnectionIDData
+                }
+                if sourceConnectionIDLength > 0 {
+                    connectionOptions.sourceConnectionID = sourceConnectionIDData
+                }
+
+                // Step 3: Set the QUICConnectionOptions flags to a local variable so that internal state can be setup correctly
+                let parsedConnectionFlags: QUICConnectionProtocol.QUICConnectionOptions.Flags = QUICConnectionProtocol
+                    .QUICConnectionOptions.Flags(rawValue: connectionFlags)
+
+                // nil = default = 0
+                // true = enabled = 1
+                // false = disabled = 2
+                if enableL4S == 0 {
+                    connectionOptions.enableL4S = nil
+                } else {
+                    connectionOptions.enableL4S = enableL4S == 1 ? true : false
+                }
+
+                // Set the QUICConnectionOptions flags
+                connectionOptions.flags = parsedConnectionFlags
             }
-            if sourceConnectionIDLength > 0 {
-                self.quicConnectionOptions.sourceConnectionID = sourceConnectionIDData
-            }
-            // Step 3: Set the QUICConnectionOptions flags to a local variable so that internal state can be setup correctly
-            let parsedConnectionFlags: QUICConnectionProtocol.QUICConnectionOptions.Flags = QUICConnectionProtocol
-                .QUICConnectionOptions.Flags(rawValue: connectionFlags)
-            // nil = default = 0
-            // true = enabled = 1
-            // false = disabled = 2
-            if enableL4S == 0 {
-                self.quicConnectionOptions.enableL4S = nil
-            } else {
-                self.quicConnectionOptions.enableL4S = enableL4S == 1 ? true : false
-            }
+
             // Step 4: Set the QUICStreamOptions values
             self.associatedStreamID = associatedStreamID
             self.datagramContextID = datagramContextID
             self.flags = Flags(rawValue: flagsByte)
-
-            // Set the QUICConnectionOptions flags
-            self.quicConnectionOptions.flags = parsedConnectionFlags
 
             #if NETWORK_PRIVATE
             if case .remaining(let left) = result {
@@ -224,16 +255,9 @@ public struct QUICStreamProtocol: NetworkProtocol {
             true
         }
         public func deepCopy() -> Self {
-            // NOTE: This is a class so we need to make an explicit copy here.
-            // StreamOptions is used to make important decisions about unidirectional/bidirectional streams.
-            // And these options are often used at the same time in different places in the code.  So a new object is created here.
-            let streamOptions = Self()
-            streamOptions.associatedStreamID = self.associatedStreamID
-            streamOptions.quicConnectionOptions = self.quicConnectionOptions.deepCopy()
-            streamOptions.datagramContextID = self.datagramContextID
-            streamOptions.isDatagram = self.isDatagram
-            streamOptions.isUnidirectional = self.isUnidirectional
-            streamOptions.flags = self.flags
+            // The copy gets its own connection configuration, so that changing it does not change the original's.
+            var streamOptions = self
+            streamOptions.sharedConnectionOptions = self.sharedConnectionOptions.deepCopy()
 
             #if NETWORK_PRIVATE
             streamOptions.privateStorage = self.privateStorage.deepCopy()
@@ -264,11 +288,7 @@ public struct QUICStreamProtocol: NetworkProtocol {
         }
 
         func copySharedConnectionOptions() -> ProtocolOptions<QUICConnectionProtocol> {
-            let connectionOptions = self.quicConnectionOptions
-            return ProtocolOptions<QUICConnectionProtocol>(
-                protocolIdentifier: QUICConnectionProtocol.identifier,
-                perProtocolOptions: connectionOptions
-            )
+            self.sharedConnectionOptions
         }
     }
 
@@ -399,15 +419,36 @@ extension ProtocolOptions<QUICProtocol> {
         get { perProtocolOptions!.isUnidirectional }
         set { modifyPerProtocolOptions { $0.isUnidirectional = newValue } }
     }
+    /// The connection options these stream options share, as a value. Change them with `modifyConnectionOptions`.
     public var connectionOptions: QUICConnectionProtocol.QUICConnectionOptions {
         get { perProtocolOptions!.quicConnectionOptions }
-        set { modifyPerProtocolOptions { $0.quicConnectionOptions = newValue } }
+        set { modifyConnectionOptions { $0 = newValue } }
+    }
+
+    /// Changes the connection options these stream options share, in place. Does nothing if there are no stream
+    /// options.
+    ///
+    /// - Parameter body: Changes the connection options.
+    /// - Warning: `body` must not read or change these connection options; otherwise it traps.
+    public func modifyConnectionOptions(
+        _ body: (_ connectionOptions: inout QUICConnectionProtocol.QUICConnectionOptions) -> Void
+    ) {
+        perProtocolOptions?.modifyQUICConnectionOptions(body)
     }
 
     #if !NETWORK_PRIVATE
+    /// The TLS options, as a value. Change them with `modifyTLSOptions`.
     public var tlsOptions: TLSProtocol.Options {
         get { perProtocolOptions!.quicConnectionOptions.tlsOptions!.perProtocolOptions! }
         set { perProtocolOptions?.quicConnectionOptions.tlsOptions?.replacePerProtocolOptions(newValue) }
+    }
+
+    /// Changes the TLS options in place.
+    ///
+    /// - Parameter body: Changes the TLS options.
+    /// - Warning: `body` must not read or change these TLS options; otherwise it traps.
+    public func modifyTLSOptions(_ body: (_ tlsOptions: inout TLSProtocol.Options) -> Void) {
+        perProtocolOptions?.quicConnectionOptions.tlsOptions?.modifyPerProtocolOptions(body)
     }
     #endif
 }

@@ -55,7 +55,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
 
     // QUICConnectionOptions -
 
-    public final class QUICConnectionOptions: PerProtocolOptions {
+    public struct QUICConnectionOptions: PerProtocolOptions {
 
         internal var _initialMaxData: UInt64 = UInt64.max
         public var initialMaxData: UInt64 {
@@ -134,6 +134,8 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         #endif
 
         #if !NETWORK_PRIVATE
+        /// The TLS options. They are an object, so copies of these connection options share them, and a change made
+        /// through one copy reaches every copy. `deepCopy()` gives the copy TLS options of its own.
         var tlsOptions: ProtocolOptions<TLSProtocol>?
         #endif
 
@@ -509,81 +511,13 @@ public struct QUICConnectionProtocol: NetworkProtocol {
             false
         }
         public func deepCopy() -> Self {
-            let connectionOptions = Self()
+            var connectionOptions = self
             #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
             connectionOptions.privateStorage = self.privateStorage.deepCopy()
             #endif
             #if !NETWORK_PRIVATE
             connectionOptions.tlsOptions = self.tlsOptions?.deepCopy()
             #endif
-            connectionOptions.initialMaxData = self.initialMaxData
-            connectionOptions.maxUDPPayloadSize = self.maxUDPPayloadSize
-            connectionOptions.idleTimeout = self.idleTimeout
-            connectionOptions.initialMaxStreamsBidirectional = self.initialMaxStreamsBidirectional
-            connectionOptions.initialMaxStreamsUnidirectional = self.initialMaxStreamsUnidirectional
-            connectionOptions.initialMaxStreamDataBidirectionalLocal = self.initialMaxStreamDataBidirectionalLocal
-            connectionOptions.initialMaxStreamDataBidirectionalRemote = self.initialMaxStreamDataBidirectionalRemote
-            connectionOptions.initialMaxStreamDataUnidirectional = self.initialMaxStreamDataUnidirectional
-            connectionOptions.peerMaxStreamDataBidirectionalLocal = self.peerMaxStreamDataBidirectionalLocal
-            connectionOptions.peerMaxStreamDataBidirectionalRemote = self.peerMaxStreamDataBidirectionalRemote
-            connectionOptions.peerMaxData = self.peerMaxData
-            connectionOptions.peerMaxDataUnidirectional = self.peerMaxDataUnidirectional
-            connectionOptions.peerMaxStreamsBidirectional = self.peerMaxStreamsBidirectional
-            connectionOptions.peerMaxStreamsUnidirectional = self.peerMaxStreamsUnidirectional
-            #if !NETWORK_STANDALONE
-            connectionOptions.quicState = self.quicState
-            connectionOptions.tlsState = self.tlsState
-            connectionOptions.sessionStateUpdateBlock = self.sessionStateUpdateBlock
-            connectionOptions.sessionStateUpdateQueue = self.sessionStateUpdateQueue
-            connectionOptions.maxStreamsUpdateBlock = self.maxStreamsUpdateBlock
-            connectionOptions.maxStreamsUpdateQueue = self.maxStreamsUpdateQueue
-            #endif
-            connectionOptions.keyIndex = self.keyIndex
-            connectionOptions.pmtud = self.pmtud
-            connectionOptions.pmtudIgnoreCost = self.pmtudIgnoreCost
-            connectionOptions.pmtudForNonTransport = self.pmtudForNonTransport
-            #if !NETWORK_STANDALONE
-            connectionOptions.pmtudUpdateBlock = self.pmtudUpdateBlock
-            connectionOptions.pmtudUpdateQueue = self.pmtudUpdateQueue
-            #endif
-            connectionOptions.pmtudUpdateInterval = self.pmtudUpdateInterval
-            connectionOptions.migrationForNonTransport = self.migrationForNonTransport
-            connectionOptions.isSpeculativeAttempt = self.isSpeculativeAttempt
-            connectionOptions.retry = self.retry
-            connectionOptions.datagramEnableFlowID = self.datagramEnableFlowID
-            connectionOptions.datagramQuarterStreamID = self.datagramQuarterStreamID
-            connectionOptions.datagramContextID = self.datagramContextID
-            connectionOptions.maxDatagramFrameSize = self.maxDatagramFrameSize
-            connectionOptions.supportWebTransport = self.supportWebTransport
-            connectionOptions.supportResetStreamAt = self.supportResetStreamAt
-            connectionOptions.initialPacketSize = self.initialPacketSize
-            connectionOptions.keepaliveCount = self.keepaliveCount
-            connectionOptions.forceVersionNegotiation = self.forceVersionNegotiation
-            connectionOptions.ackDelaySize = self.ackDelaySize
-            connectionOptions.sourceConnectionID = self.sourceConnectionID
-            connectionOptions.destinationConnectionID = self.destinationConnectionID
-            #if !NETWORK_NO_SWIFT_QUIC
-            connectionOptions.initialStatelessResetToken = self.initialStatelessResetToken
-            #endif
-            connectionOptions.disableECNEcho = self.disableECNEcho
-            connectionOptions.disableECN = self.disableECN
-            connectionOptions.enableL4S = self.enableL4S
-            connectionOptions.addH3ALPN = self.addH3ALPN
-            connectionOptions.useSwiftTLS = self.useSwiftTLS
-            connectionOptions.trustCerts = self.trustCerts
-            connectionOptions.useX25519 = self.useX25519
-            connectionOptions.pqtlsMode = self.pqtlsMode
-            connectionOptions.disableSpinBit = self.disableSpinBit
-            connectionOptions.spinBitValue = self.spinBitValue
-            connectionOptions.peerParametersOverriden = self.peerParametersOverriden
-            connectionOptions.probeSimultaneously = self.probeSimultaneously
-            connectionOptions.phoneCallRelayOptimization = self.phoneCallRelayOptimization
-            connectionOptions.ignorePathErrors = self.ignorePathErrors
-            connectionOptions.setupPlaceholder = self.setupPlaceholder
-            #if !NETWORK_NO_SWIFT_QUIC
-            connectionOptions.qlogConfiguration = self.qlogConfiguration
-            #endif
-            connectionOptions.flags = self.flags
             return connectionOptions
         }
         public func isEqual(to other: QUICConnectionOptions, for compareMode: ProtocolCompareMode) -> Bool {
@@ -656,7 +590,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         }
 
         #if !NETWORK_STANDALONE
-        func setSessionState(
+        mutating func setSessionState(
             quicState: DispatchData,
             tlsState: DispatchData
         ) {
@@ -666,7 +600,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         #endif
 
         #if os(Linux) || os(Android)
-        func setSessionStateUpdateBlock(
+        mutating func setSessionStateUpdateBlock(
             _ sessionStateUpdateBlock: (@Sendable @convention(block) ([UInt8]?, [UInt8]?) -> Void)?,
             queue: DispatchQueue
         ) {
@@ -674,7 +608,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
             self.sessionStateUpdateQueue = queue
         }
         #elseif !NETWORK_STANDALONE && canImport(Darwin)
-        func setSessionStateUpdateBlock(
+        mutating func setSessionStateUpdateBlock(
             _ sessionStateUpdateBlock: (@Sendable @convention(block) (DispatchData?, DispatchData?) -> Void)?,
             queue: DispatchQueue
         ) {
@@ -705,7 +639,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
             return true
         }
 
-        func setMaxStreamsUpdateBlock(
+        mutating func setMaxStreamsUpdateBlock(
             _ maxStreamsUpdateBlock: (@Sendable @convention(block) (UInt8, UInt64) -> Void)?,
             queue: DispatchQueue
         ) {
