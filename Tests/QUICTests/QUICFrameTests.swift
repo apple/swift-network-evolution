@@ -770,10 +770,10 @@ class QUICFrameTests: XCTestCase {
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -832,7 +832,7 @@ class QUICFrameTests: XCTestCase {
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(4)
 
@@ -947,10 +947,10 @@ class QUICFrameTests: XCTestCase {
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendData, isLast: true)
+            stream.send.buffer.addSendData(sendData, isLast: true)
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1252,11 +1252,11 @@ class QUICFrameTests: XCTestCase {
             let sendDataBeforeOffset10 = Frame(copyBuffer: Array(repeating: UInt8(0), count: 10))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1281,10 +1281,10 @@ class QUICFrameTests: XCTestCase {
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
             // We just have 4 bytes sendBuffer at offset 0, nothing at offset 10
             XCTAssertThrowsError(
                 try FrameStreamSendMetadata.write(
@@ -1319,9 +1319,9 @@ class QUICFrameTests: XCTestCase {
             // Add data to sendBuffer, it won't be sent because write is for 0 length
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
 
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
@@ -1348,12 +1348,12 @@ class QUICFrameTests: XCTestCase {
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             let sendDataBeforeOffset10 = Frame(copyBuffer: Array(repeating: UInt8(0), count: 10))
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
 
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
 
             XCTAssertThrowsError(
                 try FrameStreamSendMetadata.write(
@@ -1388,12 +1388,12 @@ class QUICFrameTests: XCTestCase {
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             let sendDataBeforeOffset10 = Frame(copyBuffer: Array(repeating: UInt8(0), count: 10))
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
 
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
 
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
@@ -1433,11 +1433,11 @@ class QUICFrameTests: XCTestCase {
                 copyBuffer: Array(repeating: UInt8(0), count: 10)
             )
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1477,11 +1477,11 @@ class QUICFrameTests: XCTestCase {
                 copyBuffer: Array(repeating: UInt8(0), count: 10)
             )
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1523,11 +1523,11 @@ class QUICFrameTests: XCTestCase {
                 copyBuffer: Array(repeating: UInt8(0), count: 10)
             )
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1567,11 +1567,11 @@ class QUICFrameTests: XCTestCase {
                 copyBuffer: Array(repeating: UInt8(0), count: 10)
             )
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1612,11 +1612,11 @@ class QUICFrameTests: XCTestCase {
                 copyBuffer: Array(repeating: UInt8(0), count: 10)
             )
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let requestedLengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1707,11 +1707,11 @@ class QUICFrameTests: XCTestCase {
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             let sendDataBeforeOffset10 = Frame(copyBuffer: Array(repeating: UInt8(0), count: 10))
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: true)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: true)
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1771,11 +1771,11 @@ class QUICFrameTests: XCTestCase {
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             let sendDataBeforeOffset10 = Frame(copyBuffer: Array(repeating: UInt8(0), count: 10))
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: true)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: true)
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1809,11 +1809,11 @@ class QUICFrameTests: XCTestCase {
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             let sendDataBeforeOffset10 = Frame(copyBuffer: Array(repeating: UInt8(0), count: 10))
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: true)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: true)
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1848,10 +1848,10 @@ class QUICFrameTests: XCTestCase {
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             let sendDataBeforeOffset10 = Frame(copyBuffer: Array(repeating: UInt8(0), count: 10))
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: true)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: true)
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
@@ -1879,11 +1879,11 @@ class QUICFrameTests: XCTestCase {
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
             let sendDataBeforeOffset10 = Frame(copyBuffer: Array(repeating: UInt8(0), count: 10))
             defer {
-                stream.sendBuffer.empty()
+                stream.send.buffer.empty()
             }
             let lengthToWrite = UInt64(sendData.unclaimedLength)
-            stream.sendBuffer.addSendData(sendDataBeforeOffset10, isLast: false)
-            stream.sendBuffer.addSendData(sendData, isLast: true)
+            stream.send.buffer.addSendData(sendDataBeforeOffset10, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: true)
             XCTAssertThrowsError(
                 try FrameStreamSendMetadata.write(
                     into: &frame,
@@ -1904,7 +1904,7 @@ class QUICFrameTests: XCTestCase {
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(1), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [UInt8](repeating: 0xab, count: 1400))
-            stream.sendBuffer.addSendData(sendData, isLast: false)
+            stream.send.buffer.addSendData(sendData, isLast: false)
 
             measure {
                 for _ in 0..<100_000_000 {

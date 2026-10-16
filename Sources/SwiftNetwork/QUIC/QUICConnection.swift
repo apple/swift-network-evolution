@@ -548,15 +548,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             let quicOptions = quicOptions(from: parameters, for: .allFlows),
             let protocolOptions = quicOptions.perProtocolOptions
         {
+            let quicConnectionOptions = protocolOptions.quicConnectionOptions
             self.logIDNumber = quicOptions.logIDNumber ?? 0
             var enableECN = true
             var enableECNEcho = true
             var enableL4s: Bool? = nil  // Default
-            enableECN = !protocolOptions.quicConnectionOptions.disableECN
-            enableECNEcho = !protocolOptions.quicConnectionOptions.disableECNEcho
-            enableL4s = protocolOptions.quicConnectionOptions.enableL4S
+            enableECN = !quicConnectionOptions.disableECN
+            enableECNEcho = !quicConnectionOptions.disableECNEcho
+            enableL4s = quicConnectionOptions.enableL4S
             if isServer {
-                retryEnabled = protocolOptions.quicConnectionOptions.retry
+                retryEnabled = quicConnectionOptions.retry
                 // Stateless Reset Token
                 let statelessResetToken = TransportParameter.statelessResetToken(
                     statelessResetToken: QUICStatelessResetToken()
@@ -564,57 +565,57 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 localTransportParameters.append(statelessResetToken)
             } else {
                 // A client can force version negotiation by setting the initial version to the negotiationPattern (0x?a?a?a?a)
-                if protocolOptions.quicConnectionOptions.forceVersionNegotiation {
+                if quicConnectionOptions.forceVersionNegotiation {
                     self.initialVersion = .negotiationPattern
                     log.info("Setting negotiation pattern")
                 }
             }
-            if let initialSCID = protocolOptions.quicConnectionOptions.initialSourceConnectionID {
+            if let initialSCID = quicConnectionOptions.initialSourceConnectionID {
                 initialSourceConnectionID = initialSCID
             }
-            if let statelessResetToken = protocolOptions.quicConnectionOptions
+            if let statelessResetToken = quicConnectionOptions
                 .initialStatelessResetToken
             {
                 initialStatelessResetToken = statelessResetToken
             }
             disableAutomaticNewConnectionIDs =
-                protocolOptions.quicConnectionOptions.disableAutomaticNewConnectionIDs
+                quicConnectionOptions.disableAutomaticNewConnectionIDs
             resendRejectedEarlyDataAutomatically =
-                protocolOptions.quicConnectionOptions.resendRejectedEarlyDataAutomatically
-            if protocolOptions.quicConnectionOptions.keepaliveCount > 0 {
-                maxKeepaliveCount = Int(protocolOptions.quicConnectionOptions.keepaliveCount)
+                quicConnectionOptions.resendRejectedEarlyDataAutomatically
+            if quicConnectionOptions.keepaliveCount > 0 {
+                maxKeepaliveCount = Int(quicConnectionOptions.keepaliveCount)
             }
 
-            allowPMTUD = protocolOptions.quicConnectionOptions.pmtud
-            pmtudIgnoreCost = protocolOptions.quicConnectionOptions.pmtudIgnoreCost
-            pmtudInterval = protocolOptions.quicConnectionOptions.pmtudUpdateInterval
+            allowPMTUD = quicConnectionOptions.pmtud
+            pmtudIgnoreCost = quicConnectionOptions.pmtudIgnoreCost
+            pmtudInterval = quicConnectionOptions.pmtudUpdateInterval
 
             // RFC 9000 - 14.1. Initial Datagram Size
             // Datagrams containing Initial packets MAY exceed 1200 bytes if the sender
             // believes that the network path and peer both support the size that it chooses
-            let requestedInitialPacketSize = Int(protocolOptions.quicConnectionOptions.initialPacketSize)
+            let requestedInitialPacketSize = Int(quicConnectionOptions.initialPacketSize)
             if requestedInitialPacketSize > Constants.initialMSS {
                 initialMSS = requestedInitialPacketSize
             }
 
-            pacingEnabled = protocolOptions.quicConnectionOptions.enablePacing
+            pacingEnabled = quicConnectionOptions.enablePacing
 
             testSendingShortPackets =
-                protocolOptions.quicConnectionOptions.testSendingShortPackets
+                quicConnectionOptions.testSendingShortPackets
 
-            forceUnsupportedClientVersion = protocolOptions.quicConnectionOptions.forceUnsupportedClientVersion
+            forceUnsupportedClientVersion = quicConnectionOptions.forceUnsupportedClientVersion
 
-            qlogConfiguration = protocolOptions.quicConnectionOptions.qlogConfiguration
+            qlogConfiguration = quicConnectionOptions.qlogConfiguration
 
             datagramUseQuarterStreamID =
-                protocolOptions.quicConnectionOptions.datagramQuarterStreamID
-            datagramUseContextID = protocolOptions.quicConnectionOptions.datagramContextID
-            datagramEnableFlowID = protocolOptions.quicConnectionOptions.datagramEnableFlowID
+                quicConnectionOptions.datagramQuarterStreamID
+            datagramUseContextID = quicConnectionOptions.datagramContextID
+            datagramEnableFlowID = quicConnectionOptions.datagramEnableFlowID
 
             maximumConcurrentBidirectionalStreams =
-                protocolOptions.quicConnectionOptions.maximumConcurrentBidirectionalStreams
+                quicConnectionOptions.maximumConcurrentBidirectionalStreams
             maximumConcurrentUnidirectionalStreams =
-                protocolOptions.quicConnectionOptions.maximumConcurrentUnidirectionalStreams
+                quicConnectionOptions.maximumConcurrentUnidirectionalStreams
 
             if let currentPath {
                 currentPath.pacePackets = pacingEnabled
@@ -624,7 +625,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     ack.disableAckCompression = true
                 }
             }
-            if !protocolOptions.quicConnectionOptions.disableSpinBit {
+            if !quicConnectionOptions.disableSpinBit {
                 // RFC9000: "Even when the spin bit is not disabled by
                 // the administrator, endpoints MUST disable their use
                 // of the spin bit for a random selection of at least
@@ -642,7 +643,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             } else {
                 // The application has asked us to disable the spin bit.
                 spinBitEnabled = false
-                initialSpinValue = protocolOptions.quicConnectionOptions.spinBitValue
+                initialSpinValue = quicConnectionOptions.spinBitValue
             }
             // Setup ECN
             ecn = ECN(
@@ -2630,11 +2631,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             )
             // When the stream is already in `resetReceived` state,
             // it should be closed when we receive STOP_SENDING, so we
-            // only need to handle the `dataRead` state here.
-            if stream.receiveState == .dataRead, stream.receivedStopSending {
-                stream.close(errorCode: nil, in: &eventContext)
-            } else if !stream.closed, stream.sendState == .dataReceived, stream.receiveState == .dataRead {
-                // If both directions are closed, and all data is read, close the stream
+            // only need to handle the `dataRead` state here. Otherwise,
+            // close once both directions are closed and all data is read.
+            let receiveIsDataRead = stream.receive.state == .dataRead
+            let shouldCloseStream =
+                receiveIsDataRead
+                && (stream.receivedStopSending
+                    || (!stream.closed && stream.send.state == .dataReceived))
+            if shouldCloseStream {
                 stream.close(errorCode: nil, in: &eventContext)
             }
         }
@@ -2707,7 +2711,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 }
             }
 
-            if !stream.sendState.dataHasAlreadyBeenSent {
+            if !stream.send.state.dataHasAlreadyBeenSent {
                 applicationPendingItems.appendStreamToService(stream)
             }
             // Note: trigger sending of any frames based on this external event
@@ -4482,18 +4486,18 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        if stream.receiveState == .receive && !state.isTerminal {
+        if stream.receive.state == .receive && !state.isTerminal {
             sendStopSending(stream: stream)
             stream.stopSendRequested = true
 
             // Create a zombie stream so that we can release
             // resources while we wait for the RESET_STREAM.
-            let lastOffset = stream.reassemblyQueue.lastOffset
+            let lastOffset = stream.receive.reassemblyQueue.lastOffset
             let lastSize = lastOffset == 0 ? 0 : lastOffset + 1
             // Using streamID! is safe because a stream cannot not be in receive
             // state without a streamID
             zombieStreamList.append(
-                logIDString: stream.logPrefix,
+                logIDString: stream.log.logPrefix,
                 streamID: stream.streamID!,
                 lastSize: UInt64(lastSize),
                 localMaxStreamData: stream.flowControlState.inboundMaxData
@@ -4535,17 +4539,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // RESET_STREAM when an application error is set (e.g. a received
             // STOP_SENDING) or a partially buffered stream is aborted.
             if stream.outboundApplicationError == nil
-                && (stream.sendState == .send || stream.sendState == .ready)
+                && (stream.send.state == .send || stream.send.state == .ready)
             {
-                if stream.sendState == .ready {
-                    stream.sendState.change(logIDString: stream.logPrefix, to: .send)
+                if stream.send.state == .ready {
+                    stream.send.state.change(logIDString: stream.log.logPrefix, to: .send)
                     // Keep the write side open until the zero-length FIN has been
                     // serviced (and ACKed); closing now would drop the queued FIN.
                     closeWrite = false
                 }
                 markStreamFinished(stream: stream)
-            } else if stream.sendState == .ready
-                || (stream.sendState == .send && !stream.sendBuffer.hasLast
+            } else if stream.send.state == .ready
+                || (stream.send.state == .send && !stream.send.buffer.hasLast
                     && stream.outboundApplicationError != nil)
             {
                 // Drop all the pending data.
@@ -5800,7 +5804,7 @@ extension QUICConnection {
 
     // Mark stream FIN and trigger servicing
     private func markStreamFinished(stream: Flow) {
-        stream.sendBuffer.markStreamFinished()
+        stream.send.buffer.markStreamFinished()
         applicationPendingItems.appendStreamToService(stream)
     }
 
@@ -5825,7 +5829,7 @@ extension QUICConnection {
         )
         stream.log.notice("Sending RESET_STREAM, error: \(errorCode)")
         stream.resetSent = true
-        stream.sendState.change(logIDString: stream.logPrefix, to: .resetSent)
+        stream.send.state.change(logIDString: stream.log.logPrefix, to: .resetSent)
     }
 
     private func sendConnectionClose(packetNumberSpace: PacketNumberSpace) {
@@ -6046,11 +6050,11 @@ extension QUICConnection {
         knownFlows[streamID] = flowID
         if !stream.unidirectional {
             self.bidirectionalStreams.incrementActiveStreams()
-            stream.receiveState.change(logIDString: stream.logPrefix, to: .receive)
+            stream.receive.state.change(logIDString: stream.log.logPrefix, to: .receive)
         } else {
             self.unidirectionalStreams.incrementActiveStreams()
         }
-        stream.sendState.change(logIDString: stream.logPrefix, to: .ready)
+        stream.send.state.change(logIDString: stream.log.logPrefix, to: .ready)
         startOutboundStream(stream: stream, for: flowID, in: &eventContext)
         // Deliver the connected event for the newly start flow
         deliverConnectedEvent(flow: flowID, in: &eventContext)
@@ -6062,7 +6066,7 @@ extension QUICConnection {
     func readyAllOutboundStreams(in eventContext: inout NetworkContext.EventContext) {
         applyToAllFlows { stream in
             let flowID = stream.flowIdentifier
-            if stream.sendState == .invalid && stream.receiveState == .invalid {
+            if stream.send.state == .invalid && stream.receive.state == .invalid {
                 if !readyPendingStream(stream, flowID: flowID, in: &eventContext) {
                     log.error("Could not ready pending stream")
                 }
@@ -6090,7 +6094,7 @@ extension QUICConnection {
             localTransportParameters: localTransportParameters
         )
 
-        if stream.sendState == .ready {
+        if stream.send.state == .ready {
             if stream.unidirectional {
                 self.unidirectionalStreams.removePending(stream)
             } else {
@@ -6603,15 +6607,15 @@ extension QUICConnection {
             return
         }
 
-        if stream.sendState == .send {
+        if stream.send.state == .send {
             log.error(
                 "[S\(stream.streamID?.value ?? 0)] in state send (resetSent? \(stream.resetSent))"
             )
         }
-        stream.sendState.change(logIDString: logIDString, to: .resetReceived)
+        stream.send.state.change(logIDString: logIDString, to: .resetReceived)
 
         // Only close the stream when the receive side is also in a terminal state.
-        if stream.receiveState.dataHasAlreadyBeenReceived {
+        if stream.receive.state.dataHasAlreadyBeenReceived {
             let error = NetworkError.posix(ECONNRESET)
             stream.close(errorCode: error, in: &eventContext)
         }
@@ -6650,7 +6654,7 @@ extension QUICConnection {
             log.datapath("Acknowledgement for unknown flow \(flowID)")
             return
         }
-        let streamFinished = stream.sendBuffer.acknowledgedSendData(
+        let streamFinished = stream.send.buffer.acknowledgedSendData(
             offset: offset,
             length: length,
             log: stream.log
@@ -6658,9 +6662,9 @@ extension QUICConnection {
         if isFinal {
             stream.peerAcknowledgedFIN = true
         }
-        if streamFinished, stream.peerAcknowledgedFIN, stream.sendState != .dataReceived {
-            stream.sendState.change(logIDString: stream.logPrefix, to: .dataReceived)
-            if !stream.closed, stream.receiveState == .dataRead {
+        if streamFinished, stream.peerAcknowledgedFIN, stream.send.state != .dataReceived {
+            stream.send.state.change(logIDString: stream.log.logPrefix, to: .dataReceived)
+            if !stream.closed, stream.receive.state == .dataRead {
                 // If both directions are closed, and all data is read, close the stream
                 stream.close(errorCode: nil, in: &eventContext)
             }

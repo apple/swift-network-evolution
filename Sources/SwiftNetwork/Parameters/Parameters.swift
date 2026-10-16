@@ -590,7 +590,7 @@ public struct Parameters: Hashable, CustomStringConvertible {
             let quicConnectionOptions = QUICConnectionProtocol.options()
             handler(quicConnectionOptions)
             if let innerOptions = quicConnectionOptions.perProtocolOptions {
-                quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions = innerOptions }
+                quicOptions.perProtocolOptions?.modifyQUICConnectionOptions { $0 = innerOptions }
             }
         }
         defaultStack.transport = .quic(quicOptions)
@@ -679,12 +679,12 @@ public struct Parameters: Hashable, CustomStringConvertible {
             let quicConnectionOptions = QUICConnectionProtocol.options()
             handler(quicConnectionOptions)
             if let innerOptions = quicConnectionOptions.perProtocolOptions {
-                quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions = innerOptions }
+                quicOptions.perProtocolOptions?.modifyQUICConnectionOptions { $0 = innerOptions }
             }
         }
 
         quicOptions.prohibitJoining = true
-        quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions.tlsOptions = tlsOptions }
+        quicOptions.perProtocolOptions?.modifyQUICConnectionOptions { $0.tlsOptions = tlsOptions }
 
         let tcpOptions = TCPProtocol.options()
         if case .customize(let handler) = tcpFallback {

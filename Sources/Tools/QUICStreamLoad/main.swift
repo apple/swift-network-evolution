@@ -120,9 +120,11 @@ final class QUICStreamLoad {
                 [UInt8](self.serverSigningKey.publicKey.derRepresentation)
             ]
             let clientQUICOptions = QUICStreamProtocol.options()
-            clientQUICOptions.tlsOptions = clientTLSOptions
-            clientQUICOptions.connectionOptions.initialMaxStreamsBidirectional = 100
-            clientQUICOptions.connectionOptions.maximumConcurrentBidirectionalStreams = concurrentStreams * 2
+            clientQUICOptions.modifyTLSOptions { $0 = clientTLSOptions }
+            clientQUICOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = 100 }
+            clientQUICOptions.modifyConnectionOptions {
+                $0.maximumConcurrentBidirectionalStreams = concurrentStreams * 2
+            }
             clientQUICOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
             clientQUICOptions.setProtocolInstance(clientQUICStreamListener.identifier)
 
@@ -206,9 +208,11 @@ final class QUICStreamLoad {
             serverTLSOptions.rawPrivateKey = [UInt8](self.serverSigningKey.rawRepresentation)
 
             let serverQUICOptions = QUICStreamProtocol.options()
-            serverQUICOptions.tlsOptions = serverTLSOptions
-            serverQUICOptions.connectionOptions.initialMaxStreamsBidirectional = 100
-            serverQUICOptions.connectionOptions.maximumConcurrentBidirectionalStreams = concurrentStreams * 2
+            serverQUICOptions.modifyTLSOptions { $0 = serverTLSOptions }
+            serverQUICOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = 100 }
+            serverQUICOptions.modifyConnectionOptions {
+                $0.maximumConcurrentBidirectionalStreams = concurrentStreams * 2
+            }
             serverQUICOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
             serverQUICOptions.setProtocolInstance(serverQUICStreamListener.identifier)
             serverParameters.defaultStack.prepend(applicationProtocol: .quic(serverQUICOptions))
@@ -461,7 +465,7 @@ if #available(anyAppleOS 26, *) {
     var loggingHandler: LoggingHandle = LoggingHandle(loggingType: .none)
     var uploadSize = 1000  // 1kb
     var downloadSize = 1000  // 1kb
-    var streamCount = 100000
+    var streamCount = 1_000_000
     var concurrentStreams = 100
     var linkDelay = NetworkDuration.zero
     let arguments = CommandLine.arguments.dropFirst(0)

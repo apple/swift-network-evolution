@@ -139,17 +139,20 @@ class QUICTestHarness {
                 tlsOptions.trustedRawPublicKeyCertificates = [[UInt8](serverSigningKey.publicKey.derRepresentation)]
             }
         }
-        quicOptions.tlsOptions = tlsOptions
+        quicOptions.modifyTLSOptions { $0 = tlsOptions }
 
-        if let streamOptions = quicOptions.perProtocolOptions {
-            if datagram {
+        if datagram {
+            quicOptions.modifyPerProtocolOptions { streamOptions in
                 if !server {
                     streamOptions.isDatagram = true
                     streamOptions.associatedStreamID = 0
                 }
-                streamOptions.quicConnectionOptions.datagramQuarterStreamID = true
-                streamOptions.quicConnectionOptions.datagramEnableFlowID = true
-                streamOptions.quicConnectionOptions.maxDatagramFrameSize = 65535
+
+                streamOptions.modifyQUICConnectionOptions { connectionOptions in
+                    connectionOptions.datagramQuarterStreamID = true
+                    connectionOptions.datagramEnableFlowID = true
+                    connectionOptions.maxDatagramFrameSize = 65535
+                }
             }
         }
     }
@@ -1759,13 +1762,13 @@ class QUICTestHarness {
         timeout: TimeInterval = 4.0
     ) {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialMaxData = initialMaxData
-        serverOptions.connectionOptions.initialMaxStreamDataBidirectionalRemote = initialMaxData
-        serverOptions.connectionOptions.initialMaxStreamDataBidirectionalLocal = initialMaxData
+        serverOptions.modifyConnectionOptions { $0.initialMaxData = initialMaxData }
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamDataBidirectionalRemote = initialMaxData }
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamDataBidirectionalLocal = initialMaxData }
         // Keep the stream limits well clear of `rounds` so that a stall can only
         // be caused by connection-level flow control.
-        serverOptions.connectionOptions.initialMaxStreamsBidirectional = UInt64(rounds * 2 + 10)
-        serverOptions.connectionOptions.maximumConcurrentBidirectionalStreams = rounds * 2 + 10
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = UInt64(rounds * 2 + 10) }
+        serverOptions.modifyConnectionOptions { $0.maximumConcurrentBidirectionalStreams = rounds * 2 + 10 }
 
         do {
             try quicHandshake(timeout: timeout, serverOptions: serverOptions)
@@ -1997,8 +2000,8 @@ class QUICTestHarness {
             let serverFlow = serverConnection.multiplexedFlows.values.first
         {
             XCTAssertTrue(
-                serverFlow.sendState == .dataSent || serverFlow.sendState == .dataReceived,
-                "Server send side must reach a clean FIN terminal state, got \(serverFlow.sendState)"
+                serverFlow.send.state == .dataSent || serverFlow.send.state == .dataReceived,
+                "Server send side must reach a clean FIN terminal state, got \(serverFlow.send.state)"
             )
         } else {
             XCTFail("Server stream flow missing; cannot verify send state")

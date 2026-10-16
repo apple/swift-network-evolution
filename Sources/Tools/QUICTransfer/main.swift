@@ -111,7 +111,7 @@ final class QUICTransfer {
                 [UInt8](self.serverSigningKey.publicKey.derRepresentation)
             ]
             let clientQUICOptions = QUICStreamProtocol.options()
-            clientQUICOptions.tlsOptions = clientTLSOptions
+            clientQUICOptions.modifyTLSOptions { $0 = clientTLSOptions }
             clientQUICOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
             clientQUICOptions.setProtocolInstance(clientQUICStreamListener.identifier)
             if !quicOnly {
@@ -231,7 +231,7 @@ final class QUICTransfer {
             serverTLSOptions.rawPrivateKey = [UInt8](self.serverSigningKey.rawRepresentation)
 
             let serverQUICOptions = QUICStreamProtocol.options()
-            serverQUICOptions.tlsOptions = serverTLSOptions
+            serverQUICOptions.modifyTLSOptions { $0 = serverTLSOptions }
             serverQUICOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
             serverQUICOptions.setProtocolInstance(serverQUICStreamListener.identifier)
             if !quicOnly {

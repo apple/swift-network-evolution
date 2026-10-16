@@ -63,10 +63,10 @@ final class SwiftNetworkQUICKeepaliveTests: NetTestCase {
         // Note that the keep-alive interval does not actually keep the connection alive,
         // the PMTUD probe actually is the part that keeps the connection alive.
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.idleTimeout = .seconds(2)
-        clientOptions.connectionOptions.pmtudUpdateInterval = .seconds(1)
+        clientOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(2) }
+        clientOptions.modifyConnectionOptions { $0.pmtudUpdateInterval = .seconds(1) }
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.pmtudUpdateInterval = .seconds(1)
+        serverOptions.modifyConnectionOptions { $0.pmtudUpdateInterval = .seconds(1) }
 
         var networkError: NetworkError? = nil
 
@@ -101,10 +101,10 @@ final class SwiftNetworkQUICKeepaliveTests: NetTestCase {
         // Note that the keep-alive interval does keep the connection alive,
         // since the PMTUD probe is disabled.
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.idleTimeout = .seconds(2)
-        clientOptions.connectionOptions.pmtud = false
+        clientOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(2) }
+        clientOptions.modifyConnectionOptions { $0.pmtud = false }
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.pmtud = false
+        serverOptions.modifyConnectionOptions { $0.pmtud = false }
 
         var networkError: NetworkError? = nil
 

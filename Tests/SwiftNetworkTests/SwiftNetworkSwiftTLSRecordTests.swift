@@ -71,7 +71,7 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
         } else {
             actualOptions.trustedRawPublicKeyCertificates = [[UInt8](serverSigningKey.publicKey.derRepresentation)]
         }
-        tlsProtocolOptions.tlsOptions = actualOptions
+        tlsProtocolOptions.replacePerProtocolOptions(actualOptions)
         return tlsProtocolOptions
     }
 

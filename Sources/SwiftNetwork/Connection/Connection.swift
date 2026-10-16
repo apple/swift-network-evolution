@@ -1192,7 +1192,7 @@ public struct QUIC: MultiplexProtocol {
 
     var options: ProtocolOptions<QUICProtocol> {
         let options = QUICProtocol.Options()
-        let connectionOptions = QUICConnectionProtocol.Options()
+        var connectionOptions = QUICConnectionProtocol.Options()
         var tlsOptions = TLSProtocol.Options()
         tlsOptions.applicationProtocols = self.alpn
         if let trustedRawPublicKeyCertificates {
@@ -1223,7 +1223,7 @@ public struct QUIC: MultiplexProtocol {
             protocolIdentifier: TLSProtocol.identifier,
             perProtocolOptions: tlsOptions
         )
-        options.quicConnectionOptions = connectionOptions
+        options.modifyQUICConnectionOptions { $0 = connectionOptions }
         return ProtocolOptions(protocolIdentifier: QUICProtocol.identifier, perProtocolOptions: options)
     }
 

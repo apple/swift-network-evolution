@@ -64,8 +64,10 @@ final class SwiftNetworkQUICVersionNegotiation: NetTestCase {
         // is sent from the server to the client. The client picks a suitable version and sends it back in the initial and the handshake continues.
 
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.forceVersionNegotiation = true
-        clientOptions.connectionOptions.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        clientOptions.modifyConnectionOptions { $0.forceVersionNegotiation = true }
+        clientOptions.modifyConnectionOptions {
+            $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        }
 
         QUICTestHarness().runQUICTest(
             clientOptions: clientOptions,
@@ -88,8 +90,10 @@ final class SwiftNetworkQUICVersionNegotiation: NetTestCase {
         // is sent from the server to the client. The client picks a suitable version and sends it back in the initial and the handshake continues.
         // After this is all complete, a data exchange takes place to validate the connection.
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.forceVersionNegotiation = true
-        clientOptions.connectionOptions.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        clientOptions.modifyConnectionOptions { $0.forceVersionNegotiation = true }
+        clientOptions.modifyConnectionOptions {
+            $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        }
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,
@@ -109,8 +113,10 @@ final class SwiftNetworkQUICVersionNegotiation: NetTestCase {
         // This test will inject an unsupported version on the client and verify that the server
         // does not recognize it and attempts to negotiate a supported version.
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-        clientOptions.connectionOptions.forceUnsupportedClientVersion = true
+        clientOptions.modifyConnectionOptions {
+            $0.sourceConnectionID = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        }
+        clientOptions.modifyConnectionOptions { $0.forceUnsupportedClientVersion = true }
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,

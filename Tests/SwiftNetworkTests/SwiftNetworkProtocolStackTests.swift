@@ -94,4 +94,50 @@ final class SwiftNetworkProtocolStackTests: NetTestCase {
             "Failed to get noMetadata in protocol stack copy"
         )
     }
+    // A copy of QUIC options must keep every connection setting; otherwise a copied listener or accepted connection
+    // silently runs with defaults.
+    func testQUICOptionsCopyKeepsConnectionSettings() {
+        let quicOptions = QUICProtocol.options()
+        quicOptions.modifyConnectionOptions { $0.maximumConcurrentBidirectionalStreams = 5 }
+        quicOptions.modifyConnectionOptions { $0.maximumConcurrentUnidirectionalStreams = 7 }
+        quicOptions.modifyConnectionOptions { $0.maxPathsPerInterface = 3 }
+
+        let copy = quicOptions.deepCopy()
+        XCTAssertEqual(copy.connectionOptions.maximumConcurrentBidirectionalStreams, 5)
+        XCTAssertEqual(copy.connectionOptions.maximumConcurrentUnidirectionalStreams, 7)
+        XCTAssertEqual(copy.connectionOptions.maxPathsPerInterface, 3)
+    }
+
+    // Changes made through the shared connection options must reach the stream options they came from, since callers
+    // configure QUIC that way. A deep copy must not share them.
+    func testSharedQUICConnectionOptionsChangeOnlyTheirStreamOptions() {
+        let quicOptions = QUICProtocol.options()
+        let sharedConnectionOptions = quicOptions.perProtocolOptions!.copySharedConnectionOptions()
+        sharedConnectionOptions.modifyPerProtocolOptions { $0.idleTimeout = .seconds(5) }
+        XCTAssertEqual(quicOptions.connectionOptions.idleTimeout, .seconds(5))
+
+        let copy = quicOptions.deepCopy()
+        let copiedConnectionOptions = copy.perProtocolOptions!.copySharedConnectionOptions()
+        copiedConnectionOptions.modifyPerProtocolOptions { $0.idleTimeout = .seconds(9) }
+        XCTAssertEqual(copy.connectionOptions.idleTimeout, .seconds(9))
+        XCTAssertEqual(quicOptions.connectionOptions.idleTimeout, .seconds(5))
+    }
+
+    // QUIC options built from the same stream options must keep their own stream settings but share the connection
+    // configuration; otherwise a stream setting leaks into another stream, or a connection setting reaches only one
+    // of its streams.
+    func testQUICOptionsCopySharesOnlyTheConnectionConfiguration() {
+        let quicOptions = QUICProtocol.options()
+        let sharingOptions = ProtocolOptions<QUICProtocol>(
+            protocolIdentifier: quicOptions.identifier,
+            perProtocolOptions: quicOptions.perProtocolOptions
+        )
+
+        sharingOptions.modifyPerProtocolOptions { $0.associatedStreamID = 8 }
+        XCTAssertEqual(sharingOptions.perProtocolOptions?.associatedStreamID, 8)
+        XCTAssertNil(quicOptions.perProtocolOptions?.associatedStreamID)
+
+        sharingOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(5) }
+        XCTAssertEqual(quicOptions.connectionOptions.idleTimeout, .seconds(5))
+    }
 }
