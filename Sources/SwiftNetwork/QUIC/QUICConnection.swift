@@ -517,8 +517,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 timerNow: self.now,
                 in: &eventContext
             ) { firedAt, timerState in
-                self.recovery.timerFired(at: firedAt, in: &timerState)
+                let wasActive = self.isSendActive
+                self.isSendActive = true
                 self.flushPendingRecoverySentPackets(in: &timerState)
+                self.recovery.timerFired(at: firedAt, in: &timerState)
+                self.isSendActive = wasActive
+                if !wasActive {
+                    self.drainDeferredSendFrames(in: &timerState)
+                }
             }
             self.recovery = Recovery(
                 connection: self,
@@ -3349,6 +3355,23 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         recoveryIsFree: Bool,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        guard recoveryIsFree else {
+            // Run when sendFramesFromRecovery hold access to recovery
+            while !deferredPathSends.isEmpty {
+                let pathSends = deferredPathSends
+                deferredPathSends.removeAll()
+                for (_, pathSend) in pathSends {
+                    guard let path = pathSend.path else { continue }
+                    replayDeferredPathSend(
+                        path,
+                        ignoreCongestionWindow: pathSend.ignoreCongestionWindow,
+                        retransmission: pathSend.retransmission,
+                        in: &eventContext
+                    )
+                }
+            }
+            return
+        }
         while deferredSendFrames != nil || !deferredPathSends.isEmpty {
             if let plain = deferredSendFrames {
                 deferredSendFrames = nil
@@ -3370,11 +3393,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 )
             }
         }
-        if recoveryIsFree {
-            flushPendingRecoverySentPackets(in: &eventContext)
-        }
+        flushPendingRecoverySentPackets(in: &eventContext)
     }
-
+    // Runs a deferred sendFrames on path
     private func replayDeferredPathSend(
         _ path: QUICPath,
         ignoreCongestionWindow: Bool,
