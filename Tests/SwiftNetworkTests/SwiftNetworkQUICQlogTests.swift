@@ -62,7 +62,8 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
         let title = "ClientQLog"
         let description = "ClientQLogDescription"
         // NOTE: Test not using a trailing slash at the end of the path name
-        let path = "/tmp"
+        let path = try makeQlogDirectory()
+        defer { removeQlogDirectory(path) }
         let harness = QUICTestHarness()
 
         let clientOptions = QUICProtocol.options()
@@ -97,7 +98,6 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
             return
         }
         XCTAssertNotNil(resultData)
-        unlink(finalPath)
     }
 
     func testQUICWriteServerQlogFileOnDataTransfer() throws {
@@ -105,7 +105,9 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
         let title = "ServerQLog"
         let description = "ServerQLogDescription"
         // NOTE: Test using a trailing slash at the end of the path name
-        let path = "/tmp/"
+        let directory = try makeQlogDirectory()
+        defer { removeQlogDirectory(directory) }
+        let path = directory + "/"
         let harness = QUICTestHarness()
 
         let serverOptions = QUICProtocol.options()
@@ -141,7 +143,6 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
             return
         }
         XCTAssertNotNil(resultData)
-        unlink(finalPath)
     }
 
     // When the peer sends CONNECTION_CLOSE, the connection arms a draining timer and only writes its
@@ -150,9 +151,9 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
     // qlog rather than scheduling work against an identifier that has already been reset.
     func testQUICWriteServerQlogFileAfterTeardownWhileDraining() throws {
         let title = "ServerDrainingQLog"
-        let path = "/tmp/"
-        let finalPath = path + "qlog_server_\(title)_C1.qlog"
-        unlink(finalPath)
+        let directory = try makeQlogDirectory()
+        defer { removeQlogDirectory(directory) }
+        let finalPath = directory + "/qlog_server_\(title)_C1.qlog"
         let harness = QUICTestHarness()
 
         let serverOptions = QUICProtocol.options()
@@ -160,7 +161,7 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
             connectionOptions.qlogConfiguration = QLogConfiguration(
                 logTitle: title,
                 logDescription: "ServerDrainingQLogDescription",
-                logPath: path
+                logPath: directory
             )
         }
 
@@ -191,7 +192,30 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
         wait(for: [qlogExpectation], timeout: 5.0)
 
         XCTAssertNotNil(FileManager.default.contents(atPath: finalPath), "Unable to read contents of \(finalPath)")
-        unlink(finalPath)
+    }
+
+    // MARK: - Helpers
+
+    /// A directory of this run's own, so that a file an earlier run left behind cannot satisfy the
+    /// existence checks these tests make.
+    ///
+    /// Removing the file afterwards is not enough by itself. A crash or a test timeout kills the
+    /// process before any cleanup runs, an early return can skip it, and two runs on one machine
+    /// would otherwise write the same path.
+    private func makeQlogDirectory() throws -> String {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qlog-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.path
+    }
+
+    /// Removes `directory` and whatever was written into it.
+    private func removeQlogDirectory(_ directory: String) {
+        do {
+            try FileManager.default.removeItem(atPath: directory)
+        } catch {
+            Logger.test.info("Could not remove \(directory): \(error)")
+        }
     }
 }
 
