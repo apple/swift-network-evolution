@@ -117,8 +117,9 @@ final class Timer: PrefixedLoggable {
     /// ignored. Tightening it trades re-arms for precision and wants a benchmark behind it.
     ///
     /// It also decides whether that coalescing is attempted at all. A deadline nearer than this
-    /// always re-arms, because tolerating up to a millisecond of error would dominate it: half a
-    /// millisecond out, a coalesced wakeup could land after the deadline had already passed.
+    /// re-arms whenever it moves, because tolerating up to a millisecond of error would dominate
+    /// it: half a millisecond out, a coalesced wakeup could land after the deadline had already
+    /// passed.
     static let timerThreshold = NetworkDuration.milliseconds(1)
 
     init(
@@ -234,6 +235,13 @@ final class Timer: PrefixedLoggable {
             delta = .zero
         }
 
+        // The pending wakeup is already for this deadline, so there is nothing to re-arm. The
+        // check below does not cover a deadline within the threshold, and while one is that
+        // near every reschedule of another timer would re-arm the wakeup for the same instant.
+        if case .armed(let nextDeadline) = wakeup, delta > .zero, nextDeadline == earliestDeadline {
+            return
+        }
+
         // If the timer is over one millisecond in the future,
         // check if it is redundant with the existing deadline (nextDeadline).
         // This optimisation is only valid if there's a pending wakeup, otherwise
@@ -305,6 +313,33 @@ final class Timer: PrefixedLoggable {
         if !avoidRecalculate {
             recalculate(timerNow, in: &eventContext)
         }
+    }
+
+    /// Arms the timer to fire within `fromNow`, unless it is already armed to fire sooner.
+    func reschedule(
+        identifier: TimerID,
+        noLaterThan fromNow: NetworkDuration,
+        timerNow: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        guard let index = find(identifier) else {
+            return
+        }
+        if entries[index].isEnabled && entries[index].deadline <= timerNow.advanced(by: fromNow) {
+            return
+        }
+        entries[index].schedule(fromNow: fromNow, timerNow: timerNow)
+        if !avoidRecalculate {
+            recalculate(timerNow, in: &eventContext)
+        }
+    }
+
+    /// The deadline the timer is armed for, or nil while it is not armed.
+    func deadline(of identifier: TimerID) -> NetworkClock.Instant? {
+        guard let index = find(identifier), entries[index].isEnabled else {
+            return nil
+        }
+        return entries[index].deadline
     }
 
     public func timerFired(
