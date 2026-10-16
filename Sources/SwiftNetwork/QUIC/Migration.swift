@@ -206,7 +206,9 @@ extension QUICConnection {
         isPrimary: Bool,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard !migration.activeMigrationDisabled || isServer else {
+        // A path that is gone is marked unavailable whether or not active migration is enabled
+        let pathIsGone = if case .unavailable = event { true } else { false }
+        guard !migration.activeMigrationDisabled || isServer || pathIsGone else {
             return
         }
 
@@ -240,7 +242,9 @@ extension QUICConnection {
             break
         case .unavailable:
             retireOutboundCID(forPathGoingAway: path)
-            path.changeState(to: .routeUnavailable)
+            if path.state.isValidStateChange(to: .routeUnavailable) {
+                path.changeState(to: .routeUnavailable)
+            }
             break
         }
 
