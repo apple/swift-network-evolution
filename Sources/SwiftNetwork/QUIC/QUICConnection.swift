@@ -517,14 +517,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 timerNow: self.now,
                 in: &eventContext
             ) { firedAt, timerState in
-                let wasActive = self.isSendActive
-                self.isSendActive = true
-                self.flushPendingRecoverySentPackets(in: &timerState)
-                self.recovery.timerFired(at: firedAt, in: &timerState)
-                self.isSendActive = wasActive
-                if !wasActive {
-                    self.drainDeferredSendFrames(in: &timerState)
-                }
+                self.fireRecoveryTimer(at: firedAt, in: &timerState)
             }
             self.recovery = Recovery(
                 connection: self,
@@ -3312,7 +3305,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    // MARK - Send Frames logic
+    // MARK: - Send Frames logic
 
     // Used when the send path is active and sendFrames or sendFrames(on:) needs to be deferred
     private struct DeferredSend {
@@ -3350,7 +3343,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         drainDeferredSendFramesSlowPath(recoveryIsFree: recoveryIsFree, in: &eventContext)
     }
 
-    // Should drain regular sendFrames calls, sendFrames on path calls and
+    // Replays deferred sendFrames and sendFrames(on:) calls, then hands sentPackets to Recovery. While Recovery is borrowed, only the sendFrames(on:) calls are replayed. When recoveryIsFree is not set sendFramesFromRecovery was claiming the sent path and so replay any potential sendFrames(on:) calls that potentially built up while Recovery was sending.
     private func drainDeferredSendFramesSlowPath(
         recoveryIsFree: Bool,
         in eventContext: inout NetworkContext.EventContext
@@ -3418,6 +3411,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             discardInitialRecoveryState: &discardInitialRecoveryState,
             in: &eventContext
         )
+        if discardInitialRecoveryState {
+            recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
+            recovery.resetPTOCount(path: path)
+        }
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
         isSendActive = false
     }
@@ -3429,6 +3426,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         shrinkSentPacketsIfNecessary(sentPackets: &sentPackets)
     }
 
+    // Claims isSendActive so sends nested inside Ack.timerFired are deferred and run afterwards
     func fireDelayedAckTimer(
         at firedAt: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
@@ -3442,15 +3440,30 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         isSendActive = wasActive
         guard !wasActive else { return }
 
-        if deferredSendFrames != nil {
+        if let plain = deferredSendFrames {
             deferredSendFrames = nil
-            sendFrames(delayedACK: true, in: &eventContext)
+            sendFrames(ignoreCongestionWindow: plain.ignoreCongestionWindow, delayedACK: true, in: &eventContext)
 
             // `timerFired`'s own idle check ran before this deferred flush, while the ACK
             // frame was still scheduled but not yet sent, so it couldn't observe idleness.
             // Check again now that the flush has actually cleared the pending ACK.
             checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
         } else {
+            drainDeferredSendFrames(in: &eventContext)
+        }
+    }
+
+    // Claims isSendActive so sends nested inside Recovery.timerFired are deferred and run afterwards
+    func fireRecoveryTimer(
+        at firedAt: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        let wasActive = isSendActive
+        isSendActive = true
+        flushPendingRecoverySentPackets(in: &eventContext)
+        recovery.timerFired(at: firedAt, in: &eventContext)
+        isSendActive = wasActive
+        if !wasActive {
             drainDeferredSendFrames(in: &eventContext)
         }
     }

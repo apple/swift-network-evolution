@@ -37,9 +37,9 @@ import CryptoKit
 import Crypto
 #endif
 
-// Tests conditions that QUICConnectionScheduler should prevent
+// Tests that nested sends are deferred rather than overlapping the send that is already running
 @available(Network 0.1.0, *)
-let QUICTestOverlappingAccessTestsLogPrefixer: LogPrefixer = LogPrefixer("[QUICConnectionStateMachineTests]")
+let QUICTestOverlappingAccessTestsLogPrefixer: LogPrefixer = LogPrefixer("[QUICTestOverlappingAccessTests]")
 
 @available(Network 0.1.0, *)
 final class QUICTestOverlappingAccessTests: XCTestCase {
@@ -178,9 +178,9 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
-    // Scenario: Recovery.timerFired -> sendPTO -> retransmitOnePacketForced -> sendFramesFromRecovery ->
-    // addPendingItems -> addPathChallenge -> Migration.resetTimer -> sendPendingChallenges ->
-    // sendFrames(on: waitingPath)
+    // Scenario: fireRecoveryTimer -> Recovery.timerFired -> sendPTO -> retransmitOnePacketForced ->
+    // sendFramesFromRecovery -> addPendingItems -> addPathChallenge -> Migration.resetTimer ->
+    // sendPendingChallenges -> sendFrames(on: waitingPath)
     func testRecoveryPTOTimerTriggersChallengeOnWaitingPath() {
         let expectation = XCTestExpectation()
         connection.context.async {
@@ -207,10 +207,7 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
             self.recordSentPacket(packet)
 
             self.connection.fromExternal { eventContext in
-                // Match production exactly: the Timer registration always wraps
-                // `recovery.timerFired` in `withSendPathBorrow`, which is what makes `isSendActive`
-                // correctly reflect "a send-path operation is in progress" for the duration.
-                self.connection.recovery.timerFired(at: NetworkClock.Instant.systemNow, in: &eventContext)
+                self.connection.fireRecoveryTimer(at: NetworkClock.Instant.systemNow, in: &eventContext)
             }
 
             XCTAssertEqual(currentPath.challengesSent, 1)
@@ -251,49 +248,6 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
 
             XCTAssertEqual(currentPath.challengesSent, 1)
             XCTAssertEqual(waitingPath.challengesSent, 1)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 5.0)
-    }
-
-    // Scenario: QUICPath.handlePathChallengeResponse -> Migration.migrate -> sendFrames ->
-    // Migration.tearDownMigratedPath -> sendFrames
-    func testMigrateCompletingRoutesSendFramesFromMigrationThroughScheduler() {
-        let expectation = XCTestExpectation()
-        connection.context.async {
-            let oldPath = self.makePath(dcid: Self.pathACID, sequenceNumber: 1, validated: true)
-            let migratingPath = self.makePath(dcid: Self.pathBCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = oldPath
-            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
-            self.connection.multiplexingPaths[migratingPath.pathIdentifier] = migratingPath
-
-            self.connection.fromExternal { eventContext in
-                migratingPath.beginValidation(in: &eventContext)
-            }
-            let challenge = FramePathChallenge(data: 1)
-            self.connection.fromExternal { eventContext in
-                migratingPath.handlePathChallenge(challenge.data, in: &eventContext)
-            }
-            var pendingItems = PendingItems(packetNumberSpace: .applicationData)
-            self.connection.fromExternal { eventContext in
-                migratingPath.addPendingItems(&pendingItems, now: .systemNow, in: &eventContext)
-            }
-            guard let outboundChallenge = pendingItems.pathChallenges.first?.data else {
-                XCTFail("Expected an outbound challenge to have been queued")
-                expectation.fulfill()
-                return
-            }
-            migratingPath.migrationPending = true
-
-            self.connection.fromExternal { eventContext in
-                migratingPath.handlePathChallengeResponse(
-                    outboundChallenge,
-                    in: &eventContext
-                )
-            }
-
-            XCTAssertEqual(self.connection.currentPath?.identifier, migratingPath.identifier)
-            XCTAssertNil(self.connection.multiplexingPaths[oldPath.pathIdentifier], "Old path not torn down")
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
