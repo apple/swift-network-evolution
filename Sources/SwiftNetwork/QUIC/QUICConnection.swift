@@ -392,10 +392,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     private var pendOutboundData = false  // Don't immediately process application sends
 
-    // Set while Recovery or Ack is exclusively borrowed for ACK-related work: either
-    // processing a received ACK frame  or firing the delayed-ACK timers
-    private var isBorrowingRecoveryAckState = false
-    private var deferredSendFramesRequested = false
+    // Set for sendFrames or sendFramesFromRecovery calls claiming the send path
+    private var isSendActive = false
+    private var deferredSendFrames: DeferredSend?
+    private var deferredPathSends: [MultiplexingPathIdentifier: DeferredSend] = [:]
 
     // false == IPv6, true == IPv4
     private(set) var initialAddressIsIPv4 = false
@@ -517,7 +517,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 timerNow: self.now,
                 in: &eventContext
             ) { firedAt, timerState in
-                self.recovery.timerFired(at: firedAt, in: &timerState)
+                self.fireRecoveryTimer(at: firedAt, in: &timerState)
             }
             self.recovery = Recovery(
                 connection: self,
@@ -3305,23 +3305,166 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
-    // Safe-guard Ack and Recovery overlapping access with isBorrowingRecoveryAckState
+    // MARK: - Send Frames logic
+
+    // Used when the send path is active and sendFrames or sendFrames(on:) needs to be deferred
+    private struct DeferredSend {
+        var path: QUICPath?
+        var ignoreCongestionWindow = false
+        var retransmission = false
+        var delayedACK = false
+    }
+
+    // Records a standard sendFrames calls with the standard flags
+    private func recordDeferredSendFrames(ignoreCongestionWindow: Bool, delayedACK: Bool) {
+        var deferred = deferredSendFrames ?? DeferredSend()
+        deferred.ignoreCongestionWindow = deferred.ignoreCongestionWindow || ignoreCongestionWindow
+        deferred.delayedACK = deferred.delayedACK || delayedACK
+        deferredSendFrames = deferred
+    }
+
+    // Records a sendFrames on path call
+    private func recordDeferredPathSend(_ path: QUICPath, ignoreCongestionWindow: Bool, retransmission: Bool) {
+        var deferred =
+            deferredPathSends[path.pathIdentifier]
+            ?? DeferredSend(path: path)
+        deferred.ignoreCongestionWindow = deferred.ignoreCongestionWindow || ignoreCongestionWindow
+        deferred.retransmission = deferred.retransmission || retransmission
+        deferredPathSends[path.pathIdentifier] = deferred
+    }
+
+    // Central check to drain deferred calls
+    @inline(always)
+    private func drainDeferredSendFrames(
+        recoveryIsFree: Bool = true,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        guard deferredSendFrames != nil || !deferredPathSends.isEmpty else { return }
+        drainDeferredSendFramesSlowPath(recoveryIsFree: recoveryIsFree, in: &eventContext)
+    }
+
+    // Replays deferred sendFrames and sendFrames(on:) calls, then hands sentPackets to Recovery. While Recovery is borrowed, only the sendFrames(on:) calls are replayed. When recoveryIsFree is not set sendFramesFromRecovery was claiming the sent path and so replay any potential sendFrames(on:) calls that potentially built up while Recovery was sending.
+    private func drainDeferredSendFramesSlowPath(
+        recoveryIsFree: Bool,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        guard recoveryIsFree else {
+            // Run when sendFramesFromRecovery hold access to recovery
+            while !deferredPathSends.isEmpty {
+                let pathSends = deferredPathSends
+                deferredPathSends.removeAll()
+                for (_, pathSend) in pathSends {
+                    guard let path = pathSend.path else { continue }
+                    replayDeferredPathSend(
+                        path,
+                        ignoreCongestionWindow: pathSend.ignoreCongestionWindow,
+                        retransmission: pathSend.retransmission,
+                        in: &eventContext
+                    )
+                }
+            }
+            return
+        }
+        while deferredSendFrames != nil || !deferredPathSends.isEmpty {
+            if let plain = deferredSendFrames {
+                deferredSendFrames = nil
+                sendFrames(
+                    ignoreCongestionWindow: plain.ignoreCongestionWindow,
+                    delayedACK: plain.delayedACK,
+                    in: &eventContext
+                )
+            }
+            let pathSends = deferredPathSends
+            deferredPathSends.removeAll()
+            for (_, pathSend) in pathSends {
+                guard let path = pathSend.path else { continue }
+                replayDeferredPathSend(
+                    path,
+                    ignoreCongestionWindow: pathSend.ignoreCongestionWindow,
+                    retransmission: pathSend.retransmission,
+                    in: &eventContext
+                )
+            }
+        }
+        flushPendingRecoverySentPackets(in: &eventContext)
+    }
+    // Runs a deferred sendFrames on path
+    private func replayDeferredPathSend(
+        _ path: QUICPath,
+        ignoreCongestionWindow: Bool,
+        retransmission: Bool,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        isSendActive = true
+        self.sentPackets.reserveCapacity(
+            capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
+        )
+        var discardInitialRecoveryState = false
+        _ = sendFramesInternal(
+            path: path,
+            ignoreCongestionWindow: ignoreCongestionWindow,
+            retransmission: retransmission,
+            sentPackets: &self.sentPackets,
+            initialPendingItems: &initialPendingItems,
+            handshakePendingItems: &handshakePendingItems,
+            applicationPendingItems: &applicationPendingItems,
+            discardInitialRecoveryState: &discardInitialRecoveryState,
+            in: &eventContext
+        )
+        if discardInitialRecoveryState {
+            recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
+            recovery.resetPTOCount(path: path)
+        }
+        deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
+        isSendActive = false
+    }
+
+    // Makes sure that Recovery always records the sentPackets records for PTO bookkeeping
+    private func flushPendingRecoverySentPackets(in eventContext: inout NetworkContext.EventContext) {
+        guard !sentPackets.isEmpty else { return }
+        recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
+        shrinkSentPacketsIfNecessary(sentPackets: &sentPackets)
+    }
+
+    // Claims isSendActive so sends nested inside Ack.timerFired are deferred and run afterwards
     func fireDelayedAckTimer(
         at firedAt: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        let wasBorrowing = isBorrowingRecoveryAckState
-        isBorrowingRecoveryAckState = true
+        let wasActive = isSendActive
+        isSendActive = true
+        // Ack timer has a sendFrames nested inside of it.
+        // This can also trigger the PATH_CHALLENGE -> Migration.resetTimer -> sendFrames path
+        // The logic below makes sure that if `sendFrames(delayedACK: true` is deferred that its then run afterwards.
         ack.timerFired(at: firedAt, in: &eventContext)
-        isBorrowingRecoveryAckState = wasBorrowing
-        if !wasBorrowing, deferredSendFramesRequested {
-            deferredSendFramesRequested = false
-            sendFrames(delayedACK: true, in: &eventContext)
+        isSendActive = wasActive
+        guard !wasActive else { return }
+
+        if let plain = deferredSendFrames {
+            deferredSendFrames = nil
+            sendFrames(ignoreCongestionWindow: plain.ignoreCongestionWindow, delayedACK: true, in: &eventContext)
 
             // `timerFired`'s own idle check ran before this deferred flush, while the ACK
             // frame was still scheduled but not yet sent, so it couldn't observe idleness.
             // Check again now that the flush has actually cleared the pending ACK.
             checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
+        } else {
+            drainDeferredSendFrames(in: &eventContext)
+        }
+    }
+
+    // Claims isSendActive so sends nested inside Recovery.timerFired are deferred and run afterwards
+    func fireRecoveryTimer(
+        at firedAt: NetworkClock.Instant,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        let wasActive = isSendActive
+        isSendActive = true
+        flushPendingRecoverySentPackets(in: &eventContext)
+        recovery.timerFired(at: firedAt, in: &eventContext)
+        isSendActive = wasActive
+        if !wasActive {
+            drainDeferredSendFrames(in: &eventContext)
         }
     }
 
@@ -3333,12 +3476,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         delayedACK: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        // Guard with isBorrowingRecoveryAckState because Recovery and Ack to prevent overlapping access
-        if isBorrowingRecoveryAckState {
-            deferredSendFramesRequested = true
+        // Check if the send path is active, if so then record and defer the call
+        guard !isSendActive else {
+            recordDeferredSendFrames(ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK)
             return false
         }
-        return sendFrames(
+        isSendActive = true
+        let result = sendFrames(
             ignoreCongestionWindow: ignoreCongestionWindow,
             delayedACK: delayedACK,
             sentPackets: &sentPackets,
@@ -3348,6 +3492,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             applicationPendingItems: &applicationPendingItems,
             in: &eventContext
         )
+        isSendActive = false
+        drainDeferredSendFrames(in: &eventContext)
+        return result
     }
 
     @discardableResult
@@ -3434,6 +3581,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         retransmission: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        // Check if the send path is active, if so then record and defer the call
+        guard !isSendActive else {
+            recordDeferredPathSend(path, ignoreCongestionWindow: ignoreCongestionWindow, retransmission: retransmission)
+            return false
+        }
+        isSendActive = true
         self.sentPackets.reserveCapacity(
             capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
         )
@@ -3456,6 +3609,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             recovery.resetPTOCount(path: path)
         }
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
+        isSendActive = false
+        drainDeferredSendFrames(in: &eventContext)
         return success
     }
 
@@ -3467,7 +3622,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         discardInitialRecoveryState: inout Bool,
         in eventContext: inout NetworkContext.EventContext
     ) -> NetworkUniqueDeque<SentPacketRecord> {
-        sendFramesFromRecovery(
+        // sendFramesFromRecovery should always claim the send path so anything that
+        // comes in for sendFrames while this is active should drain afterwards
+        let wasActive = isSendActive
+        isSendActive = true
+        let result = sendFramesFromRecovery(
             on: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
             retransmission: retransmission,
@@ -3477,6 +3636,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             discardInitialRecoveryState: &discardInitialRecoveryState,
             in: &eventContext
         )
+        isSendActive = wasActive
+        if !wasActive {
+            drainDeferredSendFrames(recoveryIsFree: false, in: &eventContext)
+        }
+        return result
     }
 
     // Sends with pending items attached
@@ -5711,8 +5875,8 @@ extension QUICConnection {
         // to flush frames. Suppress those nested flushes for the duration of the
         // `recovery` borrow below, then perform one flush afterwards if any were
         // requested.
-        let wasBorrowing = isBorrowingRecoveryAckState
-        isBorrowingRecoveryAckState = true
+        let wasActive = isSendActive
+        isSendActive = true
         recovery.receivedAck(
             ack: frame,
             ackedPath: path,
@@ -5726,10 +5890,9 @@ extension QUICConnection {
         recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
 
         // The borrow of `recovery` has ended, so it is safe to flush again.
-        isBorrowingRecoveryAckState = wasBorrowing
-        if !wasBorrowing, deferredSendFramesRequested {
-            deferredSendFramesRequested = false
-            sendFrames(in: &eventContext)
+        isSendActive = wasActive
+        if !wasActive {
+            drainDeferredSendFrames(in: &eventContext)
         }
         return true
     }
