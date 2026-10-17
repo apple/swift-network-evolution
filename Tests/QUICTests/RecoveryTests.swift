@@ -423,6 +423,193 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(connection.recovery.getLargestAckedPN(packetNumberSpace: space), 3)
     }
 
+    // MARK: - Loss detection and spurious losses
+
+    /// Records ack-eliciting application data packets of 1000 bytes sent on `path` at `time`.
+    private func sendPackets(_ numbers: ClosedRange<Int64>, on path: QUICPath, at time: NetworkClock.Instant) {
+        connection.pinnedClock = .init(continuous: time, absolute: time)
+        for number in numbers {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .applicationData, number: PacketNumber(number))
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 1000
+            packet.sentPath = path.pathIdentifier
+            sentPacket(packet, connection: connection)
+        }
+    }
+
+    /// Delivers, on `path` at `time`, an ACK frame with a single range covering `acked`.
+    private func receiveAck(_ acked: ClosedRange<Int64>, on path: QUICPath, at time: NetworkClock.Instant) {
+        connection.pinnedClock = .init(continuous: time, absolute: time)
+        connection.recovery.receivedAck(
+            ack: FrameAck(
+                packetNumberSpace: .applicationData,
+                largest: PacketNumber(acked.upperBound),
+                delay: 0,
+                ranges: [FrameAckRange(gap: 0, range: PacketNumber(acked.upperBound - acked.lowerBound))]
+            ),
+            ackedPath: path,
+            connection: connection,
+            in: &connection.context.eventContext
+        )
+    }
+
+    private func slowStartThreshold(of path: QUICPath) -> UInt64 {
+        var snapshot = DataTransferSnapshot()
+        path.congestionControlFilloutDataTransferSnapshot(snapshot: &snapshot)
+        return snapshot.transportSlowStartThreshold
+    }
+
+    /// Returns the lost time and congestion window flag of an outstanding packet, or `nil` if it
+    /// is no longer outstanding.
+    private func outstandingEntry(_ number: Int64) -> (lostTime: NetworkClock.Instant, reducedCongestionWindow: Bool)? {
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) { innerState in
+            var result: (lostTime: NetworkClock.Instant, reducedCongestionWindow: Bool)?
+            innerState.findSentPacketEntry(packetNumber: PacketNumber(number)) { entry in
+                result = (entry.lostTime, entry.reducedCongestionWindow)
+            }
+            return result
+        }
+    }
+
+    private var lostPacketCount: Int {
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) { $0.lostPacketCount }
+    }
+
+    // RFC 9002 Section 7.3.2: a loss of a packet sent after recovery started is a new congestion
+    // event. Congestion control must be given the sent time of the packets lost in this round,
+    // not of an earlier one; on a fresh connection that earlier time is zero and looks like it
+    // predates every recovery period.
+    func testFirstLossReducesCongestionWindow() {
+        let start = NetworkClock.Instant.testBase
+        defer { connection.pinnedClock = nil }
+        let initialWindow = path.congestionControlWindow
+
+        // Packet 0 is overtaken by three later packets, so it is lost by the packet threshold.
+        sendPackets(0...4, on: path, at: start)
+        receiveAck(1...4, on: path, at: start + .milliseconds(10))
+
+        XCTAssertNotEqual(outstandingEntry(0)?.lostTime ?? .zero, .zero, "Packet 0 should have been declared lost")
+        XCTAssertLessThan(path.congestionControlWindow, initialWindow)
+        XCTAssertEqual(slowStartThreshold(of: path), path.congestionControlWindow)
+        XCTAssertEqual(
+            outstandingEntry(0)?.reducedCongestionWindow,
+            true,
+            "The lost packet must record that it reduced the window, so a spurious loss can undo it"
+        )
+    }
+
+    // A lost packet stays outstanding for up to an RTT, so a late ACK for it is recognized as a
+    // spurious loss: the congestion window reduction is undone and the reordering threshold grows.
+    func testLateAckForLostPacketUndoesCongestionWindowReduction() {
+        let start = NetworkClock.Instant.testBase
+        defer { connection.pinnedClock = nil }
+        let initialWindow = path.congestionControlWindow
+
+        sendPackets(0...4, on: path, at: start)
+        receiveAck(1...4, on: path, at: start + .milliseconds(10))
+        XCTAssertLessThan(path.congestionControlWindow, initialWindow)
+
+        // The lost packet is kept, but no longer counts as awaiting acknowledgment.
+        XCTAssertNotEqual(outstandingEntry(0)?.lostTime ?? .zero, .zero)
+        XCTAssertEqual(lostPacketCount, 1)
+        XCTAssertFalse(connection.recovery.hasOutstandingPackets)
+        XCTAssertEqual(connection.recovery.totalAckElicitingPacketsInFlight, 0)
+        XCTAssertEqual(path.congestionControlBytesInFlight, 0)
+
+        // Packet 0 was only reordered: its ACK arrives within an RTT of the loss.
+        receiveAck(0...4, on: path, at: start + .milliseconds(15))
+
+        XCTAssertEqual(path.congestionControlWindow, initialWindow)
+        XCTAssertEqual(slowStartThreshold(of: path), UInt64.max)
+        XCTAssertNil(outstandingEntry(0))
+        XCTAssertEqual(lostPacketCount, 0)
+        // Packet 0 was overtaken by four packets, so a threshold of five would have tolerated it.
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) { innerState in
+            XCTAssertEqual(innerState.packetThreshold, 5)
+        }
+    }
+
+    // A lost packet is no longer kept once an RTT has passed since its loss: an ACK for it is no
+    // longer expected.
+    func testLostPacketIsDroppedOneRTTAfterItsLoss() {
+        let start = NetworkClock.Instant.testBase
+        defer { connection.pinnedClock = nil }
+        let initialWindow = path.congestionControlWindow
+
+        sendPackets(0...4, on: path, at: start)
+        receiveAck(1...4, on: path, at: start + .milliseconds(10))
+        XCTAssertEqual(lostPacketCount, 1)
+
+        // Less than an RTT after the loss, the lost packet is still kept.
+        sendPackets(5...5, on: path, at: start + .milliseconds(10))
+        receiveAck(1...5, on: path, at: start + .milliseconds(15))
+        XCTAssertNotNil(outstandingEntry(0))
+        XCTAssertEqual(lostPacketCount, 1)
+
+        // More than an RTT after the loss, it is dropped.
+        sendPackets(6...6, on: path, at: start + .milliseconds(15))
+        receiveAck(1...6, on: path, at: start + .milliseconds(40))
+        XCTAssertNil(outstandingEntry(0))
+        XCTAssertEqual(lostPacketCount, 0)
+        XCTAssertFalse(connection.recovery.hasOutstandingPackets)
+
+        // An ACK for it now is no longer treated as a spurious loss: the window stays reduced.
+        let windowBeforeLateAck = path.congestionControlWindow
+        XCTAssertLessThan(windowBeforeLateAck, initialWindow)
+        receiveAck(0...6, on: path, at: start + .milliseconds(45))
+        XCTAssertEqual(path.congestionControlWindow, windowBeforeLateAck)
+    }
+
+    /// A packet declared lost on one path and then acknowledged on another must undo the
+    /// congestion window reduction on the path it was sent on, not the path the ACK came in on.
+    func testSpuriousLossUndoesCongestionWindowOnSentPath() {
+        let start = NetworkClock.Instant.testBase
+        defer { connection.pinnedClock = nil }
+
+        // A second path that the spuriously lost packet goes out on. `path` (from setUp)
+        // receives every ACK.
+        let sentPath = connection.context.onQueue {
+            QUICPath.makeFromExternalTest(parent: connection)
+        }
+        sentPath.set(interface: nil, priority: 1, isInitial: true)
+        connection.multiplexingPaths[sentPath.pathIdentifier] = sentPath
+        defer {
+            connection.multiplexingPaths[sentPath.pathIdentifier] = nil
+            connection.context.onQueue { sentPath.destroyFromExternalTest() }
+        }
+        XCTAssertNotEqual(sentPath.pathIdentifier, path.pathIdentifier)
+        let ackPathInitialWindow = path.congestionControlWindow
+        let sentPathInitialWindow = sentPath.congestionControlWindow
+
+        // A real loss on the ACK path puts it in recovery, so undoing the wrong path's
+        // reduction would be visible.
+        sendPackets(0...4, on: path, at: start)
+        receiveAck(1...4, on: path, at: start + .milliseconds(10))
+        XCTAssertLessThan(path.congestionControlWindow, ackPathInitialWindow)
+
+        // Packet 5 goes out on the other path and is overtaken by three packets on the ACK path.
+        sendPackets(5...5, on: sentPath, at: start + .milliseconds(10))
+        sendPackets(6...8, on: path, at: start + .milliseconds(10))
+        receiveAck(6...8, on: path, at: start + .milliseconds(20))
+        XCTAssertLessThan(sentPath.congestionControlWindow, sentPathInitialWindow)
+        XCTAssertEqual(outstandingEntry(5)?.reducedCongestionWindow, true)
+        let ackPathWindow = path.congestionControlWindow
+        let ackPathSlowStartThreshold = slowStartThreshold(of: path)
+
+        // Packet 5 was only reordered; its ACK comes in on the ACK path.
+        receiveAck(5...8, on: path, at: start + .milliseconds(25))
+
+        // The reduction is undone on the path that sent the packet...
+        XCTAssertEqual(sentPath.congestionControlWindow, sentPathInitialWindow)
+        XCTAssertEqual(slowStartThreshold(of: sentPath), UInt64.max)
+        // ...and the ACK path, whose own loss was real, stays in recovery.
+        XCTAssertEqual(path.congestionControlWindow, ackPathWindow)
+        XCTAssertEqual(slowStartThreshold(of: path), ackPathSlowStartThreshold)
+        XCTAssertNil(outstandingEntry(5))
+    }
+
     func testPacketAckedNonAckEliciting() throws {
         func makeAckFrame() -> FrameAck {
             FrameAck(
