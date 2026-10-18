@@ -3343,7 +3343,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         drainDeferredSendFramesSlowPath(recoveryIsFree: recoveryIsFree, in: &eventContext)
     }
 
-    // Replays deferred sendFrames and sendFrames(on:) calls, then hands sentPackets to Recovery. While Recovery is borrowed, only the sendFrames(on:) calls are replayed. When recoveryIsFree is not set sendFramesFromRecovery was claiming the sent path and so replay any potential sendFrames(on:) calls that potentially built up while Recovery was sending.
+    // Replays deferred sendFrames and sendFrames(on:) calls, then hands sentPackets to Recovery. While Recovery is borrowed, only the sendFrames(on:) calls are replayed
     private func drainDeferredSendFramesSlowPath(
         recoveryIsFree: Bool,
         in eventContext: inout NetworkContext.EventContext
