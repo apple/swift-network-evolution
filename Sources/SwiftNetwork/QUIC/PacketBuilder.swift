@@ -174,7 +174,7 @@ extension Packet {
             _ = outboundFrame.unclaim(fromStart: totalUnclaimedLength)
             throw error
         }
-        packet.shorthandFrames = shorthandFrames
+        packet.shorthandFrames = consume shorthandFrames
 
         let lengthAfterWritingFrames = outboundFrame.unclaimedLength
 

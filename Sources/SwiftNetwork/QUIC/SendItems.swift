@@ -311,7 +311,10 @@ extension FrameResetStream: SendableItem {
         from pendingItems: inout PendingItems
     ) {
         if let first = pendingItems.streamResets.popFirst() {
-            transmittedItems.streamResets.append(first)
+            if transmittedItems.streamResets == nil {
+                transmittedItems.streamResets = Deque()
+            }
+            transmittedItems.streamResets!.append(first)
             transmittedItems.resetStream = true
         }
         pendingItems.resetStream = !pendingItems.streamResets.isEmpty
@@ -322,8 +325,10 @@ extension FrameResetStream: SendableItem {
         from transmittedItems: borrowing TransmittedItems,
         connection: QUICConnection
     ) {
-        pendingItems.streamResets.append(contentsOf: transmittedItems.streamResets)
-        pendingItems.resetStream = !pendingItems.streamResets.isEmpty
+        if let streamResets = transmittedItems.streamResets {
+            pendingItems.streamResets.append(contentsOf: streamResets)
+            pendingItems.resetStream = !pendingItems.streamResets.isEmpty
+        }
     }
 
     static func write(
@@ -371,7 +376,10 @@ extension FrameStopSending: SendableItem {
         from pendingItems: inout PendingItems
     ) {
         if let first = pendingItems.streamStopSendings.popFirst() {
-            transmittedItems.streamStopSendings.append(first)
+            if transmittedItems.streamStopSendings == nil {
+                transmittedItems.streamStopSendings = Deque()
+            }
+            transmittedItems.streamStopSendings!.append(first)
             transmittedItems.stopSendingFlag = true
         }
         pendingItems.stopSendingFlag = !pendingItems.streamStopSendings.isEmpty
@@ -382,8 +390,10 @@ extension FrameStopSending: SendableItem {
         from transmittedItems: borrowing TransmittedItems,
         connection: QUICConnection
     ) {
-        pendingItems.streamStopSendings.append(contentsOf: transmittedItems.streamStopSendings)
-        pendingItems.stopSendingFlag = !pendingItems.streamStopSendings.isEmpty
+        if let streamStopSendings = transmittedItems.streamStopSendings {
+            pendingItems.streamStopSendings.append(contentsOf: streamStopSendings)
+            pendingItems.stopSendingFlag = !pendingItems.streamStopSendings.isEmpty
+        }
     }
 
     static func write(
@@ -942,7 +952,10 @@ extension FrameStreamDataBlocked: SendableItem {
         from pendingItems: inout PendingItems
     ) {
         if let first = pendingItems.streamDataBlockedFlows.popFirst() {
-            transmittedItems.streamDataBlockedFlows.append(first)
+            if transmittedItems.streamDataBlockedFlows == nil {
+                transmittedItems.streamDataBlockedFlows = Deque()
+            }
+            transmittedItems.streamDataBlockedFlows!.append(first)
             transmittedItems.streamDataBlocked = true
         }
         pendingItems.streamDataBlocked = !pendingItems.streamDataBlockedFlows.isEmpty
@@ -953,10 +966,12 @@ extension FrameStreamDataBlocked: SendableItem {
         from transmittedItems: borrowing TransmittedItems,
         connection: QUICConnection
     ) {
-        for flowID in transmittedItems.streamDataBlockedFlows {
-            if !pendingItems.streamDataBlockedFlows.contains(flowID) {
-                pendingItems.streamDataBlockedFlows.append(flowID)
-                pendingItems.streamDataBlocked = true
+        if let streamDataBlockedFlows = transmittedItems.streamDataBlockedFlows {
+            for flowID in streamDataBlockedFlows {
+                if !pendingItems.streamDataBlockedFlows.contains(flowID) {
+                    pendingItems.streamDataBlockedFlows.append(flowID)
+                    pendingItems.streamDataBlocked = true
+                }
             }
         }
     }
@@ -1106,7 +1121,10 @@ extension FrameMaxStreamData: SendableItem {
         from pendingItems: inout PendingItems
     ) {
         if let first = pendingItems.maxStreamDataFlows.popFirst() {
-            transmittedItems.maxStreamDataFlows.append(first)
+            if transmittedItems.maxStreamDataFlows == nil {
+                transmittedItems.maxStreamDataFlows = Deque()
+            }
+            transmittedItems.maxStreamDataFlows!.append(first)
             transmittedItems.maxStreamData = true
         }
         if pendingItems.maxStreamDataFlows.isEmpty {
@@ -1119,10 +1137,12 @@ extension FrameMaxStreamData: SendableItem {
         from transmittedItems: borrowing TransmittedItems,
         connection: QUICConnection
     ) {
-        for flowID in transmittedItems.maxStreamDataFlows {
-            if !pendingItems.maxStreamDataFlows.contains(flowID) {
-                pendingItems.maxStreamDataFlows.append(flowID)
-                pendingItems.maxStreamData = true
+        if let maxStreamDataFlows = transmittedItems.maxStreamDataFlows {
+            for flowID in maxStreamDataFlows {
+                if !pendingItems.maxStreamDataFlows.contains(flowID) {
+                    pendingItems.maxStreamDataFlows.append(flowID)
+                    pendingItems.maxStreamData = true
+                }
             }
         }
     }
@@ -1243,7 +1263,10 @@ extension FrameNewConnectionID: SendableItem {
         from pendingItems: inout PendingItems
     ) {
         if let first = pendingItems.newConnectionIDs.popFirst() {
-            transmittedItems.newConnectionIDs.append(first)
+            if transmittedItems.newConnectionIDs == nil {
+                transmittedItems.newConnectionIDs = Deque()
+            }
+            transmittedItems.newConnectionIDs!.append(first)
             transmittedItems.newConnectionID = true
         }
         if pendingItems.newConnectionIDs.isEmpty {
@@ -1256,8 +1279,10 @@ extension FrameNewConnectionID: SendableItem {
         from transmittedItems: borrowing TransmittedItems,
         connection: QUICConnection
     ) {
-        pendingItems.newConnectionIDs.append(contentsOf: transmittedItems.newConnectionIDs)
-        pendingItems.newConnectionID = !pendingItems.newConnectionIDs.isEmpty
+        if let newConnectionIDs = transmittedItems.newConnectionIDs {
+            pendingItems.newConnectionIDs.append(contentsOf: newConnectionIDs)
+            pendingItems.newConnectionID = !pendingItems.newConnectionIDs.isEmpty
+        }
     }
 
     static func write(
@@ -1298,7 +1323,10 @@ extension FrameRetireConnectionID: SendableItem {
         from pendingItems: inout PendingItems
     ) {
         if let first = pendingItems.retireConnectionIDs.popFirst() {
-            transmittedItems.retireConnectionIDs.append(first)
+            if transmittedItems.retireConnectionIDs == nil {
+                transmittedItems.retireConnectionIDs = Deque()
+            }
+            transmittedItems.retireConnectionIDs!.append(first)
             transmittedItems.retireConnectionID = true
         }
         if pendingItems.retireConnectionIDs.isEmpty {
@@ -1311,8 +1339,10 @@ extension FrameRetireConnectionID: SendableItem {
         from transmittedItems: borrowing TransmittedItems,
         connection: QUICConnection
     ) {
-        pendingItems.retireConnectionIDs.append(contentsOf: transmittedItems.retireConnectionIDs)
-        pendingItems.retireConnectionID = !pendingItems.retireConnectionIDs.isEmpty
+        if let retireConnectionIDs = transmittedItems.retireConnectionIDs {
+            pendingItems.retireConnectionIDs.append(contentsOf: retireConnectionIDs)
+            pendingItems.retireConnectionID = !pendingItems.retireConnectionIDs.isEmpty
+        }
     }
 
     static func write(
@@ -3231,9 +3261,6 @@ struct TransmittedItems: ~Copyable {
     }
     var sentStreams = SentStreams()
 
-    var maxStreamDataFlows = Deque<MultiplexedFlowIdentifier>()
-    var streamDataBlockedFlows = Deque<MultiplexedFlowIdentifier>()
-
     struct TransmittedAckFrame {
         var largest = PacketNumber.none
         var delay: UInt64 = 0
@@ -3250,10 +3277,12 @@ struct TransmittedItems: ~Copyable {
     }
     var ackFrame: TransmittedAckFrame?
 
-    var streamResets = Deque<PendingItems.StreamReset>()
-    var streamStopSendings = Deque<PendingItems.StreamStopSending>()
-    var newConnectionIDs = Deque<FrameNewConnectionID>()
-    var retireConnectionIDs = Deque<FrameRetireConnectionID>()
+    var maxStreamDataFlows: Deque<MultiplexedFlowIdentifier>?
+    var streamDataBlockedFlows: Deque<MultiplexedFlowIdentifier>?
+    var streamResets: Deque<PendingItems.StreamReset>?
+    var streamStopSendings: Deque<PendingItems.StreamStopSending>?
+    var newConnectionIDs: Deque<FrameNewConnectionID>?
+    var retireConnectionIDs: Deque<FrameRetireConnectionID>?
 
     var pmtudProbeMSS: Int?
 
@@ -3261,13 +3290,13 @@ struct TransmittedItems: ~Copyable {
     var hasRetransmissibleItems: Bool {
         simpleSendableItems.rawValue != 0
             || !sentCrypto.isEmpty
-            || !maxStreamDataFlows.isEmpty
-            || !streamDataBlockedFlows.isEmpty
+            || !(maxStreamDataFlows?.isEmpty ?? true)
+            || !(streamDataBlockedFlows?.isEmpty ?? true)
             || !sentStreams.isEmpty
-            || !streamResets.isEmpty
-            || !streamStopSendings.isEmpty
-            || !newConnectionIDs.isEmpty
-            || !retireConnectionIDs.isEmpty
+            || !(streamResets?.isEmpty ?? true)
+            || !(streamStopSendings?.isEmpty ?? true)
+            || !(newConnectionIDs?.isEmpty ?? true)
+            || !(retireConnectionIDs?.isEmpty ?? true)
         // ackFrame is never retransmitted
     }
 
@@ -3304,8 +3333,10 @@ struct TransmittedItems: ~Copyable {
             )
         }
 
-        for streamReset in streamResets {
-            connection.acknowledgedResetStream(id: streamReset.streamID, in: &eventContext)
+        if let streamResets {
+            for streamReset in streamResets {
+                connection.acknowledgedResetStream(id: streamReset.streamID, in: &eventContext)
+            }
         }
 
         if let pmtudProbeMSS {
