@@ -3311,6 +3311,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Used when the send path is active and sendFrames or sendFrames(on:) needs to be deferred
     private struct DeferredSend {
         var path: QUICPath?
+        init(path: QUICPath? = nil) {
+            self.path = path
+        }
         struct Flags: OptionSet {
             init(rawValue: Self.RawValue) {
                 self.rawValue = rawValue
