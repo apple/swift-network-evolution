@@ -76,21 +76,12 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
         }
         harness.runQUICTest(dataBlock: dataBlock, clientOptions: clientOptions)
 
-        let qlogExpectation = XCTestExpectation(description: "Loop until the qlog is written")
         // Validate the qlog file is present (based on how it creates the file)
         let finalPath = path + "/qlog_client_\(title)_C1.qlog"
-        func checkQlogFileExists() {
-            if FileManager.default.fileExists(atPath: finalPath) {
-                qlogExpectation.fulfill()
-            }
-            harness.context.async {
-                checkQlogFileExists()
-            }
-        }
-        harness.context.async {
-            checkQlogFileExists()
-        }
-        wait(for: [qlogExpectation], timeout: 5.0)
+
+        // The close queues the qlog write on the context; `flush` returns once it has run.
+        harness.flush()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finalPath), "qlog file was not written")
 
         let resultData = FileManager.default.contents(atPath: finalPath)
         guard let resultData else {
@@ -121,21 +112,12 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
 
         harness.runQUICTest(dataBlock: dataBlock, serverOptions: serverOptions)
 
-        let qlogExpectation = XCTestExpectation(description: "Loop until the qlog is written")
         // Validate the qlog file is present (based on how it creates the file)
         let finalPath = path + "qlog_server_\(title)_C1.qlog"
-        func checkQlogFileExists() {
-            if FileManager.default.fileExists(atPath: finalPath) {
-                qlogExpectation.fulfill()
-            }
-            harness.context.async {
-                checkQlogFileExists()
-            }
-        }
-        harness.context.async {
-            checkQlogFileExists()
-        }
-        wait(for: [qlogExpectation], timeout: 5.0)
+
+        // The close queues the qlog write on the context; `flush` returns once it has run.
+        harness.flush()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finalPath), "qlog file was not written")
 
         let resultData = FileManager.default.contents(atPath: finalPath)
         guard let resultData else {
@@ -176,20 +158,11 @@ final class SwiftNetworkQUICQlogTests: NetTestCase {
         )
 
         // The qlog is only written by the draining timer, so wait for it to fire.
-        let qlogExpectation = XCTestExpectation(description: "Loop until the draining qlog is written")
-        func checkQlogFileExists() {
-            if FileManager.default.fileExists(atPath: finalPath) {
-                qlogExpectation.fulfill()
-                return
-            }
-            harness.context.async {
-                checkQlogFileExists()
-            }
-        }
-        harness.context.async {
-            checkQlogFileExists()
-        }
-        wait(for: [qlogExpectation], timeout: 5.0)
+        harness.wait(
+            until: { FileManager.default.fileExists(atPath: finalPath) },
+            timeout: 5.0,
+            "the draining timer to write the qlog"
+        )
 
         XCTAssertNotNil(FileManager.default.contents(atPath: finalPath), "Unable to read contents of \(finalPath)")
     }

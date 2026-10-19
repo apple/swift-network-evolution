@@ -63,8 +63,9 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             dataBlock: Array("Hello World!".utf8),
             afterData: { harness in
                 // Verify the pakets with ECN marking reached the other side
-                let expectation = XCTestExpectation(description: "Wait to validate ECN")
-                harness.context.async {
+                // `onContext` rather than an expectation: on a mock clock the test thread is the only
+                // thing that can run the work, so blocking would deadlock.
+                harness.onContext {
                     XCTAssertTrue(
                         harness.state?.serverInstance.stats[.ecnCapablePacketsAcknowledged] ?? 0 > 0,
                         "Server should have ACKed ECN marked packets"
@@ -73,9 +74,7 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
                         harness.state?.clientInstance.stats[.ecnCapablePacketsSent] ?? 0 > 0,
                         "Clients should have sent ECN marked packets"
                     )
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -93,8 +92,9 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             serverOptions: serverOptions,
             afterData: { harness in
                 // Verify the packets with ECN marking reached the other side
-                let expectation = XCTestExpectation(description: "Wait to validate ECN")
-                harness.context.async {
+                // `onContext` rather than an expectation: on a mock clock the test thread is the only
+                // thing that can run the work, so blocking would deadlock.
+                harness.onContext {
                     XCTAssertTrue(
                         harness.state?.serverInstance.stats[.ecnCapablePacketsAcknowledged] == 0,
                         "Server should NOT have ACKed ECN marked packets"
@@ -103,9 +103,7 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
                         harness.state?.clientInstance.stats[.ecnCapablePacketsSent] == 0,
                         "Clients should NOT have sent ECN marked packets"
                     )
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }

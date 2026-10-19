@@ -68,8 +68,7 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
         QUICTestHarness().runQUICTest(
             serverOptions: serverOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate tokens")
-                harness.context.async {
+                harness.onContext {
                     XCTAssertNotNil(
                         harness.state?.clientInstance.initialToken,
                         "Client should have an initial retry token"
@@ -79,9 +78,7 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
                         harness.state?.serverInstance.initialToken,
                         "Server must discard the retry token once validated, so it is never sent in an INITIAL"
                     )
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -107,8 +104,7 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
             clientOptions: clientOptions,
             serverOptions: serverOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate tokens")
-                harness.context.async {
+                harness.onContext {
                     XCTAssertNotNil(
                         harness.state?.clientInstance.initialToken,
                         "Client should have an initial retry token"
@@ -118,9 +114,7 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
                         harness.state?.serverInstance.initialToken,
                         "Server must discard the retry token once validated, so it is never sent in an INITIAL"
                     )
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -137,8 +131,7 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
             dataBlock: dataBlock,
             serverOptions: serverOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate tokens")
-                harness.context.async {
+                harness.onContext {
                     XCTAssertNotNil(
                         harness.state?.clientInstance.initialToken,
                         "Client should have an initial retry token"
@@ -148,9 +141,7 @@ final class SwiftNetworkQUICRetryTokenTests: NetTestCase {
                         harness.state?.serverInstance.initialToken,
                         "Server must discard the retry token once validated, so it is never sent in an INITIAL"
                     )
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }

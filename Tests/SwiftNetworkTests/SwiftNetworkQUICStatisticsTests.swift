@@ -63,9 +63,7 @@ final class SwiftNetworkQUICStatisticsTests: NetTestCase {
             blockSize: 10240,
             blockCount: 4,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate stats")
-                harness.context.async {
-                    defer { expectation.fulfill() }
+                harness.onContext {
 
                     let clientConnectionStats = harness.state?.clientInstance.stats.connectionStatistics
                     XCTAssertNotNil(clientConnectionStats)
@@ -83,7 +81,6 @@ final class SwiftNetworkQUICStatisticsTests: NetTestCase {
                     XCTAssertEqual(clientConnectionStats[.rxStreamBytes]!, totalSentBytes)
                     XCTAssertEqual(clientConnectionStats[.outboundBidirectionalStreams], 1)
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -94,9 +91,7 @@ final class SwiftNetworkQUICStatisticsTests: NetTestCase {
             blockSize: 10240,
             blockCount: 4,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate stats")
-                harness.context.async {
-                    defer { expectation.fulfill() }
+                harness.onContext {
 
                     let clientConnectionStats = harness.state?.clientInstance.stats.connectionStatistics
                     XCTAssertNotNil(clientConnectionStats)
@@ -118,7 +113,6 @@ final class SwiftNetworkQUICStatisticsTests: NetTestCase {
                     XCTAssertTrue(clientConnectionStats[.txStreamBytes]! > 0)
                     XCTAssertTrue(clientConnectionStats[.rxStreamBytes]! > 0)
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
