@@ -22,6 +22,10 @@ import Dispatch
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestSupport)
+@_spi(Essentials) import SwiftNetworkTestSupport
+#endif
+
 #if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
@@ -46,6 +50,13 @@ extension NetworkContext {
     /// this does it rather than asking every test to remember.
     func onQueue<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
         activate()
+
+        // A substituted scheduler runs queued work on the calling thread, so `body` must run in place;
+        // otherwise hopping would block the only thread able to run it.
+        if !self.eventContext.schedulerIsDefault {
+            return try body()
+        }
+
         dispatchPrecondition(condition: .notOnQueue(queue))
 
         var outcome: Result<R, E>? = nil
@@ -81,3 +92,23 @@ extension NetworkContext {
 }
 
 #endif
+
+/// A context on the clock `TestClock` selects.
+@available(Network 0.1.0, *)
+struct TestClockContext {
+    let context: NetworkContext
+
+    /// Drives `context` on a mock clock; `nil` on the system clock, where the context runs itself.
+    let manual: ManualTimeContext?
+
+    init(_ identifier: String) {
+        if TestClock.usesRealTime {
+            self.context = NetworkContext(identifier: identifier)
+            self.manual = nil
+        } else {
+            let manual = ManualTimeContext(identifier)
+            self.context = manual.context
+            self.manual = manual
+        }
+    }
+}

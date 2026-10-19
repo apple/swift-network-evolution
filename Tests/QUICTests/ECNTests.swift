@@ -903,7 +903,7 @@ final class ECNValidateTests: XCTestCase {
     }
 
     func testValidateAckLargestCECount() throws {
-        let context = NetworkContext(identifier: #function)
+        let context = TestClockContext(#function).context
         context.activate()
 
         let connection = QUICConnection(context: context)

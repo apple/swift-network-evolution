@@ -62,7 +62,7 @@ final class SendItemsTests: XCTestCase {
     ) {
         var frame = Frame(count: 1200)
         defer { frame.finalize(success: true) }
-        let context = NetworkContext(identifier: "SendItemsTests")
+        let context = TestClockContext("SendItemsTests").context
         let connection = QUICConnection(context: context)
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         var shorthandFrames: [QUICShorthandFrame]? = nil
@@ -288,7 +288,7 @@ final class SendItemsTests: XCTestCase {
         roomFor: Int,
         oversizedAtIndex: Int? = nil
     ) -> DatagramWriteOutcome {
-        let connection = QUICConnection(context: NetworkContext(identifier: "SendItemsTests"))
+        let connection = QUICConnection(context: TestClockContext("SendItemsTests").context)
         let flowID: UInt64 = 4
         let contextID: UInt64 = 0
         let flow = QUICDatagramFlow(parent: connection, inbound: true)
