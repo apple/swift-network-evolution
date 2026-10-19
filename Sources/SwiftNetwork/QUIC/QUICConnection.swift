@@ -4220,8 +4220,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
             // Record the largest connection ID sent.
             // This is checked in processRetireConnectionIDFrame.
-            if sentPacketRecord.transmittedItems.newConnectionID {
-                for newConnectionID in sentPacketRecord.transmittedItems.newConnectionIDs {
+            if sentPacketRecord.transmittedItems.newConnectionID,
+                let newConnectionIDs = sentPacketRecord.transmittedItems.newConnectionIDs
+            {
+                for newConnectionID in newConnectionIDs {
                     let sequence = newConnectionID.sequence
                     if sequence > largestSentLocalCIDSequenceNumber {
                         largestSentLocalCIDSequenceNumber = sequence
