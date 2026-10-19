@@ -3286,18 +3286,13 @@ struct TransmittedItems: ~Copyable {
 
     var pmtudProbeMSS: Int?
 
-    // Add new Frame support here, unless it's covered by flags
-    // sentStreams and simpleSendableItems should be checked first as they will be the most common
+    // Add new Frame support here, unless it's covered by flags.
+    // sentStreams and simpleSendableItems are checked first since they're the most common.
+    // simpleSendableItems should cover any of the pending deque flags above
     var hasRetransmissibleItems: Bool {
         !sentStreams.isEmpty
             || simpleSendableItems.rawValue != 0
             || !sentCrypto.isEmpty
-            || maxStreamDataFlows?.isEmpty == false
-            || streamDataBlockedFlows?.isEmpty == false
-            || streamResets?.isEmpty == false
-            || streamStopSendings?.isEmpty == false
-            || newConnectionIDs?.isEmpty == false
-            || retireConnectionIDs?.isEmpty == false
         // ackFrame is never retransmitted
     }
 
