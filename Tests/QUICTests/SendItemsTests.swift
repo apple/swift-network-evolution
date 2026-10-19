@@ -161,7 +161,7 @@ final class SendItemsTests: XCTestCase {
         )
 
         XCTAssertEqual(pendingItems.retireConnectionIDs.count, 1)
-        XCTAssertEqual(transmittedItems.retireConnectionIDs.count, 1)
+        XCTAssertEqual(transmittedItems.retireConnectionIDs?.count ?? 0, 1)
         XCTAssertEqual(
             pendingItems.retireConnectionID,
             !pendingItems.retireConnectionIDs.isEmpty,
@@ -219,7 +219,7 @@ final class SendItemsTests: XCTestCase {
         )
 
         XCTAssertEqual(pendingItems.streamResets.count, 1)
-        XCTAssertEqual(transmittedItems.streamResets.count, 1)
+        XCTAssertEqual(transmittedItems.streamResets?.count ?? 0, 1)
         XCTAssertEqual(
             pendingItems.resetStream,
             !pendingItems.streamResets.isEmpty,
@@ -239,7 +239,7 @@ final class SendItemsTests: XCTestCase {
         )
 
         XCTAssertEqual(pendingItems.streamStopSendings.count, 1)
-        XCTAssertEqual(transmittedItems.streamStopSendings.count, 1)
+        XCTAssertEqual(transmittedItems.streamStopSendings?.count ?? 0, 1)
         XCTAssertEqual(
             pendingItems.stopSendingFlag,
             !pendingItems.streamStopSendings.isEmpty,
@@ -259,7 +259,7 @@ final class SendItemsTests: XCTestCase {
         )
 
         XCTAssertEqual(pendingItems.streamDataBlockedFlows.count, 1)
-        XCTAssertEqual(transmittedItems.streamDataBlockedFlows.count, 1)
+        XCTAssertEqual(transmittedItems.streamDataBlockedFlows?.count ?? 0, 1)
         XCTAssertEqual(
             pendingItems.streamDataBlocked,
             !pendingItems.streamDataBlockedFlows.isEmpty,
