@@ -18,6 +18,7 @@ import XCTest
 
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
+@_spi(Essentials) import SwiftNetworkTestSupport
 #elseif canImport(Network)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
@@ -31,7 +32,7 @@ final class FlowControlTests: XCTestCase {
     func testOutboundFlowControl() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let connection = QUICConnection(
-            context: NetworkContext(identifier: "test context")
+            context: TestClockContext("test context").context
         )
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         connection.context.onQueue {
@@ -71,7 +72,7 @@ final class FlowControlTests: XCTestCase {
     func testInboundFlowControl() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let connection = QUICConnection(
-            context: NetworkContext(identifier: "test context")
+            context: TestClockContext("test context").context
         )
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         connection.context.onQueue {
@@ -112,7 +113,8 @@ final class FlowControlTests: XCTestCase {
 
     func testSendPermitReopensAfterDrainWithoutMaxStreamData() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
-        let context = NetworkContext(identifier: "test context")
+        let selected = TestClockContext("test context")
+        let context = selected.context
         context.activate()
 
         // Run on the context queue: reopening the permit delivers an upper-layer
@@ -155,13 +157,19 @@ final class FlowControlTests: XCTestCase {
             connection.destroyFromExternalTest()
             done.fulfill()
         }
-        wait(for: [done], timeout: 5.0)
+        // Nothing else runs the queue on a mock clock. The wait must still pass: otherwise a body that
+        // never ran would skip its assertions and the test would pass on nothing.
+        selected.manual?.run()
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [done], timeout: selected.manual == nil ? 5.0 : 0),
+            .completed
+        )
     }
 
     func testDuplicateResetStreamOverflow() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let connection = QUICConnection(
-            context: NetworkContext(identifier: "test context")
+            context: TestClockContext("test context").context
         )
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         connection.context.onQueue {
