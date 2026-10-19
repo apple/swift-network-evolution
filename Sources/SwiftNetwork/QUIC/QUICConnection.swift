@@ -394,6 +394,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     // Set for sendFrames or sendFramesFromRecovery calls claiming the send path
     private var isSendActive = false
+    private var hasDeferredSends = false
     private var deferredSendFrames: DeferredSend?
     private var deferredPathSends: [MultiplexingPathIdentifier: DeferredSend] = [:]
 
@@ -3310,9 +3311,46 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Used when the send path is active and sendFrames or sendFrames(on:) needs to be deferred
     private struct DeferredSend {
         var path: QUICPath?
-        var ignoreCongestionWindow = false
-        var retransmission = false
-        var delayedACK = false
+        struct Flags: OptionSet {
+            init(rawValue: Self.RawValue) {
+                self.rawValue = rawValue
+            }
+            var rawValue: UInt8
+            static let ignoreCongestionWindow = Flags(rawValue: 1 << 0)
+            static let retransmission = Flags(rawValue: 1 << 1)
+            static let delayedACK = Flags(rawValue: 1 << 2)
+        }
+        private var flags = Flags()
+        var ignoreCongestionWindow: Bool {
+            get { flags.contains(.ignoreCongestionWindow) }
+            set {
+                if newValue {
+                    flags.insert(.ignoreCongestionWindow)
+                } else {
+                    flags.remove(.ignoreCongestionWindow)
+                }
+            }
+        }
+        var retransmission: Bool {
+            get { flags.contains(.retransmission) }
+            set {
+                if newValue {
+                    flags.insert(.retransmission)
+                } else {
+                    flags.remove(.retransmission)
+                }
+            }
+        }
+        var delayedACK: Bool {
+            get { flags.contains(.delayedACK) }
+            set {
+                if newValue {
+                    flags.insert(.delayedACK)
+                } else {
+                    flags.remove(.delayedACK)
+                }
+            }
+        }
     }
 
     // Records a standard sendFrames calls with the standard flags
@@ -3321,6 +3359,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         deferred.ignoreCongestionWindow = deferred.ignoreCongestionWindow || ignoreCongestionWindow
         deferred.delayedACK = deferred.delayedACK || delayedACK
         deferredSendFrames = deferred
+        hasDeferredSends = true
     }
 
     // Records a sendFrames on path call
@@ -3331,6 +3370,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         deferred.ignoreCongestionWindow = deferred.ignoreCongestionWindow || ignoreCongestionWindow
         deferred.retransmission = deferred.retransmission || retransmission
         deferredPathSends[path.pathIdentifier] = deferred
+        hasDeferredSends = true
     }
 
     // Central check to drain deferred calls
@@ -3339,7 +3379,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         recoveryIsFree: Bool = true,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard deferredSendFrames != nil || !deferredPathSends.isEmpty else { return }
+        guard hasDeferredSends else { return }
         drainDeferredSendFramesSlowPath(recoveryIsFree: recoveryIsFree, in: &eventContext)
     }
 
@@ -3363,6 +3403,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     )
                 }
             }
+            hasDeferredSends = deferredSendFrames != nil
             return
         }
         while deferredSendFrames != nil || !deferredPathSends.isEmpty {
@@ -3386,6 +3427,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 )
             }
         }
+        hasDeferredSends = false
         flushPendingRecoverySentPackets(in: &eventContext)
     }
     // Runs a deferred sendFrames on path
@@ -3442,6 +3484,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         if let plain = deferredSendFrames {
             deferredSendFrames = nil
+            hasDeferredSends = !deferredPathSends.isEmpty
             sendFrames(ignoreCongestionWindow: plain.ignoreCongestionWindow, delayedACK: true, in: &eventContext)
 
             // `timerFired`'s own idle check ran before this deferred flush, while the ACK
