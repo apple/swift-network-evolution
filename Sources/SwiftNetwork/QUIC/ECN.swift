@@ -189,12 +189,11 @@ struct ECN: ~Copyable, PrefixedLoggable {
     @inline(always)
     static func outgoingIPCodepoint(
         ecn: borrowing ECN,
-        path: QUICPath,
+        ecnState: inout ECNPathState,
         stats: inout Statistics,
         packet: inout SentPacketRecord
     ) -> IPProtocol.ECN {
-        path.ecnState?.outgoingIPCodepoint(ecn: ecn, stats: &stats, packet: &packet)
-            ?? .nonECT
+        ecnState.outgoingIPCodepoint(ecn: ecn, stats: &stats, packet: &packet)
     }
 
 }

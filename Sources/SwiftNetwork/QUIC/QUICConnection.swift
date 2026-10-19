@@ -3829,6 +3829,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         protector: inout Protector,
         stats: inout Statistics,
         ecn: inout ECN,
+        ecnState: inout ECNPathState,
         applicationPendingItems: inout PendingItems,
         totalTxBytes: inout Int,
         totalTxPackets: inout Int,
@@ -3851,6 +3852,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     protector: &protector,
                     stats: &stats,
                     ecn: &ecn,
+                    ecnState: &ecnState,
                     totalTxBytes: &totalTxBytes,
                     totalTxPackets: &totalTxPackets,
                     in: &eventContext
@@ -3970,6 +3972,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
+            ecnState: &path.ecnState!,
             applicationPendingItems: &applicationPendingItems,
             totalTxBytes: &totalTxBytes,
             totalTxPackets: &totalTxPackets,
@@ -4040,6 +4043,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 protector: &protector,
                 stats: &stats,
                 ecn: &ecn,
+                ecnState: &path.ecnState!,
                 totalTxBytes: &totalTxBytes,
                 totalTxPackets: &totalTxPackets,
                 in: &eventContext
@@ -4098,6 +4102,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         protector: &protector,
                         stats: &stats,
                         ecn: &ecn,
+                        ecnState: &path.ecnState!,
                         totalTxBytes: &totalTxBytes,
                         totalTxPackets: &totalTxPackets,
                         in: &eventContext
@@ -4138,6 +4143,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     protector: &protector,
                     stats: &stats,
                     ecn: &ecn,
+                    ecnState: &path.ecnState!,
                     totalTxBytes: &totalTxBytes,
                     totalTxPackets: &totalTxPackets,
                     in: &eventContext
@@ -4172,6 +4178,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
+            ecnState: &path.ecnState!,
             applicationPendingItems: &applicationPendingItems,
             totalTxBytes: &totalTxBytes,
             totalTxPackets: &totalTxPackets,
@@ -4200,6 +4207,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         protector: inout Protector,
         stats: inout Statistics,
         ecn: inout ECN,
+        ecnState: inout ECNPathState,
         totalTxBytes: inout Int,
         totalTxPackets: inout Int,
         in eventContext: inout NetworkContext.EventContext
@@ -4366,7 +4374,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             let isInFlightEligible = sentPacketRecord.isInFlightEligible
             outFrame.ecnFlag = ECN.outgoingIPCodepoint(
                 ecn: ecn,
-                path: path,
+                ecnState: &ecnState,
                 stats: &stats,
                 packet: &sentPacketRecord
             )
@@ -4376,8 +4384,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
             // Record the largest connection ID sent.
             // This is checked in processRetireConnectionIDFrame.
-            if sentPacketRecord.transmittedItems.newConnectionID {
-                for newConnectionID in sentPacketRecord.transmittedItems.newConnectionIDs {
+            if sentPacketRecord.transmittedItems.newConnectionID,
+                let newConnectionIDs = sentPacketRecord.transmittedItems.newConnectionIDs
+            {
+                for newConnectionID in newConnectionIDs {
                     let sequence = newConnectionID.sequence
                     if sequence > largestSentLocalCIDSequenceNumber {
                         largestSentLocalCIDSequenceNumber = sequence
