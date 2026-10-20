@@ -755,6 +755,124 @@ final class RecoveryTests: XCTestCase {
         XCTAssertGreaterThan(path.recoveryState.PTOPeriod, .milliseconds(7900))
     }
 
+    // Once the connection has been in PTO recovery for two minutes, the next PTO sends no probe and
+    // flags the connection to be closed.
+    func testPTOLimitReached() {
+        var packet = SentPacketRecord()
+        packet.identifier = .init(space: .initial, number: 0)
+        packet.isInFlightEligible = true
+        packet.isAckEliciting = true
+        packet.totalLength = 20 + 96
+        packet.transmittedItems.ping = true
+        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+        sentPacket(packet, connection: connection)
+
+        let start = NetworkClock.Instant.systemNow
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.fromExternal { eventContext in
+                // The first PTO starts the clock.
+                self.connection.recovery.timerFired(at: start, in: &eventContext)
+                XCTAssertEqual(self.connection.recovery.firstPTOAt, start)
+                XCTAssertEqual(self.path.recoveryState.PTOCount, 1)
+
+                // Still inside the limit, so it probes as usual.
+                self.connection.recovery.timerFired(at: start.advanced(by: .minutes(1)), in: &eventContext)
+                XCTAssertFalse(self.connection.recovery.ptoLimitReached)
+                XCTAssertEqual(self.path.recoveryState.PTOCount, 2)
+                let inFlight = self.connection.recovery.totalAckElicitingPacketsInFlight
+
+                // Two minutes after the first PTO: stop probing and flag the connection to close.
+                self.connection.recovery.timerFired(at: start.advanced(by: .minutes(2)), in: &eventContext)
+                XCTAssertTrue(self.connection.recovery.ptoLimitReached)
+                XCTAssertEqual(self.path.recoveryState.PTOCount, 2, "PTO counted after the limit")
+                XCTAssertEqual(
+                    self.connection.recovery.totalAckElicitingPacketsInFlight,
+                    inFlight,
+                    "Probe sent after the limit"
+                )
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // An acknowledgment of new data ends the PTO episode, so the limit runs from the first PTO after
+    // it rather than from the first PTO overall.
+    func testPTOLimitClockRestartsAfterAck() {
+        connection.recovery.received1RTTAck = true
+        recordSparsePackets([0, 1])
+
+        let start = NetworkClock.Instant.systemNow
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.fromExternal { eventContext in
+                self.connection.recovery.timerFired(at: start, in: &eventContext)
+                XCTAssertEqual(self.connection.recovery.firstPTOAt, start)
+                XCTAssertEqual(self.path.recoveryState.PTOCount, 1)
+
+                // Packet 1 stays in flight, so the timer is not cancelled.
+                self.connection.recovery.receivedAck(
+                    ack: FrameAck(
+                        packetNumberSpace: .applicationData,
+                        largest: 0,
+                        delay: 0,
+                        ranges: [FrameAckRange(gap: 0, range: 0)]
+                    ),
+                    ackedPath: self.path,
+                    connection: self.connection,
+                    in: &eventContext
+                )
+                XCTAssertNil(self.connection.recovery.firstPTOAt, "ACK did not end the PTO episode")
+                XCTAssertEqual(self.path.recoveryState.PTOCount, 0)
+                XCTAssertGreaterThan(self.connection.recovery.totalAckElicitingPacketsInFlight, 0)
+
+                // Three minutes after the first PTO overall, but the first of a new episode.
+                self.connection.recovery.timerFired(at: start.advanced(by: .minutes(3)), in: &eventContext)
+                XCTAssertFalse(self.connection.recovery.ptoLimitReached)
+                XCTAssertEqual(self.connection.recovery.firstPTOAt, start.advanced(by: .minutes(3)))
+                XCTAssertEqual(self.path.recoveryState.PTOCount, 1)
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // A PTO that fires with nothing in flight starts no PTO episode, so it must not leave the clock
+    // running for a later loss episode.
+    func testSpuriousPTODoesNotStartPTOLimitClock() {
+        connection.recovery.received1RTTAck = true
+        XCTAssertEqual(connection.recovery.totalAckElicitingPacketsInFlight, 0)
+
+        let start = NetworkClock.Instant.systemNow
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.fromExternal { eventContext in
+                self.connection.recovery.timerFired(at: start, in: &eventContext)
+                XCTAssertNil(self.connection.recovery.firstPTOAt)
+                XCTAssertEqual(self.path.recoveryState.PTOCount, 0)
+
+                var packet = SentPacketRecord()
+                packet.identifier = .init(space: .applicationData, number: 0)
+                packet.isInFlightEligible = true
+                packet.isAckEliciting = true
+                packet.totalLength = 100
+                packet.sentPath = self.connection.currentPath?.pathIdentifier ?? .none
+                var packets = NetworkUniqueDeque<SentPacketRecord>()
+                packets.append(packet)
+                self.connection.recovery.recordSentPackets(&packets, connection: self.connection, in: &eventContext)
+
+                // The first PTO of this episode probes, however long after the spurious one.
+                self.connection.recovery.timerFired(at: start.advanced(by: .minutes(3)), in: &eventContext)
+                XCTAssertFalse(self.connection.recovery.ptoLimitReached)
+                XCTAssertEqual(self.connection.recovery.firstPTOAt, start.advanced(by: .minutes(3)))
+                XCTAssertEqual(self.path.recoveryState.PTOCount, 1)
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
     // A PTO with ack-eliciting data in flight must emit a probe, even when the only outstanding
     // packet carries STREAM data for a now-closed flow (so it can't be rebuilt) and the connection
     // is validated; otherwise `sendPTO` sends nothing and the connection makes no progress until the
