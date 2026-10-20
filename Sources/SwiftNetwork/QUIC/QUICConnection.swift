@@ -257,6 +257,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var maxKeepaliveCount = 0
     var unackedKeepaliveCount = 0
 
+    var maxPTODuration: NetworkDuration = Constants.defaultMaxPTODuration
+
     /// A continuous and an absolute reading of the clock, taken back to back.
     struct ClockSample {
         let continuous: NetworkClock.Instant
@@ -519,6 +521,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 in: &eventContext
             ) { firedAt, timerState in
                 self.fireRecoveryTimer(at: firedAt, in: &timerState)
+                if self.recovery.ptoLimitReached, !self.state.isTerminal {
+                    self.errorToReport = .posix(ETIMEDOUT)
+                    self.close(with: .noError, "PTO limit reached", in: &timerState)
+                }
             }
             self.recovery = Recovery(
                 connection: self,
@@ -585,6 +591,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 quicConnectionOptions.resendRejectedEarlyDataAutomatically
             if quicConnectionOptions.keepaliveCount > 0 {
                 maxKeepaliveCount = Int(quicConnectionOptions.keepaliveCount)
+            }
+            if let maxPTODuration = quicConnectionOptions.maxPTODuration {
+                self.maxPTODuration = maxPTODuration
             }
 
             allowPMTUD = quicConnectionOptions.pmtud

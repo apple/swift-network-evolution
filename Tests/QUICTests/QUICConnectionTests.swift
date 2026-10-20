@@ -514,6 +514,58 @@ final class QUICConnectionTests: XCTestCase {
             )
         }
     }
+
+    /// The PTO limit comes from the connection options a connection sets up with, whichever side it is;
+    /// without one the connection keeps the default.
+    func testMaxPTODurationComesFromConnectionOptions() {
+        let limits: [(configured: NetworkDuration?, expected: NetworkDuration)] = [
+            (nil, Constants.defaultMaxPTODuration),
+            (.seconds(30), .seconds(30)),
+        ]
+        for isServer in [false, true] {
+            for (configured, expected) in limits {
+                let storage = TestNetworkProtocolStorage(context: .implicitContext)
+                let (streamListener, _, _) = storage.createTestQUICInstance()
+                guard let connection = storage.quicInstance(for: streamListener.base) else {
+                    XCTFail("Failed to create a QUIC connection")
+                    return
+                }
+
+                var parameters = Parameters()
+                let quicOptions = QUICStreamProtocol.options()
+                quicOptions.setProtocolInstance(streamListener.identifier)
+                quicOptions.modifyConnectionOptions { $0.maxPTODuration = configured }
+                parameters.defaultStack.prepend(applicationProtocol: .quic(quicOptions))
+                parameters.isServer = isServer
+                let path = PathProperties(parameters: parameters)
+                let local = Endpoint(hostname: "10.0.0.1", port: 4433)
+                let remote = Endpoint(hostname: "10.0.0.2", port: 1234)
+
+                let setUp = XCTestExpectation(description: "connection set up")
+                connection.context.async {
+                    do {
+                        try connection.setup(remote: remote, local: local, parameters: parameters, path: path)
+                    } catch {
+                        XCTFail("Failed to set up the connection: \(error)")
+                    }
+                    XCTAssertEqual(
+                        connection.maxPTODuration,
+                        expected,
+                        "Unexpected PTO limit for \(isServer ? "server" : "client") with \(String(describing: configured))"
+                    )
+                    setUp.fulfill()
+                }
+                wait(for: [setUp], timeout: 5.0)
+
+                connection.context.onQueue {
+                    if !connection.identifier.isNone {
+                        connection.destroyFromExternalTest()
+                    }
+                    storage.releaseHeldInstances()
+                }
+            }
+        }
+    }
 }
 
 #endif
