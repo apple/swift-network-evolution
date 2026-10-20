@@ -91,8 +91,6 @@ extension NetworkContext {
     }
 }
 
-#endif
-
 /// A context on the clock `TestClock` selects.
 @available(Network 0.1.0, *)
 struct TestClockContext {
@@ -112,3 +110,5 @@ struct TestClockContext {
         }
     }
 }
+
+#endif
