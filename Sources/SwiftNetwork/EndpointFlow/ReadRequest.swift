@@ -23,7 +23,34 @@ struct ReadRequest: ~Copyable {
         case streamSpan(minimumBytes: Int, maximumBytes: Int, maximumFrames: Int, spanCompletion: SpanCompletion)
     }
 
+    struct Flags: OptionSet {
+        let rawValue: UInt8
+
+        static let isReported = Flags(rawValue: 1 << 0)
+        static let isComplete = Flags(rawValue: 1 << 1)
+        static let fileProgressStarted = Flags(rawValue: 1 << 2)
+        static let fileFinished = Flags(rawValue: 1 << 3)
+
+        mutating func set(_ flag: Flags, to value: Bool) {
+            if value {
+                insert(flag)
+            } else {
+                remove(flag)
+            }
+        }
+    }
+
     let type: ReadRequestType
+    var flags: Flags = []
+
+    /// Bytes (or, for a batch of datagrams, datagrams) delivered to the request so far.
+    var progress = 0
+    var error: NetworkError?
+    var privateStorage = ReadRequestPrivateStorage()
+
+    init(type: ReadRequestType) {
+        self.type = type
+    }
 
     init(minimumBytes: Int, maximumBytes: Int, completion: @escaping DataCompletion) {
         type = ReadRequestType.stream(

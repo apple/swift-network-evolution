@@ -622,7 +622,7 @@ struct EndpointFlow: ~Copyable {
             return
         }
         if let takenRequest = writeRequest.take() {
-            writeRequests.append(takenRequest)
+            writeRequests.appendOrderedByPriority(takenRequest)
         }
         if state == .ready {
             write()
