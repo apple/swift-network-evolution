@@ -17,9 +17,9 @@
 import Dispatch
 
 #if canImport(SwiftNetwork)
-@_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
+@_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetwork
 #elseif canImport(Network)
-@_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
+@_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
 /*
@@ -46,7 +46,7 @@ extension NetworkContext {
     ///
     /// A context has nothing to run on until it is activated, and activating twice is harmless, so
     /// this does it rather than asking every test to remember.
-    public func onQueue<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
+    nonisolated public func onQueue<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
         activate()
         dispatchPrecondition(condition: .notOnQueue(queue))
 

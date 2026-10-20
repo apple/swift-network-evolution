@@ -68,19 +68,199 @@ public protocol NetworkContextProtocol: AnyObject, Hashable {
     func barrierAsync(_ block: @escaping () -> Void)
 }
 
+#if !NETWORK_EMBEDDED
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
-    public func hash(into hasher: inout Hasher) {
-        #if !NETWORK_EMBEDDED
-        hasher.combine(self.identifier)
-        #else
-        // Embedded does not currently support directly taking the hash of a string
-        for byte in self.identifier.utf8 {
-            hasher.combine(byte)
+public actor NetworkContext: NetworkContextProtocol {
+    #if !NETWORK_PRIVATE || NETWORK_STANDALONE
+    public let identifier: String
+
+    final class SchedulerExecutor: SerialExecutor, @unchecked Sendable {
+        let scheduler: any Scheduler
+        private let queueKey = DispatchSpecificKey<SystemUUID>()
+        private var queueVal = SystemUUID()
+
+        init(scheduler: any NetworkContext.Scheduler, queue: DispatchQueue) {
+            self.scheduler = scheduler
+            queue.setSpecific(key: queueKey, value: queueVal)
+        }
+
+        func enqueue(_ job: consuming ExecutorJob) {
+            let job = UnownedJob(job)
+            let executor = asUnownedSerialExecutor()
+            scheduler.runImmediate { job.runSynchronously(on: executor) }
+        }
+
+        func checkIsolated() {
+            precondition(queueVal == DispatchQueue.getSpecific(key: queueKey), "Not isolated")
+        }
+    }
+
+    internal nonisolated let executor: SchedulerExecutor
+    public nonisolated var unownedExecutor: UnownedSerialExecutor {
+        self.executor.asUnownedSerialExecutor()
+    }
+
+    // Unsafe is okay because _eventContext will only be mutated
+    // inside the isolation domain
+    nonisolated(unsafe) internal var _eventContext: EventContext
+
+    internal init(
+        identifier: String,
+        globals: NetworkContext.Globals,
+        scheduler: any NetworkContext.Scheduler,
+        schedulerIsDefault: Bool
+    ) {
+        self.scheduler = scheduler
+        self.globals = globals
+        self.identifier = identifier
+        self._eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
+        self.executor = SchedulerExecutor(scheduler: scheduler, queue: globals.queue)
+    }
+
+    // The scheduler and globals, held directly so `async(_:)` and `queue` don't read `eventContext`.
+    // Both are immutable for the lifetime of the context, and both are reached from places where
+    // the caller may already hold the state: `async(_:)` from `deinit`, and `queue` from protocol
+    // setup that runs inside an attach. `Globals` is a class, so this is a single reference.
+    nonisolated internal let scheduler: any Scheduler
+    nonisolated internal let globals: Globals
+
+    internal let _privacyLevel = NetworkMutex<PrivacyLevel>(.privateLogs)
+    #else
+    var storage: NetworkContext.Storage
+
+    var _eventContext: NetworkContext.EventContext
+
+    internal init(storage: consuming NetworkContext.Storage) {
+        self.storage = storage
+        self._eventContext = .init()
+    }
+
+    deinit {
+        teardown()
+    }
+    #endif
+
+    #if !NETWORK_PRIVATE && !NETWORK_STANDALONE && canImport(Dispatch)
+    public init(identifier: String) {
+        let globals = Globals(label: identifier)
+        let scheduler = DefaultScheduler(globals: globals)
+        self.scheduler = scheduler
+        self.globals = globals
+        self.identifier = identifier
+        self._eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: true)
+        self.executor = SchedulerExecutor(scheduler: scheduler, queue: globals.queue)
+    }
+
+    public init(identifier: String, externalScheduler: any Scheduler) {
+        let globals = Globals(label: identifier)
+        self.scheduler = externalScheduler
+        self.globals = globals
+        self.identifier = identifier
+        self._eventContext = .init(globals: globals, scheduler: externalScheduler, schedulerIsDefault: false)
+        self.executor = SchedulerExecutor(scheduler: scheduler, queue: globals.queue)
+    }
+    #endif
+}
+#else
+@_spi(Essentials)
+@available(Network 0.1.0, *)
+public final class NetworkContext: NetworkContextProtocol {
+    #if !NETWORK_PRIVATE || NETWORK_STANDALONE
+    public let identifier: String
+
+    internal var _eventContext: EventContext
+
+    internal init(
+        identifier: String,
+        globals: NetworkContext.Globals,
+        scheduler: any NetworkContext.Scheduler,
+        schedulerIsDefault: Bool
+    ) {
+        self.scheduler = scheduler
+        self.globals = globals
+        self.identifier = identifier
+        self._eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
+        self.executor = SchedulerExecutor(scheduler: scheduler, queue: globals.queue)
+    }
+
+    // The scheduler and globals, held directly so `async(_:)` and `queue` don't read `eventContext`.
+    // Both are immutable for the lifetime of the context, and both are reached from places where
+    // the caller may already hold the state: `async(_:)` from `deinit`, and `queue` from protocol
+    // setup that runs inside an attach. `Globals` is a class, so this is a single reference.
+    nonisolated internal let scheduler: any Scheduler
+    nonisolated internal let globals: Globals
+
+    internal let _privacyLevel = NetworkMutex<PrivacyLevel>(.privateLogs)
+    #else
+    var storage: NetworkContext.Storage
+
+    var _eventContext: NetworkContext.EventContext
+
+    internal init(storage: consuming NetworkContext.Storage) {
+        self.storage = storage
+        self._eventContext = .init()
+    }
+
+    deinit {
+        teardown()
+    }
+    #endif
+
+    #if !NETWORK_PRIVATE && !NETWORK_STANDALONE && canImport(Dispatch)
+    public init(identifier: String) {
+        let globals = Globals(label: identifier)
+        let scheduler = DefaultScheduler(globals: globals)
+        self.scheduler = scheduler
+        self.globals = globals
+        self.identifier = identifier
+        self._eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: true)
+        self.executor = SchedulerExecutor(scheduler: scheduler, queue: globals.queue)
+    }
+
+    public init(identifier: String, externalScheduler: any Scheduler) {
+        let globals = Globals(label: identifier)
+        self.scheduler = externalScheduler
+        self.globals = globals
+        self.identifier = identifier
+        self._eventContext = .init(globals: globals, scheduler: externalScheduler, schedulerIsDefault: false)
+        self.executor = SchedulerExecutor(scheduler: scheduler, queue: globals.queue)
+    }
+    #endif
+}
+#endif
+
+// MARK: - Globals
+
+#if !NETWORK_PRIVATE && !NETWORK_STANDALONE && canImport(Dispatch) && !NETWORK_EMBEDDED
+@available(Network 0.1.0, *)
+extension NetworkContext {
+
+    #if !NETWORK_PRIVATE || NETWORK_STANDALONE
+    public struct EventContext: ~Copyable {
+        let globals: NetworkContext.Globals
+        let scheduler: any Scheduler
+        let schedulerIsDefault: Bool
+
+        #if !NETWORK_DRIVERKIT && !NETWORK_STANDALONE
+        func assert() {
+            if schedulerIsDefault {
+                dispatchPrecondition(condition: DispatchPredicate.onQueue(queue))
+            } else {
+                precondition(scheduler.runningInScheduler, "Not running on context scheduler")
+            }
         }
         #endif
+
+        internal var protocolEventStates = NetworkGappyArray<ProtocolEventManagerState>()
+        internal mutating func registerProtocolEventState() -> NetworkStateIndex {
+            protocolEventStates.insert(.init())
+        }
+        internal mutating func unregisterProtocolEventState(_ index: NetworkStateIndex) {
+            protocolEventStates.remove(index: index)
+        }
     }
+    #endif
 
     public protocol Scheduler: AnyObject, Sendable {
         /// Runs an immediate task. This task must not be run directly on the caller's stack, but otherwise
@@ -128,220 +308,6 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         }
     }
 
-    #if !NETWORK_PRIVATE || NETWORK_STANDALONE
-    public let identifier: String
-
-    public static func == (lhs: NetworkContext, rhs: NetworkContext) -> Bool {
-        lhs === rhs
-    }
-
-    public struct EventContext: ~Copyable {
-        let globals: NetworkContext.Globals
-        let scheduler: any NetworkContext.Scheduler
-        let schedulerIsDefault: Bool
-
-        #if !NETWORK_DRIVERKIT && !NETWORK_STANDALONE
-        func assert() {
-            if schedulerIsDefault {
-                dispatchPrecondition(condition: DispatchPredicate.onQueue(queue))
-            } else {
-                precondition(scheduler.runningInScheduler, "Not running on context scheduler")
-            }
-        }
-        #endif
-
-        internal var protocolEventStates = NetworkGappyArray<ProtocolEventManagerState>()
-        internal mutating func registerProtocolEventState() -> NetworkStateIndex {
-            protocolEventStates.insert(.init())
-        }
-        internal mutating func unregisterProtocolEventState(_ index: NetworkStateIndex) {
-            protocolEventStates.remove(index: index)
-        }
-    }
-
-    #if !NETWORK_EMBEDDED
-    public actor EventContextManager {
-        internal nonisolated let executor: SchedulerExecutor
-        nonisolated(unsafe) internal var _eventContext: EventContext
-
-        init(globals: NetworkContext.Globals, scheduler: any NetworkContext.Scheduler, schedulerIsDefault: Bool) {
-            executor = SchedulerExecutor(scheduler: scheduler, queue: globals.queue)
-            _eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
-        }
-
-        nonisolated var eventContext: EventContext {
-            _read {
-                yield _eventContext
-            }
-            _modify {
-                yield &_eventContext
-            }
-        }
-
-        func fromExternal<R>(_ handler: () -> R) -> R {
-            handler()
-        }
-
-        func fromExternal<R: Sendable>(_ handler: () -> R) -> R {
-            handler()
-        }
-
-        func fromExternal<R, E: Error>(_ handler: () throws(E) -> R) rethrows -> R {
-            try handler()
-        }
-
-        func fromExternal<R: ~Copyable, E: Error>(_ handler: () throws(E) -> R) throws(E) -> R {
-            try handler()
-        }
-
-        public nonisolated var unownedExecutor: UnownedSerialExecutor {
-            self.executor.asUnownedSerialExecutor()
-        }
-
-        final class SchedulerExecutor: SerialExecutor, @unchecked Sendable {
-            let scheduler: any NetworkContext.Scheduler
-            private let queueKey = DispatchSpecificKey<SystemUUID>()
-            private var queueVal = SystemUUID()
-
-            init(scheduler: any NetworkContext.Scheduler, queue: DispatchQueue) {
-                self.scheduler = scheduler
-                queue.setSpecific(key: queueKey, value: queueVal)
-            }
-
-            func enqueue(_ job: consuming ExecutorJob) {
-                let job = UnownedJob(job)
-                let executor = asUnownedSerialExecutor()
-                scheduler.runImmediate { job.runSynchronously(on: executor) }
-            }
-
-            func checkIsolated() {
-                if queueVal != DispatchQueue.getSpecific(key: queueKey) {
-                    fatalError("checkIsolated failure")
-                }
-            }
-        }
-    }
-    #else
-    public final class EventContextManager {
-        internal var _eventContext: EventContext
-
-        init(globals: NetworkContext.Globals, scheduler: any NetworkContext.Scheduler, schedulerIsDefault: Bool) {
-            _eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
-        }
-
-        func fromExternal<R>(_ handler: (inout EventContext) -> R) -> R {
-            handler(&_eventContext)
-        }
-
-        func fromExternal<R, E: Error>(_ handler: (inout EventContext) throws(E) -> R) throws(E) -> R {
-            try handler(&_eventContext)
-        }
-
-        func fromExternal<R: ~Copyable, E: Error>(_ handler: (inout EventContext) throws(E) -> R) throws(E) -> R {
-            try handler(&_eventContext)
-        }
-    }
-    #endif
-    var eventContextManager: EventContextManager
-
-    internal init(
-        identifier: String,
-        globals: NetworkContext.Globals,
-        scheduler: any NetworkContext.Scheduler,
-        schedulerIsDefault: Bool
-    ) {
-        self.scheduler = scheduler
-        self.globals = globals
-        self.identifier = identifier
-        self.eventContextManager = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
-    }
-
-    public static let implicitContext: NetworkContext = NetworkContext(identifier: "context")
-
-    var cacheContext: NetworkContext {
-        self
-    }
-
-    // The scheduler and globals, held directly so `async(_:)` and `queue` don't read `eventContext`.
-    // Both are immutable for the lifetime of the context, and both are reached from places where
-    // the caller may already hold the state: `async(_:)` from `deinit`, and `queue` from protocol
-    // setup that runs inside an attach. `Globals` is a class, so this is a single reference.
-    internal let scheduler: any NetworkContext.Scheduler
-    internal let globals: NetworkContext.Globals
-
-    internal let _privacyLevel = NetworkMutex<PrivacyLevel>(.privateLogs)
-    var privacyLevel: PrivacyLevel {
-        get {
-            _privacyLevel.withLock { $0 }
-        }
-        set {
-            _privacyLevel.withLock { $0 = newValue }
-        }
-    }
-    #else
-    var storage: NetworkContext.Storage
-
-    var _eventContext: NetworkContext.EventContext
-
-    internal init(storage: consuming NetworkContext.Storage) {
-        self.storage = storage
-        self._eventContext = .init()
-    }
-
-    deinit {
-        teardown()
-    }
-    #endif
-
-    #if !NETWORK_PRIVATE && !NETWORK_STANDALONE && canImport(Dispatch)
-    public init(identifier: String) {
-        let globals = Globals(label: identifier)
-        let scheduler = DefaultScheduler(globals: globals)
-        self.scheduler = scheduler
-        self.globals = globals
-        self.identifier = identifier
-        eventContextManager = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: true)
-    }
-
-    public init(identifier: String, externalScheduler: any Scheduler) {
-        let globals = Globals(label: identifier)
-        self.scheduler = externalScheduler
-        self.globals = globals
-        self.identifier = identifier
-        eventContextManager = .init(globals: globals, scheduler: externalScheduler, schedulerIsDefault: false)
-    }
-    #endif
-
-    var disableLogging: Bool {
-        self.privacyLevel == .silentLogs
-    }
-
-    #if !NETWORK_PRIVATE || NETWORK_STANDALONE
-    public func activate() {}
-
-    func sharesWorkloop(with other: NetworkContext) -> Bool {
-        false
-    }
-
-    var isolateProtocolCache: Bool {
-        false
-    }
-
-    var sensitiveRedacted: Bool {
-        false
-    }
-
-    var privateRedacted: Bool {
-        false
-    }
-    #endif
-}
-
-// MARK: - Globals
-
-#if !NETWORK_PRIVATE && !NETWORK_STANDALONE && canImport(Dispatch) && !NETWORK_EMBEDDED
-@available(Network 0.1.0, *)
-extension NetworkContext {
     struct TimerEntry: ~Copyable, NetworkComparable {
         var targetTime: DispatchTime
         var block: () -> Void
@@ -506,61 +472,119 @@ extension NetworkContext {
     }
 }
 
+@available(Network 0.1.0, *)
+extension NetworkContext {
+
+    nonisolated public func hash(into hasher: inout Hasher) {
+        #if !NETWORK_EMBEDDED
+        hasher.combine(self.identifier)
+        #else
+        // Embedded does not currently support directly taking the hash of a string
+        for byte in self.identifier.utf8 {
+            hasher.combine(byte)
+        }
+        #endif
+    }
+
+    #if !NETWORK_PRIVATE || NETWORK_STANDALONE
+    public static func == (lhs: NetworkContext, rhs: NetworkContext) -> Bool {
+        lhs === rhs
+    }
+
+    nonisolated var eventContext: EventContext {
+        _read {
+            executor.checkIsolated()
+            yield _eventContext
+        }
+        _modify {
+            executor.checkIsolated()
+            yield &_eventContext
+        }
+    }
+
+    nonisolated public static let implicitContext: NetworkContext = NetworkContext(identifier: "context")
+
+    nonisolated var cacheContext: NetworkContext {
+        self
+    }
+
+    nonisolated var privacyLevel: PrivacyLevel {
+        get {
+            _privacyLevel.withLock { $0 }
+        }
+        set {
+            _privacyLevel.withLock { $0 = newValue }
+        }
+    }
+
+    nonisolated var disableLogging: Bool {
+        self.privacyLevel == .silentLogs
+    }
+
+    nonisolated public func activate() {}
+
+    nonisolated func sharesWorkloop(with other: NetworkContext) -> Bool {
+        false
+    }
+
+    nonisolated var isolateProtocolCache: Bool {
+        false
+    }
+
+    nonisolated var sensitiveRedacted: Bool {
+        false
+    }
+
+    nonisolated var privateRedacted: Bool {
+        false
+    }
+    #endif
+}
+
 // MARK: - Async
 
 @available(Network 0.1.0, *)
 extension NetworkContext {
 
     // Read during protocol setup, which runs inside an attach with the state already held.
-    var queue: DispatchQueue {
+    @_spi(Essentials)
+    nonisolated public var queue: DispatchQueue {
         globals.queue
     }
 
     // Schedules onto the context queue without reading `eventContext`. This is reachable from `deinit`
     // and from callbacks running inline with a delivering event, where the state is already held.
-    public func async(_ block: @escaping () -> Void) {
+    nonisolated public func async(_ block: @escaping () -> Void) {
         scheduler.runImmediate(block)
     }
 
-    public func barrierAsync(_ block: @escaping () -> Void) {
+    nonisolated public func barrierAsync(_ block: @escaping () -> Void) {
         scheduler.runImmediate(block)
     }
 
-    public var runningInContext: Bool {
+    nonisolated public var runningInContext: Bool {
         scheduler.runningInScheduler
     }
 
-    func assert() {
+    nonisolated func assert() {
         eventContext.assert()
     }
-}
 
-@available(Network 0.1.0, *)
-extension NetworkContext {
-    var eventContext: EventContext {
-        _read {
-            #if !NETWORK_EMBEDDED
-            eventContextManager.executor.checkIsolated()
-            #endif
-            yield eventContextManager._eventContext
-        }
-        _modify {
-            #if !NETWORK_EMBEDDED
-            eventContextManager.executor.checkIsolated()
-            #endif
-            yield &eventContextManager._eventContext
-        }
+    func fromExternal<R>(_ handler: () -> R) -> R {
+        handler()
     }
 
-    #if !NETWORK_EMBEDDED
-    public func fromExternal<R: Sendable>(_ handler: @Sendable () -> R) async -> R {
-        await eventContextManager.fromExternal(handler)
+    func fromExternal<R: Sendable>(_ handler: () -> R) -> R {
+        handler()
     }
 
-    public func fromExternal<R: Sendable, E: Error>(_ handler: @Sendable () throws(E) -> R) async rethrows -> R {
-        try await eventContextManager.fromExternal(handler)
+    func fromExternal<R, E: Error>(_ handler: () throws(E) -> R) rethrows -> R {
+        try handler()
     }
-    #endif
+
+    func fromExternal<R: ~Copyable, E: Error>(_ handler: () throws(E) -> R) throws(E) -> R {
+        try handler()
+    }
 }
 
 @available(Network 0.1.0, *)
@@ -599,13 +623,14 @@ extension NetworkContext {
         case after(NetworkDuration, () -> Void)
     }
 
-    public func scheduleTimer(duration: NetworkDuration, completion: @escaping () -> Void) -> TimerReference {
+    nonisolated public func scheduleTimer(duration: NetworkDuration, completion: @escaping () -> Void) -> TimerReference
+    {
         let newReference = TimerReference()
         resetTimer(for: newReference, to: .after(duration, completion))
         return newReference
     }
 
-    public func unscheduleTimer(_ timerReference: TimerReference) {
+    nonisolated public func unscheduleTimer(_ timerReference: TimerReference) {
         resetTimer(for: timerReference, to: .unschedule)
     }
 
@@ -614,16 +639,16 @@ extension NetworkContext {
     ///
     /// Time comes from whatever runs the context's timers, so a scheduler that holds scheduled
     /// tasks instead of arming an OS timer reports the time it fires them at.
-    var now: NetworkClock.Instant {
+    nonisolated var now: NetworkClock.Instant {
         scheduler.now
     }
 
     /// The context's current notion of the absolute clock.
-    var nowAbsolute: NetworkClock.Instant {
+    nonisolated var nowAbsolute: NetworkClock.Instant {
         scheduler.nowAbsolute
     }
 
-    func resetTimer(for reference: TimerReference, to time: FutureTime) {
+    nonisolated func resetTimer(for reference: TimerReference, to time: FutureTime) {
         switch time {
         case .unschedule:
             scheduler.unschedule(reference: reference)
