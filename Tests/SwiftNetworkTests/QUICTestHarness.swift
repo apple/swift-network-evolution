@@ -139,17 +139,20 @@ class QUICTestHarness {
                 tlsOptions.trustedRawPublicKeyCertificates = [[UInt8](serverSigningKey.publicKey.derRepresentation)]
             }
         }
-        quicOptions.tlsOptions = tlsOptions
+        quicOptions.modifyTLSOptions { $0 = tlsOptions }
 
-        if let streamOptions = quicOptions.perProtocolOptions {
-            if datagram {
+        if datagram {
+            quicOptions.modifyPerProtocolOptions { streamOptions in
                 if !server {
                     streamOptions.isDatagram = true
                     streamOptions.associatedStreamID = 0
                 }
-                streamOptions.quicConnectionOptions.datagramQuarterStreamID = true
-                streamOptions.quicConnectionOptions.datagramEnableFlowID = true
-                streamOptions.quicConnectionOptions.maxDatagramFrameSize = 65535
+
+                streamOptions.modifyQUICConnectionOptions { connectionOptions in
+                    connectionOptions.datagramQuarterStreamID = true
+                    connectionOptions.datagramEnableFlowID = true
+                    connectionOptions.maxDatagramFrameSize = 65535
+                }
             }
         }
     }
@@ -161,6 +164,7 @@ class QUICTestHarness {
         serverLinkDelay: NetworkDuration = .zero,
         clientDrops: DatagramDrops? = nil,
         serverDrops: DatagramDrops? = nil,
+        waitForServerConnected: Bool = true,  // false: return once the client alone is connected
         timeout: TimeInterval = 5.0,
         clientOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
@@ -180,8 +184,7 @@ class QUICTestHarness {
         // Async onto the context to attach the protocol stack and start the handshake
         context.async {
             // Setup client parameters
-            var clientParameters = Parameters()
-            clientParameters.context = self.context
+            var clientParameters = Parameters(context: self.context)
             clientParameters.isServer = false
 
             // Build the QUIC connection through storage so its listener/multipath linkages are
@@ -231,8 +234,7 @@ class QUICTestHarness {
             }
 
             // Setup server parameters
-            var serverParameters = Parameters()
-            serverParameters.context = self.context
+            var serverParameters = Parameters(context: self.context)
             serverParameters.isServer = true
 
             var (serverQUICStreamListener, serverQUICDatagramListener, serverQUICMultipath) =
@@ -443,7 +445,7 @@ class QUICTestHarness {
             serverHarness.start { connected in
                 if connected {
                     serverConnected = true
-                    if expectHandshakeError == nil {
+                    if expectHandshakeError == nil, waitForServerConnected {
                         handshakeExpectation.fulfill()  // server transitions to connected last, wait for it
                     }
                 }
@@ -451,6 +453,9 @@ class QUICTestHarness {
             clientHarness.start { connected in
                 if connected {
                     clientConnected = true
+                    if expectHandshakeError == nil, !waitForServerConnected {
+                        handshakeExpectation.fulfill()
+                    }
                 }
             }
         }
@@ -470,9 +475,9 @@ class QUICTestHarness {
         }
 
         XCTAssertTrue(clientConnected, "QUIC client failed to become connected")
-        XCTAssertTrue(serverConnected, "QUIC server failed to become connected")
+        XCTAssertTrue(serverConnected || !waitForServerConnected, "QUIC server failed to become connected")
         XCTAssertNotNil(state, "Result cannot be nil here for the tests to proceed")
-        guard clientConnected, serverConnected else {
+        guard clientConnected, serverConnected || !waitForServerConnected else {
             XCTFail("This test cannot continue without both client and server being connected")
             throw NetworkError.posix(EINVAL)
         }
@@ -497,8 +502,7 @@ class QUICTestHarness {
             return nil
         }
         var upperHarnessConnected = false
-        var parameters = Parameters()
-        parameters.context = context
+        let parameters = Parameters(context: context)
 
         var upperHarness: StreamUpperHarness<TestStreamLinkageFamily>?
         let newStreamExpectation = XCTestExpectation(description: "Wait for new QUIC stream to be ready")
@@ -580,8 +584,7 @@ class QUICTestHarness {
             return nil
         }
         var upperHarnessConnected = false
-        var parameters = Parameters()
-        parameters.context = context
+        let parameters = Parameters(context: context)
 
         var upperHarness: DatagramUpperHarness<TestDatagramLinkageFamily>?
         let newFlowExpectation = XCTestExpectation(description: "Wait for new QUIC datagram flow to be ready")
@@ -1068,6 +1071,7 @@ class QUICTestHarness {
         serverLinkDelay: NetworkDuration = .zero,
         clientDrops: DatagramDrops? = nil,
         serverDrops: DatagramDrops? = nil,
+        waitForServerConnected: Bool = true,
         clientReadChunkSize: Int = Int.max,
         timeout: TimeInterval = 5.0,
         applicationError: UInt64? = nil,
@@ -1107,6 +1111,7 @@ class QUICTestHarness {
                 serverLinkDelay: serverLinkDelay,
                 clientDrops: clientDrops,
                 serverDrops: serverDrops,
+                waitForServerConnected: waitForServerConnected,
                 timeout: timeout,
                 clientOptions: clientOptions,
                 serverOptions: serverOptions,
@@ -1761,13 +1766,13 @@ class QUICTestHarness {
         timeout: TimeInterval = 4.0
     ) {
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.initialMaxData = initialMaxData
-        serverOptions.connectionOptions.initialMaxStreamDataBidirectionalRemote = initialMaxData
-        serverOptions.connectionOptions.initialMaxStreamDataBidirectionalLocal = initialMaxData
+        serverOptions.modifyConnectionOptions { $0.initialMaxData = initialMaxData }
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamDataBidirectionalRemote = initialMaxData }
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamDataBidirectionalLocal = initialMaxData }
         // Keep the stream limits well clear of `rounds` so that a stall can only
         // be caused by connection-level flow control.
-        serverOptions.connectionOptions.initialMaxStreamsBidirectional = UInt64(rounds * 2 + 10)
-        serverOptions.connectionOptions.maximumConcurrentBidirectionalStreams = rounds * 2 + 10
+        serverOptions.modifyConnectionOptions { $0.initialMaxStreamsBidirectional = UInt64(rounds * 2 + 10) }
+        serverOptions.modifyConnectionOptions { $0.maximumConcurrentBidirectionalStreams = rounds * 2 + 10 }
 
         do {
             try quicHandshake(timeout: timeout, serverOptions: serverOptions)
@@ -1999,8 +2004,8 @@ class QUICTestHarness {
             let serverFlow = serverConnection.multiplexedFlows.values.first
         {
             XCTAssertTrue(
-                serverFlow.sendState == .dataSent || serverFlow.sendState == .dataReceived,
-                "Server send side must reach a clean FIN terminal state, got \(serverFlow.sendState)"
+                serverFlow.send.state == .dataSent || serverFlow.send.state == .dataReceived,
+                "Server send side must reach a clean FIN terminal state, got \(serverFlow.send.state)"
             )
         } else {
             XCTFail("Server stream flow missing; cannot verify send state")
@@ -2042,8 +2047,7 @@ class QUICTestHarness {
         let maxStreamsUpdateExpectation = XCTestExpectation(description: "Wait for MAX_STREAMS update to be processed")
         context.async {
             // Create a new stream by hand, this should put us over the remote max streams limit
-            var parameters = Parameters()
-            parameters.context = self.context
+            let parameters = Parameters(context: self.context)
             let options = QUICProtocol.options()
             options.setLogID(
                 prefix: identifier,

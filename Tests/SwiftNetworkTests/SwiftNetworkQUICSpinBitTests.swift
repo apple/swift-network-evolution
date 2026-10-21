@@ -118,11 +118,11 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
 
     func testQUICSpinBitDisabled() throws {
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.disableSpinBit = true
-        clientOptions.connectionOptions.spinBitValue = false
+        clientOptions.modifyConnectionOptions { $0.disableSpinBit = true }
+        clientOptions.modifyConnectionOptions { $0.spinBitValue = false }
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.disableSpinBit = true
-        serverOptions.connectionOptions.spinBitValue = false
+        serverOptions.modifyConnectionOptions { $0.disableSpinBit = true }
+        serverOptions.modifyConnectionOptions { $0.spinBitValue = false }
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,

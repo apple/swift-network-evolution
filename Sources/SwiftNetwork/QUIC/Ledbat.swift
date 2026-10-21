@@ -31,6 +31,7 @@ internal import os
 struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
     let log: LogPrefixer
 
+    private var prevRecoveryStartTime = NetworkClock.Instant.zero
     private var prevCongestionWindow = UInt64(0)
     private var slowDownTimestamp = NetworkClock.Instant.zero
     private var slowDownBegin = NetworkClock.Instant.zero
@@ -95,6 +96,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         now: NetworkClock.Instant,
         qlog: QLog? = nil
     ) {
+        prevRecoveryStartTime = state.recoveryStartTime
         state.recoveryStartTime = now
         prevCongestionWindow = state.congestionWindow
         state.congestionWindow = UInt64(Double(state.lossFlightSize(log: log)) * Ledbat.beta)
@@ -280,6 +282,9 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         // Revert to the state before loss was detected
         state.congestionWindow = max(prevCongestionWindow, state.congestionWindow)
         state.slowStartThreshold = state.prevSlowStartThreshold
+        // Back to the previous recovery period, so that a genuine loss of a packet sent before
+        // the spurious event still gets a response.
+        state.recoveryStartTime = prevRecoveryStartTime
         state.logUpdate(log: log, qlog: qlog)
     }
 
@@ -343,6 +348,8 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
         // For congestion window, we can take the lower of
         // its own cwnd and previous controller's cwnd.
         state.bytesInFlight = from.bytesInFlight
+        // The CE count is cumulative, so keep it to only react to new marks.
+        state.ecnCECounter = from.ecnCECounter
         state.congestionWindow = min(from.congestionWindow, state.congestionWindow)
         state.logUpdate(log: log, qlog: qlog)
         resetInternal(state: &state)

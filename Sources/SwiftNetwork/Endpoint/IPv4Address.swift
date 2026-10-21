@@ -132,14 +132,42 @@ public struct IPv4Address: IPAddress, Hashable, CustomDebugStringConvertible {
 
     /// An IPv4 address parsed from a dotted-decimal string (e.g. `"192.168.1.1"`).
     public init?(_ string: String) {
-        let octets = string.split(separator: ".", maxSplits: 3, omittingEmptySubsequences: false)
-        guard octets.count == 4,
-            let a = UInt8(octets[0]),
-            let b = UInt8(octets[1]),
-            let c = UInt8(octets[2]),
-            let d = UInt8(octets[3])
+        guard let value = Self.parseDottedQuad(string[...]) else { return nil }
+        self.init(value.bigEndian)
+    }
+
+    // Parses a dotted quad into a host-order UInt32 without allocating.
+    static func parseDottedQuad(_ string: Substring) -> UInt32? {
+        var rest = string
+        guard let a = nextOctet(&rest, isLast: false),
+            let b = nextOctet(&rest, isLast: false),
+            let c = nextOctet(&rest, isLast: false),
+            let d = nextOctet(&rest, isLast: true)
         else { return nil }
-        self.init((UInt32(a) << 24 | UInt32(b) << 16 | UInt32(c) << 8 | UInt32(d)).bigEndian)
+        return UInt32(a) << 24 | UInt32(b) << 16 | UInt32(c) << 8 | UInt32(d)
+    }
+
+    // Parses the octet at the front of `rest` and consumes the "." after it,
+    // or for the last octet, requires that nothing follows it.
+    private static func nextOctet(_ rest: inout Substring, isLast: Bool) -> UInt8? {
+        let octet = rest.prefix { $0 != "." }
+        rest = rest[octet.endIndex...]
+        if isLast {
+            guard rest.isEmpty else { return nil }
+        } else {
+            guard rest.first == "." else { return nil }
+            rest = rest.dropFirst()
+        }
+        return parseOctet(octet)
+    }
+
+    // Parses one decimal octet. Rejects a sign and leading zeros, which could
+    // be read as octal (`010` is 8, not 10).
+    private static func parseOctet(_ octet: Substring) -> UInt8? {
+        guard octet.allSatisfy({ $0.isASCII && $0.isNumber }),
+            octet.count == 1 || octet.first != "0"
+        else { return nil }
+        return UInt8(octet)
     }
 
     static func ipv4AddressString(from address: UInt32) -> String {

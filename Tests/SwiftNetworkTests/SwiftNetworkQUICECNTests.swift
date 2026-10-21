@@ -82,11 +82,11 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
 
     func testQUICTestECNMarkedPacketsDisabled() throws {
         let clientOptions = QUICProtocol.options()
-        clientOptions.connectionOptions.disableECN = true
-        clientOptions.connectionOptions.disableECNEcho = true
+        clientOptions.modifyConnectionOptions { $0.disableECN = true }
+        clientOptions.modifyConnectionOptions { $0.disableECNEcho = true }
         let serverOptions = QUICProtocol.options()
-        serverOptions.connectionOptions.disableECN = true
-        serverOptions.connectionOptions.disableECNEcho = true
+        serverOptions.modifyConnectionOptions { $0.disableECN = true }
+        serverOptions.modifyConnectionOptions { $0.disableECNEcho = true }
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,

@@ -590,7 +590,7 @@ public struct Parameters: Hashable, CustomStringConvertible {
             let quicConnectionOptions = QUICConnectionProtocol.options()
             handler(quicConnectionOptions)
             if let innerOptions = quicConnectionOptions.perProtocolOptions {
-                quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions = innerOptions }
+                quicOptions.perProtocolOptions?.modifyQUICConnectionOptions { $0 = innerOptions }
             }
         }
         defaultStack.transport = .quic(quicOptions)
@@ -679,12 +679,12 @@ public struct Parameters: Hashable, CustomStringConvertible {
             let quicConnectionOptions = QUICConnectionProtocol.options()
             handler(quicConnectionOptions)
             if let innerOptions = quicConnectionOptions.perProtocolOptions {
-                quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions = innerOptions }
+                quicOptions.perProtocolOptions?.modifyQUICConnectionOptions { $0 = innerOptions }
             }
         }
 
         quicOptions.prohibitJoining = true
-        quicOptions.modifyPerProtocolOptions { $0.quicConnectionOptions.tlsOptions = tlsOptions }
+        quicOptions.perProtocolOptions?.modifyQUICConnectionOptions { $0.tlsOptions = tlsOptions }
 
         let tcpOptions = TCPProtocol.options()
         if case .customize(let handler) = tcpFallback {
@@ -737,6 +737,12 @@ public struct Parameters: Hashable, CustomStringConvertible {
         allowSocketAccess = true
     }
     #endif
+
+    /// Creates default parameters that run on `context`, activating it.
+    public init(context: NetworkContext) {
+        self = Self.init()
+        self.context = context
+    }
 
     public var context: NetworkContext {
         get { pathParameters.context }

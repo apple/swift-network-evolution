@@ -97,10 +97,10 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         }
 
         let quicOptions = QUICStreamProtocol.options()
-        quicOptions.tlsOptions = tlsOptions
+        quicOptions.modifyTLSOptions { $0 = tlsOptions }
 
         if sourceConnectionIDLength > 0 {
-            quicOptions.connectionOptions.sourceConnectionIDLength = sourceConnectionIDLength
+            quicOptions.modifyConnectionOptions { $0.sourceConnectionIDLength = sourceConnectionIDLength }
         }
 
         return quicOptions
@@ -166,11 +166,9 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             serverIPOptions.setLogID(prefix: "L", parent: identifier, protocolLogIDNumber: 3)
             serverIPOptions.setProtocolInstance(serverIPLower.identifier)
 
-            var clientParameters = Parameters()
-            clientParameters.context = context
+            let clientParameters = Parameters(context: context)
 
-            var serverParameters = Parameters()
-            serverParameters.context = context
+            let serverParameters = Parameters(context: context)
 
             let clientPath = PathProperties(parameters: clientParameters)
             let serverPath = PathProperties(parameters: serverParameters)

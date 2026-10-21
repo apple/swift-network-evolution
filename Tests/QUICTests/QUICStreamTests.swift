@@ -78,6 +78,79 @@ final class QUICStreamTests: XCTestCase {
             XCTAssertTrue(stream.flowControlState.outboundMaxData == 2048)
         }
     }
+
+    // MARK: - Sentinel-backed computed properties (finalSize, inboundApplicationError,
+    // outboundApplicationError, streamID)
+
+    func testStreamIDDefaultsToNilBeforeSetup() {
+        connection.context.onQueue {
+            let freshStream = QUICStreamInstance(parent: self.connection, inbound: false)
+            XCTAssertNil(freshStream.streamID)
+            freshStream.destroyFromExternalTest()
+        }
+    }
+
+    func testFinalSizeDefaultsToNil() {
+        XCTAssertNil(stream.finalSize)
+    }
+
+    func testInboundApplicationErrorDefaultsToNil() {
+        XCTAssertNil(stream.inboundApplicationError)
+    }
+
+    func testOutboundApplicationErrorDefaultsToNil() {
+        XCTAssertNil(stream.outboundApplicationError)
+    }
+
+    func testFinalSizeRoundTrip() {
+        stream.finalSize = 123_456
+        XCTAssertEqual(stream.finalSize, 123_456)
+        stream.finalSize = nil
+        XCTAssertNil(stream.finalSize)
+    }
+
+    func testFinalSizeZeroIsNotConfusedWithNil() {
+        stream.finalSize = 0
+        XCTAssertNotNil(stream.finalSize)
+        XCTAssertEqual(stream.finalSize, 0)
+    }
+
+    func testInboundApplicationErrorRoundTrip() {
+        stream.inboundApplicationError = 42
+        XCTAssertEqual(stream.inboundApplicationError, 42)
+        stream.inboundApplicationError = nil
+        XCTAssertNil(stream.inboundApplicationError)
+    }
+
+    func testInboundApplicationErrorZeroIsNotConfusedWithNil() {
+        stream.inboundApplicationError = 0
+        XCTAssertNotNil(stream.inboundApplicationError)
+        XCTAssertEqual(stream.inboundApplicationError, 0)
+    }
+
+    func testOutboundApplicationErrorRoundTrip() {
+        stream.outboundApplicationError = 99
+        XCTAssertEqual(stream.outboundApplicationError, 99)
+        stream.outboundApplicationError = nil
+        XCTAssertNil(stream.outboundApplicationError)
+    }
+
+    func testOutboundApplicationErrorZeroIsNotConfusedWithNil() {
+        stream.outboundApplicationError = 0
+        XCTAssertNotNil(stream.outboundApplicationError)
+        XCTAssertEqual(stream.outboundApplicationError, 0)
+    }
+
+    func testResetStreamIDUpdatesStreamID() {
+        let newStreamID = QUICStreamID(UInt32(4))
+        stream.resetStreamID(streamID: newStreamID)
+        XCTAssertEqual(stream.streamID, newStreamID)
+        XCTAssertEqual(stream.streamID?.value, 4)
+    }
+    func testApplicationErrorMaxIsReservedAsSentinel() {
+        stream.inboundApplicationError = UInt64.max
+        XCTAssertNil(stream.inboundApplicationError)
+    }
 }
 
 @available(Network 0.1.0, *)

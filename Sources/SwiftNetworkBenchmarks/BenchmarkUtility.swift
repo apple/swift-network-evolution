@@ -126,20 +126,24 @@ public final class QUICBenchmarkUtility {
 
         let quicOptions = QUICStreamProtocol.options()
         quicOptions.isUnidirectional = unidirectionalStreams
-        quicOptions.tlsOptions = tlsOptions
+        quicOptions.modifyTLSOptions { $0 = tlsOptions }
 
-        if let streamOptions = quicOptions.perProtocolOptions {
-            streamOptions.quicConnectionOptions.idleTimeout = idleTimeout
-            if datagram {
-                if !server {
-                    streamOptions.isDatagram = true
-                    streamOptions.associatedStreamID = 0
+        quicOptions.modifyPerProtocolOptions { streamOptions in
+            if datagram && !server {
+                streamOptions.isDatagram = true
+                streamOptions.associatedStreamID = 0
+            }
+
+            streamOptions.modifyQUICConnectionOptions { connectionOptions in
+                connectionOptions.idleTimeout = idleTimeout
+                if datagram {
+                    connectionOptions.datagramQuarterStreamID = true
+                    connectionOptions.datagramEnableFlowID = true
+                    connectionOptions.maxDatagramFrameSize = 65535
                 }
-                streamOptions.quicConnectionOptions.datagramQuarterStreamID = true
-                streamOptions.quicConnectionOptions.datagramEnableFlowID = true
-                streamOptions.quicConnectionOptions.maxDatagramFrameSize = 65535
             }
         }
+
         return quicOptions
     }
 
@@ -159,8 +163,7 @@ public final class QUICBenchmarkUtility {
         logger: LoggingHandle
     ) throws -> QUICClientEndpointResult? {
         // Set context on parameters to activate the context before asyncing
-        var parameters = Parameters()
-        parameters.context = context
+        var parameters = Parameters(context: context)
         parameters.isServer = false
 
         parameters.defaultStack.transport = .quic(options)
@@ -229,8 +232,7 @@ public final class QUICBenchmarkUtility {
         remoteEndpoint: Endpoint,
         logger: LoggingHandle
     ) throws -> QUICServerEndpointResult? {
-        var serverParameters = Parameters()
-        serverParameters.context = context
+        var serverParameters = Parameters(context: context)
         serverParameters.defaultStack.transport = .quic(options)
         serverParameters.isServer = true
         let serverPath = PathProperties(parameters: serverParameters)
