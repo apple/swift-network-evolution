@@ -22,12 +22,6 @@ import Dispatch
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
-/*
-#if canImport(SwiftNetworkTestHarness)
-@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
-#endif
- */
-
 @available(Network 0.1.0, *)
 extension NetworkContext {
     /// Runs `body` on the context and returns its result, for a caller that is not on it.
