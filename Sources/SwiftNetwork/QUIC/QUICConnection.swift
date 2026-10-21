@@ -3883,6 +3883,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) {
         var packetBurst = 0
         var packetBurstTotal = 0
+        defer {
+            if applicationPendingItems.streamsToService.count > 1 {
+                applicationPendingItems.rotateFirstStreamToService()
+            }
+        }
         while applicationPendingItems.hasPendingItems {
             guard
                 buildSinglePacketForKeyState(
@@ -3945,7 +3950,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // If we've exceeded the send burst limit, trigger an async before servicing more data
             if shouldEndBurst {
                 log.datapath("Burst limit application data")
-                applicationPendingItems.rotateFirstStreamToService()
                 burstLimitReached(in: &eventContext)
                 break
             }
