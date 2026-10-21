@@ -123,7 +123,9 @@ class QUICTestHarness {
         self.init(context: context, scheduler: nil)
     }
 
-    private init(context: NetworkContext, scheduler: ManualScheduler?) {
+    // Not private: a subclass in another file must inherit this, or its own stored properties are
+    // left uninitialized.
+    init(context: NetworkContext, scheduler: ManualScheduler?) {
         self.context = context
         self.scheduler = scheduler
         self.context.activate()
@@ -820,6 +822,16 @@ class QUICTestHarness {
             self.state = nil
         }
         wait(until: { stopCompleteFinished }, timeout: 5.0, "stop/teardown to complete")
+        // A real context keeps running after the test and finishes closing its connections, but a mock
+        // clock moves only when told to. Run it on until nothing is armed; a timer that stays armed
+        // keeps its context, and so the scheduler, alive. The limit only stops a timer that re-arms
+        // itself forever from hanging the test.
+        if let scheduler = self.scheduler {
+            XCTAssertTrue(
+                scheduler.run(until: { scheduler.scheduledCount == 0 }, limit: .seconds(600)),
+                "Timers were still armed ten minutes on"
+            )
+        }
     }
 
     func echoDataOnStream(

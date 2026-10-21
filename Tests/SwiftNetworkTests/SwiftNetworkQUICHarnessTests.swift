@@ -390,6 +390,21 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         )
     }
 
+    func testStopLeavesNoTimerArmedOnAMockClock() {
+        let manual = ManualTimeContext(#function)
+        QUICTestHarness(manual: manual).runQUICTest(
+            streamCount: 2,
+            dataBlock: Array("Hello World!".utf8),
+            applicationError: 10,  // PROTOCOL_VIOLATION
+            applicationErrorReason: "QUIC Error thrown from test"
+        )
+        XCTAssertEqual(
+            manual.scheduler.scheduledCount,
+            0,
+            "A timer left armed keeps its context, and so the scheduler, alive"
+        )
+    }
+
     func testQUICApplicationCloseError() {
         QUICTestHarness().runQUICTest(
             streamCount: 2,

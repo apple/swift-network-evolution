@@ -108,6 +108,8 @@ struct TestClockContext {
             self.context = manual.context
             self.manual = manual
         }
+        // A mock context has its own globals, and a connection built on it before activation traps.
+        self.context.activate()
     }
 }
 

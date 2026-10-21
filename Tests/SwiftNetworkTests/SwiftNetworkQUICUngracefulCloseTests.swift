@@ -156,10 +156,14 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
     func testQUICServerApplicationCloseBeforeHandshakeComplete() throws {
         // Drop all packets to the server after the first. The client completes the handshake, but the
         // server never sees the client's Finished, so it closes while its key state is still .handshake
+        weak var weakClient: QUICConnection?
+        weak var weakServer: QUICConnection?
         QUICTestHarness().runQUICTest(
             clientDrops: .init(1...Int.max),
             waitForServerConnected: false,
             afterHandshake: { harness in
+                weakClient = harness.state?.clientInstance
+                weakServer = harness.state?.serverInstance
                 var clientDisconnected = false
                 harness.onContext {
                     harness.state?.clientHarness.waitForDisconnected {
@@ -180,6 +184,13 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
                 )
             }
         )
+
+        // On the system clock the connections finish closing after this returns, so only a mock clock
+        // can check; a connection still alive here keeps its timer, and the timer keeps the connection.
+        if !QUICTestHarness.usesRealTime {
+            XCTAssertNil(weakClient, "The client connection must be released once the test ends")
+            XCTAssertNil(weakServer, "The server connection must be released once the test ends")
+        }
     }
 
     #if !NETWORK_PRIVATE
