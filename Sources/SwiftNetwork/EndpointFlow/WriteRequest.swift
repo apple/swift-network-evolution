@@ -12,6 +12,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#if canImport(BasicContainers)
+import BasicContainers
+internal import DequeModule
+#endif
+
 #if canImport(SwiftSystem)
 internal import SwiftSystem
 #endif
@@ -31,8 +36,30 @@ internal import os
 
 @available(Network 0.1.0, *)
 struct WriteRequest: ~Copyable {
+    struct Flags: OptionSet {
+        let rawValue: UInt8
+
+        static let isComplete = Flags(rawValue: 1 << 0)
+        static let isReported = Flags(rawValue: 1 << 1)
+        static let isIdempotent = Flags(rawValue: 1 << 2)
+        static let isWriteClose = Flags(rawValue: 1 << 3)
+
+        mutating func set(_ flag: Flags, to value: Bool) {
+            if value {
+                insert(flag)
+            } else {
+                remove(flag)
+            }
+        }
+    }
+
     var frame: Frame
     let completion: (@Sendable (Result<Void, NetworkError>) -> Void)?
+    var flags: Flags = []
+
+    /// Orders queued requests; a higher value is sent first and equal values keep their order.
+    var relativePriority: Double = 0.5
+    var privateStorage = WriteRequestPrivateStorage()
 
     private init(
         frame: consuming Frame,
@@ -42,6 +69,7 @@ struct WriteRequest: ~Copyable {
         if isComplete {
             frame.metadataComplete = true
             frame.connectionComplete = true
+            self.flags.insert(.isComplete)
         }
         self.frame = frame
         self.completion = completion
@@ -72,5 +100,19 @@ struct WriteRequest: ~Copyable {
                 completion(Result.failure(NetworkError.posix(ENOBUFS)))
             }
         }
+    }
+}
+
+@available(Network 0.1.0, *)
+extension NetworkUniqueDeque where Element == WriteRequest {
+    /// Queues `request` behind every request of equal or higher priority.
+    mutating func appendOrderedByPriority(_ request: consuming WriteRequest) {
+        let priority = request.relativePriority
+        // The common case is joining the end; otherwise find the last request that is not lower.
+        var index = count
+        while index > 0 && self[index - 1].relativePriority < priority {
+            index -= 1
+        }
+        insert(request, at: index)
     }
 }
