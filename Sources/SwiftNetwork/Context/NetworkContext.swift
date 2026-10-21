@@ -92,7 +92,9 @@ public actor NetworkContext: NetworkContextProtocol {
         }
 
         func checkIsolated() {
-            precondition(queueVal == DispatchQueue.getSpecific(key: queueKey), "Not isolated")
+            if queueVal != DispatchQueue.getSpecific(key: queueKey) {
+                fatalError("Not isolated")
+            }
         }
     }
 
