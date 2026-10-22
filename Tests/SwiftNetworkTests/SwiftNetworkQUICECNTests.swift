@@ -117,15 +117,12 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate L4S")
-                harness.context.async {
+                harness.onContext {
                     let path = harness.state?.clientInstance.currentPath
                     XCTAssertEqual(path?.l4sEnabled, true, "Client path should have L4S enabled")
                     XCTAssertEqual(path?.congestionControlName, "PRAGUE", "L4S should use Prague")
                     XCTAssertEqual(path?.pacer.enabled, true, "Prague always paces")
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -140,11 +137,9 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate L4S on second path")
-                harness.context.async {
+                harness.onContext {
                     guard let connection = harness.state?.clientInstance else {
                         XCTFail("No client connection")
-                        expectation.fulfill()
                         return
                     }
                     let newPath = QUICPath.makeFromExternalTest(parent: connection)
@@ -166,9 +161,7 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
                     XCTAssertEqual(newPath.congestionControlName, "PRAGUE", "Second path should use Prague")
                     XCTAssertEqual(newPath.pacer.enabled, true, "Second path should be paced")
                     XCTAssertEqual(newPath.pacePackets, true, "Second path should honor the pacing option")
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -177,14 +170,11 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate L4S")
-                harness.context.async {
+                harness.onContext {
                     let path = harness.state?.clientInstance.currentPath
                     XCTAssertEqual(path?.l4sEnabled, false, "Client path should not have L4S enabled")
                     XCTAssertEqual(path?.congestionControlName, "CUBIC", "Default should use CUBIC")
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
