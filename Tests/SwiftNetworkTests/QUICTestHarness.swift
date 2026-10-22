@@ -825,7 +825,7 @@ class QUICTestHarness {
         // A real context keeps running after the test and finishes closing its connections, but a mock
         // clock moves only when told to. Run it on until nothing is armed; a timer that stays armed
         // keeps its context, and so the scheduler, alive. The limit only stops a timer that re-arms
-        // itself forever from hanging the test.
+        // itself forever from stalling the test.
         if let scheduler = self.scheduler {
             XCTAssertTrue(
                 scheduler.run(until: { scheduler.scheduledCount == 0 }, limit: .seconds(600)),
