@@ -36,7 +36,9 @@ let recoveryTestsLogPrefixer: LogPrefixer = LogPrefixer("[RecoveryTests]")
 
 @available(Network 0.1.0, *)
 final class RecoveryTests: XCTestCase {
-    var connection = QUICConnection(context: .implicitContext)
+    var connection = NetworkContext.implicitContext.onQueue {
+        QUICConnection(context: .implicitContext)
+    }
     var path: QUICPath! = nil
     // The base linkages are storage-backed, so lower harnesses have to come from storage
     // rather than being wrapped in a bare linkage.
@@ -140,15 +142,18 @@ final class RecoveryTests: XCTestCase {
     }
 
     func testSentPacket() {
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .initial, number: 1)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 20 + 96
-        let sentPath = connection.currentPath?.pathIdentifier ?? .none
-        packet.sentPath = sentPath
-        let space = packet.identifier.space
-        sentPacket(packet, connection: connection)
+        let space = connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .initial, number: 1)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            let sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = sentPath
+            let space = packet.identifier.space
+            sentPacket(packet, connection: connection)
+            return space
+        }
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(packetNumberSpace: space),
             1
@@ -162,15 +167,18 @@ final class RecoveryTests: XCTestCase {
     }
 
     func testResetInitialSpace() throws {
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .initial, number: 10)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 500 + 500
-        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
-        let space = packet.identifier.space
+        let space = connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .initial, number: 10)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 500 + 500
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            let space = packet.identifier.space
 
-        sentPacket(packet, connection: connection)
+            sentPacket(packet, connection: connection)
+            return space
+        }
 
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(
@@ -212,15 +220,18 @@ final class RecoveryTests: XCTestCase {
     }
 
     func testResetHandshakeSpace() throws {
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .handshake, number: 1)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 500 + 500
-        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
-        let space = packet.identifier.space
+        let space = connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .handshake, number: 1)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 500 + 500
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            let space = packet.identifier.space
 
-        sentPacket(packet, connection: connection)
+            sentPacket(packet, connection: connection)
+            return space
+        }
 
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(
@@ -262,15 +273,18 @@ final class RecoveryTests: XCTestCase {
     }
 
     func testResetApplicationDataSpace() throws {
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .applicationData, number: 4)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 500 + 500
-        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
-        let space = packet.identifier.space
+        let space = connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .applicationData, number: 4)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 500 + 500
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            let space = packet.identifier.space
 
-        sentPacket(packet, connection: connection)
+            sentPacket(packet, connection: connection)
+            return space
+        }
 
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(
@@ -312,16 +326,19 @@ final class RecoveryTests: XCTestCase {
     }
 
     func testResetApplicationSpaceNonAckEliciting() throws {
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .applicationData, number: 10)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = false
-        packet.totalLength = 500 + 516
-        let sentPath = connection.currentPath?.pathIdentifier ?? .none
-        packet.sentPath = sentPath
-        let space = packet.identifier.space
+        let space = connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .applicationData, number: 10)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = false
+            packet.totalLength = 500 + 516
+            let sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = sentPath
+            let space = packet.identifier.space
 
-        sentPacket(packet, connection: connection)
+            sentPacket(packet, connection: connection)
+            return space
+        }
 
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(
@@ -363,21 +380,18 @@ final class RecoveryTests: XCTestCase {
     }
 
     func testPacketAcked() {
-        let ackFrame = FrameAck(
-            packetNumberSpace: .applicationData,
-            largest: 3,
-            delay: 0,
-            ranges: [FrameAckRange(gap: 0, range: 3)]
-        )
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .applicationData, number: 3)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 500 + 540
-        let sentPath = connection.currentPath?.pathIdentifier ?? .none
-        packet.sentPath = sentPath
-        let space = packet.identifier.space
-        sentPacket(packet, connection: connection)
+        let space = connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .applicationData, number: 3)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 500 + 540
+            let sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = sentPath
+            let space = packet.identifier.space
+            sentPacket(packet, connection: connection)
+            return space
+        }
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(
                 packetNumberSpace: space
@@ -399,12 +413,20 @@ final class RecoveryTests: XCTestCase {
         // Validate that the congestion window starts at the default
         XCTAssertEqual(path.congestionControlWindow, 12000)
 
-        connection.recovery.receivedAck(
-            ack: ackFrame,
-            ackedPath: connection.currentPath!,
-            connection: connection,
-            in: &connection.context.eventContext
-        )
+        connection.context.onQueue {
+            let ackFrame = FrameAck(
+                packetNumberSpace: .applicationData,
+                largest: 3,
+                delay: 0,
+                ranges: [FrameAckRange(gap: 0, range: 3)]
+            )
+            connection.recovery.receivedAck(
+                ack: ackFrame,
+                ackedPath: connection.currentPath!,
+                connection: connection,
+                in: &connection.context.eventContext
+            )
+        }
 
         // Validate that the congestion window has grown after the packet is acked
         XCTAssertGreaterThan(path.congestionControlWindow, 12000)
@@ -432,17 +454,19 @@ final class RecoveryTests: XCTestCase {
                 ranges: [FrameAckRange(gap: 0, range: 3)]
             )
         }
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .applicationData, number: 3)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = false
-        packet.totalLength = 500 + 524
-        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
-        packet.transmittedItems = TransmittedItems()
-        packet.transmittedItems.ackFrame = .init(makeAckFrame())
-        let space = packet.identifier.space
-
-        sentPacket(packet, connection: connection)
+        let space = connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .applicationData, number: 3)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = false
+            packet.totalLength = 500 + 524
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.transmittedItems = TransmittedItems()
+            packet.transmittedItems.ackFrame = .init(makeAckFrame())
+            let space = packet.identifier.space
+            sentPacket(packet, connection: connection)
+            return space
+        }
 
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(packetNumberSpace: space),
@@ -457,12 +481,14 @@ final class RecoveryTests: XCTestCase {
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
         }
 
-        connection.recovery.receivedAck(
-            ack: makeAckFrame(),
-            ackedPath: connection.currentPath!,
-            connection: connection,
-            in: &connection.context.eventContext
-        )
+        connection.context.onQueue {
+            connection.recovery.receivedAck(
+                ack: makeAckFrame(),
+                ackedPath: connection.currentPath!,
+                connection: connection,
+                in: &connection.context.eventContext
+            )
+        }
 
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(packetNumberSpace: space),
@@ -513,9 +539,13 @@ final class RecoveryTests: XCTestCase {
         connection.ack.remoteDelayExponent = 5
 
         // The first sample only seeds the estimator, so it leaves the minimum RTT at 10 ms.
-        sendAndAck(1, start: start, sentAt: .zero, ackedAt: .milliseconds(10), delay: 0)
+        connection.context.onQueue {
+            sendAndAck(1, start: start, sentAt: .zero, ackedAt: .milliseconds(10), delay: 0)
+        }
         // 625 on the wire is 625 << 5 = 20,000 microseconds.
-        sendAndAck(2, start: start, sentAt: .milliseconds(10), ackedAt: .milliseconds(110), delay: 625)
+        connection.context.onQueue {
+            sendAndAck(2, start: start, sentAt: .milliseconds(10), ackedAt: .milliseconds(110), delay: 625)
+        }
 
         XCTAssertEqual(path.rtt.latestRTT, .milliseconds(100))
         XCTAssertEqual(path.rtt.adjustedRTT, .milliseconds(80))
@@ -529,24 +559,31 @@ final class RecoveryTests: XCTestCase {
         path.rtt.remoteMaxAckDelay = .milliseconds(25)
         connection.ack.remoteDelayExponent = 5
 
-        sendAndAck(1, start: start, sentAt: .zero, ackedAt: .milliseconds(10), delay: 0)
+        connection.context.onQueue {
+            sendAndAck(1, start: start, sentAt: .zero, ackedAt: .milliseconds(10), delay: 0)
+        }
         // 1,000 on the wire is 1,000 << 5 = 32,000 microseconds, above the 25 ms maximum. The
         // undecoded 1,000 microseconds would be below it.
-        sendAndAck(2, start: start, sentAt: .milliseconds(10), ackedAt: .milliseconds(110), delay: 1000)
+        connection.context.onQueue {
+            sendAndAck(2, start: start, sentAt: .milliseconds(10), ackedAt: .milliseconds(110), delay: 1000)
+        }
 
         XCTAssertEqual(path.rtt.latestRTT, .milliseconds(100))
         XCTAssertEqual(path.rtt.adjustedRTT, .milliseconds(75))
     }
 
     func testResetPNSpaceAndDiscard() {
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .applicationData, number: 3)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 540 + 500
-        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
-        let space = packet.identifier.space
-        sentPacket(packet, connection: connection)
+        let space = connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .applicationData, number: 3)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 540 + 500
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            let space = packet.identifier.space
+            sentPacket(packet, connection: connection)
+            return space
+        }
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(packetNumberSpace: space),
             PacketNumber(3)
@@ -654,17 +691,20 @@ final class RecoveryTests: XCTestCase {
     }
 
     func testPTO() {
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .initial, number: 0)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 20 + 96
-        // Pretend there was an ACK eliciting frame inside the packet.
-        packet.transmittedItems.ping = true
-        let sentPath = connection.currentPath?.pathIdentifier ?? .none
-        packet.sentPath = sentPath
-        var timeNow = NetworkClock.Instant.systemNow
-        sentPacket(packet, connection: connection)
+        var timeNow = connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .initial, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            // Pretend there was an ACK eliciting frame inside the packet.
+            packet.transmittedItems.ping = true
+            let sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = sentPath
+            let timeNow = NetworkClock.Instant.systemNow
+            sentPacket(packet, connection: connection)
+            return timeNow
+        }
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(packetNumberSpace: .initial),
             0
@@ -778,23 +818,25 @@ final class RecoveryTests: XCTestCase {
         // A single ack-eliciting application-data packet is outstanding, carrying only that flow's
         // STREAM data. This keeps ackElicitingPacketsInFlight > 0 (so the PTO stays armed) while
         // being unrebuildable once the flow is closed.
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .applicationData, number: 0)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 20 + 96
-        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
-        packet.transmittedItems.sentStreams.append(
-            TransmittedItems.SentStream(
-                flowID: stream.flowIdentifier,
-                streamID: QUICStreamID(0),
-                offset: 0,
-                length: 32,
-                isFinal: true
+        connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .applicationData, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.transmittedItems.sentStreams.append(
+                TransmittedItems.SentStream(
+                    flowID: stream.flowIdentifier,
+                    streamID: QUICStreamID(0),
+                    offset: 0,
+                    length: 32,
+                    isFinal: true
+                )
             )
-        )
-        XCTAssertTrue(packet.transmittedItems.hasRetransmissibleItems)
-        sentPacket(packet, connection: connection)
+            XCTAssertTrue(packet.transmittedItems.hasRetransmissibleItems)
+            sentPacket(packet, connection: connection)
+        }
 
         connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) { innerState in
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 1)
@@ -859,14 +901,16 @@ final class RecoveryTests: XCTestCase {
         XCTAssertTrue(hasPendingAckEliciting)
 
         // One ack-eliciting packet outstanding, so the PTO is armed and the per-space loop runs.
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .initial, number: 0)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 20 + 96
-        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+        connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .initial, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
 
-        sentPacket(packet, connection: connection)
+            sentPacket(packet, connection: connection)
+        }
 
         connection.recovery.withImmutableInnerState(packetNumberSpace: .initial) { innerState in
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 1)
@@ -927,7 +971,9 @@ final class RecoveryTests: XCTestCase {
     /// reported as present, regardless of the hints accumulated along the way.
     func testIndexOfPacketNumberFindsSparseEntries() {
         let numbers: [Int64] = [4, 5, 9, 10, 11, 20, 21, 40, 41, 42, 100]
-        recordSparsePackets(numbers)
+        connection.context.onQueue {
+            recordSparsePackets(numbers)
+        }
 
         connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) {
             innerState in
@@ -952,7 +998,9 @@ final class RecoveryTests: XCTestCase {
     /// keep the remaining lookups correct as cached indices shift down.
     func testIndexOfPacketNumberAfterFrontRemovals() {
         var remaining: [Int64] = [4, 5, 9, 10, 11, 20, 21, 40, 41, 42, 100]
-        recordSparsePackets(remaining)
+        connection.context.onQueue {
+            recordSparsePackets(remaining)
+        }
 
         while !remaining.isEmpty {
             let removed = remaining.removeFirst()
@@ -982,7 +1030,9 @@ final class RecoveryTests: XCTestCase {
     /// removed index shift down, and the pair naming it must be dropped.
     func testIndexOfPacketNumberAfterInteriorRemovals() {
         var remaining: [Int64] = [1, 2, 3, 7, 8, 15, 16, 17, 30, 31, 60, 61, 62]
-        recordSparsePackets(remaining)
+        connection.context.onQueue {
+            recordSparsePackets(remaining)
+        }
 
         // Prime the hints with lookups spread across the deque, then remove from
         // the middle so the cached indices must be adjusted.
@@ -1013,7 +1063,9 @@ final class RecoveryTests: XCTestCase {
     /// Appending after removals must not leave stale hints behind: the deque can
     /// drain to empty and refill with much larger packet numbers.
     func testIndexOfPacketNumberAcrossDrainAndRefill() {
-        recordSparsePackets([1, 2, 3])
+        connection.context.onQueue {
+            recordSparsePackets([1, 2, 3])
+        }
         connection.recovery.withMutableInnerState(packetNumberSpace: .applicationData) {
             innerState in
             for number: Int64 in [1, 2, 3] {
@@ -1023,7 +1075,9 @@ final class RecoveryTests: XCTestCase {
         }
 
         let refilled: [Int64] = [500, 501, 700]
-        recordSparsePackets(refilled)
+        connection.context.onQueue {
+            recordSparsePackets(refilled)
+        }
         connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) {
             innerState in
             for (expectedIndex, number) in refilled.enumerated() {

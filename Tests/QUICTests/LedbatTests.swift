@@ -527,7 +527,9 @@ final class LedbatTests: XCTestCase {
     // Moving a path into and out of the background must carry bytes in flight across both
     // controller switches; otherwise the ACKs for packets already on the wire underflow it.
     func testBackgroundRoundTripPreservesBytesInFlight() {
-        let connection = QUICConnection(context: NetworkContext.implicitContext)
+        let connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let path = connection.context.onQueue {
             QUICPath.makeFromExternalTest(parent: connection)
