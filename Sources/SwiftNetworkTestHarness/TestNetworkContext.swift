@@ -40,7 +40,7 @@ extension NetworkContext {
     ///
     /// A context has nothing to run on until it is activated, and activating twice is harmless, so
     /// this does it rather than asking every test to remember.
-    nonisolated public func onQueue<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
+    public func onQueue<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
         activate()
         dispatchPrecondition(condition: .notOnQueue(queue))
 
