@@ -121,7 +121,6 @@ struct ECN: ~Copyable, PrefixedLoggable {
         echoEnabled: Bool,
         markingEnabled: Bool,
         l4sEnabled: Bool?,
-        connection: QUICConnection,
         logPrefixer: LogPrefixer
     ) {
         self.log = logPrefixer
@@ -139,28 +138,14 @@ struct ECN: ~Copyable, PrefixedLoggable {
         log.info(
             "ECN init - echo: \(echoEnabled), marking: \(markingEnabled), ECT(1): \(useECT1)"
         )
-
-        // Create ECN path only for the initial path. Wait for
-        // handshake completion for additional one
-        if let currentPath = connection.currentPath,
-            currentPath.isInitialPath
-        {
-            currentPath.ecnState = ECNPathState(ecn: self)
-        }
+        // Per-path ECN state is created in `QUICPath.setup()`.
     }
 
-    func reset(path: QUICPath?) {
-        if let path {
-            if path.ecnState?.ecnMarkingEnabled ?? false {
-                path.ecnState?.state = .probing
-            } else {
-                path.ecnState?.state = .disabled
-            }
-            path.ecnState?.resetValidationCounters()
-            log.info(
-                "Enable ECN echo: \(path.ecnState?.echoEnabled ?? false), enable ECN: \(path.ecnState?.ecnMarkingEnabled ?? false) use ECT(1): \(path.ecnState?.useECT1 ?? false)"
-            )
-        }
+    // Resets the connection-wide, per-packet-number-space ECN counters.
+    //
+    // Per-path state is reset by `ECNPathState.reset(ecn:)`. This must not touch any
+    // `QUICPath.ecnState`, since it may be called while that state is being mutated.
+    func reset() {
         for i in 0..<counters.count {
             let counter = counters[i]
             counter.reset()
@@ -178,12 +163,12 @@ struct ECN: ~Copyable, PrefixedLoggable {
         packetNumberSpace: PacketNumberSpace,
         flag: IPProtocol.ECN
     ) -> Bool {
-        path.ecnState?.processIPCodepoint(
+        path.ecnState.processIPCodepoint(
             ecn: ecn,
             stats: &stats,
             packetNumberSpace: packetNumberSpace,
             flag: flag
-        ) ?? false
+        )
     }
 
     @inline(always)
@@ -207,7 +192,7 @@ struct ECNPathState: ~Copyable, PrefixedLoggable {
     static let lossThreshold: (ect0: Int, ect1: Int) = (3, 10)
 
     // ECN counters for path
-    private var counters: ECNCounters
+    private var counters = ECNCounters()
 
     var state = ECNState.disabled
     private var validationSentPacketCount = 0
@@ -226,10 +211,13 @@ struct ECNPathState: ~Copyable, PrefixedLoggable {
     }
     private var flags = ECN.Flags()
 
+    init() {
+        self.log = LogPrefixer()
+    }
+
     init(ecn: borrowing ECN) {
         self.log = ecn.log
         self.flags = ecn.flags
-        counters = ECNCounters()
         if markingEnabled {  // state is disabled by default
             state = .probing
         }
@@ -244,14 +232,14 @@ struct ECNPathState: ~Copyable, PrefixedLoggable {
         }
     }
 
-    mutating func reset(ecn: inout ECN, path: QUICPath?) {
+    mutating func reset(ecn: borrowing ECN) {
         state = markingEnabled ? .probing : .disabled
-        validationSentPacketCount = 0
-        validationAckElicitingLostPacketCount = 0
-
-        ecn.reset(path: path)
+        resetValidationCounters()
+        ecn.reset()
         resetCounters()
-        log.info("ECN reset - new state = \(state)")
+        log.info(
+            "ECN reset - new state = \(state), echo: \(echoEnabled), marking: \(markingEnabled), ECT(1): \(useECT1)"
+        )
     }
 
     mutating func resetValidationCounters() {

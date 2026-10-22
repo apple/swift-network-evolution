@@ -32,23 +32,11 @@ final class ECNTests: XCTestCase {
     var ecn: ECN!
     var ecnPath: ECNPathState!
     var stats: Statistics!
-    var conn: QUICConnection!
     let logPrefixer = LogPrefixer("[ECNTests]")
-    // These tests reset ECN state without a path attached.
-    let noPath: QUICPath? = nil
 
     override func setUp() {
         super.setUp()
-        conn = QUICConnection(context: NetworkContext.implicitContext)
         stats = Statistics()
-    }
-
-    override func tearDown() {
-        // The connection was built directly rather than attached to a stack, so nothing else
-        // hands its event state back.
-        conn.context.onQueue { self.conn.destroyFromExternalTest() }
-        conn = nil
-        super.tearDown()
     }
 
     private func runInitTest(
@@ -62,7 +50,6 @@ final class ECNTests: XCTestCase {
             echoEnabled: echoEnabled,
             markingEnabled: markingEnabled,
             l4sEnabled: l4sEnabled,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -71,7 +58,7 @@ final class ECNTests: XCTestCase {
         runProcessIPCodepoint()
         validateECNPackets(counter, expectedCount)
 
-        ecnPath.reset(ecn: &ecn, path: noPath)
+        ecnPath.reset(ecn: ecn)
         validateECNPackets(counter, 0)
 
         runProcessIPCodepoint()
@@ -419,22 +406,12 @@ extension ECNTestStepAck {
 final class ECNValidateTests: XCTestCase {
     var ecn: ECN!
     var ecnPath: ECNPathState!
-    var conn: QUICConnection!
     var stats: Statistics!
     let logPrefixer = LogPrefixer("[ECNValidateTests]")
 
     override func setUp() {
         super.setUp()
-        conn = QUICConnection(context: NetworkContext.implicitContext)
         stats = Statistics()
-    }
-
-    override func tearDown() {
-        // The connection was built directly rather than attached to a stack, so nothing else
-        // hands its event state back.
-        conn.context.onQueue { self.conn.destroyFromExternalTest() }
-        conn = nil
-        super.tearDown()
     }
 
     private func createFrame(
@@ -669,7 +646,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -678,7 +654,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: false,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -690,7 +665,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -700,7 +674,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: false,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -714,7 +687,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -724,7 +696,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: false,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -736,7 +707,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -746,7 +716,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: false,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -758,7 +727,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -768,7 +736,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: false,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -780,7 +747,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -790,7 +756,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: false,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -802,7 +767,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -812,7 +776,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: false,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -824,7 +787,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -834,7 +796,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: false,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -846,7 +807,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -856,7 +816,6 @@ final class ECNValidateTests: XCTestCase {
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: false,
-            connection: conn,
             logPrefixer: self.logPrefixer
         )
         ecnPath = ECNPathState(ecn: ecn)
@@ -864,13 +823,10 @@ final class ECNValidateTests: XCTestCase {
     }
 
     func testValidateAckReturnsCorrectCECount() async throws {
-        let connection = QUICConnection(context: NetworkContext.implicitContext)
-        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let ecn = ECN(
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: connection,
             logPrefixer: self.logPrefixer
         )
         var ecnPath = ECNPathState(ecn: ecn)
@@ -903,16 +859,10 @@ final class ECNValidateTests: XCTestCase {
     }
 
     func testValidateAckLargestCECount() throws {
-        let context = TestClockContext(#function).context
-        context.activate()
-
-        let connection = QUICConnection(context: context)
-        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let ecn = ECN(
             echoEnabled: true,
             markingEnabled: true,
             l4sEnabled: true,
-            connection: connection,
             logPrefixer: self.logPrefixer
         )
         var ecnPath = ECNPathState(ecn: ecn)
