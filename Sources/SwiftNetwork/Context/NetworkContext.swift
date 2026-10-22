@@ -462,7 +462,7 @@ extension NetworkContext {
     }
 
     func assert() {
-        eventContext.assert()
+        _eventContext.assert()
     }
 
     #if !NETWORK_EMBEDDED

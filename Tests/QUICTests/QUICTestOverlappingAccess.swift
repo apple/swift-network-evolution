@@ -43,7 +43,9 @@ let QUICTestOverlappingAccessTestsLogPrefixer: LogPrefixer = LogPrefixer("[QUICT
 
 @available(Network 0.1.0, *)
 final class QUICTestOverlappingAccessTests: XCTestCase {
-    var connection = QUICConnection(context: .implicitContext)
+    var connection = NetworkContext.implicitContext.onQueue {
+        QUICConnection(context: .implicitContext)
+    }
     // The base linkages are storage-backed, so lower harnesses have to come from storage
     // rather than being wrapped in a bare linkage.
     let storage = TestNetworkProtocolStorage(context: .implicitContext)
