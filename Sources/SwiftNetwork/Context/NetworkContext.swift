@@ -466,7 +466,11 @@ extension NetworkContext {
 
     @_spi(Essentials)
     public func assertExternal() {
-        dispatchPrecondition(condition: .notOnQueue(queue))
+        if _eventContext.schedulerIsDefault {
+            dispatchPrecondition(condition: .notOnQueue(queue))
+        } else {
+            precondition(!scheduler.runningInScheduler, "Running on context scheduler")
+        }
     }
 
     #if !NETWORK_EMBEDDED

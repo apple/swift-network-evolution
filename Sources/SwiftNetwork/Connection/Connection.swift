@@ -629,13 +629,13 @@ public struct QUICDatagram: DatagramProtocol {
 /// Supports sending and receiving encrypted byte streams.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct TLS: StreamProtocol, @unchecked Sendable {
+public struct TLS: StreamProtocol, Sendable {
     private var trustedRawPublicKeyCertificates: [[UInt8]]?
     private var rawPrivateKey: [UInt8]?
     private var applicationProtocols: [String]?
     private var earlyDataEnabled: Bool?
     private var ticketsEnabled: Bool?
-    private var customOptionsHandlers: [(ProtocolOptions<SwiftTLSProtocol>) -> Void] = []
+    private var customOptionsHandlers: [@Sendable (ProtocolOptions<SwiftTLSProtocol>) -> Void] = []
 
     var options: ProtocolOptions<TLSProtocol> {
         var options = TLSProtocol.Options()
@@ -651,7 +651,7 @@ public struct TLS: StreamProtocol, @unchecked Sendable {
         return ProtocolOptions(protocolIdentifier: TLSProtocol.identifier, perProtocolOptions: options)
     }
 
-    public enum BelowProtocol {
+    public enum BelowProtocol: Sendable {
         case tcp(TCP)
         case noTransport(NoTransport)
     }
@@ -736,7 +736,7 @@ public struct TLS: StreamProtocol, @unchecked Sendable {
     ///     }
     /// ```
     @_spi(ProtocolProvider)
-    public func customOptions(_ handler: @escaping (ProtocolOptions<SwiftTLSProtocol>) -> Void) -> Self {
+    public func customOptions(_ handler: @Sendable @escaping (ProtocolOptions<SwiftTLSProtocol>) -> Void) -> Self {
         var mutableSelf = self
         mutableSelf.customOptionsHandlers.append(handler)
         return mutableSelf
@@ -748,7 +748,7 @@ public struct TLS: StreamProtocol, @unchecked Sendable {
 /// Supports sending and receiving byte streams.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct TCP: StreamProtocol, @unchecked Sendable {
+public struct TCP: StreamProtocol, Sendable {
     private var noDelay: Bool?
     private var noPush: Bool?
     private var noOptions: Bool?
@@ -2491,15 +2491,19 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
 
     #if !NETWORK_EMBEDDED
     public func send(_ message: StreamMessage) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            send(message) { result in
-                switch result {
-                case .success:
-                    continuation.resume()
-                case .failure(let error):
-                    continuation.resume(throwing: error)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                send(message) { result in
+                    switch result {
+                    case .success:
+                        continuation.resume()
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } onCancel: {
+            self.forceCancel()
         }
     }
     #endif
@@ -2548,15 +2552,19 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
         atLeast minBytes: Int,
         atMost maxBytes: Int
     ) async throws -> StreamMessage {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<StreamMessage, Error>) in
-            receive(atLeast: minBytes, atMost: maxBytes) { result in
-                switch result {
-                case .success(let message):
-                    continuation.resume(returning: message)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<StreamMessage, Error>) in
+                receive(atLeast: minBytes, atMost: maxBytes) { result in
+                    switch result {
+                    case .success(let message):
+                        continuation.resume(returning: message)
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } onCancel: {
+            self.forceCancel()
         }
     }
     #endif
@@ -2615,15 +2623,19 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
 
     #if !NETWORK_EMBEDDED
     public func send(_ message: DatagramMessage) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            send(message) { result in
-                switch result {
-                case .success:
-                    continuation.resume()
-                case .failure(let error):
-                    continuation.resume(throwing: error)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                send(message) { result in
+                    switch result {
+                    case .success:
+                        continuation.resume()
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } onCancel: {
+            self.forceCancel()
         }
     }
     #endif
@@ -2665,16 +2677,20 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
 
     #if !NETWORK_EMBEDDED
     public func receive() async throws -> DatagramMessage {
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<DatagramMessage, Error>) in
-            receive { result in
-                switch result {
-                case .success(let message):
-                    continuation.resume(returning: message)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<DatagramMessage, Error>) in
+                receive { result in
+                    switch result {
+                    case .success(let message):
+                        continuation.resume(returning: message)
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } onCancel: {
+            self.forceCancel()
         }
     }
     #endif
