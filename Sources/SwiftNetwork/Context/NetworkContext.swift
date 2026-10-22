@@ -442,8 +442,7 @@ extension NetworkContext {
 extension NetworkContext {
 
     // Read during protocol setup, which runs inside an attach with the state already held.
-    @_spi(Essentials)
-    public var queue: DispatchQueue {
+    var queue: DispatchQueue {
         globals.queue
     }
 
@@ -463,6 +462,11 @@ extension NetworkContext {
 
     func assert() {
         _eventContext.assert()
+    }
+
+    @_spi(Essentials)
+    public func assertExternal() {
+        dispatchPrecondition(condition: .notOnQueue(queue))
     }
 
     #if !NETWORK_EMBEDDED

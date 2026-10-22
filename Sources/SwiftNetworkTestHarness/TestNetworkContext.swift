@@ -42,7 +42,7 @@ extension NetworkContext {
     /// this does it rather than asking every test to remember.
     public func onQueue<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
         activate()
-        dispatchPrecondition(condition: .notOnQueue(queue))
+        assertExternal()
 
         var outcome: Result<R, E>? = nil
         withoutActuallyEscaping(body) { escapingBody in
