@@ -54,7 +54,7 @@ public struct FrameArray: ~Copyable {
         if self.frames.isEmpty, self.frames.capacity < frames.count {
             self.frames = frames.frames
         } else {
-            // removeFirst() rather than popFirst() keeps the large Frame out of an Optional
+            // removeFirst avoids transferring the frame as an optional which has overhead
             while !frames.frames.isEmpty {
                 self.frames.append(frames.frames.removeFirst())
             }
