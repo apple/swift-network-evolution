@@ -43,7 +43,7 @@ internal import Musl
 /// constructed the scheduler.
 @available(Network 0.1.0, *)
 @_spi(Essentials)
-public final class ManualScheduler: NetworkContext.Scheduler, @unchecked Sendable {
+public final class ManualScheduler: NetworkContext.Scheduler {
 
     /// Comparable in firing order: by deadline, then by the order the timer was armed.
     private struct Timer: Comparable {
