@@ -54,8 +54,9 @@ public struct FrameArray: ~Copyable {
         if self.frames.isEmpty, self.frames.capacity < frames.count {
             self.frames = frames.frames
         } else {
-            while let first = frames.frames.popFirst() {
-                self.frames.append(first)
+            // removeFirst() rather than popFirst() keeps the large Frame out of an Optional
+            while !frames.frames.isEmpty {
+                self.frames.append(frames.frames.removeFirst())
             }
         }
     }
@@ -83,6 +84,14 @@ public struct FrameArray: ~Copyable {
     @_optimize(speed)
     public mutating func popFirst() -> Frame? {
         frames.popFirst()
+    }
+
+    /// Removes and returns the first frame. The array must not be empty.
+    ///
+    /// Unlike `popFirst()` this never wraps the large `Frame` in an `Optional`, which saves the
+    /// outlined enum tag stores and loads.
+    public mutating func removeFirst() -> Frame {
+        frames.removeFirst()
     }
 
     public func peekFirstFrame<R>(_ access: (borrowing Frame) -> R) -> R {

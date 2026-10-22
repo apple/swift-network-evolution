@@ -189,7 +189,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public var log = NetworkLoggerState()
     var logPrefixer: LogPrefixer
 
-    public private(set) var context: NetworkContext
+    public let context: NetworkContext
 
     public var eventManager = ProtocolEventManager()
     public let timerReference = TimerReference()
@@ -2676,7 +2676,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
 
             accessStreamDataToSend(stream: stream) { streamData in
-                while var frame = streamData.popFirst() {
+                while !streamData.isEmpty {
+                    let frame = streamData.removeFirst()
 
                     // If the connection is complete, it is always a FIN
                     let dataLength = frame.unclaimedLength
@@ -2687,12 +2688,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     // If the metadata is connection mode (so each metadata is a new stream)
                     // and the metadata is complete, this is also a FIN
 
-                    if frame.protocolMetadatas.count > 0 {
-                        if frame.protocolMetadatas[0].metadata.matches(
-                            protocolIdentifier: QUICConnectionProtocol.identifier
-                        ) {
-                            isFinal = isFinal || metadataComplete
-                        }
+                    if frame.firstMetadataMatches(protocolIdentifier: QUICConnectionProtocol.identifier) {
+                        isFinal = isFinal || metadataComplete
                     }
                     #if DatapathLogging
                     log.datapath(
@@ -2702,21 +2699,20 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
                     if dataLength > 0 {
                         processOutbound(frame: frame, flowID: flowID, stream: stream, isLast: isFinal)
-                        continue
-                    } else if isFinal, let _ = knownFlows[streamID] {
-                        log.datapath("Treating zero length fin as a stop message")
-                        disconnect(flow: flowID, direction: .outbound, in: &eventContext)
                     } else {
-                        // For QUIC, empty frames with just metadata are not meaningful if they are not complete
-                        log.notice("Not processing outbound data of length 0")
+                        discardEmptyOutbound(
+                            frame: frame,
+                            isFinal: isFinal,
+                            streamID: streamID,
+                            flowID: flowID,
+                            in: &eventContext
+                        )
                     }
-                    frame.finalize(success: false)
                 }
             }
 
-            if !stream.send.state.dataHasAlreadyBeenSent {
-                applicationPendingItems.appendStreamToService(stream)
-            }
+            // appendStreamToService already declines streams whose data has all been sent
+            applicationPendingItems.appendStreamToService(stream, connection: self)
             // Note: trigger sending of any frames based on this external event
             checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount, in: &eventContext)
 
@@ -2727,6 +2723,26 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             sendFrames(in: &eventContext)
         }
 
+    }
+
+    // Zero length outbound frames are rare, so this is kept out of line. Inlining it would pull the
+    // disconnect path's dictionary accesses and retains into every call of serviceStreamDataToSend.
+    @inline(never)
+    private func discardEmptyOutbound(
+        frame: consuming Frame,
+        isFinal: Bool,
+        streamID: QUICStreamID,
+        flowID: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        if isFinal, let _ = knownFlows[streamID] {
+            log.datapath("Treating zero length fin as a stop message")
+            disconnect(flow: flowID, direction: .outbound, in: &eventContext)
+        } else {
+            // For QUIC, empty frames with just metadata are not meaningful if they are not complete
+            log.notice("Not processing outbound data of length 0")
+        }
+        frame.finalize(success: false)
     }
 
     #if !NETWORK_EMBEDDED
@@ -4680,16 +4696,28 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         isLast: Bool
     ) {
         if !isServer, state == .idle {
-            state.change(to: .initialSent, logIDString: logPrefixer.logIDString)
+            markInitialSent()
         }
 
         if frame.unclaimedLength > Constants.streamDataMaxSize {
-            log.error("Stream data length is too large")
-            frame.finalize(success: false)
+            rejectOversizedOutbound(frame: frame)
             return
         }
 
         stream.addStreamData(frame: frame, isLast: isLast, connection: self)
+    }
+
+    // Only the first write on a client connection takes this, so it is kept out of line to
+    // keep the String copy for the log id out of processOutbound.
+    @inline(never)
+    private func markInitialSent() {
+        state.change(to: .initialSent, logIDString: logPrefixer.logIDString)
+    }
+
+    @inline(never)
+    private func rejectOversizedOutbound(frame: consuming Frame) {
+        log.error("Stream data length is too large")
+        frame.finalize(success: false)
     }
 
     internal func handleStopRead(for stream: Flow) {
