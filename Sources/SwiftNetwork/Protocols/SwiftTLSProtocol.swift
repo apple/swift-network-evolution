@@ -204,8 +204,29 @@ public struct SwiftTLSProtocol: NetworkProtocol {
     }
 
     public struct SwiftTLSMetadata: PerProtocolMetadata {
+        private var _metadata = SwiftTLS.SwiftTLSMetadata()
+
         init() {}
+
+        init(tlsMetadata: SwiftTLS.SwiftTLSMetadata) {
+            self._metadata = tlsMetadata
+        }
+
+        public var tlsMetadata: SwiftTLS.SwiftTLSMetadata {
+            get { _metadata }
+            set { _metadata = newValue }
+        }
+
+        /// Derives exporter key material bound to this connection, per RFC 8446 section 7.5.
+        /// Key material stays a CryptoKit `SymmetricKey` throughout.
+        public var exporter: SwiftTLS.SwiftTLSExporter? { _metadata.exporter }
+
         public func isEqual(to other: SwiftTLSMetadata, for: ProtocolCompareMode) -> Bool { true }
+
+        /// Explicit because the storage is not `Equatable`, so synthesis does not apply.
+        public static func == (lhs: SwiftTLSMetadata, rhs: SwiftTLSMetadata) -> Bool {
+            lhs.isEqual(to: rhs, for: .equal)
+        }
     }
 
     #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
@@ -214,6 +235,16 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         OneToOneStreamProtocol
     {
         private var recordLayer: SwiftTLSRecordLayerInstance<TLSUpperProtocol, TLSLowerProtocol>?
+
+        /// Called from the record layer's `completeHandshake` before the connected event, so the
+        /// metadata is already in place for anyone observing `.ready`.
+        func publishMetadata(tlsMetadata: SwiftTLS.SwiftTLSMetadata) {
+            self.metadata = ProtocolMetadata<SwiftTLSProtocol>(
+                protocolIdentifier: SwiftTLSProtocol.identifier,
+                perProtocolMetadata: SwiftTLSMetadata(tlsMetadata: tlsMetadata),
+                messageIdentifier: SystemUUID(insecure: true)
+            )
+        }
 
         private func requireRecordLayer() throws(NetworkError) -> SwiftTLSRecordLayerInstance<
             TLSUpperProtocol,
@@ -669,10 +700,21 @@ public struct SwiftTLSProtocol: NetworkProtocol {
             }
         }
 
+        /// Called from `completeHandshake` before the connected event, so the metadata is already in
+        /// place for anyone observing `.ready`.
+        func publishMetadata() {
+            self.metadata = ProtocolMetadata<SwiftTLSProtocol>(
+                protocolIdentifier: SwiftTLSProtocol.identifier,
+                perProtocolMetadata: SwiftTLSMetadata(tlsMetadata: handshaker.metadata),
+                messageIdentifier: SystemUUID(insecure: true)
+            )
+        }
+
         func completeHandshake(in eventContext: inout NetworkContext.EventContext) {
             let newlyConnected = !isConnected
             isConnected = true
 
+            publishMetadata()
             deliverConnectedEvent(in: &eventContext)
             if !isServer, newlyConnected, let quicCrypto, !handshaker.earlyDataAccepted {
                 quicCrypto.updateEarlyDataAccepted(false, in: &eventContext)
@@ -1063,6 +1105,7 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         // know that we are connected
         func completeHandshake(in eventContext: inout NetworkContext.EventContext) {
             handle.log.debug("handshake completed successfully")
+            handle.publishMetadata(tlsMetadata: tlsManager.metadata)
             handle.deliverConnectedEvent(in: &eventContext)
         }
 

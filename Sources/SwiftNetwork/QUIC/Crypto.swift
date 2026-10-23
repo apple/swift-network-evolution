@@ -552,6 +552,9 @@ extension QUICCrypto: TopStreamProtocol {
         guard let parentConnection else { return }
         inScope(of: parentConnection, in: &eventContext) { eventContext in
             parentConnection.log.info("Connected: TLS finished")
+            // Before `reportReady`, so it is in place for anyone observing `.ready`.
+            parentConnection.connectionMetadata.swiftTLSMetadata =
+                self.tlsInstance.metadata as? ProtocolMetadata<SwiftTLSProtocol>
             parentConnection.reportReady(in: &eventContext)
         }
     }

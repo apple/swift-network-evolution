@@ -202,6 +202,23 @@ struct EndpointFlow: ~Copyable {
         case inboundDatagram(InboundDatagramEndpointFlowProtocol)
     }
 
+    /// The metadata published by a protocol in this flow's stack, or `nil` if that protocol is not
+    /// present or has published nothing yet.
+    func getMetadata<P: NetworkProtocol>() -> ProtocolMetadata<P>? {
+        switch self.flowProtocol {
+        case .stream(let flow):
+            return flow.invokeGetMetadata()
+        case .datagram(let flow):
+            return flow.invokeGetMetadata()
+        case .inboundStream(let flow):
+            return flow.invokeGetMetadata()
+        case .inboundDatagram(let flow):
+            return flow.invokeGetMetadata()
+        case .none:
+            return nil
+        }
+    }
+
     var isInboundFlowHandler: Bool {
         switch self.flowProtocol {
         case .inboundStream, .inboundDatagram: return true
