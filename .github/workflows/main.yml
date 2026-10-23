@@ -32,6 +32,24 @@ jobs:
       enable_android_sdk_checks: true
       enable_embedded_wasm_sdk_build: false
       enable_linux_static_sdk_build: true
+  tests-real-time:
+    name: Test (real time)
+    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.15
+    with:
+      swift_flags: "-Xswiftc -warnings-as-errors -Xswiftc -DSWIFT_NETWORK_TEST_REAL_TIME"
+      swift_nightly_flags: "-Xswiftc -warnings-as-errors -Xswiftc -DSWIFT_NETWORK_TEST_REAL_TIME"
+      enable_macos_checks: true
+      macos_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}]"
+      macos_build_command: bash .github/workflows/scripts/ci-macos.sh
+      enable_ios_checks: false
+      enable_linux_checks: true
+      linux_swift_versions: '["6.4"]'
+      linux_build_command: bash .github/workflows/scripts/ci-linux.sh
+      enable_windows_checks: false
+      enable_android_sdk_build: false
+      enable_android_sdk_checks: false
+      enable_embedded_wasm_sdk_build: false
+      enable_linux_static_sdk_build: false
   tests-nightly-main:
     # Keep this separate so that it can be disabled if the nightly compiler shows any issue.
     name: Test (nightly-main)

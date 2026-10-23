@@ -71,9 +71,7 @@ final class SwiftNetworkQUICCIDTests: NetTestCase {
 
         QUICTestHarness().runQUICTest(
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait for retired outbound connection ID event")
-                harness.context.async {
-                    defer { expectation.fulfill() }
+                harness.onContext {
                     guard let clientInstance = harness.state?.clientInstance,
                         let clientHarness = harness.state?.clientHarness,
                         let dcid = clientInstance.currentPath?.dcid
@@ -115,7 +113,6 @@ final class SwiftNetworkQUICCIDTests: NetTestCase {
                     retiredConnectionID = clientHarness.lastRetiredOutboundConnectionID
                     retiredStatelessResetToken = clientHarness.lastRetiredOutboundStatelessResetToken
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
 

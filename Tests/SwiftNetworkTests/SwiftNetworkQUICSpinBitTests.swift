@@ -76,9 +76,7 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate spin bit")
-                harness.context.async {
-                    defer { expectation.fulfill() }
+                harness.onContext {
                     guard let clientInstance = harness.state?.clientInstance,
                         let serverInstance = harness.state?.serverInstance
                     else {
@@ -92,16 +90,13 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
                         return
                     }
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             },
             afterData: { harness in
                 guard hasSpinBit else {
                     return
                 }
 
-                let expectation = XCTestExpectation(description: "Wait to validate spin bit")
-                harness.context.async {
-                    defer { expectation.fulfill() }
+                harness.onContext {
                     XCTAssertFalse(
                         observedSpinBitValues.withLock { $0.isEmpty },
                         "BridgeDatagramProtocol should have observed short-header packets with spin bit values"
@@ -128,9 +123,7 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
             clientOptions: clientOptions,
             serverOptions: serverOptions,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate spin bit")
-                harness.context.async {
-                    defer { expectation.fulfill() }
+                harness.onContext {
                     let clientSpinBit = harness.state?.clientInstance.currentPath?.spinValue ?? false
                     let serverSpinBit = harness.state?.serverInstance.currentPath?.spinValue ?? false
                     XCTAssertFalse(clientSpinBit, "Client should have the spin bit set to false")
