@@ -62,11 +62,11 @@ final class SendItemsTests: XCTestCase {
     ) {
         var frame = Frame(count: 1200)
         defer { frame.finalize(success: true) }
-        let context = TestClockContext("SendItemsTests").context
-        let connection = context.onQueue {
-            QUICConnection(context: context)
+        let clock = TestClockContext("SendItemsTests")
+        let connection = clock.onQueue {
+            QUICConnection(context: clock.context)
         }
-        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+        defer { clock.onQueue { connection.destroyFromExternalTest() } }
         var shorthandFrames: [QUICShorthandFrame]? = nil
         XCTAssertNoThrow(
             try pendingItems.write(
@@ -290,19 +290,19 @@ final class SendItemsTests: XCTestCase {
         roomFor: Int,
         oversizedAtIndex: Int? = nil
     ) -> DatagramWriteOutcome {
-        let context = TestClockContext("SendItemsTests").context
-        let connection = context.onQueue {
-            QUICConnection(context: context)
+        let clock = TestClockContext("SendItemsTests")
+        let connection = clock.onQueue {
+            QUICConnection(context: clock.context)
         }
         let flowID: UInt64 = 4
         let contextID: UInt64 = 0
-        let flow = context.onQueue {
+        let flow = clock.onQueue {
             QUICDatagramFlow(parent: connection, inbound: true)
         }
         flow.setup(datagramFlowID: flowID, contextID: contextID, logPrefixer: LogPrefixer())
         connection.multiplexedSecondaryFlows[flow.flowIdentifier] = flow
         defer {
-            connection.context.onQueue {
+            clock.onQueue {
                 connection.fromExternal { eventContext in
                     flow.upperSendQueue.finalizeAllFramesAsFailed()
                     flow.unregisterEventManager(in: &eventContext)

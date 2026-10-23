@@ -24,6 +24,10 @@
 @_spi(Essentials) import SwiftNetworkTestSupport
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 /// A context on the clock `TestClock` selects.
 @available(Network 0.1.0, *)
 struct TestClockContext {
@@ -43,6 +47,17 @@ struct TestClockContext {
         }
         // A mock context has its own globals, and a connection built on it before activation traps.
         self.context.activate()
+    }
+
+    /// Runs `body` on the context and returns its result.
+    ///
+    /// A mock scheduler runs queued work on the thread that owns it, which is the caller, so `body` runs
+    /// in place; hopping would block the only thread able to run it, and `assertExternal` rejects the call.
+    func onQueue<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
+        if self.manual != nil {
+            return try body()
+        }
+        return try self.context.onQueue(body)
     }
 }
 
