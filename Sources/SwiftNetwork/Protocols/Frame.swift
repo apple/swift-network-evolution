@@ -833,6 +833,13 @@ public struct Frame: ~Copyable {
         var metadataComplete: Bool = false
     }
 
+    /// Whether the first metadata belongs to a specific protocol
+    @inline(always)
+    func firstMetadataMatches(protocolIdentifier: ProtocolIdentifier) -> Bool {
+        protocolMetadatas.count > 0
+            && protocolMetadatas[0].metadata.protocolIdentifier == protocolIdentifier
+    }
+
     public var firstMetadata: AbstractProtocolMetadata? {
         guard protocolMetadatas.count > 0 else {
             return nil
