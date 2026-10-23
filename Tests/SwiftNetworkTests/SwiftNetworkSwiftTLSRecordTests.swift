@@ -198,12 +198,16 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
 
         let storage = BaseNetworkProtocolStorage(context: context)
 
-        let clientTLS = storage.createSwiftTLSRecordInstance()
+        let clientTLS = context.onQueue {
+            storage.createSwiftTLSRecordInstance()
+        }
         let clientOptions = createTLSRecordTestOptions(server: false)
         clientOptions.setProtocolInstance(clientTLS.lower.identifier)
         clientOptions.setLogID(prefix: "C", parent: "1", protocolLogIDNumber: 1)
 
-        let serverTLS = storage.createSwiftTLSRecordInstance()
+        let serverTLS = context.onQueue {
+            storage.createSwiftTLSRecordInstance()
+        }
         let serverOptions = createTLSRecordTestOptions(server: true, mismatch: fail)
         serverOptions.setProtocolInstance(serverTLS.lower.identifier)
         serverOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)

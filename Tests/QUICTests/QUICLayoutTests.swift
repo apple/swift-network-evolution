@@ -30,10 +30,14 @@ import XCTest
 final class QUICLayoutTests: XCTestCase {
 
     var stream: QUICStreamInstance!
-    var connection = QUICConnection(context: NetworkContext.implicitContext)
+    var connection = NetworkContext.implicitContext.onQueue {
+        QUICConnection(context: NetworkContext.implicitContext)
+    }
 
     override func setUp() {
-        stream = QUICStreamInstance(parent: connection, inbound: false)
+        stream = NetworkContext.implicitContext.onQueue {
+            QUICStreamInstance(parent: connection, inbound: false)
+        }
         stream.setup(
             streamID: QUICStreamID(0),
             logPrefixer: quicStreamTestsLogPrefixer

@@ -1114,7 +1114,16 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     func addStreamData(frame: consuming Frame, isLast: Bool, connection: QUICConnection) {
         let dataLength = UInt64(frame.unclaimedLength)
         updateFlowControlWithEnqueuedBytesToSend(dataLength, connection: connection)
-        send.enqueue(frame, isLast: isLast, logPrefix: log.logPrefix)
+        if send.enqueue(frame, isLast: isLast) {
+            startSending()
+        }
+    }
+
+    // Only the first write on a stream gets here. It is kept out of line so reading the log prefix
+    // does not become part of every addStreamData call.
+    @inline(never)
+    private func startSending() {
+        send.startSending(logIDString: log.logPrefix)
     }
 
     // To be called when 0-RTT sending is rejected

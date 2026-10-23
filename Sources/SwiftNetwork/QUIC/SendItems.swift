@@ -2647,8 +2647,14 @@ struct PendingItems: ~Copyable {
     var transmittedStreams = NetworkUniqueDeque<TransmittedItems.SentStream>()
 
     func canAddStreamToService(_ stream: QUICStreamInstance) -> Bool {
+        canAddStreamToService(stream, connection: stream.parentProtocol)
+    }
+
+    // Callers that already hold the connection pass it in, which saves reading it back out of the
+    // stream's parentProtocol.
+    func canAddStreamToService(_ stream: QUICStreamInstance, connection: QUICConnection) -> Bool {
         !stream.send.state.dataHasAlreadyBeenSent
-            && ((stream.hasMoreSendDataToService && stream.availableRemoteReceiveWindow(for: stream.parentProtocol) > 0)
+            && ((stream.hasMoreSendDataToService && stream.availableRemoteReceiveWindow(for: connection) > 0)
                 || stream.send.buffer.hasLast)
     }
 
@@ -2659,7 +2665,11 @@ struct PendingItems: ~Copyable {
     }
 
     mutating func appendStreamToService(_ newStream: QUICStreamInstance) {
-        guard canAddStreamToService(newStream) else {
+        appendStreamToService(newStream, connection: newStream.parentProtocol)
+    }
+
+    mutating func appendStreamToService(_ newStream: QUICStreamInstance, connection: QUICConnection) {
+        guard canAddStreamToService(newStream, connection: connection) else {
             // Nothing new to send
             return
         }

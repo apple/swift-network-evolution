@@ -158,7 +158,21 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
             protocolEventStates.remove(index: index)
         }
     }
-    var eventContext: EventContext
+    var _eventContext: EventContext
+    var eventContext: EventContext {
+        _read {
+            #if DEBUG
+            assert()
+            #endif
+            yield _eventContext
+        }
+        _modify {
+            #if DEBUG
+            assert()
+            #endif
+            yield &_eventContext
+        }
+    }
 
     internal init(
         identifier: String,
@@ -169,7 +183,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         self.scheduler = scheduler
         self.globals = globals
         self.identifier = identifier
-        eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
+        self._eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: schedulerIsDefault)
     }
 
     public static let implicitContext: NetworkContext = NetworkContext(identifier: "context")
@@ -216,7 +230,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         self.scheduler = scheduler
         self.globals = globals
         self.identifier = identifier
-        eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: true)
+        self._eventContext = .init(globals: globals, scheduler: scheduler, schedulerIsDefault: true)
     }
 
     public init(identifier: String, externalScheduler: any Scheduler) {
@@ -224,7 +238,7 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         self.scheduler = externalScheduler
         self.globals = globals
         self.identifier = identifier
-        eventContext = .init(globals: globals, scheduler: externalScheduler, schedulerIsDefault: false)
+        self._eventContext = .init(globals: globals, scheduler: externalScheduler, schedulerIsDefault: false)
     }
     #endif
 
@@ -447,8 +461,34 @@ extension NetworkContext {
     }
 
     func assert() {
-        eventContext.assert()
+        _eventContext.assert()
     }
+
+    @_spi(Essentials)
+    public func assertExternal() {
+        if _eventContext.schedulerIsDefault {
+            dispatchPrecondition(condition: .notOnQueue(queue))
+        } else {
+            precondition(!scheduler.runningInScheduler, "Running on context scheduler")
+        }
+    }
+
+    #if !NETWORK_EMBEDDED
+    func fromExternal(_ handler: @escaping () -> Void) async {
+        await withCheckedContinuation { continuation in
+            async {
+                handler()
+                continuation.resume()
+            }
+        }
+    }
+    #else
+    func fromExternal(_ handler: @escaping () -> Void) {
+        async {
+            handler()
+        }
+    }
+    #endif
 }
 
 @available(Network 0.1.0, *)
