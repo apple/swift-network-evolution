@@ -2021,6 +2021,30 @@ public class NetworkChannel<ApplicationProtocol: NetworkProtocolOptions>: Networ
         }
     }
 
+    /// The connection-wide metadata published by a protocol in this channel's stack, chosen by the
+    /// return type rather than by an argument:
+    ///
+    /// ```swift
+    /// let tls: ProtocolMetadata<SwiftTLSProtocol>? = connection.getMetadata()
+    /// ```
+    ///
+    /// Call this on the connection's queue: from a state update handler, or from a receive or send
+    /// completion that the framework delivers asynchronously. `.ready` is the usual place, because a
+    /// protocol that publishes at handshake completion has published by then. Unlike the other entry
+    /// points here, this one cannot hop to the queue for you -- it has to return a value -- so it
+    /// asserts the caller is already there.
+    ///
+    /// Do not call it from a completion the framework runs inline, such as the span-delivering
+    /// `receive(atLeast:atMost:maximumChunks:completion:)`; those run while the flow is held and are
+    /// not safe to re-enter.
+    ///
+    /// `nil` when the stack has no such protocol, or when it has published nothing yet -- for a
+    /// protocol that publishes at handshake completion, that means before the connection is ready.
+    public func getMetadata<P: NetworkProtocol>() -> ProtocolMetadata<P>? {
+        context.assert()
+        return withFlow { $0.getMetadata() } ?? nil
+    }
+
     /// Cancel the connection, and cause all update handlers to be cancelled.
     ///
     /// Cancel is asynchronous. The last callback will be to the stateUpdateHandler with the cancelled state. After
