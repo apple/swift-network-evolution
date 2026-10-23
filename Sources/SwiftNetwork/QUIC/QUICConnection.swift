@@ -3581,8 +3581,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // For ACK bundling purposes make sure to rely on the ACK-delay timer as much as possible,
         // unless an immediate ACK needs to be processed.
         guard !applicationPendingItems.isAckOnly || delayedACK || ack.immediateAcks > 0 else {
-            // Make sure the ack-delay timer is armed if returning early
-            ack.scheduleDelayedAck(in: &eventContext)
+            // Make sure the ack-delay timer is armed if returning early. This ACK is due
+            // now, so the timer is pulled in to the bundling delay: a peer whose congestion
+            // window is waiting on the ACK would otherwise stall for the max ACK delay.
+            let delay = currentPath.map { ack.bundlingDelay(on: $0) } ?? ack.maxDelay
+            ack.scheduleDelayedAck(within: delay, in: &eventContext)
             return false
         }
         guard let path = currentPath else {
