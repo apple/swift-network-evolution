@@ -31,9 +31,10 @@ import XCTest
 final class FlowControlTests: XCTestCase {
     func testOutboundFlowControl() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
-        let connection = QUICConnection(
-            context: TestClockContext("test context").context
-        )
+        let context = TestClockContext("test context").context
+        let connection = context.onQueue {
+            QUICConnection(context: context)
+        }
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         connection.context.onQueue {
             let stream = QUICStreamInstance(parent: connection, inbound: false)
@@ -71,9 +72,10 @@ final class FlowControlTests: XCTestCase {
 
     func testInboundFlowControl() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
-        let connection = QUICConnection(
-            context: TestClockContext("test context").context
-        )
+        let context = TestClockContext("test context").context
+        let connection = context.onQueue {
+            QUICConnection(context: context)
+        }
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         connection.context.onQueue {
             let stream = QUICStreamInstance(parent: connection, inbound: false)
@@ -168,9 +170,10 @@ final class FlowControlTests: XCTestCase {
 
     func testDuplicateResetStreamOverflow() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
-        let connection = QUICConnection(
-            context: TestClockContext("test context").context
-        )
+        let context = TestClockContext("test context").context
+        let connection = context.onQueue {
+            QUICConnection(context: context)
+        }
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         connection.context.onQueue {
             let stream = QUICStreamInstance(parent: connection, inbound: false)

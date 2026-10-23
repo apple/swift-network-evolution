@@ -101,11 +101,16 @@ struct QUICSendState: ~Copyable {
     var buffer = StreamSendBuffer()
     var state = QUICSendStreamState()
 
-    mutating func enqueue(_ frame: consuming Frame, isLast: Bool, logPrefix: String) {
-        if state == .ready {
-            state.change(logIDString: logPrefix, to: .send)
-        }
+    /// Queues `frame` for sending. Returns true for the first write on the stream, which still
+    /// has to move the state out of `.ready` with `startSending(logIDString:)`
+    mutating func enqueue(_ frame: consuming Frame, isLast: Bool) -> Bool {
+        let isFirstWrite = state == .ready
         buffer.addSendData(frame, isLast: isLast)
+        return isFirstWrite
+    }
+
+    mutating func startSending(logIDString: String) {
+        state.change(logIDString: logIDString, to: .send)
     }
 
     mutating func recordSent(isFinal: Bool, logPrefix: String) {

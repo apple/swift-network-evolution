@@ -63,7 +63,9 @@ final class SendItemsTests: XCTestCase {
         var frame = Frame(count: 1200)
         defer { frame.finalize(success: true) }
         let context = TestClockContext("SendItemsTests").context
-        let connection = QUICConnection(context: context)
+        let connection = context.onQueue {
+            QUICConnection(context: context)
+        }
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         var shorthandFrames: [QUICShorthandFrame]? = nil
         XCTAssertNoThrow(
@@ -288,10 +290,15 @@ final class SendItemsTests: XCTestCase {
         roomFor: Int,
         oversizedAtIndex: Int? = nil
     ) -> DatagramWriteOutcome {
-        let connection = QUICConnection(context: TestClockContext("SendItemsTests").context)
+        let context = TestClockContext("SendItemsTests").context
+        let connection = context.onQueue {
+            QUICConnection(context: context)
+        }
         let flowID: UInt64 = 4
         let contextID: UInt64 = 0
-        let flow = QUICDatagramFlow(parent: connection, inbound: true)
+        let flow = context.onQueue {
+            QUICDatagramFlow(parent: connection, inbound: true)
+        }
         flow.setup(datagramFlowID: flowID, contextID: contextID, logPrefixer: LogPrefixer())
         connection.multiplexedSecondaryFlows[flow.flowIdentifier] = flow
         defer {

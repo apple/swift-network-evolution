@@ -1428,7 +1428,7 @@ open class MultiplexedStreamFlow<
 
     public var log = NetworkLoggerState()
 
-    public var flowIdentifier: MultiplexedFlowIdentifier
+    public let flowIdentifier: MultiplexedFlowIdentifier
 
     public var identifier: InstanceIdentifier
 

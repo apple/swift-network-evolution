@@ -224,7 +224,9 @@ final class CubicTests: XCTestCase {
     // CE marks reported through the path must reach the path's congestion controller,
     // not a discarded copy of it.
     func testCubicECNThroughPathReducesCongestionWindow() {
-        let connection = QUICConnection(context: NetworkContext.implicitContext)
+        let connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let path = connection.context.onQueue {
             QUICPath.makeFromExternalTest(parent: connection)
@@ -664,7 +666,9 @@ final class CubicTests: XCTestCase {
 
     func testCubicExercisingPacer() {
         // Path holds both Pacer and Cubic, thats why its setup this way.
-        let connection = QUICConnection(context: NetworkContext.implicitContext)
+        let connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let path = connection.context.onQueue {
             QUICPath.makeFromExternalTest(parent: connection)
@@ -725,7 +729,9 @@ final class CubicTests: XCTestCase {
     // A smoothed RTT that rounds to zero microseconds must not reach the pacing-rate division; it
     // traps there.
     func testCubicPacerSurvivesASubMicrosecondSmoothedRTT() {
-        let connection = QUICConnection(context: NetworkContext.implicitContext)
+        let connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
         let path = connection.context.onQueue {
             QUICPath.makeFromExternalTest(parent: connection)

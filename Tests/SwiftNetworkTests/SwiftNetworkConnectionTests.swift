@@ -869,6 +869,75 @@ final class SwiftNetworkConnectionTests: NetTestCase {
         )
     }
 
+    func testUDPDataPathAsyncAwait() async {
+        let group = DispatchGroup()
+        group.enter()
+        let c1 = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 7778),
+            using: .parameters {
+                UDP {
+                    IP {
+                        DatagramBridge()
+                    }
+                }
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
+        )
+        .onStateUpdate { _, state in
+            print("c1 \(state)")
+            switch state {
+            case .cancelled:
+                group.leave()
+            default:
+                break
+            }
+        }
+        XCTAssertNotNil(c1)
+
+        group.enter()
+        let c2 = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 7777),
+            using: .parameters {
+                UDP {
+                    IP {
+                        DatagramBridge()
+                    }
+                }
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7778))
+        )
+        .onStateUpdate { _, state in
+            print("c2 \(state)")
+            switch state {
+            case .cancelled:
+                group.leave()
+            default:
+                break
+            }
+        }
+        XCTAssertNotNil(c2)
+
+        c1.start()
+        c2.start()
+
+        await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await c1.send(.message(content: [1, 2, 3]))
+            }
+
+            group.addTask {
+                let message = try await c2.receive()
+                XCTAssertEqual(message.content, [1, 2, 3])
+            }
+        }
+
+        c1.cancel()
+        c2.cancel()
+
+        XCTAssertEqual(
+            group.wait(timeout: DispatchTime.now() + .seconds(5)),
+            DispatchTimeoutResult.success
+        )
+    }
+
     func testNoTransportDataPath() {
         let group = DispatchGroup()
         group.enter()
@@ -933,6 +1002,71 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                 XCTFail("receive failed with error \(error)")
             }
         }
+
+        XCTAssertEqual(
+            group.wait(timeout: DispatchTime.now() + .seconds(5)),
+            DispatchTimeoutResult.success
+        )
+    }
+
+    func testNoTransportDataPathAsyncAwait() async {
+        let group = DispatchGroup()
+        group.enter()
+        let c1 = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 7778),
+            using: .parameters {
+                NoTransport {
+                    StreamBridge()
+                }
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
+        )
+        .onStateUpdate { _, state in
+            print("c1 \(state)")
+            switch state {
+            case .cancelled:
+                group.leave()
+            default:
+                break
+            }
+        }
+        XCTAssertNotNil(c1)
+
+        group.enter()
+        let c2 = NetworkConnection(
+            to: Endpoint(address: IPv4Address.loopback, port: 7777),
+            using: .parameters {
+                NoTransport {
+                    StreamBridge()
+                }
+            }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7778))
+        )
+        .onStateUpdate { _, state in
+            print("c2 \(state)")
+            switch state {
+            case .cancelled:
+                group.leave()
+            default:
+                break
+            }
+        }
+        XCTAssertNotNil(c2)
+
+        c1.start()
+        c2.start()
+
+        await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await c1.send(.message(content: [1, 2, 3]))
+            }
+
+            group.addTask {
+                let message = try await c2.receive(atLeast: 1, atMost: Int.max)
+                XCTAssertEqual(message.content, [1, 2, 3])
+            }
+        }
+
+        c1.cancel()
+        c2.cancel()
 
         XCTAssertEqual(
             group.wait(timeout: DispatchTime.now() + .seconds(5)),
