@@ -272,15 +272,8 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
             minimumDatagramSize: Int,
             in eventContext: inout NetworkContext.EventContext
         ) throws(NetworkError) -> FrameArray? {
-            if datagramDrops?.blockPacketGeneration ?? false {
-                if datagramDrops?.shouldDropPacket() ?? false {
-                    log.datapath("blocking \(maximumDatagramCount) datagrams to port: \(self.remoteEndpoint!.port)")
-                    self.async(in: &eventContext) { eventContext in
-                        self.log.datapath("unblocking outbound data")
-                        self.upper.deliverOutboundRoomAvailableEvent(from: self.identifier, in: &eventContext)
-                    }
-                    return nil
-                }
+            if blocksPacketGeneration(datagramCount: maximumDatagramCount, in: &eventContext) {
+                return nil
             }
 
             let frameSize = min(minimumDatagramSize, self.maximumOutputSize)
@@ -290,6 +283,33 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
                 frameArray.add(frame: frame)
             }
             return frameArray
+        }
+
+        public func getDatagramToSend(
+            minimumDatagramSize: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) throws(NetworkError) -> Frame? {
+            if blocksPacketGeneration(datagramCount: 1, in: &eventContext) {
+                return nil
+            }
+            return Frame(count: min(minimumDatagramSize, self.maximumOutputSize))
+        }
+
+        /// Whether the configured drops withhold the next `datagramCount` datagrams. When they do, the upper
+        /// protocol is told it has room again on the next turn, so that it retries.
+        private func blocksPacketGeneration(
+            datagramCount: Int,
+            in eventContext: inout NetworkContext.EventContext
+        ) -> Bool {
+            guard datagramDrops?.blockPacketGeneration ?? false, datagramDrops?.shouldDropPacket() ?? false else {
+                return false
+            }
+            log.datapath("blocking \(datagramCount) datagrams to port: \(self.remoteEndpoint!.port)")
+            self.async(in: &eventContext) { eventContext in
+                self.log.datapath("unblocking outbound data")
+                self.upper.deliverOutboundRoomAvailableEvent(from: self.identifier, in: &eventContext)
+            }
+            return true
         }
 
         public func sendDatagrams(
