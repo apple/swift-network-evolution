@@ -4105,9 +4105,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // it here too, before pending items are built, so a PATH_CHALLENGE or PATH_RESPONSE
             // that cannot be sent yet stays pending instead of being consumed and lost.
             let amplificationBudget = remainingAmplificationBudget(on: path, isServer: isServer)
-            if amplificationBudget == 0 {
-                log.error("Path is limited by anti-amplification, nothing left to send")
-                return false
+            if let budget = amplificationBudget {
+                let smallPacketSize = Packet.shortPacketSize(
+                    destinationConnectionIDLength: path.dcid?.length ?? 0,
+                    tagSize: Int(protector.getTagSize(for: self.keyState)),
+                    payloadLength: FramePathChallenge.encodedLength
+                )
+                if budget < smallPacketSize {
+                    log.error("Path is limited by anti-amplification, insufficient budget for minimum packet")
+                    return false
+                }
             }
             var pendingItems = PendingItems(
                 packetNumberSpace: PacketNumberSpace.fromKeyState(keyState: keyState)
@@ -4308,7 +4315,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // the client's address has been validated by receiving a handshake
         // packet. To enforce this constraint limit the congestion window to not send more 3x received.
         if isServer, !receivedHandshakePacket {
-            let totalReceivedBytes = stats[.rxBytes] * 3
+            let totalReceivedBytes = stats[.rxBytes] * Constants.antiAmplificationFactor
             let totalSentBytes = stats[.txBytes]
             // Make sure totalReceivedBytes is greater
             if totalReceivedBytes >= totalSentBytes {

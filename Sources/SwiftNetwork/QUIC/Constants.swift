@@ -27,6 +27,7 @@ enum Constants {
     static let maxDatagramFrameSize = 65535
     static let minimumPacketSize = 21
     static let maximumAllowedAckDelay = UInt32.max
+    static let antiAmplificationFactor = 3
 
     // Check burst every 10 packets
     static let packetBurstCount = 10
