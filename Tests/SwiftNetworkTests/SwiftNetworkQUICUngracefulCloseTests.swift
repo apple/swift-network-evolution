@@ -18,6 +18,7 @@ import XCTest
 
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
+@_spi(Essentials) import SwiftNetworkTestSupport
 #elseif canImport(Network)
 @_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
@@ -75,6 +76,9 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
 
     #if !os(Linux) && !os(Android) && canImport(Dispatch)
     func testQUICConcurrentClientConnectionTimeouts() throws {
+        // Threads need the system clock; a mock clock is driven from one thread.
+        try XCTSkipUnless(QUICTestHarness.usesRealTime, "Needs the system clock")
+
         // Drop 100% of packets from the client to make the server unreachable
         // Times out 100 clients connection close to the same time
         // This tests ensures that timers are still able to fire if needed even when the connection is going down.
@@ -86,7 +90,7 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
             queue.async {
                 let clientOptions = QUICProtocol.options()
                 clientOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(2) }
-                QUICTestHarness(context: context).runQUICTest(
+                QUICTestHarness(realTime: context).runQUICTest(
                     expectHandshakeError: .posix(ETIMEDOUT),
                     clientDrops: .init(0...Int.max),
                     clientOptions: clientOptions
@@ -98,6 +102,21 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
     }
     #endif
 
+    func testQUICSequentialClientConnectionTimeouts() throws {
+        // Clients whose packets are all dropped reach their idle timeout in turn on one context and
+        // clock; timers must keep firing while a connection goes down.
+        let shared = ManualTimeContext("concurrent")
+        for _ in 0..<100 {
+            let clientOptions = QUICProtocol.options()
+            clientOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(2) }
+            QUICTestHarness(manual: shared).runQUICTest(
+                expectHandshakeError: .posix(ETIMEDOUT),
+                clientDrops: .init(0...Int.max),
+                clientOptions: clientOptions
+            )
+        }
+    }
+
     func testQUICIdleTimeout() throws {
         let clientOptions = QUICProtocol.options()
         clientOptions.modifyConnectionOptions { $0.idleTimeout = .seconds(2) }
@@ -108,14 +127,16 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
             clientOptions: clientOptions,
             serverOptions: serverOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait for timeout error")
-                harness.context.async {
+                var reportedError: NetworkError?
+                harness.onContext {
                     harness.state?.serverHarness.waitForError { error in
-                        XCTAssertEqual(error, NetworkError.posix(ETIMEDOUT))
-                        expectation.fulfill()
+                        reportedError = error
                     }
                 }
-                self.wait(for: [expectation], timeout: 5.0)
+                // Record and wait: nothing has arrived when `onContext` returns, so an assertion in
+                // the callback would never run.
+                harness.wait(until: { reportedError != nil }, timeout: 5.0, "server idle timeout")
+                XCTAssertEqual(reportedError, NetworkError.posix(ETIMEDOUT))
             }
         )
     }
@@ -135,28 +156,41 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
     func testQUICServerApplicationCloseBeforeHandshakeComplete() throws {
         // Drop all packets to the server after the first. The client completes the handshake, but the
         // server never sees the client's Finished, so it closes while its key state is still .handshake
+        weak var weakClient: QUICConnection?
+        weak var weakServer: QUICConnection?
         QUICTestHarness().runQUICTest(
             clientDrops: .init(1...Int.max),
             waitForServerConnected: false,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait for client disconnect")
-                harness.context.async {
+                weakClient = harness.state?.clientInstance
+                weakServer = harness.state?.serverInstance
+                var clientDisconnected = false
+                harness.onContext {
                     harness.state?.clientHarness.waitForDisconnected {
-                        // RFC 9000 §10.2.3: a Handshake packet carries CONNECTION_CLOSE with APPLICATION_ERROR
-                        // instead of APPLICATION_CLOSE.
-                        XCTAssertEqual(
-                            harness.state?.clientInstance.closeError?.code,
-                            QUICTransportError.QUICTransportErrorCode.applicationError.rawValue,
-                            "Server sent APPLICATION_CLOSE in a Handshake packet"
-                        )
-                        expectation.fulfill()
+                        clientDisconnected = true
                     }
                     harness.state?.serverHarness.stop(error: .init(quicApplicationError: 10, reason: "test"))
                 }
+                // Recorded and waited on rather than asserted inside the callback: the close has
+                // to travel before the client sees it, so an assertion in there would never run.
                 // Well below the 30 s idle timeout the client falls back to if it loses the close
-                self.wait(for: [expectation], timeout: 5.0)
+                harness.wait(until: { clientDisconnected }, timeout: 5.0, "client to see the close")
+                // RFC 9000 Section 10.2.3: a Handshake packet carries CONNECTION_CLOSE with
+                // APPLICATION_ERROR instead of APPLICATION_CLOSE.
+                XCTAssertEqual(
+                    harness.state?.clientInstance.closeError?.code,
+                    QUICTransportError.QUICTransportErrorCode.applicationError.rawValue,
+                    "Server sent APPLICATION_CLOSE in a Handshake packet"
+                )
             }
         )
+
+        // On the system clock the connections finish closing after this returns, so only a mock clock
+        // can check; a connection still alive here keeps its timer, and the timer keeps the connection.
+        if !QUICTestHarness.usesRealTime {
+            XCTAssertNil(weakClient, "The client connection must be released once the test ends")
+            XCTAssertNil(weakServer, "The server connection must be released once the test ends")
+        }
     }
 
     #if !NETWORK_PRIVATE
@@ -167,8 +201,9 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
             clientDrops: .init(1...Int.max),
             waitForServerConnected: false,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait for the client to handle the packet")
-                harness.context.async {
+                var checked = false
+                var clientClosed = false
+                harness.onContext {
                     if let server = harness.state?.serverInstance {
                         server.fromExternal { eventContext in
                             // HANDSHAKE_DONE is only allowed in 1-RTT packets
@@ -179,14 +214,15 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
                     // Queued behind the delivery of that packet. A later check would pass even without
                     // closing on the violation, because the next server packet also closes the client
                     harness.context.async {
-                        XCTAssertTrue(
-                            harness.state?.clientHarness.receivedDisconnected ?? false,
-                            "Client did not close on a frame not allowed in a Handshake packet"
-                        )
-                        expectation.fulfill()
+                        clientClosed = harness.state?.clientHarness.receivedDisconnected ?? false
+                        checked = true
                     }
                 }
-                self.wait(for: [expectation], timeout: 5.0)
+                harness.wait(until: { checked }, timeout: 5.0, "the client to handle the packet")
+                XCTAssertTrue(
+                    clientClosed,
+                    "Client did not close on a frame not allowed in a Handshake packet"
+                )
             }
         )
     }
@@ -208,11 +244,10 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
         QUICTestHarness().runQUICTest(
             serverOptions: serverOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait for reset error")
-                harness.context.async {
+                var reportedError: NetworkError?
+                harness.onContext {
                     harness.state?.clientHarness.waitForError { error in
-                        XCTAssertEqual(error, NetworkError.posix(ECONNRESET))
-                        expectation.fulfill()
+                        reportedError = error
                     }
 
                     let statelessResetPacket = try! QUICConnectionUtilities.createStatelessResetPacket(
@@ -225,7 +260,8 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
                         to: harness.clientPort
                     )
                 }
-                self.wait(for: [expectation], timeout: 5.0)
+                harness.wait(until: { reportedError != nil }, timeout: 5.0, "client to report the reset")
+                XCTAssertEqual(reportedError, NetworkError.posix(ECONNRESET))
             }
         )
     }
@@ -242,11 +278,10 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
         QUICTestHarness().runQUICTest(
             serverOptions: serverOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait for reset error")
-                harness.context.async {
+                var reportedError: NetworkError?
+                harness.onContext {
                     harness.state?.clientHarness.waitForError { error in
-                        XCTAssertEqual(error, NetworkError.posix(ECONNRESET))
-                        expectation.fulfill()
+                        reportedError = error
                     }
 
                     let statelessResetPacket = try! QUICConnectionUtilities.createStatelessResetPacket(
@@ -259,7 +294,8 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
                         to: harness.clientPort
                     )
                 }
-                self.wait(for: [expectation], timeout: 5.0)
+                harness.wait(until: { reportedError != nil }, timeout: 5.0, "client to report the reset")
+                XCTAssertEqual(reportedError, NetworkError.posix(ECONNRESET))
             }
         )
     }

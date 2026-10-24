@@ -252,6 +252,7 @@ public struct UDPProtocol: NetworkProtocol {
             17  // IPPROTO_UDP
         }
 
+        @_optimize(speed)
         func pseudoHeaderChecksum(inboundChecksum: UInt16?, length: Int) -> UInt16 {
             let inbound = (inboundChecksum != nil)
             let existingChecksum: UInt16 = inboundChecksum ?? 0

@@ -67,14 +67,11 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
         // listening server is before any handshake.
         let server = try attachIdleServer(harness)
         defer {
-            let teardownExpectation = XCTestExpectation(description: "Server harness torn down")
-            harness.context.async {
+            harness.onContext {
                 server.harness.stop()
                 server.harness.teardown()
                 harness.storage.releaseHeldInstances()
-                teardownExpectation.fulfill()
             }
-            wait(for: [teardownExpectation], timeout: 5.0)
         }
 
         XCTAssertEqual(
@@ -98,22 +95,29 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
         datagram.append(contentsOf: [UInt8](repeating: 0x41, count: 12))
         XCTAssertEqual(datagram.count, Constants.minimumPacketSize)
 
-        let injectExpectation = XCTestExpectation(description: "Malformed Initial injected")
-        harness.context.async {
+        let receivedBefore = server.instance.stats.connectionStatistics[.rxPackets] ?? 0
+
+        harness.onContext {
             BridgeDatagramProtocol.BridgeInstance.injectDatagram(
                 Frame(copyBuffer: datagram),
                 to: harness.serverPort
             )
-            injectExpectation.fulfill()
         }
-        wait(for: [injectExpectation], timeout: 5.0)
 
-        let processedExpectation = XCTestExpectation(
-            description: "Wait for server to process the injected datagram"
+        // Wait until the server has received the datagram; otherwise the assertion below holds
+        // whether or not it saw it.
+        harness.wait(
+            until: { (server.instance.stats.connectionStatistics[.rxPackets] ?? 0) > receivedBefore },
+            timeout: 5.0,
+            "the server to receive the injected datagram"
         )
-        _ = XCTWaiter.wait(for: [processedExpectation], timeout: 1.0)
-        Logger.test.info(
-            "Server connection state after malformed Initial: \(server.instance.state)"
+
+        // A malformed Initial must be discarded without closing the connection: the long header parses
+        // far enough to reach `.initialReceived`, and the remainder is dropped.
+        XCTAssertEqual(
+            server.instance.state,
+            .initialReceived,
+            "Server connection must survive a malformed Initial"
         )
     }
 
@@ -121,14 +125,12 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
         let harness = QUICTestHarness()
         harness.runQUICTest(
             afterHandshake: { harness in
-                let injectExpectation = XCTestExpectation(
-                    description: "Malformed short-header datagram injected"
-                )
+                let receivedBefore =
+                    harness.state?.serverInstance.stats.connectionStatistics[.rxPackets] ?? 0
 
-                harness.context.async {
+                harness.onContext {
                     guard let serverInstance = harness.state?.serverInstance else {
                         XCTFail("Server instance missing after handshake")
-                        injectExpectation.fulfill()
                         return
                     }
 
@@ -140,7 +142,6 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                             .connectionID.connectionID
                     else {
                         XCTFail("Server has no local connection IDs")
-                        injectExpectation.fulfill()
                         return
                     }
                     XCTAssertEqual(
@@ -161,14 +162,18 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                         Frame(copyBuffer: datagram),
                         to: harness.serverPort
                     )
-                    injectExpectation.fulfill()
                 }
-                self.wait(for: [injectExpectation], timeout: 5.0)
 
-                let processedExpectation = XCTestExpectation(
-                    description: "Wait for server to process the injected datagram"
+                // Wait until the server has received the datagram; otherwise the assertion below holds
+                // whether or not it saw it, because the server is already `.connected`.
+                harness.wait(
+                    until: {
+                        (harness.state?.serverInstance.stats.connectionStatistics[.rxPackets] ?? 0)
+                            > receivedBefore
+                    },
+                    timeout: 5.0,
+                    "the server to receive the injected datagram"
                 )
-                _ = XCTWaiter.wait(for: [processedExpectation], timeout: 1.0)
 
                 XCTAssertEqual(
                     harness.state?.serverInstance.state,
@@ -183,14 +188,12 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
         let harness = QUICTestHarness()
         harness.runQUICTest(
             afterHandshake: { harness in
-                let injectExpectation = XCTestExpectation(
-                    description: "Malformed short-header datagram injected"
-                )
+                let receivedBefore =
+                    harness.state?.serverInstance.stats.connectionStatistics[.rxPackets] ?? 0
 
-                harness.context.async {
+                harness.onContext {
                     guard let serverInstance = harness.state?.serverInstance else {
                         XCTFail("Server instance missing after handshake")
-                        injectExpectation.fulfill()
                         return
                     }
 
@@ -202,7 +205,6 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                             .connectionID.connectionID
                     else {
                         XCTFail("Server has no local connection IDs")
-                        injectExpectation.fulfill()
                         return
                     }
                     XCTAssertEqual(
@@ -225,14 +227,18 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                         Frame(copyBuffer: datagram),
                         to: harness.serverPort
                     )
-                    injectExpectation.fulfill()
                 }
-                self.wait(for: [injectExpectation], timeout: 5.0)
 
-                let processedExpectation = XCTestExpectation(
-                    description: "Wait for server to process the injected datagram"
+                // Wait until the server has received the datagram; otherwise the assertion below holds
+                // whether or not it saw it, because the server is already `.connected`.
+                harness.wait(
+                    until: {
+                        (harness.state?.serverInstance.stats.connectionStatistics[.rxPackets] ?? 0)
+                            > receivedBefore
+                    },
+                    timeout: 5.0,
+                    "the server to receive the injected datagram"
                 )
-                _ = XCTWaiter.wait(for: [processedExpectation], timeout: 1.0)
 
                 XCTAssertEqual(
                     harness.state?.serverInstance.state,
@@ -251,17 +257,15 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
     }
 
     private func attachIdleServer(_ harness: QUICTestHarness) throws -> IdleServer {
-        let attachExpectation = XCTestExpectation(description: "Idle server stack attached")
         var result: IdleServer?
 
-        harness.context.async {
+        harness.onContext {
             var serverParameters = Parameters(context: harness.context)
             serverParameters.isServer = true
 
             var (serverQUICStreamListener, _, serverQUICMultipath) = harness.storage.createTestQUICInstance()
             guard let serverInstance = harness.storage.quicInstance(for: serverQUICStreamListener.base) else {
                 XCTFail("Failed to create the server QUIC instance")
-                attachExpectation.fulfill()
                 return
             }
 
@@ -303,7 +307,6 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                 )
             } catch {
                 XCTFail("Failed to attach the server harness to QUIC: \(error)")
-                attachExpectation.fulfill()
                 return
             }
 
@@ -317,7 +320,6 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
                 )
             } catch {
                 XCTFail("Failed to attach QUIC server to datagram bridge: \(error)")
-                attachExpectation.fulfill()
                 return
             }
 
@@ -329,9 +331,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
             // connection stays in `.idle`.
             serverFlowHarness.start()
 
-            attachExpectation.fulfill()
         }
-        wait(for: [attachExpectation], timeout: 5.0)
 
         guard let result else {
             XCTFail("Failed to attach the idle server")

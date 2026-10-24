@@ -72,13 +72,10 @@ final class SwiftNetworkQUICVersionNegotiation: NetTestCase {
         QUICTestHarness().runQUICTest(
             clientOptions: clientOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate version")
-                harness.context.async {
+                harness.onContext {
                     XCTAssertEqual(harness.state?.clientInstance.negotiatedVersion, .v1)
                     XCTAssertEqual(harness.state?.serverInstance.negotiatedVersion, .v1)
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -98,13 +95,10 @@ final class SwiftNetworkQUICVersionNegotiation: NetTestCase {
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate version")
-                harness.context.async {
+                harness.onContext {
                     XCTAssertEqual(harness.state?.clientInstance.negotiatedVersion, .v1)
                     XCTAssertEqual(harness.state?.serverInstance.negotiatedVersion, .v1)
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -121,13 +115,10 @@ final class SwiftNetworkQUICVersionNegotiation: NetTestCase {
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate version")
-                harness.context.async {
+                harness.onContext {
                     XCTAssertEqual(harness.state?.clientInstance.negotiatedVersion, .v1)
                     XCTAssertEqual(harness.state?.serverInstance.negotiatedVersion, .v1)
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -137,14 +128,11 @@ final class SwiftNetworkQUICVersionNegotiation: NetTestCase {
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate version")
-                harness.context.async {
+                harness.onContext {
                     // currentVersion can contain the default or the negotiatedVersion
                     XCTAssertEqual(harness.state?.clientInstance.currentVersion, .v1)
                     XCTAssertEqual(harness.state?.serverInstance.currentVersion, .v1)
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }

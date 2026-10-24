@@ -74,11 +74,9 @@ final class SwiftNetworkQUICKeepaliveTests: NetTestCase {
             clientOptions: clientOptions,
             serverOptions: serverOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait for timeout error")
-                harness.context.async {
+                harness.onContext {
                     harness.state?.clientHarness.waitForError { error in
                         networkError = error
-                        expectation.fulfill()
                     }
 
                     if let metadata: ProtocolMetadata<QUICProtocol> = harness.state?.clientHarness.getMetadata() {
@@ -87,10 +85,9 @@ final class SwiftNetworkQUICKeepaliveTests: NetTestCase {
                     }
                 }
 
-                // Expect to hit the timer without having hit an error yet
-                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 3.0)
-                XCTAssertEqual(waitResult, XCTWaiter.Result.timedOut, "Waiter should be able to wait without error")
-                XCTAssertEqual(networkError, nil)
+                // Negative assertion: no error may arrive while time passes beyond the idle timeout.
+                harness.allow(.seconds(3))
+                XCTAssertNil(networkError, "Connection did not stay alive across the idle timeout")
             }
         )
     }
@@ -112,11 +109,9 @@ final class SwiftNetworkQUICKeepaliveTests: NetTestCase {
             clientOptions: clientOptions,
             serverOptions: serverOptions,
             afterHandshake: { harness in
-                let expectation = XCTestExpectation(description: "Wait for timeout error")
-                harness.context.async {
+                harness.onContext {
                     harness.state?.clientHarness.waitForError { error in
                         networkError = error
-                        expectation.fulfill()
                     }
 
                     if let metadata: ProtocolMetadata<QUICProtocol> = harness.state?.clientHarness.getMetadata() {
@@ -125,10 +120,9 @@ final class SwiftNetworkQUICKeepaliveTests: NetTestCase {
                     }
                 }
 
-                // Expect to hit the timer without having hit an error yet
-                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 3.0)
-                XCTAssertEqual(waitResult, XCTWaiter.Result.timedOut, "Waiter should be able to wait without error")
-                XCTAssertEqual(networkError, nil)
+                // Negative assertion: no error may arrive while time passes beyond the idle timeout.
+                harness.allow(.seconds(3))
+                XCTAssertNil(networkError, "Connection did not stay alive across the idle timeout")
             }
         )
     }

@@ -63,8 +63,9 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             dataBlock: Array("Hello World!".utf8),
             afterData: { harness in
                 // Verify the pakets with ECN marking reached the other side
-                let expectation = XCTestExpectation(description: "Wait to validate ECN")
-                harness.context.async {
+                // `onContext` rather than an expectation: on a mock clock the test thread is the only
+                // thing that can run the work, so blocking would deadlock.
+                harness.onContext {
                     XCTAssertTrue(
                         harness.state?.serverInstance.stats[.ecnCapablePacketsAcknowledged] ?? 0 > 0,
                         "Server should have ACKed ECN marked packets"
@@ -73,9 +74,7 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
                         harness.state?.clientInstance.stats[.ecnCapablePacketsSent] ?? 0 > 0,
                         "Clients should have sent ECN marked packets"
                     )
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -93,8 +92,9 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             serverOptions: serverOptions,
             afterData: { harness in
                 // Verify the packets with ECN marking reached the other side
-                let expectation = XCTestExpectation(description: "Wait to validate ECN")
-                harness.context.async {
+                // `onContext` rather than an expectation: on a mock clock the test thread is the only
+                // thing that can run the work, so blocking would deadlock.
+                harness.onContext {
                     XCTAssertTrue(
                         harness.state?.serverInstance.stats[.ecnCapablePacketsAcknowledged] == 0,
                         "Server should NOT have ACKed ECN marked packets"
@@ -103,9 +103,7 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
                         harness.state?.clientInstance.stats[.ecnCapablePacketsSent] == 0,
                         "Clients should NOT have sent ECN marked packets"
                     )
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -119,15 +117,12 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate L4S")
-                harness.context.async {
+                harness.onContext {
                     let path = harness.state?.clientInstance.currentPath
                     XCTAssertEqual(path?.l4sEnabled, true, "Client path should have L4S enabled")
                     XCTAssertEqual(path?.congestionControlName, "PRAGUE", "L4S should use Prague")
                     XCTAssertEqual(path?.pacer.enabled, true, "Prague always paces")
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -142,11 +137,9 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             dataBlock: Array("Hello World!".utf8),
             clientOptions: clientOptions,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate L4S on second path")
-                harness.context.async {
+                harness.onContext {
                     guard let connection = harness.state?.clientInstance else {
                         XCTFail("No client connection")
-                        expectation.fulfill()
                         return
                     }
                     let newPath = QUICPath.makeFromExternalTest(parent: connection)
@@ -168,9 +161,7 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
                     XCTAssertEqual(newPath.congestionControlName, "PRAGUE", "Second path should use Prague")
                     XCTAssertEqual(newPath.pacer.enabled, true, "Second path should be paced")
                     XCTAssertEqual(newPath.pacePackets, true, "Second path should honor the pacing option")
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -179,14 +170,11 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
         QUICTestHarness().runQUICTest(
             dataBlock: Array("Hello World!".utf8),
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate L4S")
-                harness.context.async {
+                harness.onContext {
                     let path = harness.state?.clientInstance.currentPath
                     XCTAssertEqual(path?.l4sEnabled, false, "Client path should not have L4S enabled")
                     XCTAssertEqual(path?.congestionControlName, "CUBIC", "Default should use CUBIC")
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
