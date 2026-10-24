@@ -543,6 +543,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         if let path {
             pathPropertiesMTU = path.mtu
+            var headerLength = Constants.quicIPv6HeaderSize
+            if initialAddressIsIPv4 {
+                headerLength = Constants.quicIPv4HeaderSize
+            }
+            let derivedMTU = path.mtu - headerLength
+            if path.mtu > 0 && derivedMTU > Constants.initialMSS {
+                initialMSS = derivedMTU
+            }
         }
 
         if let parameters,
