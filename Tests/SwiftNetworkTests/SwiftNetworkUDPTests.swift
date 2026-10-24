@@ -185,8 +185,19 @@ final class SwiftNetworkUDPTests: NetTestCase {
                 XCTAssertNotNil(metrics)
                 switch metrics {
                 case .dataTransferSnapshot(let snapshot):
-                    XCTAssertTrue(snapshot.receivedTransportByteCount > 0)
-                    XCTAssertTrue(snapshot.sentTransportByteCount > 0)
+                    XCTAssertEqual(
+                        snapshot.receivedTransportByteCount,
+                        UInt64(inputPacket.count - UDPProtocol.headerLength)
+                    )
+                    XCTAssertEqual(
+                        snapshot.sentTransportByteCount,
+                        UInt64(outputPacket.count - UDPProtocol.headerLength)
+                    )
+                    // UDP only fills in the transport byte counts; everything else stays at its default
+                    var expectedSnapshot = DataTransferSnapshot()
+                    expectedSnapshot.receivedTransportByteCount = snapshot.receivedTransportByteCount
+                    expectedSnapshot.sentTransportByteCount = snapshot.sentTransportByteCount
+                    XCTAssertEqual(snapshot, expectedSnapshot)
                 default:
                     XCTFail("Failed to get UDP harness metrics")
                 }
