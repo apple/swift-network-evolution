@@ -217,6 +217,9 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         return reservedBits
     }
 
+    /// Returns nil when the packet cannot be processed. `skippedPacket` is set when that packet was
+    /// stepped over and `frame` still holds the packets coalesced after it, which the caller must go
+    /// on to process (RFC 9000 Section 12.2).
     mutating func parse(
         frame: inout Frame,
         connection: QUICConnection,
@@ -224,6 +227,7 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         ack: inout Ack,
         protector: inout Protector,
         stats: inout Statistics,
+        skippedPacket: inout Bool,
         in eventContext: inout NetworkContext.EventContext
     ) -> Packet? {
         let originalLength = frame.unclaimedLength
@@ -285,6 +289,12 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             }
             packet.tagLength = tagSize
             guard openHeader(connection: connection, packet: &packet, frame: &frame, protector: &protector) else {
+                // A long header carries the packet's length in the clear, so the packet can be
+                // stepped over without its keys to reach whatever is coalesced after it.
+                let packetLength = Int(packet.headerLength) + Int(packet.payloadLength)
+                if packet.longHeader, packetLength < originalLength, frame.claim(fromStart: packetLength) {
+                    skippedPacket = true
+                }
                 return nil
             }
 
