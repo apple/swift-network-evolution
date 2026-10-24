@@ -572,6 +572,51 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(path.rtt.adjustedRTT, .milliseconds(75))
     }
 
+    // After a migration the old path is torn down while packets sent on it can still be in flight.
+    // The ACK for such a packet must still take it out of the in-flight count, or the PTO timer is
+    // armed for it forever, and must still mark what it carried as acknowledged.
+    func testPacketAckedAfterSentPathTornDown() {
+        let oldPath = connection.context.onQueue {
+            QUICPath.makeFromExternalTest(parent: connection)
+        }
+        oldPath.set(interface: nil, priority: 1, isInitial: true)
+        connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
+        connection.unackedKeepaliveCount = 1
+        for number: Int64 in 0...1 {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .applicationData, number: PacketNumber(number))
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 1200
+            packet.sentPath = oldPath.pathIdentifier
+            packet.transmittedItems.isKeepalive = number == 0
+            sentPacket(packet, connection: connection)
+        }
+        XCTAssertEqual(connection.recovery.totalAckElicitingPacketsInFlight, 2)
+
+        // `tearDownMigratedPath` removes the old path as soon as the connection has migrated away.
+        connection.multiplexingPaths.removeValue(forKey: oldPath.pathIdentifier)
+        connection.context.onQueue {
+            oldPath.destroyFromExternalTest()
+        }
+
+        connection.recovery.receivedAck(
+            ack: FrameAck(
+                packetNumberSpace: .applicationData,
+                largest: 1,
+                delay: 0,
+                ranges: [FrameAckRange(gap: 0, range: 1)]
+            ),
+            ackedPath: connection.currentPath!,
+            connection: connection,
+            in: &connection.context.eventContext
+        )
+
+        XCTAssertFalse(connection.recovery.hasOutstandingPackets)
+        XCTAssertEqual(connection.recovery.totalAckElicitingPacketsInFlight, 0)
+        XCTAssertEqual(connection.unackedKeepaliveCount, 0)
+    }
+
     func testResetPNSpaceAndDiscard() {
         let space = connection.context.onQueue {
             var packet = SentPacketRecord()
