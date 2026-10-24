@@ -894,6 +894,139 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         }
         wait(for: [stopExpectation], timeout: 10.0)
     }
+
+    private func onContext<R>(_ harness: QUICTestHarness, _ body: @escaping () -> R) -> R? {
+        var result: R?
+        harness.onContext { result = body() }
+        return result
+    }
+
+    // After the handshake the same limit applies to any address the server has not validated yet
+    // (RFC 9000 - section 8). A PATH_CHALLENGE datagram may stay below 1200 bytes when the limit does
+    // not allow more. One forged 61-byte datagram arrives on a new path whose address
+    // never answers.
+    func testPathValidationStaysWithinAmplificationLimitOnUnvalidatedPath() {
+        // The client defaults to zero-length CIDs, which leaves the server nothing to send on a
+        // new path with.
+        let clientOptions = QUICProtocol.options()
+        clientOptions.connectionOptions.initialSourceConnectionID = QUICConnectionID(8)
+
+        let harness = QUICTestHarness()
+        harness.runQUICTest(
+            clientOptions: clientOptions,
+            afterHandshake: { harness in
+                guard let server = harness.state?.serverInstance else {
+                    XCTFail("Server instance missing after handshake")
+                    return
+                }
+
+                // The server needs a spare CID from the client before it can send on a new path.
+                var hasSpareCID = false
+                for _ in 0..<20 {
+                    hasSpareCID = self.onContext(harness) { server.remoteCIDs.contains { !$0.used } } ?? false
+                    if hasSpareCID { break }
+                    _ = XCTWaiter.wait(for: [XCTestExpectation(description: "Wait for a spare CID")], timeout: 0.1)
+                }
+                XCTAssertTrue(hasSpareCID, "Server never received a spare CID from the client")
+
+                // The path an embedder creates when a datagram arrives from an unknown address.
+                let newPort = BridgeDatagramProtocol.BridgeInstance.nextGeneratedPort
+                let local = Endpoint(address: IPv4Address(QUICTestHarness.serverIPv4Address)!, port: newPort)
+                let unvalidated = Endpoint(address: IPv4Address([192, 0, 2, 1])!, port: 4433)
+                let newPath: QUICPath? =
+                    self.onContext(harness) {
+                        let bridge = harness.storage.createTestBridgeDatagramInstance()
+                        let bridgeOptions = BridgeDatagramProtocol.options()
+                        bridgeOptions.setProtocolInstance(bridge.identifier)
+                        var parameters = Parameters()
+                        parameters.context = harness.context
+                        parameters.isServer = true
+                        parameters.defaultStack.link = .custom(bridgeOptions)
+                        var pathProperties = PathProperties(parameters: parameters)
+                        pathProperties.effectiveMTU = 1500
+                        var instance = server
+                        do {
+                            _ = try instance.fromExternal { eventContext throws(NetworkError) in
+                                try instance.attachLowerProtocolForNewPath(
+                                    bridge.base,
+                                    remote: unvalidated,
+                                    local: local,
+                                    parameters: parameters,
+                                    path: pathProperties,
+                                    in: &eventContext
+                                )
+                            }
+                        } catch {
+                            XCTFail("Failed to attach the new path: \(error)")
+                            return nil
+                        }
+                        return server.multiplexingPaths.values.first { $0.localEndpoint?.port == newPort }
+                    } ?? nil
+                guard let newPath else {
+                    XCTFail("New server path not found")
+                    return
+                }
+
+                // A short header packet with the server's CID that does not decrypt.
+                // Essentially spoofing a packet
+                let serverCID =
+                    (self.onContext(harness) {
+                        server.localCIDs.managedConnectionIDs.first?.connectionID.connectionID
+                    } ?? nil) ?? []
+                var forged: [UInt8] = [0x40] + serverCID
+                forged += [UInt8](repeating: 0x42, count: 61 - forged.count)
+
+                // The bridge on the new path only receives once its setup has run, and a datagram
+                // injected before then is dropped without being counted. Inject until the path has
+                // counted one, so exactly one forged datagram is ever received.
+                var injected = 0
+                var counted = false
+                while !counted && injected < 5 {
+                    harness.context.async {
+                        BridgeDatagramProtocol.BridgeInstance.injectDatagram(Frame(copyBuffer: forged), to: newPort)
+                    }
+                    injected += 1
+                    counted = harness.reached({ newPath.pathStatistics[.rxBytes] > 0 }, within: 1.0)
+                }
+                XCTAssertTrue(counted, "The forged datagram never reached the new path")
+                XCTAssertEqual(
+                    injected,
+                    1,
+                    "The forged datagram was dropped \(injected - 1) time(s) before it was counted"
+                )
+
+                // Six challenges would go out within 7.75 s (250 ms initial interval, doubling).
+                // Nothing ends this wait early, so it lets that much time pass on either clock.
+                _ = harness.reached({ false }, within: 9.0)
+                guard
+                    let (received, sent, datagrams) = self.onContext(
+                        harness,
+                        {
+                            (
+                                newPath.pathStatistics[.rxBytes], newPath.pathStatistics[.txBytes],
+                                newPath.pathStatistics[.txPackets]
+                            )
+                        }
+                    )
+                else {
+                    XCTFail("Path statistics could not be read on the harness context")
+                    return
+                }
+                XCTAssertEqual(received, forged.count)
+                XCTAssertLessThanOrEqual(
+                    sent,
+                    3 * received,
+                    "Server sent \(sent) bytes in \(datagrams) datagrams for \(received) received (\(String(format: "%.2f", Double(sent) / Double(max(received, 1))))x)"
+                )
+
+                _ = self.onContext(harness) {
+                    server.fromExternal { eventContext in
+                        server.tearDownMigratedPath(newPath, in: &eventContext)
+                    }
+                }
+            }
+        )
+    }
 }
 #endif
 #endif
