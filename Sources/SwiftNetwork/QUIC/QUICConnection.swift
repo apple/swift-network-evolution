@@ -216,6 +216,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var packetParser: PacketParser
 
     private(set) var keyState = PacketKeyState.initial
+    // Set from initiating a key update until the peer responds in the new key phase
+    private(set) var keyUpdatePending = false
+    // The first application packet number of the current key phase (RFC 9001, Section 6.1)
+    private var keyPhaseFirstPacketNumber: PacketNumber = 0
     var remoteMaxDatagramFrameSize = 0
     var remoteMaximumUDPPayloadSize = 0
 
@@ -417,7 +421,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var maximumConcurrentBidirectionalStreams: Int?
     private(set) var maximumConcurrentUnidirectionalStreams: Int?
 
-    private var originalDCID: QUICConnectionID
+    private(set) var originalDCID: QUICConnectionID
     var initialDCID: QUICConnectionID?
     var initialToken: [UInt8]?
     var newToken: [UInt8]?
@@ -1941,6 +1945,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     transferredPacket,
                     path: path,
                     ack: &ack,
+                    protector: &protector,
                     in: &eventContext
                 )
             }
@@ -2040,6 +2045,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
+        if !packet.longHeader, !state.isTerminal {
+            updateKeysIfNeeded(in: &eventContext)
+        }
+
         if unvalidatedPath {
             sendFrames(on: path, in: &eventContext)
         }
@@ -2079,6 +2088,32 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         return true
+    }
+
+    // RFC 9001, Section 6.6: initiate a key update before the AEAD confidentiality limit, or
+    // close while the key can still protect the CONNECTION_CLOSE. This runs after the frames
+    // of a packet so that an ACK it carries counts.
+    private func updateKeysIfNeeded(in eventContext: inout NetworkContext.EventContext) {
+        guard _slowPath(protector.keyUpdateNeeded(for: keyState)) else {
+            return
+        }
+        // RFC 9001, Section 6.1: not before the handshake is confirmed, nor before the peer has
+        // acknowledged a packet from the current key phase
+        if !keyUpdatePending, isHandshakeConfirmed,
+            largestAckedApplicationPacketNumber >= keyPhaseFirstPacketNumber
+        {
+            log.notice("Initiating key update from \(keyState)")
+            protector.trafficUpdate(previousKeyState: keyState)
+            keyState = keyState == .phase0 ? .phase1 : .phase0
+            keyPhaseFirstPacketNumber = protector.getPacketNumber(for: .applicationData)
+            keyUpdatePending = true
+        } else if protector.sealLimitImminent(for: keyState) {
+            close(with: .aeadLimitReached, "key update not possible", in: &eventContext)
+        } else if !keyUpdatePending, isHandshakeConfirmed {
+            // Nothing from this key phase has been acknowledged, which stays that way for
+            // an endpoint that only sends ACKs. Elicit an acknowledgment.
+            withPendingItems(for: .applicationData) { $0.ping = true }
+        }
     }
 
     private func handleInboundVersionNegotiation(
@@ -2543,15 +2578,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         _ packet: borrowing Packet,
         path: QUICPath,
         ack: inout Ack,
+        protector: inout Protector,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         guard let packetKeyState = packet.keyState else {
             log.error("Received short header without keystate set")
             return false
         }
-        if packetKeyState != keyState {
+        if packetKeyState == keyState {
+            keyUpdatePending = false
+        } else if !keyUpdatePending {
             log.notice("Switching to keystate \(packetKeyState)")
             keyState = packetKeyState
+            keyPhaseFirstPacketNumber = protector.getPacketNumber(for: .applicationData)
         }
 
         ack.append(
@@ -4313,6 +4352,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         guard protector.sealKeyReady(for: keyState) else {
             return false
         }
+        // RFC 9001, Section 6.6: the last packet a key may protect is kept for a CONNECTION_CLOSE
+        if _slowPath(protector.sealLimitImminent(for: keyState)),
+            !pendingItems.connectionClose, !pendingItems.applicationClose
+        {
+            return false
+        }
 
         var largestAcked = largestAckedPacketNumber(space: packetNumberSpace)
         largestAcked = largestAcked.value == Int.max ? PacketNumber.none : largestAcked
@@ -4901,6 +4946,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         _ packet: borrowing Packet,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        if let keyState = packet.keyState, protector.failedDecryption(for: keyState) {
+            closeError = QUICTransportError(.aeadLimitReached, "AEAD integrity limit reached")
+            close(in: &eventContext)
+            return
+        }
         if packet.tagLength == Constants.statelessResetTokenSize,
             let packetToken = packet.tag,
             let statelessToken = QUICStatelessResetToken(packetToken)
