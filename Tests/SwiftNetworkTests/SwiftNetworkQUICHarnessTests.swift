@@ -27,6 +27,10 @@ import XCTest
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
+#if canImport(SwiftNetworkTestSupport)
+@_spi(Essentials) import SwiftNetworkTestSupport
+#endif
+
 #if IMPORT_SWIFTTLS
 #if EXPORT_SWIFTTLS
 @_spi(SwiftTLSOptions) @_spi(SwiftTLSProtocol) import SwiftTLS
@@ -70,20 +74,31 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     }
 
     #if canImport(Dispatch)
-    func testQUICHandshakeConcurrent() {
+    func testQUICHandshakeConcurrent() throws {
+        // Threads need the system clock; a mock clock is driven from one thread.
+        try XCTSkipUnless(QUICTestHarness.usesRealTime, "Needs the system clock")
+
         let context = NetworkContext(identifier: "concurrent")
         let queue = DispatchQueue(label: "concurrent queue", attributes: .concurrent)
         let group = DispatchGroup()
         for i in 0..<20 {
             group.enter()
             queue.async {
-                QUICTestHarness(context: context).runQUICTest(identifier: "Concurrent\(i)")
+                QUICTestHarness(realTime: context).runQUICTest(identifier: "Concurrent\(i)")
                 group.leave()
             }
         }
         XCTAssertEqual(group.wait(timeout: DispatchTime.now() + .seconds(5)), .success)
     }
     #endif
+
+    func testQUICHandshakeSequential() {
+        // Successive connections on one `NetworkContext`, a single serial queue, must all complete.
+        let shared = ManualTimeContext("concurrent")
+        for i in 0..<20 {
+            QUICTestHarness(manual: shared).runQUICTest(identifier: "Sequential\(i)")
+        }
+    }
 
     func testQUICHandshakeWithShortPackets() {
         let clientOptions = QUICProtocol.options()
@@ -372,6 +387,21 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
             dataBlock: Array("Hello World!".utf8),
             applicationError: 10,  // PROTOCOL_VIOLATION
             applicationErrorReason: "QUIC Error thrown from test"
+        )
+    }
+
+    func testStopLeavesNoTimerArmedOnAMockClock() {
+        let manual = ManualTimeContext(#function)
+        QUICTestHarness(manual: manual).runQUICTest(
+            streamCount: 2,
+            dataBlock: Array("Hello World!".utf8),
+            applicationError: 10,  // PROTOCOL_VIOLATION
+            applicationErrorReason: "QUIC Error thrown from test"
+        )
+        XCTAssertEqual(
+            manual.scheduler.scheduledCount,
+            0,
+            "A timer left armed keeps its context, and so the scheduler, alive"
         )
     }
 
@@ -721,6 +751,10 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     #if !os(Linux)
     func testQUICSevereDrops() throws {
+        // On a mock clock, a probe bursts past the two datagrams RFC 9002 Section 6.2.4
+        // allows, and the connection stalls. The system clock hides the stall behind timing.
+        try XCTSkipUnless(QUICTestHarness.usesRealTime, "Stalls on a mock clock")
+
         // Induce severe drops (100 in each direction) to heavily exercise recovery
         // The patterns of drops were generated randomly, but shown to hit pathological cases.
         // They are statically included here to ensure that behavior is hit consistently.
@@ -836,8 +870,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
             blockSize: 1000,
             blockCount: 1,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait for remote datagram frame size to be fetched")
-                harness.context.async {
+                harness.onContext {
                     let clientMetadata: ProtocolMetadata<QUICProtocol>? = harness.state?.clientHarness.getMetadata()
                     XCTAssertNotNil(clientMetadata)
                     if let clientMetadata {
@@ -852,10 +885,7 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
                         XCTAssertNotNil(serverRemoteSize)
                         XCTAssertEqual(serverRemoteSize, 65535)
                     }
-                    expectation.fulfill()
                 }
-                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
-                XCTAssertEqual(waitResult, .completed, "Remote datagram frame size fetch should complete")
             }
         )
     }

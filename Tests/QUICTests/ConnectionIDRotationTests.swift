@@ -22,12 +22,18 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 @available(Network 0.1.0, *)
 let connectionIDRotationTestsLogPrefixer: LogPrefixer = LogPrefixer("[ConnectionIDRotationTests]")
 
 @available(Network 0.1.0, *)
 final class ConnectionIDRotationTests: XCTestCase {
-    var connection = QUICConnection(context: .implicitContext)
+    var connection = NetworkContext.implicitContext.onQueue {
+        QUICConnection(context: .implicitContext)
+    }
 
     override func setUp() {
         let expectation = XCTestExpectation()

@@ -67,9 +67,9 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                 // The test relies on the client still owing a delayed ACK for the echoed
                 // data when the idle state is evaluated, and sends that ACK explicitly.
                 // Stretch the delayed ACK timer so it cannot fire on its own before then;
-                // with the default 25ms delay, slow CI machines can lose that race.
-                let expectation = XCTestExpectation(description: "Wait for delayed ACK timer to be extended")
-                harness.context.async {
+                // with the default 25ms delay, time passing fires it first, whether the harness
+                // advances the mock clock or real time elapses.
+                harness.onContext {
                     if let client = harness.state?.clientInstance {
                         client.fromExternal { eventContext in
                             client.ack.maxDelay = .seconds(30)
@@ -89,15 +89,11 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                     // Keep the server's view of the client's ACK delay consistent, otherwise
                     // its PTO fires while the ACK is held and the probe forces an immediate ACK.
                     harness.state?.serverInstance.currentPath?.rtt.remoteMaxAckDelay = .seconds(30)
-                    expectation.fulfill()
                 }
-                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
-                XCTAssertEqual(waitResult, .completed, "Delayed ACK timer should be extended")
             },
             afterData: { harness in
                 // Verify the reported idle state follows the transmit obligations
-                let expectation = XCTestExpectation(description: "Wait for idle state to be evaluated")
-                harness.context.async {
+                harness.onContext {
                     let client = harness.state?.clientInstance
                     XCTAssertNotNil(client, "Client instance needs to be present to proceed")
                     if let client {
@@ -123,8 +119,10 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                         )
 
                         // Once the delayed ACK has been sent there are no obligations left.
+                        // The instant comes from the harness because that is the clock the
+                        // delayed-ACK deadline was armed against.
                         client.fromExternal { eventContext in
-                            client.fireDelayedAckTimer(at: .systemNow, in: &eventContext)
+                            client.fireDelayedAckTimer(at: harness.now, in: &eventContext)
                         }
                         XCTAssertEqual(
                             client.ack.unackedPacketCount,
@@ -144,10 +142,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                             "Client should not have reported idle after the application reuses the connection"
                         )
                     }
-                    expectation.fulfill()
                 }
-                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
-                XCTAssertEqual(waitResult, .completed, "Idle state evaluation should complete")
             }
         )
     }
@@ -166,8 +161,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
             clientOptions: clientOptions,
             serverOptions: serverOptions,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait for the delayed ACK timer to fire")
-                harness.context.async {
+                harness.onContext {
                     let client = harness.state?.clientInstance
                     XCTAssertNotNil(client, "Client instance needs to be present to proceed")
                     if let client, let path = client.currentPath {
@@ -194,8 +188,10 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                             "Client should have a PMTUD probe ready to send alongside the delayed ACK"
                         )
 
+                        // The instant comes from the harness because that is the clock the
+                        // delayed-ACK deadline was armed against.
                         client.fromExternal { eventContext in
-                            client.fireDelayedAckTimer(at: .systemNow, in: &eventContext)
+                            client.fireDelayedAckTimer(at: harness.now, in: &eventContext)
                         }
 
                         XCTAssertEqual(
@@ -204,10 +200,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                             "Client should not owe the peer an ACK once the delayed ACK has been sent"
                         )
                     }
-                    expectation.fulfill()
                 }
-                let waitResult = XCTWaiter.wait(for: [expectation], timeout: 2.0)
-                XCTAssertEqual(waitResult, .completed, "Delayed ACK timer should complete")
             },
             clientMTU: 1550
         )

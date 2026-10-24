@@ -24,6 +24,10 @@ import Foundation
 #endif
 #endif
 
+#if canImport(SwiftNetworkTestHarness)
+@_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
+#endif
+
 #if !Fuzzing
 @main
 struct RefuseToFuzz {
@@ -89,7 +93,9 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
     }
 
     let context = NetworkContext(identifier: "FuzzingContext")
-    let connection = QUICConnection(context: context)
+    let connection = context.onQueue {
+        QUICConnection(context: context)
+    }
 
     context.queue.sync {
         let path = QUICPath.makeFromExternalTest(parent: connection)

@@ -32,6 +32,12 @@ struct EndpointFlowPrivateStorage {
 }
 
 @available(Network 0.1.0, *)
+struct WriteRequestPrivateStorage: ~Copyable {}
+
+@available(Network 0.1.0, *)
+struct ReadRequestPrivateStorage: ~Copyable {}
+
+@available(Network 0.1.0, *)
 extension EndpointFlow {
 
     internal mutating func startOnQueue<P: EndpointFlowParent>(_ parent: P) throws(NetworkError) {

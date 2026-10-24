@@ -552,6 +552,21 @@ where LinkageFamily.Listener.PairedUpperLinkage == LinkageFamily.InboundFlow {
 }
 
 @available(Network 0.1.0, *)
+extension InboundEndpointFlowProtocol {
+    /// The metadata published by a protocol below this flow, or `nil` if that protocol is not
+    /// present or has published nothing yet.
+    ///
+    /// Mirrors `TopProtocol.invokeGetMetadata()`. This type is not a `TopProtocol`, having no data
+    /// path of its own, but it does have a lower linkage to walk -- and for a QUIC connection that
+    /// linkage is where the connection's metadata lives.
+    func invokeGetMetadata<P: NetworkProtocol>() -> ProtocolMetadata<P>? {
+        identifier.fromExternal(in: &context.eventContext) { eventContext in
+            lower.invokeGetMetadata(for: self.identifier, in: &eventContext)
+        }
+    }
+}
+
+@available(Network 0.1.0, *)
 final class InboundStreamEndpointFlowProtocol: InboundEndpointFlowProtocol<BaseStreamLinkageFamily> {}
 
 @available(Network 0.1.0, *)

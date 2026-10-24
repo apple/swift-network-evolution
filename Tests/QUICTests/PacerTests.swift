@@ -31,7 +31,9 @@ final class PacerTests: XCTestCase {
 
     var connection: QUICConnection!
     override func setUp() {
-        connection = QUICConnection(context: NetworkContext.implicitContext)
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
     }
 
     override func tearDown() {

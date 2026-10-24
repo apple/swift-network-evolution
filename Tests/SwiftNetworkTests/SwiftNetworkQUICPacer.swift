@@ -65,15 +65,12 @@ final class SwiftNetworkQUICPacer: NetTestCase {
             blockCount: 4,
             clientOptions: clientOptions,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate departure time")
-                harness.context.async {
+                harness.onContext {
                     XCTAssertTrue(
                         harness.state?.clientInstance.stats[.txDepartureTimestamp] ?? 0 > 0,
                         "Client Frames should be marked with departureTime"
                     )
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -86,15 +83,12 @@ final class SwiftNetworkQUICPacer: NetTestCase {
             blockCount: 4,
             serverOptions: serverOptions,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate departure time")
-                harness.context.async {
+                harness.onContext {
                     XCTAssertTrue(
                         harness.state?.serverInstance.stats[.txDepartureTimestamp] ?? 0 > 0,
                         "Server Frames should be marked with departureTime"
                     )
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
@@ -104,8 +98,7 @@ final class SwiftNetworkQUICPacer: NetTestCase {
             blockSize: 10240,
             blockCount: 4,
             afterData: { harness in
-                let expectation = XCTestExpectation(description: "Wait to validate departure time")
-                harness.context.async {
+                harness.onContext {
                     XCTAssertEqual(
                         harness.state?.clientInstance.stats[.txDepartureTimestamp],
                         0,
@@ -116,9 +109,7 @@ final class SwiftNetworkQUICPacer: NetTestCase {
                         0,
                         "Server Frames should NOT be marked with departureTime"
                     )
-                    expectation.fulfill()
                 }
-                self.wait(for: [expectation], timeout: 5.0)
             }
         )
     }
