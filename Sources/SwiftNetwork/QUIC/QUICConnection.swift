@@ -519,6 +519,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 in: &eventContext
             ) { firedAt, timerState in
                 self.fireRecoveryTimer(at: firedAt, in: &timerState)
+                if self.recovery.ptoLimitReached, !self.state.isTerminal {
+                    self.errorToReport = .posix(ETIMEDOUT)
+                    self.close(with: .noError, "PTO limit reached", in: &timerState)
+                }
             }
             self.recovery = Recovery(
                 connection: self,
