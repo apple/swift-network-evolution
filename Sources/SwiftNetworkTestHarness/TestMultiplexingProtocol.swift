@@ -90,7 +90,17 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
     public var log = NetworkLoggerState()
     public var eventManager = ProtocolEventManager()
 
-    public var multiplexedFlows = [MultiplexedFlowIdentifier: TestDatagramFlow]()
+    public var multiplexedFlows = MultiplexedFlowTable<Flow>()
+
+    public func withMultiplexedFlows<R: ~Copyable, E: Error>(
+        _ body: (inout MultiplexedFlowTable<Flow>) throws(E) -> R
+    ) throws(E) -> R {
+        try body(&multiplexedFlows)
+    }
+
+    public func insertFlow(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
+        multiplexedFlows.insert(flow, for: flowID)
+    }
     public var multiplexingPaths = [MultiplexingPathIdentifier: TestDatagramPath]()
 
     public func serviceDatagramsToSend(
@@ -188,7 +198,7 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
         log.debug("Multiplexing protocol creating a new inbound flow")
         fromExternal { eventContext in
             let newFlow = Flow(parent: self, inbound: true, in: &eventContext)
-            multiplexedFlows[newFlow.flowIdentifier] = newFlow
+            insertFlow(newFlow, for: newFlow.flowIdentifier)
             deliverNewInboundFlowEvent(newFlow.identifier, flowMetadata: nil, in: &eventContext)
         }
     }

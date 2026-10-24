@@ -801,19 +801,18 @@ final class RecoveryTests: XCTestCase {
     // idle timeout closes it.
     func testValidatedPTOProbesWhenTailRetransmitProducesNothing() {
         // Register a flow and close it, so its STREAM data can never be rebuilt for retransmission.
-        var streamStorage: QUICStreamInstance? = connection.context.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: true)
-            defer { stream.destroyFromExternalTest() }
+        let streamFlowID = connection.context.onQueue { () -> MultiplexedFlowIdentifier in
+            var stream = QUICStreamInstance(parent: connection, inbound: true)
             stream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
-            return stream
+            stream.closed = true
+            XCTAssertFalse(stream.isOpen)
+            let flowID = stream.flowIdentifier
+            // Nothing else hands the stream's event state back, since it is built outside a protocol
+            // stack. The connection owns the stream from here on.
+            stream.destroyFromExternalTest()
+            connection.insertFlow(stream, for: flowID)
+            return flowID
         }
-        // The stream's `deinit` reaches `fromExternal`, so release it on the context queue
-        // rather than letting it deallocate on the main thread at function exit.
-        defer { connection.context.onQueue { streamStorage = nil } }
-        let stream = streamStorage!
-        connection.multiplexedFlows[stream.flowIdentifier] = stream
-        stream.closed = true
-        XCTAssertFalse(stream.isOpen)
 
         // A single ack-eliciting application-data packet is outstanding, carrying only that flow's
         // STREAM data. This keeps ackElicitingPacketsInFlight > 0 (so the PTO stays armed) while
@@ -827,7 +826,7 @@ final class RecoveryTests: XCTestCase {
             packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
             packet.transmittedItems.sentStreams.append(
                 TransmittedItems.SentStream(
-                    flowID: stream.flowIdentifier,
+                    flowID: streamFlowID,
                     streamID: QUICStreamID(0),
                     offset: 0,
                     length: 32,
@@ -878,19 +877,16 @@ final class RecoveryTests: XCTestCase {
     func testPTOProbesWhenNewDataProducesNothing() {
         // A stream queued for service whose flow has since been torn down: it is absent from
         // `multiplexedFlows`, so writing it produces no payload.
-        var unregisteredStreamStorage: QUICStreamInstance? = connection.context.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: true)
-            defer { stream.destroyFromExternalTest() }
+        let unregisteredFlowID = connection.context.onQueue { () -> MultiplexedFlowIdentifier in
+            var stream = QUICStreamInstance(parent: connection, inbound: true)
             stream.setup(streamID: QUICStreamID(0), logPrefixer: recoveryTestsLogPrefixer)
-            return stream
+            let flowID = stream.flowIdentifier
+            stream.destroyFromExternalTest()
+            return flowID
         }
-        // The stream's `deinit` reaches `fromExternal`, so release it on the context queue
-        // rather than letting it deallocate on the main thread at function exit.
-        defer { connection.context.onQueue { unregisteredStreamStorage = nil } }
-        let unregisteredStream = unregisteredStreamStorage!
-        XCTAssertNil(connection.flow(for: unregisteredStream.flowIdentifier))
+        XCTAssertFalse(connection.hasFlow(unregisteredFlowID))
         connection.withPendingItems(for: .initial) { pendingItems in
-            pendingItems.streamsToService.append(unregisteredStream.flowIdentifier)
+            pendingItems.streamsToService.append(unregisteredFlowID)
             pendingItems.stream = true
         }
 

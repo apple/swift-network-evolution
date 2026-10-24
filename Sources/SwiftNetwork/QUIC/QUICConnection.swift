@@ -169,7 +169,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public var inboundFlowLinkage = UpperProtocol()
     public var secondaryInboundFlowLinkage = SecondaryUpperProtocol()
 
-    public var multiplexedFlows = [MultiplexedFlowIdentifier: Flow]()
+    public var multiplexedFlows = MultiplexedFlowTable<Flow>()
+
+    public func withMultiplexedFlows<R: ~Copyable, E: Error>(
+        _ body: (inout MultiplexedFlowTable<Flow>) throws(E) -> R
+    ) throws(E) -> R {
+        try body(&multiplexedFlows)
+    }
+
+    public func insertFlow(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
+        multiplexedFlows.insert(flow, for: flowID)
+    }
     public var multiplexedSecondaryFlows = [MultiplexedFlowIdentifier: SecondaryFlow]()
     public var multiplexingPaths = [MultiplexingPathIdentifier: Path]()
 
@@ -329,6 +339,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     // List of streams that have app input data in their reassembly queue.
     var pendingReassemblyDequeue = QUICStreamList.pendingReassemblyDequeueList()
+
+    // Set while a stream is borrowed from the flow table. Work that would look at the table has to
+    // wait until the borrow ends; see QUICStreamAccess.swift.
+    var streamAccess = StreamAccessState()
 
     private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
 
@@ -684,14 +698,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             setupNewDatagramFlow(datagramFlow, with: protocolOptions)
         } else {
-            guard let stream = flow(for: flowID) else {
+            guard hasFlow(flowID) else {
                 throw NetworkError.posix(ENOENT)
             }
-            setupNewOutboundStream(stream, with: protocolOptions)
+            setupNewOutboundStream(flow: flowID, with: protocolOptions)
         }
     }
 
     deinit {
+        // Any streams still here were never detached. Give back what they hold.
+        multiplexedFlows.forEachFlow { $0.releaseResources() }
         self.qLog = nil
     }
 
@@ -1558,7 +1574,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // For streams (not datagram flows), ensure the stream isn't pending
         if secondaryFlow(for: flowID) == nil {
             // If this is a QUICStream then make sure its not in a pending state
-            guard let stream = flow(for: flowID), !stream.pendingStart else {
+            guard let pendingStart = withFlow(flowID, { (stream: inout Flow) in stream.pendingStart }),
+                !pendingStart
+            else {
                 log.error(
                     "Flow \(flowID.debugDescription) cannot go connected because it is pending (isServer: \(self.isServer))"
                 )
@@ -1629,46 +1647,62 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             "Stopping flow \(flowID.debugDescription) (direction: \(direction))"
         )
 
-        if let error, let applicationError = error.quicApplicationError,
-            let stream = flow(for: flowID)
-        {
-            switch direction {
-            case .inbound:
-                stream.inboundApplicationError = UInt64(applicationError)
-            case .outbound:
-                stream.outboundApplicationError = UInt64(applicationError)
-            case .both:
-                stream.inboundApplicationError = UInt64(applicationError)
-                stream.outboundApplicationError = UInt64(applicationError)
-            }
+        let stopped: Void? = performOnStream(flowID, in: &eventContext) {
+            (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
+            disconnect(stream: &stream, direction: direction, error: error, in: &ctx)
         }
-        if let stream = flow(for: flowID) {
-            switch direction {
-            case .both:
-                handleStopRead(for: stream)
-                stream.writeClosed = handleStopWrite(for: stream)
-                stream.readClosed = true
-            case .inbound:
-                handleStopRead(for: stream)
-                stream.readClosed = true
-            case .outbound:
-                stream.writeClosed = handleStopWrite(for: stream)
-            }
-            if stream.readClosed, stream.writeClosed {
-                stream.close(errorCode: nil, in: &eventContext)
-                stream.log.debug("Closed stream")
+        if stopped == nil {
+            if let _ = secondaryFlow(for: flowID) {
+                deliverDisconnectedEvent(flow: flowID, error: nil, in: &eventContext)
             } else {
-                stream.log.debug(
-                    "stream.readClosed \(stream.readClosed), stream.writeClosed \(stream.writeClosed)"
-                )
-
+                log.error("No stream for \(flowID), cannot close")
             }
-        } else if let _ = secondaryFlow(for: flowID) {
-            deliverDisconnectedEvent(flow: flowID, error: nil, in: &eventContext)
-        } else {
-            log.error("No stream for \(flowID), cannot close")
         }
 
+        if state == .connected {
+            //  Possibly send CONNECTION_CLOSE, STOP_SENDING and/or RESET_STREAM, STREAM FIN
+            sendFrames(in: &eventContext)
+        }
+    }
+
+    // Stops one or both directions of a stream that is already borrowed from the flow table.
+    func disconnect(
+        stream: inout Flow,
+        direction: FlowStopDirection,
+        error: NetworkError? = nil,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        if let error, let applicationError = error.quicApplicationError {
+            switch direction {
+            case .inbound:
+                stream.inboundApplicationError = UInt64(applicationError)
+            case .outbound:
+                stream.outboundApplicationError = UInt64(applicationError)
+            case .both:
+                stream.inboundApplicationError = UInt64(applicationError)
+                stream.outboundApplicationError = UInt64(applicationError)
+            }
+        }
+        switch direction {
+        case .both:
+            handleStopRead(for: &stream)
+            stream.writeClosed = handleStopWrite(for: &stream)
+            stream.readClosed = true
+        case .inbound:
+            handleStopRead(for: &stream)
+            stream.readClosed = true
+        case .outbound:
+            stream.writeClosed = handleStopWrite(for: &stream)
+        }
+        if stream.readClosed, stream.writeClosed {
+            stream.close(errorCode: nil, in: &eventContext)
+            stream.log.debug("Closed stream")
+        } else {
+            stream.log.debug(
+                "stream.readClosed \(stream.readClosed), stream.writeClosed \(stream.writeClosed)"
+            )
+
+        }
         if state == .connected {
             //  Possibly send CONNECTION_CLOSE, STOP_SENDING and/or RESET_STREAM, STREAM FIN
             sendFrames(in: &eventContext)
@@ -2604,45 +2638,61 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Try to send more data on all streams due to a received MAX_DATA or ACK
         if applicationPendingItems.triggerAllStreamsUnblocked {
             applyToAllFlows { stream in
-                applicationPendingItems.prependStreamToService(stream)
+                applicationPendingItems.prependStreamToService(&stream)
             }
             sendFrames(in: &eventContext)
             // We've already processed all the unblocked streams
-            applicationPendingItems.unblockedSendStreams.removeAll(connection: self)
+            let unblockedMembership = applicationPendingItems.unblockedSendStreams.membership
+            for flowID in applicationPendingItems.unblockedSendStreams.removeAllIdentifiers() {
+                _ = withFlow(flowID) { (stream: inout Flow) in
+                    stream.listMembership.remove(unblockedMembership)
+                }
+            }
         } else {
-            while let stream = applicationPendingItems.unblockedSendStreams.removeFirst(
-                connection: self
-            ) {
+            let unblockedMembership = applicationPendingItems.unblockedSendStreams.membership
+            while let flowID = applicationPendingItems.unblockedSendStreams.removeFirstIdentifier() {
                 // Try to send data on just a single stream due
                 // to a new MAX_STREAM_DATA frame.
-                applicationPendingItems.prependStreamToService(stream)
+                let prepended: Void? = withFlow(flowID) { (stream: inout Flow) in
+                    stream.listMembership.remove(unblockedMembership)
+                    applicationPendingItems.prependStreamToService(&stream)
+                }
+                guard prepended != nil else { continue }
                 sendFrames(in: &eventContext)
 
-                stream.updateOutboundFlowControlCredit(connection: self)
+                performOnStream(flowID, in: &eventContext) {
+                    (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
+                    stream.updateOutboundFlowControlCredit(connection: self)
+                }
             }
         }
 
         // Service streams that are pending application reads
-        while var stream = pendingReassemblyDequeue.removeFirst(connection: self) {
-            guard let frameArray = stream.dequeueReassembledData(connection: self) else {
-                continue
-            }
-            try? deliverInboundStreamData(
-                flow: &stream,
-                streamData: frameArray,
-                in: &eventContext
-            )
-            // When the stream is already in `resetReceived` state,
-            // it should be closed when we receive STOP_SENDING, so we
-            // only need to handle the `dataRead` state here. Otherwise,
-            // close once both directions are closed and all data is read.
-            let receiveIsDataRead = stream.receive.state == .dataRead
-            let shouldCloseStream =
-                receiveIsDataRead
-                && (stream.receivedStopSending
-                    || (!stream.closed && stream.send.state == .dataReceived))
-            if shouldCloseStream {
-                stream.close(errorCode: nil, in: &eventContext)
+        let reassemblyMembership = pendingReassemblyDequeue.membership
+        while let flowID = pendingReassemblyDequeue.removeFirstIdentifier() {
+            performOnStream(flowID, in: &eventContext) {
+                (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
+                stream.listMembership.remove(reassemblyMembership)
+                guard let frameArray = stream.dequeueReassembledData(connection: self) else {
+                    return
+                }
+                try? deliverInboundStreamData(
+                    flow: &stream,
+                    streamData: frameArray,
+                    in: &ctx
+                )
+                // When the stream is already in `resetReceived` state,
+                // it should be closed when we receive STOP_SENDING, so we
+                // only need to handle the `dataRead` state here. Otherwise,
+                // close once both directions are closed and all data is read.
+                let receiveIsDataRead = stream.receive.state == .dataRead
+                let shouldCloseStream =
+                    receiveIsDataRead
+                    && (stream.receivedStopSending
+                        || (!stream.closed && stream.send.state == .dataReceived))
+                if shouldCloseStream {
+                    stream.close(errorCode: nil, in: &ctx)
+                }
             }
         }
         synchronizeStats()
@@ -2656,11 +2706,21 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         flow flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard let stream = flow(for: flowID) else {
-            log.error("Unable to access state for flow \(flowID)")
-            return
+        let serviced: Void? = performOnStream(flowID, in: &eventContext) {
+            (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
+            serviceStreamDataToSend(stream: &stream, in: &ctx)
         }
+        if serviced == nil {
+            log.error("Unable to access state for flow \(flowID)")
+        }
+    }
 
+    // The stream is already borrowed from the flow table, so everything here works from the stream
+    // itself. Sending frames looks at streams and so is held back until the borrow ends.
+    func serviceStreamDataToSend(
+        stream: inout Flow,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         guard let streamID = stream.streamID else {
             log.debug("Outbound packet is for an unknown stream ID")
             return
@@ -2675,44 +2735,41 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 QUICSignpost.outboundStopping(outboundInterval)
             }
 
-            accessStreamDataToSend(stream: stream) { streamData in
-                while !streamData.isEmpty {
-                    let frame = streamData.removeFirst()
+            while !stream.upperSendQueue.isEmpty {
+                let frame = stream.upperSendQueue.removeFirst()
 
-                    // If the connection is complete, it is always a FIN
-                    let dataLength = frame.unclaimedLength
-                    let connectionComplete = frame.connectionComplete
-                    let metadataComplete = frame.metadataComplete
-                    var isFinal = connectionComplete
+                // If the connection is complete, it is always a FIN
+                let dataLength = frame.unclaimedLength
+                let connectionComplete = frame.connectionComplete
+                let metadataComplete = frame.metadataComplete
+                var isFinal = connectionComplete
 
-                    // If the metadata is connection mode (so each metadata is a new stream)
-                    // and the metadata is complete, this is also a FIN
+                // If the metadata is connection mode (so each metadata is a new stream)
+                // and the metadata is complete, this is also a FIN
 
-                    if frame.firstMetadataMatches(protocolIdentifier: QUICConnectionProtocol.identifier) {
-                        isFinal = isFinal || metadataComplete
-                    }
-                    #if DatapathLogging
-                    log.datapath(
-                        "Handle outbound stream data for [\(streamID)] (size \(dataLength) metadataComplete: \(metadataComplete), connectionComplete: \(connectionComplete), isFinal: \(isFinal))"
+                if frame.firstMetadataMatches(protocolIdentifier: QUICConnectionProtocol.identifier) {
+                    isFinal = isFinal || metadataComplete
+                }
+                #if DatapathLogging
+                log.datapath(
+                    "Handle outbound stream data for [\(streamID)] (size \(dataLength) metadataComplete: \(metadataComplete), connectionComplete: \(connectionComplete), isFinal: \(isFinal))"
+                )
+                #endif
+
+                if dataLength > 0 {
+                    processOutbound(frame: frame, stream: &stream, isLast: isFinal)
+                } else {
+                    discardEmptyOutbound(
+                        frame: frame,
+                        isFinal: isFinal,
+                        stream: &stream,
+                        in: &eventContext
                     )
-                    #endif
-
-                    if dataLength > 0 {
-                        processOutbound(frame: frame, flowID: flowID, stream: stream, isLast: isFinal)
-                    } else {
-                        discardEmptyOutbound(
-                            frame: frame,
-                            isFinal: isFinal,
-                            streamID: streamID,
-                            flowID: flowID,
-                            in: &eventContext
-                        )
-                    }
                 }
             }
 
             // appendStreamToService already declines streams whose data has all been sent
-            applicationPendingItems.appendStreamToService(stream, connection: self)
+            applicationPendingItems.appendStreamToService(&stream, connection: self)
             // Note: trigger sending of any frames based on this external event
             checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount, in: &eventContext)
 
@@ -2731,13 +2788,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private func discardEmptyOutbound(
         frame: consuming Frame,
         isFinal: Bool,
-        streamID: QUICStreamID,
-        flowID: MultiplexedFlowIdentifier,
+        stream: inout Flow,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if isFinal, let _ = knownFlows[streamID] {
+        if isFinal, let streamID = stream.streamID, let _ = knownFlows[streamID] {
             log.datapath("Treating zero length fin as a stop message")
-            disconnect(flow: flowID, direction: .outbound, in: &eventContext)
+            disconnect(stream: &stream, direction: .outbound, in: &eventContext)
         } else {
             // For QUIC, empty frames with just metadata are not meaningful if they are not complete
             log.notice("Not processing outbound data of length 0")
@@ -2770,17 +2826,22 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return metadata as? ProtocolMetadata<P>
         }
 
-        guard let stream = flow(for: flowID),
-            let streamID = stream.streamID
-        else {
+        let streamInfo = withFlow(flowID) {
+            (
+                stream: inout Flow
+            ) -> (metadata: QUICStreamProtocol.QUICStreamMetadata, id: QUICStreamID, type: QUICStreamType?)? in
+            guard let streamID = stream.streamID else { return nil }
+            return (stream.streamMetadata, streamID, stream.streamType)
+        }
+        guard let streamInfo = streamInfo ?? nil else {
             return nil
         }
 
         let metadata = QUICProtocol.metadata()
-        metadata.perProtocolMetadata = stream.streamMetadata
+        metadata.perProtocolMetadata = streamInfo.metadata
         metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
-        metadata.perProtocolMetadata?.streamID = streamID.value
-        if let streamType = stream.streamType {
+        metadata.perProtocolMetadata?.streamID = streamInfo.id.value
+        if let streamType = streamInfo.type {
             metadata.perProtocolMetadata?.streamType = streamType
         }
         return metadata as? ProtocolMetadata<P>
@@ -2838,7 +2899,24 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     func setupNewOutboundStream(
-        _ stream: Flow,
+        flow flowID: MultiplexedFlowIdentifier,
+        with protocolOptions: QUICStreamProtocol.Options
+    ) {
+        performOnStream(flowID) { (stream: inout Flow) in
+            setupNewOutboundStream(stream: &stream, with: protocolOptions)
+        }
+
+        // Check if there is already data to send.
+        //
+        // `setup(flow:)` runs on the attach path, which deliberately does not carry the context
+        // state, so this is a genuine entry point into the stack.
+        fromExternal { eventContext in
+            serviceStreamDataToSend(flow: flowID, in: &eventContext)
+        }
+    }
+
+    private func setupNewOutboundStream(
+        stream: inout Flow,
         with protocolOptions: QUICStreamProtocol.Options
     ) {
         let isUnidirectional = protocolOptions.isUnidirectional
@@ -2914,7 +2992,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } else {
             log.debug("Add pending stream for flow \(flowID.debugDescription)")
             withMutableQUICStreams(unidirectional: stream.unidirectional) { mutableStreamsState in
-                mutableStreamsState.addPending(stream)
+                mutableStreamsState.addPending(&stream)
             }
             if self.state == .connected && streamBlocked {
                 // Send the STREAMS_*_BLOCKED frame if we are connected.
@@ -2933,14 +3011,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             stats.increment(.outboundUnidirectionalStreams)
         } else {
             stats.increment(.outboundBidirectionalStreams)
-        }
-
-        // Check if there is already data to send.
-        //
-        // `setup(flow:)` runs on the attach path, which deliberately does not carry the context
-        // state, so this is a genuine entry point into the stack.
-        fromExternal { eventContext in
-            serviceStreamDataToSend(flow: flowID, in: &eventContext)
         }
     }
 
@@ -2985,6 +3055,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     // Closing all flows, i.e. streams, and the connection itself
     func close(sendCloseFrame: Bool = true, in eventContext: inout NetworkContext.EventContext) {
+        // Closing tears down every stream, so it cannot happen while one is borrowed
+        guard !streamAccess.borrowed else {
+            streamAccess.close = sendCloseFrame
+            return
+        }
         if state.isTerminal || drainingScheduled {
             log.debug("Already in closing or draining state")
             return
@@ -3538,6 +3613,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         delayedACK: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        // Sending looks at streams, so it cannot happen while one is borrowed
+        guard !streamAccess.borrowed else {
+            streamAccess.sendFrames = true
+            return false
+        }
         // Check if the send path is active, if so then record and defer the call
         guard !isSendActive else {
             recordDeferredSendFrames(ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK)
@@ -3775,10 +3855,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     /// The room-available event has to reach the upper protocol with the event context in hand,
     /// and the packet-building path does not carry one, so the notification waits here until the
     /// send completes.
-    private var streamsWithReopenedOutboundRoom = [QUICStreamInstance]()
+    private var streamsWithReopenedOutboundRoom = [MultiplexedFlowIdentifier]()
 
-    func queueOutboundRoomAvailableEvent(for stream: QUICStreamInstance) {
-        streamsWithReopenedOutboundRoom.append(stream)
+    func queueOutboundRoomAvailableEvent(for stream: borrowing QUICStreamInstance) {
+        streamsWithReopenedOutboundRoom.append(stream.flowIdentifier)
     }
 
     private func deliverQueuedOutboundRoomAvailableEvents(
@@ -3787,8 +3867,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         guard !streamsWithReopenedOutboundRoom.isEmpty else { return }
         let streams = streamsWithReopenedOutboundRoom
         streamsWithReopenedOutboundRoom.removeAll(keepingCapacity: true)
-        for stream in streams {
-            stream.upper.deliverOutboundRoomAvailableEvent(from: stream.identifier, in: &eventContext)
+        for flowID in streams {
+            withFlow(flowID) { (stream: inout QUICStreamInstance) in
+                stream.upper.deliverOutboundRoomAvailableEvent(from: stream.identifier, in: &eventContext)
+            }
         }
     }
 
@@ -4691,8 +4773,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     private func processOutbound(
         frame: consuming Frame,
-        flowID: MultiplexedFlowIdentifier,
-        stream: Flow,
+        stream: inout Flow,
         isLast: Bool
     ) {
         if !isServer, state == .idle {
@@ -4720,7 +4801,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         frame.finalize(success: false)
     }
 
-    internal func handleStopRead(for stream: Flow) {
+    internal func handleStopRead(for stream: inout Flow) {
         if stream.readClosed {
             // Already handled
             return
@@ -4728,14 +4809,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         stream.log.debug("Read closed")
         if stream.pendingStart {
             if stream.unidirectional {
-                self.unidirectionalStreams.removePending(stream)
+                self.unidirectionalStreams.removePending(&stream)
             } else {
-                self.bidirectionalStreams.removePending(stream)
+                self.bidirectionalStreams.removePending(&stream)
             }
         }
 
         if stream.receive.state == .receive && !state.isTerminal {
-            sendStopSending(stream: stream)
+            sendStopSending(stream: &stream)
             stream.stopSendRequested = true
 
             // Create a zombie stream so that we can release
@@ -4766,16 +4847,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     internal func handleStopWrite(
-        for stream: Flow
+        for stream: inout Flow
     ) -> Bool {
         var closeWrite = true
 
         stream.log.debug("Write closed for stream")
         if stream.pendingStart {
             if stream.unidirectional {
-                unidirectionalStreams.removePending(stream)
+                unidirectionalStreams.removePending(&stream)
             } else {
-                bidirectionalStreams.removePending(stream)
+                bidirectionalStreams.removePending(&stream)
             }
         }
 
@@ -4795,14 +4876,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     // serviced (and ACKed); closing now would drop the queued FIN.
                     closeWrite = false
                 }
-                markStreamFinished(stream: stream)
+                markStreamFinished(stream: &stream)
             } else if stream.send.state == .ready
                 || (stream.send.state == .send && !stream.send.buffer.hasLast
                     && stream.outboundApplicationError != nil)
             {
                 // Drop all the pending data.
                 stream.emptyPendingData(connection: self)
-                sendResetStream(stream: stream)
+                sendResetStream(stream: &stream)
                 // Wait until RESET_STREAM is ACKed before closing this
                 // stream.
                 closeWrite = false
@@ -5258,7 +5339,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     // Removes sendable flag when the application state is flushed
     private func clearStreamSendable(_ flowID: MultiplexedFlowIdentifier) {
-        flow(for: flowID)?.listMembership.remove(.sendable)
+        _ = withFlow(flowID) { (stream: inout Flow) in
+            stream.listMembership.remove(.sendable)
+        }
     }
 
     private func discardKeys(
@@ -5321,7 +5404,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     func deliverInboundAbortedEvent(
-        stream: Flow,
+        stream: inout Flow,
         error: NetworkError?,
         in eventContext: inout NetworkContext.EventContext
     ) {
@@ -5335,19 +5418,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     func handleStreamClose(
-        stream: Flow,
+        stream: inout Flow,
         error: NetworkError?,
         in eventContext: inout NetworkContext.EventContext
     ) {
         guard let streamID = stream.streamID,
-            let flowID = knownFlows[streamID]
+            knownFlows[streamID] != nil
         else {
             return
         }
         if let frameArray = stream.dequeueReassembledData(connection: self) {
             do {
                 try deliverInboundStreamData(
-                    flow: flowID,
+                    flow: &stream,
                     streamData: frameArray,
                     in: &eventContext
                 )
@@ -5365,7 +5448,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         stream.discardUnreadInboundBytes(connection: self)
 
         stream.closed = true
-        deliverDisconnectedEvent(flow: flowID, error: error, in: &eventContext)
+        stream.deliverDisconnectedEvent(error: error, in: &eventContext)
         knownFlows.removeValue(forKey: streamID)
         log.datapath("Closed stream \(streamID.value)")
 
@@ -5613,21 +5696,28 @@ extension QUICConnection {
             frame.frame.finalize(success: true)
             return true
         }
-        guard let stream = flow(for: flowID) else {
+        var pendingFrame: FrameStreamReceived? = frame
+        let processed = performOnStream(flowID, in: &eventContext) {
+            (stream: inout Flow, ctx: inout NetworkContext.EventContext) -> Bool in
+            var frame = pendingFrame.take()!
+            if frame.length > 0 || frame.isFinal {
+                return stream.processIncomingStream(connection: self, frame: frame, in: &ctx)
+            } else {
+                stream.log.datapath(
+                    "Unable to handle frame len \(frame.length) offset \(frame.offset) fin \(frame.isFinal) on stream"
+                )
+                frame.frame.finalize(success: true)
+                return true
+            }
+        }
+        guard let processed else {
             log.error("Cannot look up stream for flowID \(flowID.debugDescription)")
-            frame.frame.finalize(success: true)
+            if var leftover = pendingFrame.take() {
+                leftover.frame.finalize(success: true)
+            }
             return true
         }
-
-        if frame.length > 0 || frame.isFinal {
-            return stream.processIncomingStream(connection: self, frame: frame, in: &eventContext)
-        } else {
-            stream.log.datapath(
-                "Unable to handle frame len \(frame.length) offset \(frame.offset) fin \(frame.isFinal) on stream"
-            )
-            frame.frame.finalize(success: true)
-            return true
-        }
+        return processed
     }
 
     // Process incoming CRYPTO frame
@@ -5744,18 +5834,19 @@ extension QUICConnection {
             return false
         }
 
-        // 4. Find stream
-        guard let stream = flow(for: flowID) else {
+        // 4. Find stream and 5. process max stream data
+        let remoteMaxStreamData = frame.max
+        let processed: Void? = performOnStream(flowID, in: &eventContext) {
+            (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
+            stream.processIncomingMaxStreamData(remoteMaxStreamData: remoteMaxStreamData, in: &ctx)
+            if !stream.listMembership.contains(.unblockedSend), !stream.pendingStart {
+                applicationPendingItems.unblockedSendStreams.append(&stream)
+            }
+        }
+        if processed == nil {
             log.error(
                 "MAX_STREAM_DATA for client state on flow \(flowID.debugDescription) and [S\(streamID.value)] is not a QUICStreamInstance"
             )
-            return true
-        }
-
-        // 5. process max stream data
-        stream.processIncomingMaxStreamData(remoteMaxStreamData: frame.max, in: &eventContext)
-        if !stream.listMembership.contains(.unblockedSend), !stream.pendingStart {
-            applicationPendingItems.unblockedSendStreams.append(stream)
         }
         return true
     }
@@ -5773,22 +5864,27 @@ extension QUICConnection {
     // Handle incoming stream data blocked frame and notify application protocol if needed
     @inline(never)
     func processStreamDataBlocked(frame: consuming FrameStreamDataBlocked) -> Bool {
-        guard let stream = streamFromStreamID(frame.id) else {
+        guard let flowID = flowIdentifier(forStreamID: frame.id) else {
             log.datapath("Invalid streamID: \(frame.id)")
             return false
         }
-        guard !stream.streamID!.isSendOnly(server: isServer) else {
-            log.error("[S\(frame.id)] received STREAM_DATA_BLOCKED on a send-only stream")
-            return false
+        let frameID = frame.id
+        let frameLimit = frame.limit
+        let processed = performOnStream(flowID) { (stream: inout Flow) -> Bool in
+            guard !stream.streamID!.isSendOnly(server: isServer) else {
+                log.error("[S\(frameID)] received STREAM_DATA_BLOCKED on a send-only stream")
+                return false
+            }
+
+            stream.log.info(
+                "Received STREAM_DATA_BLOCKED (max=\(frameLimit)), previous max stream data:  \(stream.flowControlState.inboundMaxData)"
+            )
+
+            stream.sendInboundFlowControlCreditForStreamDataBlocked(connection: self)
+
+            return true
         }
-
-        stream.log.info(
-            "Received STREAM_DATA_BLOCKED (max=\(frame.limit)), previous max stream data:  \(stream.flowControlState.inboundMaxData)"
-        )
-
-        stream.sendInboundFlowControlCreditForStreamDataBlocked(connection: self)
-
-        return true
+        return processed ?? false
     }
 
     func processMaxStreams(
@@ -5831,20 +5927,27 @@ extension QUICConnection {
             )
         }
         // NOTE: readyPendingStream will remove them from the pending streams list
-        var pendingStreams: [QUICStreamInstance] = []
+        var pendingStreams: [MultiplexedFlowIdentifier] = []
         withMutableQUICStreams(unidirectional: unidirectional) { mutableStreamsState in
-            for stream in mutableStreamsState.pendingStartStreams {
-                pendingStreams.append(stream)
+            for flowID in mutableStreamsState.pendingStartStreams {
+                pendingStreams.append(flowID)
             }
         }
-        for stream in pendingStreams {
-            guard self.readyPendingStream(stream, flowID: stream.flowIdentifier, in: &eventContext) else {
+        for flowID in pendingStreams {
+            let streamType: QUICStreamType = unidirectional ? .unidirectional : .bidirectional
+            let readied = performOnStream(flowID, in: &eventContext) {
+                (stream: inout Flow, ctx: inout NetworkContext.EventContext) -> Bool in
+                guard self.readyPendingStream(&stream, flowID: flowID, in: &ctx) else {
+                    return false
+                }
+                // To inform QUICStreamMetadata
+                stream.streamMetadata.streamID = stream.streamID?.value ?? 0  // Default for QUICStreamMetadata is 0
+                stream.streamMetadata.streamType = streamType
+                return true
+            }
+            guard readied == true else {
                 continue
             }
-            let streamType: QUICStreamType = unidirectional ? .unidirectional : .bidirectional
-            // To inform QUICStreamMetadata
-            stream.streamMetadata.streamID = stream.streamID?.value ?? 0  // Default for QUICStreamMetadata is 0
-            stream.streamMetadata.streamType = streamType
             var event = QUICEvent.maxStreamsLimitBidirectionalUpdated(
                 maximumStreams: Int(maxStreams)
             )
@@ -6037,7 +6140,7 @@ extension QUICConnection {
         withPendingItems(for: .applicationData) { $0.streamsBlockedUnidirectional = true }
     }
 
-    private func sendStopSending(stream: Flow) {
+    private func sendStopSending(stream: inout Flow) {
         guard let streamID = stream.streamID else {
             log.notice("Cannot send STOP_SENDING without stream ID")
             return
@@ -6052,12 +6155,12 @@ extension QUICConnection {
     }
 
     // Mark stream FIN and trigger servicing
-    private func markStreamFinished(stream: Flow) {
+    private func markStreamFinished(stream: inout Flow) {
         stream.send.buffer.markStreamFinished()
-        applicationPendingItems.appendStreamToService(stream)
+        applicationPendingItems.appendStreamToService(&stream)
     }
 
-    private func sendResetStream(stream: Flow) {
+    private func sendResetStream(stream: inout Flow) {
         guard let streamID = stream.streamID else {
             log.notice("Cannot send RESET_STREAM without stream ID")
             return
@@ -6279,7 +6382,7 @@ extension QUICConnection {
     }
 
     func readyPendingStream(
-        _ stream: Flow,
+        _ stream: inout Flow,
         flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
@@ -6304,19 +6407,19 @@ extension QUICConnection {
             self.unidirectionalStreams.incrementActiveStreams()
         }
         stream.send.state.change(logIDString: stream.log.logPrefix, to: .ready)
-        startOutboundStream(stream: stream, for: flowID, in: &eventContext)
+        startOutboundStream(stream: &stream, for: flowID, in: &eventContext)
         // Deliver the connected event for the newly start flow
-        deliverConnectedEvent(flow: flowID, in: &eventContext)
+        stream.deliverConnectedEvent(in: &eventContext)
         return true
     }
 
     // This function should only be called when the connection is ready,
     // or we are sending early data
     func readyAllOutboundStreams(in eventContext: inout NetworkContext.EventContext) {
-        applyToAllFlows { stream in
+        applyToAllStreams(in: &eventContext) { (stream: inout Flow, eventContext: inout NetworkContext.EventContext) in
             let flowID = stream.flowIdentifier
             if stream.send.state == .invalid && stream.receive.state == .invalid {
-                if !readyPendingStream(stream, flowID: flowID, in: &eventContext) {
+                if !readyPendingStream(&stream, flowID: flowID, in: &eventContext) {
                     log.error("Could not ready pending stream")
                 }
             } else {
@@ -6326,13 +6429,13 @@ extension QUICConnection {
                     )
                     return
                 }
-                startOutboundStream(stream: stream, for: flowID, in: &eventContext)
+                startOutboundStream(stream: &stream, for: flowID, in: &eventContext)
             }
         }
     }
 
     func startOutboundStream(
-        stream: Flow,
+        stream: inout Flow,
         for flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
@@ -6345,17 +6448,17 @@ extension QUICConnection {
 
         if stream.send.state == .ready {
             if stream.unidirectional {
-                self.unidirectionalStreams.removePending(stream)
+                self.unidirectionalStreams.removePending(&stream)
             } else {
-                self.bidirectionalStreams.removePending(stream)
+                self.bidirectionalStreams.removePending(&stream)
             }
         }
 
         // Add any data necessary to the send queue
-        serviceStreamDataToSend(flow: flowID, in: &eventContext)
+        serviceStreamDataToSend(stream: &stream, in: &eventContext)
 
         // Kick off send for data in send queue
-        applicationPendingItems.appendStreamToService(stream)
+        applicationPendingItems.appendStreamToService(&stream)
     }
 
     // When the burst limit has been reached for application data, we schedule
@@ -6508,7 +6611,7 @@ extension QUICConnection {
         ) {
             // create all the missing streams and flows. All will be left invalid until payload or application
             // triggers a transition to active
-            let newStream = QUICStreamInstance(
+            var newStream = QUICStreamInstance(
                 parent: self,
                 inbound: true,
                 in: &eventContext
@@ -6516,29 +6619,12 @@ extension QUICConnection {
             newStream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
 
             let newFlowIdentifier = newStream.flowIdentifier
-            multiplexedFlows[newFlowIdentifier] = newStream
-
             knownFlows[newStreamID] = newFlowIdentifier
             newStream.setup(
                 streamID: newStreamID,
                 logPrefixer: logPrefixer
             )
             newStream.unidirectional = newStreamID.isUnidirectional
-
-            let abstractMetadata: AbstractProtocolMetadata = ProtocolMetadata<QUICStreamProtocol>(
-                protocolIdentifier: QUICStreamProtocol.identifier,
-                perProtocolMetadata: newStream.streamMetadata,
-                messageIdentifier: SystemUUID(insecure: true)
-            )
-            deliverNewInboundFlowEvent(
-                newStream.identifier,
-                flowMetadata: abstractMetadata,
-                in: &eventContext
-            )
-
-            log.debug(
-                "Set stream \(newStreamID.description) for flow \(newFlowIdentifier.debugDescription)"
-            )
 
             newStream.setupMaxStreamData(
                 isServer: isServer,
@@ -6547,6 +6633,27 @@ extension QUICConnection {
             )
 
             newStream.inboundStreamReady()
+
+            // The stream is fully set up before it joins the flow table, where it can only be
+            // borrowed from then on.
+            let newStreamInstance = newStream.identifier
+            let newStreamMetadata = newStream.streamMetadata
+            insertFlow(newStream, for: newFlowIdentifier)
+
+            let abstractMetadata: AbstractProtocolMetadata = ProtocolMetadata<QUICStreamProtocol>(
+                protocolIdentifier: QUICStreamProtocol.identifier,
+                perProtocolMetadata: newStreamMetadata,
+                messageIdentifier: SystemUUID(insecure: true)
+            )
+            deliverNewInboundFlowEvent(
+                newStreamInstance,
+                flowMetadata: abstractMetadata,
+                in: &eventContext
+            )
+
+            log.debug(
+                "Set stream \(newStreamID.description) for flow \(newFlowIdentifier.debugDescription)"
+            )
 
             if streamID.isBidirectional {
                 stats.increment(.inboundBidirectionalStreams)
@@ -6851,41 +6958,41 @@ extension QUICConnection {
     }
 
     func acknowledgedResetStream(id: UInt64, in eventContext: inout NetworkContext.EventContext) {
-        guard let stream = streamFromStreamID(id) else {
+        guard let flowID = flowIdentifier(forStreamID: id) else {
             log.error("Stream frame with invalid stream ID \(id)")
             return
         }
 
-        if stream.send.state == .send {
-            log.error(
-                "[S\(stream.streamID?.value ?? 0)] in state send (resetSent? \(stream.resetSent))"
-            )
-        }
-        stream.send.state.change(logIDString: logIDString, to: .resetReceived)
+        let logIDString = self.logIDString
+        performOnStream(flowID, in: &eventContext) { (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
+            if stream.send.state == .send {
+                stream.log.error(
+                    "[S\(stream.streamID?.value ?? 0)] in state send (resetSent? \(stream.resetSent))"
+                )
+            }
+            stream.send.state.change(logIDString: logIDString, to: .resetReceived)
 
-        // Only close the stream when the receive side is also in a terminal state.
-        if stream.receive.state.dataHasAlreadyBeenReceived {
-            let error = NetworkError.posix(ECONNRESET)
-            stream.close(errorCode: error, in: &eventContext)
+            // Only close the stream when the receive side is also in a terminal state.
+            if stream.receive.state.dataHasAlreadyBeenReceived {
+                let error = NetworkError.posix(ECONNRESET)
+                stream.close(errorCode: error, in: &ctx)
+            }
         }
     }
 
-    func streamFromStreamID(_ id: UInt64) -> QUICStreamInstance? {
+    /// The flow for a stream ID, if the connection knows the stream and still holds it.
+    func flowIdentifier(forStreamID id: UInt64) -> MultiplexedFlowIdentifier? {
         guard let streamID = QUICStreamID(id) else {
             return nil
         }
-        return streamFromStreamID(streamID)
+        return flowIdentifier(forStreamID: streamID)
     }
 
-    func streamFromStreamID(_ streamID: QUICStreamID) -> QUICStreamInstance? {
-        let knownFlowID = knownFlows[streamID]
-        guard let flowID = knownFlowID else {
+    func flowIdentifier(forStreamID streamID: QUICStreamID) -> MultiplexedFlowIdentifier? {
+        guard let flowID = knownFlows[streamID], hasFlow(flowID) else {
             return nil
         }
-        guard let stream = flow(for: flowID) else {
-            return nil
-        }
-        return stream
+        return flowID
     }
 
     func acknowledgedStream(
@@ -6898,25 +7005,27 @@ extension QUICConnection {
         // We've previously sent this STREAM frame, so we're confident it's got
         // valid offset and length. However, it may be old or there may be gaps
         // that have not yet been ACKed.
-        guard let stream = flow(for: flowID) else {
+        let acknowledged: Void? = performOnStream(flowID, in: &eventContext) {
+            (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
+            let streamFinished = stream.send.buffer.acknowledgedSendData(
+                offset: offset,
+                length: length,
+                log: stream.base.log
+            )
+            if isFinal {
+                stream.peerAcknowledgedFIN = true
+            }
+            if streamFinished, stream.peerAcknowledgedFIN, stream.send.state != .dataReceived {
+                stream.send.state.change(logIDString: stream.log.logPrefix, to: .dataReceived)
+                if !stream.closed, stream.receive.state == .dataRead {
+                    // If both directions are closed, and all data is read, close the stream
+                    stream.close(errorCode: nil, in: &ctx)
+                }
+            }
+        }
+        if acknowledged == nil {
             // We sent on this stream, but no longer "know" about it, somehow we got rid of it
             log.datapath("Acknowledgement for unknown flow \(flowID)")
-            return
-        }
-        let streamFinished = stream.send.buffer.acknowledgedSendData(
-            offset: offset,
-            length: length,
-            log: stream.log
-        )
-        if isFinal {
-            stream.peerAcknowledgedFIN = true
-        }
-        if streamFinished, stream.peerAcknowledgedFIN, stream.send.state != .dataReceived {
-            stream.send.state.change(logIDString: stream.log.logPrefix, to: .dataReceived)
-            if !stream.closed, stream.receive.state == .dataRead {
-                // If both directions are closed, and all data is read, close the stream
-                stream.close(errorCode: nil, in: &eventContext)
-            }
         }
     }
 }
@@ -6930,8 +7039,7 @@ extension QUICConnection {
         _ flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if let stream = flow(for: flowID) {
-            stream.applicationMarkedIdle = true
+        if withFlow(flowID, { (stream: inout Flow) in stream.applicationMarkedIdle = true }) != nil {
             flowsHaveEverMarkedIdle = true
         } else if let datagramFlow = secondaryFlow(for: flowID) {
             datagramFlow.applicationMarkedIdle = true
@@ -6944,8 +7052,7 @@ extension QUICConnection {
         _ flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if let stream = flow(for: flowID) {
-            stream.applicationMarkedIdle = false
+        if withFlow(flowID, { (stream: inout Flow) in stream.applicationMarkedIdle = false }) != nil {
         } else if let datagramFlow = secondaryFlow(for: flowID) {
             datagramFlow.applicationMarkedIdle = false
         }
@@ -7005,6 +7112,11 @@ extension QUICConnection {
         // ever set inside this function, no path can have it set either.
         // The traversal below would be a guaranteed no-op, so skip it entirely.
         guard flowsHaveEverMarkedIdle else {
+            return
+        }
+        // Looking at every stream cannot happen while one is borrowed
+        guard !streamAccess.borrowed else {
+            streamAccess.checkIdle = true
             return
         }
         let isIdle = connectionIsIdleForAllStreams(unackedPacketCount: unackedPacketCount)

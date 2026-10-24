@@ -694,207 +694,257 @@ extension FrameStreamSendMetadata: SendableItem {
         while !sentStream, !pendingItems.retransmitStreams.isEmpty {
             let retransmitStreamFlowID = pendingItems.retransmitStreams[0].flowID
 
-            guard let stream = connection.flow(for: retransmitStreamFlowID) else {
+            // The stream is borrowed from the connection's flow table while it is written
+            let wroteRetransmission = try connection.multiplexedFlows.withFlow(retransmitStreamFlowID) {
+                (stream: inout QUICStreamInstance) throws(QUICError) -> Bool in
+                try writeRetransmission(
+                    into: &frame,
+                    pendingItems: &pendingItems,
+                    connection: connection,
+                    stats: &stats,
+                    shorthandFrames: &shorthandFrames,
+                    stream: &stream,
+                    flowID: retransmitStreamFlowID
+                )
+            }
+            guard let wroteRetransmission else {
                 connection.log.error("Unable to access state for flow \(retransmitStreamFlowID)")
                 _ = pendingItems.retransmitStreams.popFirst()
                 continue
             }
-
-            let retransmitStreamOffset = pendingItems.retransmitStreams[0].offset
-            let retransmitStreamLength = pendingItems.retransmitStreams[0].length
-            let retransmitStreamIsFinal = pendingItems.retransmitStreams[0].isFinal
-            let retransmitStreamStreamID = pendingItems.retransmitStreams[0].streamID
-
-            guard stream.isOpen else {
-                connection.log.info(
-                    "Not retransmitting data for closed flow \(retransmitStreamFlowID)"
-                )
-                _ = pendingItems.retransmitStreams.popFirst()
-                continue
-            }
-
-            guard stream.send.buffer.storageStartOffset <= retransmitStreamOffset else {
-                connection.log.datapath(
-                    "Not retransmitting data at offset \(retransmitStreamOffset), already acked"
-                )
-                _ = pendingItems.retransmitStreams.popFirst()
-                continue
-            }
-
-            // The sendBuffer may not still have this offset+length data because
-            // the ACK/timer that drove us to retransmit could have been a
-            // reordered event. It "should not" happen in current implementation
-            // because recovery deletes the recovered packet when retransmitting
-            // but a bug or implementation change could cause this to occur.
-            // And if it does, we'd stuck in a loop trying to write here and
-            // always throwing, so it is safer to guard against it.
-            let lengthWritten = try write(
-                into: &frame,
-                stats: &stats,
-                stream: stream,
-                offset: retransmitStreamOffset,
-                length: retransmitStreamLength,
-                isFinal: retransmitStreamIsFinal
-            )
-            if lengthWritten < retransmitStreamLength {
-                // Incomplete write. Save what was transmitted, and record what is left.
-                let writtenStream = TransmittedItems.SentStream(
-                    flowID: retransmitStreamFlowID,
-                    streamID: retransmitStreamStreamID,
-                    offset: retransmitStreamOffset,
-                    length: UInt64(lengthWritten),
-                    isFinal: false
-                )
-                pendingItems.transmittedStreams.append(writtenStream)
-                shorthandFrames?.append(
-                    toShorthandLogEntry(
-                        id: retransmitStreamStreamID.value,
-                        fin: retransmitStreamIsFinal,
-                        offset: retransmitStreamOffset,
-                        length: retransmitStreamLength
-                    )
-                )
-
-                let pendingStream = TransmittedItems.SentStream(
-                    flowID: retransmitStreamFlowID,
-                    streamID: retransmitStreamStreamID,
-                    offset: retransmitStreamOffset + UInt64(lengthWritten),
-                    length: retransmitStreamLength - UInt64(lengthWritten),
-                    isFinal: retransmitStreamIsFinal
-                )
-                _ = pendingItems.retransmitStreams.popFirst()
-                pendingItems.retransmitStreams.prepend(pendingStream)
-            } else {
-                // Complete write. Save it to transmitted items for a record.
-                let streamItem = pendingItems.retransmitStreams.popFirst()!
-                shorthandFrames?.append(
-                    toShorthandLogEntry(
-                        id: streamItem.streamID.value,
-                        fin: streamItem.isFinal,
-                        offset: streamItem.offset,
-                        length: streamItem.length
-                    )
-                )
-                pendingItems.transmittedStreams.append(streamItem)
-            }
-            sentStream = true
+            sentStream = wroteRetransmission
         }
 
         // Then, try to send new stream data
         while !sentStream, !pendingItems.streamsToService.isEmpty {
             let streamToService = pendingItems.streamsToService.first!
 
-            guard let stream = connection.flow(for: streamToService) else {
+            let wroteStreamData = try connection.multiplexedFlows.withFlow(streamToService) {
+                (stream: inout QUICStreamInstance) throws(QUICError) -> Bool in
+                try writeNewStreamData(
+                    into: &frame,
+                    pendingItems: &pendingItems,
+                    connection: connection,
+                    stats: &stats,
+                    shorthandFrames: &shorthandFrames,
+                    stream: &stream
+                )
+            }
+            guard let wroteStreamData else {
                 connection.log.error("Unable to access state for flow \(streamToService)")
                 pendingItems.popServicedStream()
                 continue
             }
+            sentStream = wroteStreamData
+        }
+    }
 
-            // Already completely written, ignore
-            guard !stream.send.state.dataHasAlreadyBeenSent else {
-                pendingItems.popServicedStream()
-                stream.listMembership.remove(.sendable)
-                continue
-            }
+    // Writes the first pending retransmission, which belongs to the borrowed stream. Returns
+    // whether a STREAM frame was written; when it was not, the retransmission has been discarded.
+    private static func writeRetransmission(
+        into frame: inout Frame,
+        pendingItems: inout PendingItems,
+        connection: QUICConnection,
+        stats: inout Statistics,
+        shorthandFrames: inout [QUICShorthandFrame]?,
+        stream: inout QUICStreamInstance,
+        flowID retransmitStreamFlowID: MultiplexedFlowIdentifier
+    ) throws(QUICError) -> Bool {
+        let retransmitStreamOffset = pendingItems.retransmitStreams[0].offset
+        let retransmitStreamLength = pendingItems.retransmitStreams[0].length
+        let retransmitStreamIsFinal = pendingItems.retransmitStreams[0].isFinal
+        let retransmitStreamStreamID = pendingItems.retransmitStreams[0].streamID
 
-            let (offset, remainingStreamLength, hasLast) = stream.availableSendData()
-            let allowedFlowControlLength = stream.availableRemoteReceiveWindow(for: connection)
-            let lengthToSend = min(remainingStreamLength, allowedFlowControlLength)
-            let isFinal = hasLast && lengthToSend == remainingStreamLength
+        guard stream.isOpen else {
+            connection.log.info(
+                "Not retransmitting data for closed flow \(retransmitStreamFlowID)"
+            )
+            _ = pendingItems.retransmitStreams.popFirst()
+            return false
+        }
 
-            let shouldSend = remainingStreamLength > 0 || isFinal
-            guard shouldSend else {
-                pendingItems.popServicedStream()
-                stream.listMembership.remove(.sendable)
-                continue
-            }
+        guard stream.send.buffer.storageStartOffset <= retransmitStreamOffset else {
+            connection.log.datapath(
+                "Not retransmitting data at offset \(retransmitStreamOffset), already acked"
+            )
+            _ = pendingItems.retransmitStreams.popFirst()
+            return false
+        }
 
-            if lengthToSend == 0 && remainingStreamLength > 0 {
-                // Has data to send, but cannot
-                // Remove the stream for now
-                pendingItems.popServicedStream()
-                stream.listMembership.remove(.sendable)
-                // And trigger sending blocked frames if necessary
-                stream.recordStreamDataSending(
-                    writtenLength: 0,
-                    isFinal: false,
-                    hasMoreDataToService: true,
-                    pendingItems: &pendingItems,
-                    connection: connection
+        // The sendBuffer may not still have this offset+length data because
+        // the ACK/timer that drove us to retransmit could have been a
+        // reordered event. It "should not" happen in current implementation
+        // because recovery deletes the recovered packet when retransmitting
+        // but a bug or implementation change could cause this to occur.
+        // And if it does, we'd stuck in a loop trying to write here and
+        // always throwing, so it is safer to guard against it.
+        let lengthWritten = try write(
+            into: &frame,
+            stats: &stats,
+            stream: &stream,
+            offset: retransmitStreamOffset,
+            length: retransmitStreamLength,
+            isFinal: retransmitStreamIsFinal
+        )
+        if lengthWritten < retransmitStreamLength {
+            // Incomplete write. Save what was transmitted, and record what is left.
+            let writtenStream = TransmittedItems.SentStream(
+                flowID: retransmitStreamFlowID,
+                streamID: retransmitStreamStreamID,
+                offset: retransmitStreamOffset,
+                length: UInt64(lengthWritten),
+                isFinal: false
+            )
+            pendingItems.transmittedStreams.append(writtenStream)
+            shorthandFrames?.append(
+                toShorthandLogEntry(
+                    id: retransmitStreamStreamID.value,
+                    fin: retransmitStreamIsFinal,
+                    offset: retransmitStreamOffset,
+                    length: retransmitStreamLength
                 )
-                continue
-            }
+            )
 
-            let lengthWritten = try FrameStreamSendMetadata.write(
-                into: &frame,
-                stats: &stats,
-                stream: stream,
+            let pendingStream = TransmittedItems.SentStream(
+                flowID: retransmitStreamFlowID,
+                streamID: retransmitStreamStreamID,
+                offset: retransmitStreamOffset + UInt64(lengthWritten),
+                length: retransmitStreamLength - UInt64(lengthWritten),
+                isFinal: retransmitStreamIsFinal
+            )
+            _ = pendingItems.retransmitStreams.popFirst()
+            pendingItems.retransmitStreams.prepend(pendingStream)
+        } else {
+            // Complete write. Save it to transmitted items for a record.
+            let streamItem = pendingItems.retransmitStreams.popFirst()!
+            shorthandFrames?.append(
+                toShorthandLogEntry(
+                    id: streamItem.streamID.value,
+                    fin: streamItem.isFinal,
+                    offset: streamItem.offset,
+                    length: streamItem.length
+                )
+            )
+            pendingItems.transmittedStreams.append(streamItem)
+        }
+        return true
+    }
+
+    // Writes new data for the borrowed stream, which is the first one waiting to be serviced.
+    // Returns whether a STREAM frame was written; when it was not, the stream has been taken off
+    // the list of streams to service.
+    private static func writeNewStreamData(
+        into frame: inout Frame,
+        pendingItems: inout PendingItems,
+        connection: QUICConnection,
+        stats: inout Statistics,
+        shorthandFrames: inout [QUICShorthandFrame]?,
+        stream: inout QUICStreamInstance
+    ) throws(QUICError) -> Bool {
+        // Already completely written, ignore
+        guard !stream.send.state.dataHasAlreadyBeenSent else {
+            pendingItems.popServicedStream()
+            stream.listMembership.remove(.sendable)
+            return false
+        }
+
+        let (offset, remainingStreamLength, hasLast) = stream.availableSendData()
+        let allowedFlowControlLength = stream.availableRemoteReceiveWindow(for: connection)
+        let lengthToSend = min(remainingStreamLength, allowedFlowControlLength)
+        let isFinal = hasLast && lengthToSend == remainingStreamLength
+
+        let shouldSend = remainingStreamLength > 0 || isFinal
+        guard shouldSend else {
+            pendingItems.popServicedStream()
+            stream.listMembership.remove(.sendable)
+            return false
+        }
+
+        if lengthToSend == 0 && remainingStreamLength > 0 {
+            // Has data to send, but cannot
+            // Remove the stream for now
+            pendingItems.popServicedStream()
+            stream.listMembership.remove(.sendable)
+            // And trigger sending blocked frames if necessary
+            stream.recordStreamDataSending(
+                writtenLength: 0,
+                isFinal: false,
+                hasMoreDataToService: true,
+                pendingItems: &pendingItems,
+                connection: connection
+            )
+            return false
+        }
+
+        let lengthWritten = try write(
+            into: &frame,
+            stats: &stats,
+            stream: &stream,
+            offset: offset,
+            length: lengthToSend,
+            isFinal: isFinal
+        )
+        let hasMoreDataToService = remainingStreamLength > UInt64(lengthWritten)
+
+        let streamFlowIdentifier = stream.flowIdentifier
+        let currentStreamID = stream.streamID!
+
+        if lengthWritten < lengthToSend {
+            // Incomplete write. Save what was transmitted, and record what is left.
+            let writtenStream = TransmittedItems.SentStream(
+                flowID: streamFlowIdentifier,
+                streamID: currentStreamID,
                 offset: offset,
-                length: lengthToSend,
+                length: UInt64(lengthWritten),
+                isFinal: false
+            )
+            shorthandFrames?.append(
+                toShorthandLogEntry(
+                    id: writtenStream.streamID.value,
+                    fin: writtenStream.isFinal,
+                    offset: writtenStream.offset,
+                    length: writtenStream.length
+                )
+            )
+            pendingItems.transmittedStreams.append(writtenStream)
+            stream.recordStreamDataSending(
+                writtenLength: UInt64(lengthWritten),
+                isFinal: false,
+                hasMoreDataToService: hasMoreDataToService,
+                pendingItems: &pendingItems,
+                connection: connection
+            )
+        } else {
+            // Complete write. Save it to transmitted items for a record.
+            let writtenStream = TransmittedItems.SentStream(
+                flowID: streamFlowIdentifier,
+                streamID: currentStreamID,
+                offset: offset,
+                length: UInt64(lengthWritten),
                 isFinal: isFinal
             )
-            let hasMoreDataToService = remainingStreamLength > UInt64(lengthWritten)
+            shorthandFrames?.append(
+                toShorthandLogEntry(
+                    id: writtenStream.streamID.value,
+                    fin: writtenStream.isFinal,
+                    offset: writtenStream.offset,
+                    length: writtenStream.length
+                )
+            )
+            pendingItems.transmittedStreams.append(writtenStream)
+            stream.recordStreamDataSending(
+                writtenLength: UInt64(lengthWritten),
+                isFinal: isFinal,
+                hasMoreDataToService: hasMoreDataToService,
+                pendingItems: &pendingItems,
+                connection: connection
+            )
 
-            let streamFlowIdentifier = stream.flowIdentifier
-            let currentStreamID = stream.streamID!
-
-            if lengthWritten < lengthToSend {
-                // Incomplete write. Save what was transmitted, and record what is left.
-                let writtenStream = TransmittedItems.SentStream(
-                    flowID: streamFlowIdentifier,
-                    streamID: currentStreamID,
-                    offset: offset,
-                    length: UInt64(lengthWritten),
-                    isFinal: false
-                )
-                shorthandFrames?.append(
-                    toShorthandLogEntry(
-                        id: writtenStream.streamID.value,
-                        fin: writtenStream.isFinal,
-                        offset: writtenStream.offset,
-                        length: writtenStream.length
-                    )
-                )
-                pendingItems.transmittedStreams.append(writtenStream)
-                stream.recordStreamDataSending(
-                    writtenLength: UInt64(lengthWritten),
-                    isFinal: false,
-                    hasMoreDataToService: hasMoreDataToService,
-                    pendingItems: &pendingItems,
-                    connection: connection
-                )
-            } else {
-                // Complete write. Save it to transmitted items for a record.
-                let writtenStream = TransmittedItems.SentStream(
-                    flowID: streamFlowIdentifier,
-                    streamID: currentStreamID,
-                    offset: offset,
-                    length: UInt64(lengthWritten),
-                    isFinal: isFinal
-                )
-                shorthandFrames?.append(
-                    toShorthandLogEntry(
-                        id: writtenStream.streamID.value,
-                        fin: writtenStream.isFinal,
-                        offset: writtenStream.offset,
-                        length: writtenStream.length
-                    )
-                )
-                pendingItems.transmittedStreams.append(writtenStream)
-                stream.recordStreamDataSending(
-                    writtenLength: UInt64(lengthWritten),
-                    isFinal: isFinal,
-                    hasMoreDataToService: hasMoreDataToService,
-                    pendingItems: &pendingItems,
-                    connection: connection
-                )
-
-                // Complete write, remove this stream from the list to service
-                pendingItems.popServicedStream()
-                stream.listMembership.remove(.sendable)
-            }
-            sentStream = true
+            // Complete write, remove this stream from the list to service
+            pendingItems.popServicedStream()
+            stream.listMembership.remove(.sendable)
         }
+        return true
     }
 }
 
@@ -984,12 +1034,15 @@ extension FrameStreamDataBlocked: SendableItem {
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
         guard let firstFlowID = pendingItems.streamDataBlockedFlows.first,
-            let stream = connection.flow(for: firstFlowID),
-            let streamID = stream.streamID
+            let (streamIDValue, limit) = connection.multiplexedFlows.withFlow(
+                firstFlowID,
+                { (stream: inout QUICStreamInstance) -> (UInt64, UInt64)? in
+                    guard let streamID = stream.streamID else { return nil }
+                    return (streamID.value, stream.sendOffset)
+                }
+            ) ?? nil
         else { return }
 
-        let streamIDValue = streamID.value
-        let limit = stream.sendOffset
         try write(frame: &frame, id: streamIDValue, limit: limit, stats: &stats)
         shorthandFrames?.append(toShorthandLogEntry(id: streamIDValue, limit: limit))
     }
@@ -1155,12 +1208,15 @@ extension FrameMaxStreamData: SendableItem {
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
         guard let firstFlowID = pendingItems.maxStreamDataFlows.first,
-            let stream = connection.flow(for: firstFlowID),
-            let streamID = stream.streamID
+            let (streamIDValue, localMaxData) = connection.multiplexedFlows.withFlow(
+                firstFlowID,
+                { (stream: inout QUICStreamInstance) -> (UInt64, UInt64)? in
+                    guard let streamID = stream.streamID else { return nil }
+                    return (streamID.value, stream.flowControlState.inboundMaxData)
+                }
+            ) ?? nil
         else { return }
 
-        let streamIDValue = streamID.value
-        let localMaxData = stream.flowControlState.inboundMaxData
         try write(frame: &frame, id: streamIDValue, max: localMaxData)
         shorthandFrames?.append(toShorthandLogEntry(id: streamIDValue, max: localMaxData))
     }
@@ -2646,13 +2702,13 @@ struct PendingItems: ~Copyable {
     // Temporary storage for written streams
     var transmittedStreams = NetworkUniqueDeque<TransmittedItems.SentStream>()
 
-    func canAddStreamToService(_ stream: QUICStreamInstance) -> Bool {
+    func canAddStreamToService(_ stream: borrowing QUICStreamInstance) -> Bool {
         canAddStreamToService(stream, connection: stream.parentProtocol)
     }
 
     // Callers that already hold the connection pass it in, which saves reading it back out of the
     // stream's parentProtocol.
-    func canAddStreamToService(_ stream: QUICStreamInstance, connection: QUICConnection) -> Bool {
+    func canAddStreamToService(_ stream: borrowing QUICStreamInstance, connection: QUICConnection) -> Bool {
         !stream.send.state.dataHasAlreadyBeenSent
             && ((stream.hasMoreSendDataToService && stream.availableRemoteReceiveWindow(for: connection) > 0)
                 || stream.send.buffer.hasLast)
@@ -2664,11 +2720,11 @@ struct PendingItems: ~Copyable {
         }
     }
 
-    mutating func appendStreamToService(_ newStream: QUICStreamInstance) {
-        appendStreamToService(newStream, connection: newStream.parentProtocol)
+    mutating func appendStreamToService(_ newStream: inout QUICStreamInstance) {
+        appendStreamToService(&newStream, connection: newStream.parentProtocol)
     }
 
-    mutating func appendStreamToService(_ newStream: QUICStreamInstance, connection: QUICConnection) {
+    mutating func appendStreamToService(_ newStream: inout QUICStreamInstance, connection: QUICConnection) {
         guard canAddStreamToService(newStream, connection: connection) else {
             // Nothing new to send
             return
@@ -2682,7 +2738,7 @@ struct PendingItems: ~Copyable {
         stream = true
     }
 
-    mutating func prependStreamToService(_ newStream: QUICStreamInstance) {
+    mutating func prependStreamToService(_ newStream: inout QUICStreamInstance) {
         guard canAddStreamToService(newStream) else {
             // Nothing new to send
             return

@@ -1588,7 +1588,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
         case socketStream(NetworkStateIndex)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case quicStream(ProtocolInstanceBox<QUICStreamInstance>)
+        case quicStream(ProtocolInstanceBox<QUICConnection>, MultiplexedFlowIdentifier)
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case swiftTLSRecord(
@@ -1640,14 +1640,20 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             )
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            var protocolInstance = box.instance
-            return try protocolInstance.receiveStreamData(
-                minimumBytes: minimumBytes,
-                maximumBytes: maximumBytes,
-                for: instance,
-                in: &eventContext
-            )
+        case .quicStream(let box, let flowID):
+            let result = try box.instance.performOnStream(flowID, in: &eventContext) {
+                (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) throws(NetworkError) in
+                try stream.receiveStreamData(
+                    minimumBytes: minimumBytes,
+                    maximumBytes: maximumBytes,
+                    for: instance,
+                    in: &ctx
+                )
+            }
+            switch consume result {
+            case .some(let streamData): return streamData
+            case .none: return nil
+            }
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
@@ -1698,8 +1704,11 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             )
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            return try box.instance.getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
+        case .quicStream(let box, let flowID):
+            return try box.instance.performOnStream(flowID, in: &eventContext) {
+                (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) throws(NetworkError) in
+                try stream.getOutboundStreamDataRoomAvailable(for: instance, in: &ctx)
+            } ?? 0
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
@@ -1735,9 +1744,16 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             try storage!.socketStreamInstances[index].sendStreamData(streamData, from: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            var protocolInstance = box.instance
-            try protocolInstance.sendStreamData(streamData, from: instance, in: &eventContext)
+        case .quicStream(let box, let flowID):
+            var pendingData: FrameArray? = streamData
+            let sent: Void? = try box.instance.performOnStream(flowID, in: &eventContext) {
+                (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) throws(NetworkError) in
+                try stream.sendStreamData(pendingData.take()!, from: instance, in: &ctx)
+            }
+            if sent == nil {
+                pendingData?.finalizeAllFramesAsFailed()
+                throw NetworkError.posix(ENOTCONN)
+            }
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
@@ -1762,9 +1778,16 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
     ) throws(NetworkError) {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            var protocolInstance = box.instance
-            try protocolInstance.sendEarlyStreamData(streamData, from: instance, in: &eventContext)
+        case .quicStream(let box, let flowID):
+            var pendingData: FrameArray? = streamData
+            let sent: Void? = try box.instance.performOnStream(flowID, in: &eventContext) {
+                (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) throws(NetworkError) in
+                try stream.sendEarlyStreamData(pendingData.take()!, from: instance, in: &ctx)
+            }
+            if sent == nil {
+                pendingData?.finalizeAllFramesAsFailed()
+                throw NetworkError.posix(ENOTCONN)
+            }
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -1785,8 +1808,11 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
     ) throws(NetworkError) {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            box.instance.abortInbound(error: error, for: instance, in: &eventContext)
+        case .quicStream(let box, let flowID):
+            box.instance.performOnStream(flowID, in: &eventContext) {
+                (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) in
+                stream.abortInbound(error: error, for: instance, in: &ctx)
+            }
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -1804,8 +1830,11 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
     ) throws(NetworkError) {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            box.instance.abortOutbound(error: error, for: instance, in: &eventContext)
+        case .quicStream(let box, let flowID):
+            box.instance.performOnStream(flowID, in: &eventContext) {
+                (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) in
+                stream.abortOutbound(error: error, for: instance, in: &ctx)
+            }
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -1838,7 +1867,8 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
         case .socketStream(let index): storage!.socketStreamInstances[index].connect(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box): box.instance.connect(for: instance, in: &eventContext)
+        case .quicStream(let box, let flowID):
+            box.instance.connectStream(flow: flowID, for: instance, in: &eventContext)
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
@@ -1868,8 +1898,8 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             storage!.socketStreamInstances[index].disconnect(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            box.instance.disconnect(error: error, for: instance, in: &eventContext)
+        case .quicStream(let box, let flowID):
+            box.instance.disconnectStream(flow: flowID, error: error, for: instance, in: &eventContext)
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
@@ -1899,9 +1929,8 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             try storage!.socketStreamInstances[index].detach(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            var protocolInstance = box.instance
-            try protocolInstance.detach(for: instance, in: &eventContext)
+        case .quicStream(let box, let flowID):
+            try box.instance.detachStream(flow: flowID, for: instance, in: &eventContext)
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
@@ -1933,8 +1962,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             storage!.socketStreamInstances.remove(index: index)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            box.instance.unregisterEventManager(in: &eventContext)
+        case .quicStream:
+            // The connection releases the stream, and its event state, as part of detaching it.
+            break
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
@@ -1965,8 +1995,8 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             storage!.socketStreamInstances[index].handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            box.instance.handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        case .quicStream(let box, let flowID):
+            box.instance.handleApplicationEventForStream(flow: flowID, event: event, for: instance, in: &eventContext)
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
@@ -1995,8 +2025,8 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             return storage!.socketStreamInstances[index].getMetadata(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            return box.instance.getMetadata(for: instance, in: &eventContext)
+        case .quicStream(let box, let flowID):
+            return box.instance.getMetadata(flow: flowID)
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
@@ -2042,12 +2072,8 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             )
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            return box.instance.getMetrics(
-                requestedNetworkMetric: requestedNetworkMetric,
-                for: instance,
-                in: &eventContext
-            )
+        case .quicStream(let box, let flowID):
+            return box.instance.getMetrics(flow: flowID, requestedNetworkMetric: requestedNetworkMetric)
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
@@ -2108,9 +2134,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             )
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicStream(let box):
-            var instance = box.instance
-            try instance.attachUpperProtocol(
+        case .quicStream(let box, let flowID):
+            try box.instance.attachUpperProtocolToStream(
+                flow: flowID,
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -2994,8 +3020,8 @@ open class BaseNetworkProtocolStorage {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 extension BaseOutboundStreamLinkage {
-    public init(quicStream: QUICStreamInstance) {
-        self.init(identifier: quicStream.identifier, storage: nil, protocolType: .quicStream(.init(quicStream)))
+    public init(quicConnection: QUICConnection, flow: MultiplexedFlowIdentifier, identifier: InstanceIdentifier) {
+        self.init(identifier: identifier, storage: nil, protocolType: .quicStream(.init(quicConnection), flow))
     }
 }
 

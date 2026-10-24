@@ -154,6 +154,14 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
         return NetworkStateIndex(index: newIndex, generation: generation)
     }
 
+    // Lends out every live element in turn, in slot order.
+    @inline(always)
+    mutating func forEachElement(_ body: (inout Element) -> Void) {
+        for slot in 0..<elements.count where elements[slot] != nil {
+            body(&elements[slot]!)
+        }
+    }
+
     internal mutating func cleanupGapsIfNecessary() {
         let count = elements.count
         guard count > 0, elements[count - 1] == nil else {
@@ -178,16 +186,21 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
     }
 
     mutating func remove(index: NetworkStateIndex) {
-        guard !index.isNone else { return }
+        _ = take(index: index)
+    }
+
+    // Removes the element at `index` and hands it back to the caller instead of destroying it.
+    mutating func take(index: NetworkStateIndex) -> Element? {
+        guard !index.isNone else { return nil }
         defer { cleanupGapsIfNecessary() }
         if index.slot == elements.count - 1 {
             // Removing last element
-            elements.removeLast()
-            return
+            return elements.removeLast()
         }
 
         // Clear element and record the gap
-        elements[index.slot] = nil
+        let taken = elements[index.slot].take()
         gaps.push(GapRecord(index))
+        return taken
     }
 }

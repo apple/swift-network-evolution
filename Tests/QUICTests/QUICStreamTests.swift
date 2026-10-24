@@ -26,21 +26,30 @@ import XCTest
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
+/// Keeps a stream, which cannot be copied, where a test case's `setUp` and test methods can both reach it.
+@available(Network 0.1.0, *)
+final class QUICStreamHolder {
+    var stream: QUICStreamInstance
+    init(_ stream: consuming QUICStreamInstance) {
+        self.stream = stream
+    }
+}
+
 @available(Network 0.1.0, *)
 let quicStreamTestsLogPrefixer = LogPrefixer("[QUICStreamTests]")
 
 @available(Network 0.1.0, *)
 final class QUICStreamTests: XCTestCase {
-    var stream: QUICStreamInstance!
+    var holder: QUICStreamHolder!
     var connection = NetworkContext.implicitContext.onQueue {
         QUICConnection(context: NetworkContext.implicitContext)
     }
 
     override func setUp() {
-        stream = connection.context.onQueue {
-            QUICStreamInstance(parent: connection, inbound: false)
+        connection.context.onQueue {
+            holder = QUICStreamHolder(QUICStreamInstance(parent: connection, inbound: false))
         }
-        stream.setup(
+        holder.stream.setup(
             streamID: QUICStreamID(0),
             logPrefixer: quicStreamTestsLogPrefixer
         )
@@ -51,8 +60,8 @@ final class QUICStreamTests: XCTestCase {
         // else hands their event states back. The stream's `deinit` is an external entry point
         // that acquires the event context, so release it on the queue too.
         connection.context.onQueue {
-            self.stream.destroyFromExternalTest()
-            self.stream = nil
+            self.holder.stream.destroyFromExternalTest()
+            self.holder = nil
             self.connection.destroyFromExternalTest()
         }
     }
@@ -61,7 +70,7 @@ final class QUICStreamTests: XCTestCase {
         connection.context.onQueue {
             let streamFrame = FrameStreamReceived(id: 0, offset: 0, data: [], isFinal: true)
             let result = connection.fromExternal(streamFrame) { eventContext, frame in
-                stream.processIncomingStream(connection: connection, frame: frame, in: &eventContext)
+                holder.stream.processIncomingStream(connection: connection, frame: frame, in: &eventContext)
             }
             XCTAssertTrue(result)
         }
@@ -71,15 +80,15 @@ final class QUICStreamTests: XCTestCase {
         self.connection.context.onQueue {
             let newMaxData: UInt64 = 2048
             let maxStreamDataFrame = FrameMaxStreamData(id: 0, max: newMaxData)
-            stream.flowControlState.initializeMaxDataValues(remoteMaxData: 1024, localMaxData: 1024)
-            XCTAssertTrue(stream.flowControlState.outboundMaxData == 1024)
+            holder.stream.flowControlState.initializeMaxDataValues(remoteMaxData: 1024, localMaxData: 1024)
+            XCTAssertTrue(holder.stream.flowControlState.outboundMaxData == 1024)
             connection.fromExternal { eventContext in
-                stream.processIncomingMaxStreamData(
+                holder.stream.processIncomingMaxStreamData(
                     remoteMaxStreamData: maxStreamDataFrame.max,
                     in: &eventContext
                 )
             }
-            XCTAssertTrue(stream.flowControlState.outboundMaxData == 2048)
+            XCTAssertTrue(holder.stream.flowControlState.outboundMaxData == 2048)
         }
     }
 
@@ -88,72 +97,73 @@ final class QUICStreamTests: XCTestCase {
 
     func testStreamIDDefaultsToNilBeforeSetup() {
         connection.context.onQueue {
-            let freshStream = QUICStreamInstance(parent: self.connection, inbound: false)
+            var freshStream = QUICStreamInstance(parent: self.connection, inbound: false)
             XCTAssertNil(freshStream.streamID)
             freshStream.destroyFromExternalTest()
         }
     }
 
     func testFinalSizeDefaultsToNil() {
-        XCTAssertNil(stream.finalSize)
+        XCTAssertNil(holder.stream.finalSize)
     }
 
     func testInboundApplicationErrorDefaultsToNil() {
-        XCTAssertNil(stream.inboundApplicationError)
+        XCTAssertNil(holder.stream.inboundApplicationError)
     }
 
     func testOutboundApplicationErrorDefaultsToNil() {
-        XCTAssertNil(stream.outboundApplicationError)
+        XCTAssertNil(holder.stream.outboundApplicationError)
     }
 
     func testFinalSizeRoundTrip() {
-        stream.finalSize = 123_456
-        XCTAssertEqual(stream.finalSize, 123_456)
-        stream.finalSize = nil
-        XCTAssertNil(stream.finalSize)
+        holder.stream.finalSize = 123_456
+        XCTAssertEqual(holder.stream.finalSize, 123_456)
+        holder.stream.finalSize = nil
+        XCTAssertNil(holder.stream.finalSize)
     }
 
     func testFinalSizeZeroIsNotConfusedWithNil() {
-        stream.finalSize = 0
-        XCTAssertNotNil(stream.finalSize)
-        XCTAssertEqual(stream.finalSize, 0)
+        holder.stream.finalSize = 0
+        XCTAssertNotNil(holder.stream.finalSize)
+        XCTAssertEqual(holder.stream.finalSize, 0)
     }
 
     func testInboundApplicationErrorRoundTrip() {
-        stream.inboundApplicationError = 42
-        XCTAssertEqual(stream.inboundApplicationError, 42)
-        stream.inboundApplicationError = nil
-        XCTAssertNil(stream.inboundApplicationError)
+        holder.stream.inboundApplicationError = 42
+        XCTAssertEqual(holder.stream.inboundApplicationError, 42)
+        holder.stream.inboundApplicationError = nil
+        XCTAssertNil(holder.stream.inboundApplicationError)
     }
 
     func testInboundApplicationErrorZeroIsNotConfusedWithNil() {
-        stream.inboundApplicationError = 0
-        XCTAssertNotNil(stream.inboundApplicationError)
-        XCTAssertEqual(stream.inboundApplicationError, 0)
+        holder.stream.inboundApplicationError = 0
+        XCTAssertNotNil(holder.stream.inboundApplicationError)
+        XCTAssertEqual(holder.stream.inboundApplicationError, 0)
     }
 
     func testOutboundApplicationErrorRoundTrip() {
-        stream.outboundApplicationError = 99
-        XCTAssertEqual(stream.outboundApplicationError, 99)
-        stream.outboundApplicationError = nil
-        XCTAssertNil(stream.outboundApplicationError)
+        holder.stream.outboundApplicationError = 99
+        XCTAssertEqual(holder.stream.outboundApplicationError, 99)
+        holder.stream.outboundApplicationError = nil
+        XCTAssertNil(holder.stream.outboundApplicationError)
     }
 
     func testOutboundApplicationErrorZeroIsNotConfusedWithNil() {
-        stream.outboundApplicationError = 0
-        XCTAssertNotNil(stream.outboundApplicationError)
-        XCTAssertEqual(stream.outboundApplicationError, 0)
+        holder.stream.outboundApplicationError = 0
+        XCTAssertNotNil(holder.stream.outboundApplicationError)
+        XCTAssertEqual(holder.stream.outboundApplicationError, 0)
     }
 
     func testResetStreamIDUpdatesStreamID() {
         let newStreamID = QUICStreamID(UInt32(4))
-        stream.resetStreamID(streamID: newStreamID)
-        XCTAssertEqual(stream.streamID, newStreamID)
-        XCTAssertEqual(stream.streamID?.value, 4)
+        holder.stream.resetStreamID(streamID: newStreamID)
+        let resetStreamID = holder.stream.streamID
+        XCTAssertEqual(resetStreamID, newStreamID)
+        XCTAssertEqual(resetStreamID?.value, 4)
     }
     func testApplicationErrorMaxIsReservedAsSentinel() {
-        stream.inboundApplicationError = UInt64.max
-        XCTAssertNil(stream.inboundApplicationError)
+        holder.stream.inboundApplicationError = UInt64.max
+        XCTAssertNil(holder.stream.inboundApplicationError)
     }
 }
 
@@ -163,27 +173,27 @@ final class QUICStreamIDStateTests: XCTestCase {
     var connection = NetworkContext.implicitContext.onQueue {
         QUICConnection(context: NetworkContext.implicitContext)
     }
-    var stream: QUICStreamInstance!
+    var holder: QUICStreamHolder!
     var logPrefix = LogPrefixer("[QUICStreamTests]")
 
     override func setUp() {
-        stream = connection.context.onQueue {
-            QUICStreamInstance(parent: connection, inbound: false)
+        connection.context.onQueue {
+            holder = QUICStreamHolder(QUICStreamInstance(parent: connection, inbound: false))
         }
-        stream.setup(
+        holder.stream.setup(
             streamID: QUICStreamID(0),
             logPrefixer: quicStreamTestsLogPrefixer
         )
     }
 
     override func tearDown() {
-        streamsState.removeAllPending()
+        _ = streamsState.removeAllPending()
         // The stream and the connection were both built outside a protocol stack, so nothing
         // else hands their event states back. The stream's `deinit` is an external entry point
         // that acquires the event context, so release it on the queue too.
         connection.context.onQueue {
-            self.stream.destroyFromExternalTest()
-            self.stream = nil
+            self.holder.stream.destroyFromExternalTest()
+            self.holder = nil
             self.connection.destroyFromExternalTest()
         }
     }
@@ -192,14 +202,18 @@ final class QUICStreamIDStateTests: XCTestCase {
         XCTAssertEqual(streamsState.pendingStartStreams.count, 0)
         XCTAssertNil(streamsState.pendingStartStreams.first)
 
-        XCTAssertFalse(stream.pendingStart)
-        streamsState.addPending(stream)
-        XCTAssertTrue(stream.pendingStart)
+        let flowID = holder.stream.flowIdentifier
+        let pendingBefore = holder.stream.pendingStart
+        XCTAssertFalse(pendingBefore)
+        streamsState.addPending(&holder.stream)
+        let pendingAfterAdd = holder.stream.pendingStart
+        XCTAssertTrue(pendingAfterAdd)
         XCTAssertEqual(streamsState.pendingStartStreams.count, 1)
-        XCTAssertEqual(streamsState.pendingStartStreams.first?.streamID, stream.streamID)
+        XCTAssertEqual(streamsState.pendingStartStreams.first, flowID)
 
-        streamsState.removePending(stream)
-        XCTAssertFalse(stream.pendingStart)
+        streamsState.removePending(&holder.stream)
+        let pendingAfterRemove = holder.stream.pendingStart
+        XCTAssertFalse(pendingAfterRemove)
         XCTAssertEqual(streamsState.pendingStartStreams.count, 0)
         XCTAssertNil(streamsState.pendingStartStreams.first)
     }
@@ -223,15 +237,15 @@ final class QUICStreamListTests: XCTestCase {
             var unblockedList = QUICStreamList.unblockedSendStreamList()
             var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
             XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(
                 streamID: QUICStreamID(0),
                 logPrefixer: quicStreamTestsLogPrefixer
             )
-            pendingReassemblyDequeueList.append(stream)
+            pendingReassemblyDequeueList.append(&stream)
             XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
-            unblockedList.append(stream)
+            unblockedList.append(&stream)
             XCTAssertEqual(unblockedList.count, 1)
         }
     }
@@ -240,17 +254,17 @@ final class QUICStreamListTests: XCTestCase {
         self.connection.context.onQueue {
             var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
             XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(
                 streamID: QUICStreamID(0),
                 logPrefixer: quicStreamTestsLogPrefixer
             )
-            pendingReassemblyDequeueList.append(stream)
+            pendingReassemblyDequeueList.append(&stream)
             XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
-            pendingReassemblyDequeueList.append(stream)
+            pendingReassemblyDequeueList.append(&stream)
             XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
-            pendingReassemblyDequeueList.remove(stream)
+            pendingReassemblyDequeueList.remove(&stream)
             XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
         }
     }
@@ -260,21 +274,21 @@ final class QUICStreamListTests: XCTestCase {
             var unblockedList = QUICStreamList.unblockedSendStreamList()
             var pendingReassemblyDequeueList = QUICStreamList.pendingReassemblyDequeueList()
             XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(
                 streamID: QUICStreamID(0),
                 logPrefixer: quicStreamTestsLogPrefixer
             )
-            pendingReassemblyDequeueList.append(stream)
+            pendingReassemblyDequeueList.append(&stream)
             XCTAssertEqual(pendingReassemblyDequeueList.count, 1)
-            unblockedList.append(stream)
+            unblockedList.append(&stream)
             XCTAssertEqual(unblockedList.count, 1)
             // Removing from pendingReassemblyDequeueList should not remove from sendableList
-            pendingReassemblyDequeueList.remove(stream)
+            pendingReassemblyDequeueList.remove(&stream)
             XCTAssertEqual(pendingReassemblyDequeueList.count, 0)
             XCTAssertEqual(unblockedList.count, 1)
-            unblockedList.remove(stream)
+            unblockedList.remove(&stream)
             XCTAssertEqual(unblockedList.count, 0)
         }
     }

@@ -135,7 +135,7 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
 
         connection.fromExternal { eventContext in
             connection.crypto.stop(in: &eventContext)
-            for (_, stream) in connection.multiplexedFlows {
+            connection.applyToAllFlows { stream in
                 stream.upperSendQueue.finalizeAllFramesAsFailed()
                 stream.upperReceiveQueue.finalizeAllFramesAsFailed()
                 stream.receive.reassemblyQueue.dequeueAll()
@@ -146,7 +146,7 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
                 secondaryFlow.upperReceiveQueue.finalizeAllFramesAsFailed()
                 secondaryFlow.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
             }
-            connection.multiplexedFlows.removeAll()
+            connection.withMultiplexedFlows { $0.removeAll() }
             connection.multiplexedSecondaryFlows.removeAll()
             connection.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
         }
