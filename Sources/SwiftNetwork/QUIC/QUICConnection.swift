@@ -1716,6 +1716,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 let receivedPackets: Int = datagrams.count
                 datagrams.iterateMutableFrames { frame in
                     receivedBytes &+= frame.unclaimedLength
+                    // Count the bytes on the path before handling the packet: replies sent while
+                    // handling it are limited by what has been received on an unvalidated path.
+                    path.pathStatistics.increment(.rxBytes, by: frame.unclaimedLength)
                     handleInbound(
                         frame: &frame,
                         from: path,
@@ -1742,6 +1745,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
     }
 
+    // After receiving packets from an address that is not yet validated,
+    // an endpoint MUST limit the amount of data it sends to the unvalidated
+    // address to three times the amount of data received from that address.
+    // This limit on the size of responses is known as the anti-amplification limit.
+    private func remainingAmplificationBudget(on path: QUICPath, isServer: Bool) -> Int? {
+        guard isServer, !path.isValidated else { return nil }
+        let sendLimit = path.pathStatistics[.rxBytes] * 3
+        let alreadySent = path.pathStatistics[.txBytes]
+        return max(sendLimit - alreadySent, 0)
+    }
+
     func recordRxPackets(
         totalRxBytes: Int,
         totalPackets: Int,
@@ -1751,7 +1765,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         connectionStatistics.increment(.rxBytes, by: totalRxBytes)
         connectionStatistics.increment(.rxPackets, by: totalPackets)
         pathStatistics.increment(.rxPackets, by: totalPackets)
-        pathStatistics.increment(.rxBytes, by: totalRxBytes)
     }
 
     func handleInbound(
@@ -4087,6 +4100,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             guard path.hasPendingItems(now: startSendingTimestamp) else {
                 return false
             }
+            // RFC 9000 - Address Validation: the anti-amplification limit for an unvalidated
+            // path is enforced when the packet is sized in buildSinglePacketForKeyState. Check
+            // it here too, before pending items are built, so a PATH_CHALLENGE or PATH_RESPONSE
+            // that cannot be sent yet stays pending instead of being consumed and lost.
+            let amplificationBudget = remainingAmplificationBudget(on: path, isServer: isServer)
+            if amplificationBudget == 0 {
+                log.error("Path is limited by anti-amplification, nothing left to send")
+                return false
+            }
             var pendingItems = PendingItems(
                 packetNumberSpace: PacketNumberSpace.fromKeyState(keyState: keyState)
             )
@@ -4108,6 +4130,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 ecnState: &path.ecnState,
                 totalTxBytes: &totalTxBytes,
                 totalTxPackets: &totalTxPackets,
+                amplificationBudget: amplificationBudget,
                 in: &eventContext
             )
             recordTxPackets(
@@ -4272,6 +4295,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         ecnState: inout ECNPathState,
         totalTxBytes: inout Int,
         totalTxPackets: inout Int,
+        amplificationBudget: Int? = nil,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
 
@@ -4356,19 +4380,30 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Request a full size frame, up to the available congestion window,
         // to be able to greedy fill without pre-calculating size
         let requestedFrameLength: Int
+        var requestedLength: Int
         if let probeMSS = pendingItems.pmtudProbeMSS {
-            requestedFrameLength = probeMSS
+            requestedLength = probeMSS
         } else if pendingItems.isAckOnly,
             !Packet.requiresLongHeader(keyState: keyState),
             let dcid = path.dcid
         {
             // For common case of ACK-only packets, calculate the small size required
             // Add buffer for packet number length
-            requestedFrameLength =
+            requestedLength =
                 (Packet.shortHeaderBaseSize + Int(tagSize) + dcid.length + pendingItems.ackFrameLength + 4)
         } else {
-            requestedFrameLength = path.mss
+            requestedLength = path.mss
         }
+
+        // NOTE: This should only run in cases where the path is not validated
+        if let amplificationBudget {
+            guard amplificationBudget > 0 else {
+                log.error("Path is limited by anti-amplification, nothing left to send")
+                return false
+            }
+            requestedLength = min(requestedLength, amplificationBudget)
+        }
+        requestedFrameLength = requestedLength
 
         var outFrame: Frame
         if let batchFrame = datagramBatch.popFirst() {
