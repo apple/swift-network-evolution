@@ -296,27 +296,32 @@ final class SendItemsTests: XCTestCase {
         }
         let flowID: UInt64 = 4
         let contextID: UInt64 = 0
-        let flow = clock.onQueue {
-            QUICDatagramFlow(parent: connection, inbound: true)
+        let flowIdentifier = clock.onQueue { () -> MultiplexedFlowIdentifier in
+            var flow = QUICDatagramFlow(parent: connection, inbound: true)
+            flow.setup(datagramFlowID: flowID, contextID: contextID, logPrefixer: LogPrefixer())
+            let flowIdentifier = flow.flowIdentifier
+            connection.insertSecondaryFlow(flow, for: flowIdentifier)
+            return flowIdentifier
         }
-        flow.setup(datagramFlowID: flowID, contextID: contextID, logPrefixer: LogPrefixer())
-        connection.multiplexedSecondaryFlows[flow.flowIdentifier] = flow
         defer {
             clock.onQueue {
                 connection.fromExternal { eventContext in
-                    flow.upperSendQueue.finalizeAllFramesAsFailed()
-                    flow.unregisterEventManager(in: &eventContext)
+                    if var flow = connection.removeSecondaryFlow(flowIdentifier) {
+                        flow.upperSendQueue.finalizeAllFramesAsFailed()
+                        flow.unregisterEventManager(in: &eventContext)
+                    }
                 }
-                connection.multiplexedSecondaryFlows.removeValue(forKey: flow.flowIdentifier)
                 connection.destroyFromExternalTest()
             }
         }
 
         let payload = [UInt8](repeating: 0xAB, count: 256)
-        flow.usableDatagramSize = payload.count
-        for index in 0..<queued {
-            let count = index == oversizedAtIndex ? payload.count + 1 : payload.count
-            flow.upperSendQueue.add(frame: Frame(copyBuffer: [UInt8](repeating: 0xAB, count: count)))
+        connection.withSecondaryFlow(flowIdentifier) { (flow: inout QUICDatagramFlow) in
+            flow.usableDatagramSize = payload.count
+            for index in 0..<queued {
+                let count = index == oversizedAtIndex ? payload.count + 1 : payload.count
+                flow.upperSendQueue.add(frame: Frame(copyBuffer: [UInt8](repeating: 0xAB, count: count)))
+            }
         }
 
         // The length field already covers the flow and context IDs alongside the payload.
@@ -335,7 +340,7 @@ final class SendItemsTests: XCTestCase {
         let roomBeforeWriting = packet.unclaimedLength
 
         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
-        pendingItems.prependDatagramFlowToService(flow.flowIdentifier)
+        pendingItems.prependDatagramFlowToService(flowIdentifier)
         var transmittedItems = TransmittedItems()
         var availableCongestionWindow: UInt64 = 10000
         var shorthandFrames: [QUICShorthandFrame]? = nil
@@ -355,7 +360,7 @@ final class SendItemsTests: XCTestCase {
             outcome.thrownError = error
         }
 
-        connection.accessDatagramsToSend(flow: flow.flowIdentifier) { outcome.stillQueued = $0.count }
+        connection.accessDatagramsToSend(flow: flowIdentifier) { outcome.stillQueued = $0.count }
         outcome.flowsToService = pendingItems.datagramFlowsToService.count
         outcome.datagramsWritten = connection.stats[.txDatagramFrameWithLength]
         outcome.bytesWritten = roomBeforeWriting - packet.unclaimedLength

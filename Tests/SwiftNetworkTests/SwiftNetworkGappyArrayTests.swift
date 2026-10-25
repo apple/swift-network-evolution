@@ -217,6 +217,41 @@ final class SwiftNetworkGappyArrayTests: XCTestCase {
         XCTAssertEqual(ga[third].value, 3)
     }
 
+    // Gaps are reused in any order, and trimming trailing empty slots must forget exactly the gaps
+    // that no longer exist: every surviving element stays addressable, no live slot is handed out
+    // twice, and the count stays exact.
+    func testGapReuseAndTrimKeepElementsIntact() throws {
+        var ga = NetworkGappyArray<GappyElement>()
+        var live = [Int: NetworkStateIndex]()
+        var nextValue = 0
+        func add() {
+            nextValue += 1
+            live[nextValue] = ga.insert(GappyElement(value: nextValue))
+        }
+
+        for _ in 0..<40 { add() }
+        // Free every other element, then the tail, so there are interior gaps and a trim.
+        for value in live.keys.sorted() where value % 2 == 0 {
+            ga.remove(index: live.removeValue(forKey: value)!)
+        }
+        for value in live.keys.sorted().suffix(10) {
+            ga.remove(index: live.removeValue(forKey: value)!)
+        }
+        XCTAssertEqual(ga.count, live.count)
+
+        for _ in 0..<30 { add() }
+        XCTAssertEqual(ga.count, live.count)
+        for (value, index) in live {
+            XCTAssertEqual(ga[index].value, value)
+        }
+
+        // No two live elements share a slot
+        XCTAssertEqual(Set(live.values.map { $0.rawValue & 0xFFFF_FFFF }).count, live.count)
+
+        for index in live.values { ga.remove(index: index) }
+        XCTAssertTrue(ga.isEmpty)
+    }
+
     // `NetworkStateIndex` exists to fit in a single 64-bit word, and to need no `Optional`.
     func testIndexFitsInOneWord() throws {
         XCTAssertEqual(MemoryLayout<NetworkStateIndex>.size, 8)

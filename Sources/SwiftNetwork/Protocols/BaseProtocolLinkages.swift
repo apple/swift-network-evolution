@@ -302,7 +302,7 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         case socketDatagram(NetworkStateIndex)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case quicDatagramFlow(ProtocolInstanceBox<QUICDatagramFlow>)
+        case quicDatagramFlow(ProtocolInstanceBox<QUICConnection>, MultiplexedFlowIdentifier)
         #endif
         #if !NETWORK_EMBEDDED
         case external(any ExternalOutboundDatagramLinkage)
@@ -348,13 +348,19 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            var protocolInstance = box.instance
-            return try protocolInstance.receiveDatagrams(
-                maximumDatagramCount: maximumDatagramCount,
-                for: instance,
-                in: &eventContext
-            )
+        case .quicDatagramFlow(let box, let flowID):
+            let result = try box.instance.performOnDatagramFlow(flowID, in: &eventContext) {
+                (flow: inout QUICDatagramFlow, ctx: inout NetworkContext.EventContext) throws(NetworkError) in
+                try flow.receiveDatagrams(
+                    maximumDatagramCount: maximumDatagramCount,
+                    for: instance,
+                    in: &ctx
+                )
+            }
+            switch consume result {
+            case .some(let datagrams): return datagrams
+            case .none: return nil
+            }
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -414,13 +420,20 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            return try box.instance.getDatagramsToSend(
-                maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize,
-                for: instance,
-                in: &eventContext
-            )
+        case .quicDatagramFlow(let box, let flowID):
+            let result = try box.instance.performOnDatagramFlow(flowID, in: &eventContext) {
+                (flow: inout QUICDatagramFlow, ctx: inout NetworkContext.EventContext) throws(NetworkError) in
+                try flow.getDatagramsToSend(
+                    maximumDatagramCount: maximumDatagramCount,
+                    minimumDatagramSize: minimumDatagramSize,
+                    for: instance,
+                    in: &ctx
+                )
+            }
+            switch consume result {
+            case .some(let datagrams): return datagrams
+            case .none: return nil
+            }
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -455,9 +468,16 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             try storage!.socketDatagramInstances[index].sendDatagrams(datagrams, from: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            var protocolInstance = box.instance
-            try protocolInstance.sendDatagrams(datagrams, from: instance, in: &eventContext)
+        case .quicDatagramFlow(let box, let flowID):
+            var pendingData: FrameArray? = datagrams
+            let sent: Void? = try box.instance.performOnDatagramFlow(flowID, in: &eventContext) {
+                (flow: inout QUICDatagramFlow, ctx: inout NetworkContext.EventContext) throws(NetworkError) in
+                try flow.sendDatagrams(pendingData.take()!, from: instance, in: &ctx)
+            }
+            if sent == nil {
+                pendingData?.finalizeAllFramesAsFailed()
+                throw NetworkError.posix(ENOTCONN)
+            }
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -494,7 +514,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             storage!.socketDatagramInstances[index].connect(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box): box.instance.connect(for: instance, in: &eventContext)
+        case .quicDatagramFlow(let box, let flowID):
+            box.instance.connectDatagramFlow(flow: flowID, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.connect(for: instance, in: &eventContext)
@@ -520,7 +541,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             storage!.socketDatagramInstances[index].disconnect(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box): box.instance.disconnect(error: error, for: instance, in: &eventContext)
+        case .quicDatagramFlow(let box, let flowID):
+            box.instance.disconnectDatagramFlow(flow: flowID, error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
@@ -547,9 +569,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             try storage!.socketDatagramInstances[index].detach(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            var protocolInstance = box.instance
-            try protocolInstance.detach(for: instance, in: &eventContext)
+        case .quicDatagramFlow(let box, let flowID):
+            try box.instance.detachDatagramFlow(flow: flowID, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -582,8 +603,9 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             storage!.socketDatagramInstances.remove(index: index)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            box.instance.unregisterEventManager(in: &eventContext)
+        case .quicDatagramFlow:
+            // The connection releases the flow, and its event state, as part of detaching it.
+            break
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -620,8 +642,13 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            box.instance.handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        case .quicDatagramFlow(let box, let flowID):
+            box.instance.handleApplicationEventForDatagramFlow(
+                flow: flowID,
+                event: event,
+                for: instance,
+                in: &eventContext
+            )
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
@@ -645,7 +672,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             return storage!.socketDatagramInstances[index].getMetadata(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box): return box.instance.getMetadata(for: instance, in: &eventContext)
+        case .quicDatagramFlow(let box, let flowID):
+            return box.instance.getMetadata(flow: flowID)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
@@ -693,12 +721,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            return box.instance.getMetrics(
-                requestedNetworkMetric: requestedNetworkMetric,
-                for: instance,
-                in: &eventContext
-            )
+        case .quicDatagramFlow(let box, let flowID):
+            return box.instance.getMetrics(flow: flowID, requestedNetworkMetric: requestedNetworkMetric)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -759,9 +783,9 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicDatagramFlow(let box):
-            var instance = box.instance
-            try instance.attachUpperProtocol(
+        case .quicDatagramFlow(let box, let flowID):
+            try box.instance.attachUpperProtocolToDatagramFlow(
+                flow: flowID,
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -3028,11 +3052,12 @@ extension BaseOutboundStreamLinkage {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 extension BaseOutboundDatagramLinkage {
-    public init(quicDatagramFlow: QUICDatagramFlow) {
+    public init(quicConnection: QUICConnection, datagramFlow: MultiplexedFlowIdentifier, identifier: InstanceIdentifier)
+    {
         self.init(
-            identifier: quicDatagramFlow.identifier,
+            identifier: identifier,
             storage: nil,
-            protocolType: .quicDatagramFlow(.init(quicDatagramFlow))
+            protocolType: .quicDatagramFlow(.init(quicConnection), datagramFlow)
         )
     }
 }

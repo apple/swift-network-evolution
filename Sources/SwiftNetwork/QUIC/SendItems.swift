@@ -1694,74 +1694,82 @@ extension FrameDatagram: SendableItem {
         while !pendingItems.datagramFlowsToService.isEmpty, !sentDatagram {
             let firstFlowID = pendingItems.datagramFlowsToService.first!
 
-            guard let datagramFlow = connection.secondaryFlow(for: firstFlowID) else {
-                connection.log.error("Unable to access state for flow \(firstFlowID)")
-                pendingItems.datagramFlowsToService.removeFirst()
-                continue
-            }
             var datagramsListIsEmpty = false
             // Thrown once the closure has returned, because `accessDatagramsToSend` takes a
             // non-throwing closure. It tells the packet builder that this packet is full.
             var writeError: QUICError? = nil
-            connection.accessDatagramsToSend(flow: datagramFlow) { datagrams in
-                while !datagrams.isEmpty {
-                    let dataLength = datagrams.peekFirstFrame { $0.unclaimedLength }
-                    connection.log.datapath(
-                        "Handle output datagram for flow \(firstFlowID.debugDescription) (size \(dataLength))"
-                    )
-                    guard dataLength <= datagramFlow.usableDatagramSize else {
-                        connection.log.error(
-                            "Unable to send datagram frame, length \(dataLength) exceeds usable size \(datagramFlow.usableDatagramSize)"
+            // The flow is borrowed from the secondary flow table for the whole write, so nothing
+            // below may look the table up again.
+            let accessed: Void? = connection.withSecondaryFlow(firstFlowID) {
+                (datagramFlow: inout QUICDatagramFlow) in
+                let datagramFlowID = datagramFlow.flowID
+                let datagramContextID = datagramFlow.contextID
+                let usableDatagramSize = datagramFlow.usableDatagramSize
+                connection.accessDatagramsToSend(flow: &datagramFlow) { datagrams in
+                    while !datagrams.isEmpty {
+                        let dataLength = datagrams.peekFirstFrame { $0.unclaimedLength }
+                        connection.log.datapath(
+                            "Handle output datagram for flow \(firstFlowID.debugDescription) (size \(dataLength))"
                         )
-                        guard var oversized = datagrams.popFirst() else { break }
-                        oversized.finalize(success: false)
-                        continue
-                    }
-
-                    // Write from the queue and remove it only once it is written, so a datagram
-                    // that does not fit the rest of this packet stays queued for the next one.
-                    let roomBeforeWriting = frame.unclaimedLength
-                    writeError = datagrams.peekFirstFrame { datagramFrame in
-                        do throws(QUICError) {
-                            try FrameDatagram.write(
-                                frame: &frame,
-                                hasLength: true,
-                                flowID: datagramFlow.flowID,
-                                contextID: datagramFlow.contextID,
-                                data: datagramFrame,
-                                stats: &stats
-                            )
-                            return nil
-                        } catch {
-                            return error
-                        }
-                    }
-                    if let error = writeError {
-                        if case .frameWrite(.smallBuffer) = error {
-                            connection.log.datapath(
-                                "Datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
-                            )
-                        } else {
+                        guard dataLength <= usableDatagramSize else {
                             connection.log.error(
-                                "Unable to write datagram for flow \(firstFlowID.debugDescription): "
-                                    + "\(error.info.description), code \(error.info.code)"
+                                "Unable to send datagram frame, length \(dataLength) exceeds usable size \(usableDatagramSize)"
                             )
+                            guard var oversized = datagrams.popFirst() else { break }
+                            oversized.finalize(success: false)
+                            continue
+                        }
+
+                        // Write from the queue and remove it only once it is written, so a datagram
+                        // that does not fit the rest of this packet stays queued for the next one.
+                        let roomBeforeWriting = frame.unclaimedLength
+                        writeError = datagrams.peekFirstFrame { datagramFrame in
+                            do throws(QUICError) {
+                                try FrameDatagram.write(
+                                    frame: &frame,
+                                    hasLength: true,
+                                    flowID: datagramFlowID,
+                                    contextID: datagramContextID,
+                                    data: datagramFrame,
+                                    stats: &stats
+                                )
+                                return nil
+                            } catch {
+                                return error
+                            }
+                        }
+                        if let error = writeError {
+                            if case .frameWrite(.smallBuffer) = error {
+                                connection.log.datapath(
+                                    "Datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
+                                )
+                            } else {
+                                connection.log.error(
+                                    "Unable to write datagram for flow \(firstFlowID.debugDescription): "
+                                        + "\(error.info.description), code \(error.info.code)"
+                                )
+                            }
+                            break
+                        }
+                        sentDatagram = true
+                        shorthandFrames?.append(
+                            toShorthandLogEntry(
+                                flowID: datagramFlowID,
+                                length: UInt64(dataLength)
+                            )
+                        )
+                        if var written = datagrams.popFirst() {
+                            written.finalize(success: true)
                         }
                         break
                     }
-                    sentDatagram = true
-                    shorthandFrames?.append(
-                        toShorthandLogEntry(
-                            flowID: datagramFlow.flowID,
-                            length: UInt64(dataLength)
-                        )
-                    )
-                    if var written = datagrams.popFirst() {
-                        written.finalize(success: true)
-                    }
-                    break
+                    datagramsListIsEmpty = datagrams.isEmpty
                 }
-                datagramsListIsEmpty = datagrams.isEmpty
+            }
+            guard accessed != nil else {
+                connection.log.error("Unable to access state for flow \(firstFlowID)")
+                pendingItems.datagramFlowsToService.removeFirst()
+                continue
             }
             if let writeError {
                 // A write only fails before anything is dequeued, so nothing was written in this

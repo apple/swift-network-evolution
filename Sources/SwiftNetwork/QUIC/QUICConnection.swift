@@ -180,7 +180,18 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public func insertFlow(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
         multiplexedFlows.insert(flow, for: flowID)
     }
-    public var multiplexedSecondaryFlows = [MultiplexedFlowIdentifier: SecondaryFlow]()
+
+    public var multiplexedSecondaryFlows = MultiplexedFlowTable<SecondaryFlow>()
+
+    public func withMultiplexedSecondaryFlows<R: ~Copyable, E: Error>(
+        _ body: (inout MultiplexedFlowTable<SecondaryFlow>) throws(E) -> R
+    ) throws(E) -> R {
+        try body(&multiplexedSecondaryFlows)
+    }
+
+    public func insertSecondaryFlow(_ flow: consuming SecondaryFlow, for flowID: MultiplexedFlowIdentifier) {
+        multiplexedSecondaryFlows.insert(flow, for: flowID)
+    }
     public var multiplexingPaths = [MultiplexingPathIdentifier: Path]()
 
     public typealias StreamFamily = BaseStreamLinkageFamily
@@ -407,7 +418,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private var pendOutboundData = false  // Don't immediately process application sends
 
     // Set for sendFrames or sendFramesFromRecovery calls claiming the send path
-    private var isSendActive = false
+    private(set) var isSendActive = false
     private var hasDeferredSends = false
     private var deferredSendFrames: DeferredSend?
     private var deferredPathSends: [MultiplexingPathIdentifier: DeferredSend] = [:]
@@ -693,10 +704,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         if protocolOptions.isDatagram {
-            guard let datagramFlow = secondaryFlow(for: flowID) else {
+            let didSetup: Void? = performOnDatagramFlow(flowID) { (datagramFlow: inout SecondaryFlow) in
+                setupNewDatagramFlow(&datagramFlow, with: protocolOptions)
+            }
+            guard didSetup != nil else {
                 throw NetworkError.posix(ENOENT)
             }
-            setupNewDatagramFlow(datagramFlow, with: protocolOptions)
         } else {
             guard hasFlow(flowID) else {
                 throw NetworkError.posix(ENOENT)
@@ -723,7 +736,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         path.congestionControlMSSChanged(mss: path.mss)
         if path == currentPath {
-            applyToAllSecondaryFlows { datagramFlow in
+            applyToAllSecondaryFlows { (datagramFlow: inout SecondaryFlow) in
                 datagramFlow.updateUsableDatagramFrameSize(connection: self, path: path)
             }
         }
@@ -1572,7 +1585,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             "Received connection start on flow \(flowID.debugDescription) (isServer: \(self.isServer))"
         )
         // For streams (not datagram flows), ensure the stream isn't pending
-        if secondaryFlow(for: flowID) == nil {
+        if !hasSecondaryFlow(flowID) {
             // If this is a QUICStream then make sure its not in a pending state
             guard let pendingStart = withFlow(flowID, { (stream: inout Flow) in stream.pendingStart }),
                 !pendingStart
@@ -1652,7 +1665,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             disconnect(stream: &stream, direction: direction, error: error, in: &ctx)
         }
         if stopped == nil {
-            if let _ = secondaryFlow(for: flowID) {
+            if hasSecondaryFlow(flowID) {
                 deliverDisconnectedEvent(flow: flowID, error: nil, in: &eventContext)
             } else {
                 log.error("No stream for \(flowID), cannot close")
@@ -2815,11 +2828,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return metadata as? ProtocolMetadata<P>
         }
 
-        if let datagramFlow = secondaryFlow(for: flowID) {
+        let datagramInfo = withSecondaryFlow(flowID) { (datagramFlow: inout SecondaryFlow) in
+            (flowID: datagramFlow.flowID, usableSize: datagramFlow.usableDatagramSize)
+        }
+        if let datagramInfo {
             let metadata = QUICProtocol.metadata()
-            metadata.perProtocolMetadata?.datagramFlowID = datagramFlow.flowID
+            metadata.perProtocolMetadata?.datagramFlowID = datagramInfo.flowID
             metadata.perProtocolMetadata?.usableDatagramFrameSize = UInt16(
-                datagramFlow.usableDatagramSize
+                datagramInfo.usableSize
             )
             metadata.perProtocolMetadata?.isDatagramFlow = true
             metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
@@ -3057,7 +3073,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     func close(sendCloseFrame: Bool = true, in eventContext: inout NetworkContext.EventContext) {
         // Closing tears down every stream, so it cannot happen while one is borrowed
         guard !streamAccess.borrowed else {
-            streamAccess.close = sendCloseFrame
+            // The first request wins, as it would have had it run immediately: a later one finds
+            // the connection already closing.
+            if streamAccess.close == nil {
+                streamAccess.close = sendCloseFrame
+            }
             return
         }
         if state.isTerminal || drainingScheduled {
@@ -3469,7 +3489,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     // Central check to drain deferred calls
     @inline(always)
-    private func drainDeferredSendFrames(
+    func drainDeferredSendFrames(
         recoveryIsFree: Bool = true,
         in eventContext: inout NetworkContext.EventContext
     ) {
@@ -3613,9 +3633,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         delayedACK: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        // Sending looks at streams, so it cannot happen while one is borrowed
+        // Sending looks at streams, so it cannot happen while one is borrowed. Keep what the
+        // caller asked for so that it still gets it when the borrow ends.
         guard !streamAccess.borrowed else {
             streamAccess.sendFrames = true
+            streamAccess.ignoreCongestionWindow = streamAccess.ignoreCongestionWindow || ignoreCongestionWindow
+            streamAccess.delayedACK = streamAccess.delayedACK || delayedACK
             return false
         }
         // Check if the send path is active, if so then record and defer the call
@@ -3723,6 +3746,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         retransmission: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        // Sending looks at streams, so it cannot happen while one is borrowed
+        guard !streamAccess.borrowed else {
+            recordDeferredPathSend(path, ignoreCongestionWindow: ignoreCongestionWindow, retransmission: retransmission)
+            streamAccess.hasPathSends = true
+            return false
+        }
         // Check if the send path is active, if so then record and defer the call
         guard !isSendActive else {
             recordDeferredPathSend(path, ignoreCongestionWindow: ignoreCongestionWindow, retransmission: retransmission)
@@ -5291,7 +5320,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // A flow opened before the peer's transport parameters sized itself
             // against a limit of 0, so recompute now that the limit is known.
             if let path = currentPath {
-                applyToAllSecondaryFlows { datagramFlow in
+                applyToAllSecondaryFlows { (datagramFlow: inout SecondaryFlow) in
                     datagramFlow.updateUsableDatagramFrameSize(connection: self, path: path)
                 }
             }
@@ -6693,11 +6722,26 @@ extension QUICConnection {
         flow flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard secondaryFlow(for: flowID) != nil else {
+        guard hasSecondaryFlow(flowID) else {
             log.error("Unable to find datagram flow \(flowID)")
             return
         }
+        serviceDatagramsToSendUnchecked(flow: flowID, in: &eventContext)
+    }
 
+    // The datagram flow is already borrowed from the secondary flow table, so it is known to
+    // exist and cannot be looked up again. Sending frames waits until the borrow ends.
+    func serviceDatagramsToSend(
+        borrowedFlow flowID: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        serviceDatagramsToSendUnchecked(flow: flowID, in: &eventContext)
+    }
+
+    private func serviceDatagramsToSendUnchecked(
+        flow flowID: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         withPendingItems(for: .applicationData) {
             $0.prependDatagramFlowToService(flowID)
         }
@@ -6715,7 +6759,7 @@ extension QUICConnection {
     }
 
     func setupNewDatagramFlow(
-        _ flow: QUICDatagramFlow,
+        _ flow: inout QUICDatagramFlow,
         with streamOptions: QUICStreamProtocol.Options
     ) {
         let datagramFlowID: UInt64?
@@ -6762,7 +6806,7 @@ extension QUICConnection {
             log.datapath("Received DATAGRAM frame with length: \(frame.length)")
         }
 
-        var matchingFlowIdentifier = findSecondaryFlow(where: { candidateFlow in
+        var matchingFlowIdentifier = findSecondaryFlow(where: { (candidateFlow: inout SecondaryFlow) in
             guard candidateFlow.contextID == frame.contextID,
                 candidateFlow.flowID == frame.flowID
             else {
@@ -6781,18 +6825,18 @@ extension QUICConnection {
                 return true
             }
 
-            let newFlow = QUICDatagramFlow(
+            var newFlow = QUICDatagramFlow(
                 parent: self,
                 inbound: true,
                 in: &eventContext
             )
             let newFlowIdentifier = newFlow.flowIdentifier
+            let newFlowInstance = newFlow.identifier
             newFlow.setup(
                 datagramFlowID: frame.flowID,
                 contextID: frame.contextID,
                 logPrefixer: logPrefixer
             )
-            multiplexedSecondaryFlows[newFlowIdentifier] = newFlow
 
             withCurrentPath { path in
                 newFlow.updateUsableDatagramFrameSize(connection: self, path: path)
@@ -6802,13 +6846,14 @@ extension QUICConnection {
             datagramMetadata.perProtocolMetadata?.isDatagramFlow = true
             datagramMetadata.perProtocolMetadata?.usableDatagramFrameSize = UInt16(newFlow.usableDatagramSize)
             datagramMetadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
+            newFlow.log.debug("Created inbound datagram flow for \(newFlowIdentifier)")
+            insertSecondaryFlow(newFlow, for: newFlowIdentifier)
             secondaryInboundFlowLinkage.deliverNewInboundFlowEvent(
-                flowInstance: newFlow.identifier,
+                flowInstance: newFlowInstance,
                 flowMetadata: datagramMetadata,
                 from: identifier,
                 in: &eventContext
             )
-            newFlow.log.debug("Created inbound datagram flow for \(newFlowIdentifier)")
 
             matchingFlowIdentifier = newFlowIdentifier
         }
@@ -7041,8 +7086,12 @@ extension QUICConnection {
     ) {
         if withFlow(flowID, { (stream: inout Flow) in stream.applicationMarkedIdle = true }) != nil {
             flowsHaveEverMarkedIdle = true
-        } else if let datagramFlow = secondaryFlow(for: flowID) {
-            datagramFlow.applicationMarkedIdle = true
+        } else if withSecondaryFlow(
+            flowID,
+            { (datagramFlow: inout SecondaryFlow) in datagramFlow.applicationMarkedIdle = true }
+        )
+            != nil
+        {
             flowsHaveEverMarkedIdle = true
         }
         checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount, in: &eventContext)
@@ -7053,8 +7102,10 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext
     ) {
         if withFlow(flowID, { (stream: inout Flow) in stream.applicationMarkedIdle = false }) != nil {
-        } else if let datagramFlow = secondaryFlow(for: flowID) {
-            datagramFlow.applicationMarkedIdle = false
+        } else {
+            _ = withSecondaryFlow(flowID) { (datagramFlow: inout SecondaryFlow) in
+                datagramFlow.applicationMarkedIdle = false
+            }
         }
         checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount, in: &eventContext)
     }
@@ -7082,7 +7133,7 @@ extension QUICConnection {
         if someFlowIsNonIdle {
             return false
         }
-        applyToAllSecondaryFlows { datagramFlow in
+        applyToAllSecondaryFlows { (datagramFlow: inout SecondaryFlow) in
             if !datagramFlow.applicationMarkedIdle {
                 someFlowIsNonIdle = true
             }

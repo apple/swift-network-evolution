@@ -32,20 +32,25 @@ internal import os
 // the closure has to wait until the borrow ends.
 //
 
-/// Whether a stream is borrowed from the flow table, and the connection-level work that streams asked
-/// for while it was. Kept together so a borrow touches one stored property, not several.
+/// Whether a stream or datagram flow is borrowed from its flow table, and the connection-level work
+/// that flows asked for while it was. Kept together so a borrow touches one stored property, not several.
 @available(Network 0.1.0, *)
 struct StreamAccessState {
-    /// Set while a stream is borrowed from the flow table
+    /// Set while a stream or datagram flow is borrowed from its flow table
     var borrowed = false
+    /// Set when a send was requested, along with the flags it asked for.
     var sendFrames = false
+    var ignoreCongestionWindow = false
+    var delayedACK = false
+    /// Set when a send on one path was recorded with the connection's deferred path sends.
+    var hasPathSends = false
     /// Set when a close was requested; holds whether a CONNECTION_CLOSE frame should be sent.
     var close: Bool? = nil
     /// Whether the connection should recheck if every stream is idle, which looks at every stream.
     var checkIdle = false
 
     /// Whether there is work that a borrowed stream held back for the connection.
-    var hasDeferredWork: Bool { sendFrames || close != nil || checkIdle }
+    var hasDeferredWork: Bool { sendFrames || hasPathSends || close != nil || checkIdle }
 }
 
 @available(Network 0.1.0, *)
@@ -123,21 +128,32 @@ extension QUICConnection {
     }
 
     @inline(never)
-    private func runDeferredStreamWork(in eventContext: inout NetworkContext.EventContext) {
+    func runDeferredStreamWork(in eventContext: inout NetworkContext.EventContext) {
         let work = streamAccess
         streamAccess = StreamAccessState()
         if let sendCloseFrame = work.close {
             // A close sends frames itself, so there is no point sending them first.
             close(sendCloseFrame: sendCloseFrame, in: &eventContext)
-        } else if work.sendFrames {
-            sendFrames(in: &eventContext)
+        } else {
+            if work.sendFrames {
+                sendFrames(
+                    ignoreCongestionWindow: work.ignoreCongestionWindow,
+                    delayedACK: work.delayedACK,
+                    in: &eventContext
+                )
+            }
+            // Path sends were recorded with the connection. Replaying them claims the send path, so
+            // leave them to a send that is still running; it replays them when it finishes.
+            if work.hasPathSends && !isSendActive {
+                drainDeferredSendFrames(in: &eventContext)
+            }
         }
         if work.checkIdle {
             checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
         }
     }
 
-    private func performDeferredStreamWorkFromExternal() {
+    func performDeferredStreamWorkFromExternal() {
         fromExternal { eventContext in
             runDeferredStreamWork(in: &eventContext)
         }

@@ -20,14 +20,10 @@ import BasicContainers
 //
 // A flow identifier carries the slot of the flow's event state in its low 32 bits. Those slots are
 // small and dense, so they index a lookup array directly and no hashing is needed. The rare
-// identifier that cannot use the array (a large slot, or one whose slot a live flow already
-// occupies) is kept in a dictionary instead.
+// identifier that cannot use the array is kept in a dictionary instead.
 //
 // Flows are only ever reached by borrowing: `withFlow` lends out the stored flow for the
-// duration of a closure. The table is exclusively accessed for that whole duration, so the
-// closure must not reach the table again, through the owning protocol or otherwise. Work that
-// has to touch the table (removing the flow, looking at another flow, servicing every flow)
-// is done by the caller before or after the closure, not from inside it.
+// duration of a closure.
 @available(Network 0.1.0, *)
 @_spi(ProtocolProvider)
 public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
@@ -86,7 +82,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     }
 
     public mutating func insert(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
-        precondition(slot(of: flowID) == nil, "Flow \(flowID) is already in the table")
+        assert(slot(of: flowID) == nil, "Flow \(flowID) is already in the table")
         let tableSlot: Int
         if let free = freeSlots.popLast() {
             tableSlot = free
@@ -142,6 +138,16 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         for tableSlot in 0..<elements.count where identifiers[tableSlot] != .allFlows {
             body(&elements[tableSlot]!)
         }
+    }
+
+    // The identifier of the first flow `predicate` accepts, or `nil` if it accepts none.
+    public mutating func firstFlowIdentifier(where predicate: (inout Flow) -> Bool) -> MultiplexedFlowIdentifier? {
+        for tableSlot in 0..<elements.count where identifiers[tableSlot] != .allFlows {
+            if predicate(&elements[tableSlot]!) {
+                return identifiers[tableSlot]
+            }
+        }
+        return nil
     }
 
     public mutating func removeAll() {

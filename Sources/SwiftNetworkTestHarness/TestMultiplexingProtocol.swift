@@ -35,12 +35,70 @@ internal import os
 
 @_spi(TestHarness)
 @available(Network 0.1.0, *)
-public final class TestDatagramFlow: MultiplexedDatagramFlow<TestMultiplexingProtocol, TestDatagramLinkageFamily.Upper>
-{
+public struct TestDatagramFlow: ~Copyable, MultiplexedDatapathFlow, AutomaticUpperDatagramProcessing {
+    public typealias ParentProtocol = TestMultiplexingProtocol
+    public typealias UpperProtocol = TestDatagramLinkageFamily.Upper
+
+    var base: MultiplexedDatagramFlow<TestMultiplexingProtocol, TestDatagramLinkageFamily.Upper>
+
+    public init(parent: TestMultiplexingProtocol, inbound: Bool) {
+        base = MultiplexedDatagramFlow(parent: parent, inbound: inbound)
+    }
+
+    public init(parent: TestMultiplexingProtocol, inbound: Bool, in eventContext: inout NetworkContext.EventContext) {
+        base = MultiplexedDatagramFlow(parent: parent, inbound: inbound, in: &eventContext)
+    }
+
+    public var parentProtocol: TestMultiplexingProtocol {
+        get { base.parentProtocol }
+        set { base.parentProtocol = newValue }
+    }
+    public var upper: TestDatagramLinkageFamily.Upper {
+        get { base.upper }
+        set { base.upper = newValue }
+    }
+    public var eventManager: ProtocolEventManager {
+        _read { yield base.eventManager }
+        _modify { yield &base.eventManager }
+    }
+    public var log: NetworkLoggerState {
+        _read { yield base.log }
+        _modify { yield &base.log }
+    }
+    public var upperSendQueue: FrameArray {
+        _read { yield base.upperSendQueue }
+        _modify { yield &base.upperSendQueue }
+    }
+    public var upperReceiveQueue: FrameArray {
+        _read { yield base.upperReceiveQueue }
+        _modify { yield &base.upperReceiveQueue }
+    }
+    public var maximumUpperDatagramSize: Int {
+        get { base.maximumUpperDatagramSize }
+        set { base.maximumUpperDatagramSize = newValue }
+    }
+    public var blockUpperSendQueue: Bool {
+        get { base.blockUpperSendQueue }
+        set { base.blockUpperSendQueue = newValue }
+    }
+    public var flowIdentifier: MultiplexedFlowIdentifier { base.flowIdentifier }
+    public var identifier: InstanceIdentifier {
+        get { base.identifier }
+        set { base.identifier = newValue }
+    }
+
+    public func drainQueuedEventsForUpperProtocol(in eventContext: inout NetworkContext.EventContext) {
+        base.drainQueuedEventsForUpperProtocol(in: &eventContext)
+    }
+
+    public mutating func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext) {
+        base.serviceUpperSendQueue(in: &eventContext)
+    }
+
     // Hands back a linkage that routes to this flow, so its upper protocol can reach it. The
     // default implementation returns an empty linkage.
-    public override func asLowerLinkage() -> TestOutboundDatagramLinkage {
-        TestOutboundDatagramLinkage(flow: self)
+    public func asLowerLinkage() -> TestOutboundDatagramLinkage {
+        TestOutboundDatagramLinkage(multiplexing: parentProtocol, flow: flowIdentifier, identifier: identifier)
     }
 }
 
@@ -111,12 +169,17 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
         guard let path = somePathIdentifier else {
             return
         }
+        // Take the datagrams out while the flow is borrowed, and send them once it is not: sending
+        // can reach back into the flow table.
+        var drained: FrameArray? = nil
         accessDatagramsToSend(flow: flow) { frames in
-            // The event context is already held here, so use the `in:`-taking variants rather than the
-            // external entry points, which would re-derive it.
-            try? enqueueOutboundDatagrams(path: path, datagrams: frames.drainArray())
-            try? sendEnqueuedOutboundDatagrams(path: path, in: &eventContext)
+            drained = frames.drainArray()
         }
+        guard let datagrams = drained.take() else { return }
+        // The event context is already held here, so use the `in:`-taking variants rather than the
+        // external entry points, which would re-derive it.
+        try? enqueueOutboundDatagrams(path: path, datagrams: datagrams)
+        try? sendEnqueuedOutboundDatagrams(path: path, in: &eventContext)
     }
 
     public func serviceReceivedDatagrams(
@@ -198,8 +261,10 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
         log.debug("Multiplexing protocol creating a new inbound flow")
         fromExternal { eventContext in
             let newFlow = Flow(parent: self, inbound: true, in: &eventContext)
-            insertFlow(newFlow, for: newFlow.flowIdentifier)
-            deliverNewInboundFlowEvent(newFlow.identifier, flowMetadata: nil, in: &eventContext)
+            let newFlowIdentifier = newFlow.flowIdentifier
+            let newFlowInstance = newFlow.identifier
+            insertFlow(newFlow, for: newFlowIdentifier)
+            deliverNewInboundFlowEvent(newFlowInstance, flowMetadata: nil, in: &eventContext)
         }
     }
 

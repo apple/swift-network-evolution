@@ -141,13 +141,13 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
                 stream.receive.reassemblyQueue.dequeueAll()
                 stream.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
             }
-            for (_, secondaryFlow) in connection.multiplexedSecondaryFlows {
+            connection.applyToAllSecondaryFlows { secondaryFlow in
                 secondaryFlow.upperSendQueue.finalizeAllFramesAsFailed()
                 secondaryFlow.upperReceiveQueue.finalizeAllFramesAsFailed()
                 secondaryFlow.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
             }
             connection.withMultiplexedFlows { $0.removeAll() }
-            connection.multiplexedSecondaryFlows.removeAll()
+            connection.withMultiplexedSecondaryFlows { $0.removeAll() }
             connection.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
         }
         path.destroyFromExternalTest()
