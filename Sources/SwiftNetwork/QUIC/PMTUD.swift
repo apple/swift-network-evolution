@@ -192,7 +192,7 @@ struct PMTUDState: ~Copyable {
             "PMTUD enabled, max PMTU: \(maximumPathMTU), IP/UDP header size: \(ipUDPHeaderSize), current PMTU: \(currentPathMTU)"
         )
 
-        updateProbeSize(on: path)
+        updateProbeSize(on: path, in: &eventContext)
         connection.recordSentPackets(in: &eventContext) { sentPackets, blockState in
             sendProbe(on: path, sentPackets: &sentPackets, in: &blockState)
         }
@@ -319,7 +319,7 @@ struct PMTUDState: ~Copyable {
         }
 
         if ackedMTU < maximumPathMTU {
-            updateProbeSize(on: path)
+            updateProbeSize(on: path, in: &eventContext)
         } else {
             path.log.debug("Finished searching, reached max MTU")
             searchComplete(on: path, in: &eventContext)
@@ -351,7 +351,7 @@ struct PMTUDState: ~Copyable {
             path.log.info("Finished searching: reached maxProbeCount")
             searchComplete(on: path, in: &eventContext)
         } else {
-            updateProbeSize(on: path)
+            updateProbeSize(on: path, in: &eventContext)
         }
     }
 
@@ -400,7 +400,7 @@ struct PMTUDState: ~Copyable {
         let connection = path.parentProtocol
 
         if packetTooBigMTU > 0 {
-            updateProbeSize(on: path)
+            updateProbeSize(on: path, in: &eventContext)
         }
         let probeMSS = (nextProbeMTU - ipUDPHeaderSize)
 
@@ -461,7 +461,7 @@ struct PMTUDState: ~Copyable {
     ) {
         path.log.debug("PMTUD timer fired")
         self.searchCompleted = false
-        self.updateProbeSize(on: path)
+        self.updateProbeSize(on: path, in: &eventContext)
         path.parentProtocol.recordSentPackets(in: &eventContext) { sentPackets, blockState in
             sendProbe(on: path, sentPackets: &sentPackets, in: &blockState)
         }
@@ -486,7 +486,7 @@ struct PMTUDState: ~Copyable {
         timerReschedule(.zero, connection: path.parentProtocol, in: &eventContext)
 
         // Reset probe size
-        updateProbeSize(on: path)
+        updateProbeSize(on: path, in: &eventContext)
         sendProbe(on: path, sentPackets: &sentPackets, in: &eventContext)
     }
 
@@ -564,7 +564,10 @@ struct PMTUDState: ~Copyable {
         )
     }
 
-    private mutating func updateProbeSize(on path: QUICPath) {
+    private mutating func updateProbeSize(
+        on path: QUICPath,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         if searchCompleted {
             Logger.proto.fault("Attempt to update probe size while search is completed")
             return
@@ -589,6 +592,13 @@ struct PMTUDState: ~Copyable {
                 )
                 if nextProbeSize > maximumPathMTU {
                     nextProbeSize = maximumPathMTU
+                }
+                // Nothing larger to probe (e.g. the current MTU is already at the top of
+                // the MTU table or the path maximum), so the search is done.
+                guard nextProbeSize > currentPathMTU else {
+                    path.log.info("PMTUD: no larger MTU to probe, current MTU \(currentPathMTU)")
+                    searchComplete(on: path, in: &eventContext)
+                    return
                 }
                 nextProbeMTU = nextProbeSize
                 path.log.info("Increase probe size to \(nextProbeMTU)")

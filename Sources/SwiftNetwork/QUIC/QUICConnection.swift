@@ -603,7 +603,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Datagrams containing Initial packets MAY exceed 1200 bytes if the sender
             // believes that the network path and peer both support the size that it chooses
             let requestedInitialPacketSize = Int(quicConnectionOptions.initialPacketSize)
-            if requestedInitialPacketSize > Constants.initialMSS {
+            if requestedInitialPacketSize > 0 {
                 initialMSS = requestedInitialPacketSize
             }
 

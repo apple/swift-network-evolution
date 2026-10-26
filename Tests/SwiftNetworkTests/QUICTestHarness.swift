@@ -348,21 +348,18 @@ class QUICTestHarness {
             clientParameters.defaultStack.link = .custom(clientBridgeOptions)
 
             var clientPath = PathProperties(parameters: clientParameters)
-            if clientMTU == 1500 {
-                clientPath.effectiveMTU = 1500
-            } else {
-                #if !NETWORK_PRIVATE
-                // Note that this reaches cross module on an internal property
-                clientPath.directInterface = Interface(
-                    index: 1,
-                    name: "lo0",
-                    type: .loopback,
-                    subtype: .other,
-                    mtu: clientInterfaceMTU ?? clientMTU
-                )
-                #endif
-                clientPath.effectiveMTU = UInt32(clientMTU)
-            }
+            #if !NETWORK_PRIVATE
+            // Note that this reaches cross module on an internal property.
+            // PathProperties.mtu reports 0 without a direct interface, so always set one.
+            clientPath.directInterface = Interface(
+                index: 1,
+                name: "lo0",
+                type: .loopback,
+                subtype: .other,
+                mtu: clientInterfaceMTU ?? clientMTU
+            )
+            #endif
+            clientPath.effectiveMTU = UInt32(clientMTU)
 
             // Setup server parameters
             var serverParameters = Parameters(context: self.context)
@@ -395,21 +392,18 @@ class QUICTestHarness {
             serverParameters.defaultStack.link = .custom(serverBridgeOptions)
 
             var serverPath = PathProperties(parameters: serverParameters)
-            if serverMTU == 1500 {
-                serverPath.effectiveMTU = 1500
-            } else {
-                #if !NETWORK_PRIVATE
-                // Note that this reaches cross module on an internal property
-                serverPath.directInterface = Interface(
-                    index: 1,
-                    name: "lo0",
-                    type: .loopback,
-                    subtype: .other,
-                    mtu: serverMTU
-                )
-                #endif
-                serverPath.effectiveMTU = UInt32(serverMTU)
-            }
+            #if !NETWORK_PRIVATE
+            // Note that this reaches cross module on an internal property.
+            // PathProperties.mtu reports 0 without a direct interface, so always set one.
+            serverPath.directInterface = Interface(
+                index: 1,
+                name: "lo0",
+                type: .loopback,
+                subtype: .other,
+                mtu: serverMTU
+            )
+            #endif
+            serverPath.effectiveMTU = UInt32(serverMTU)
 
             // Attach client
             let (clientHarness, clientHarnessLinkage) = self.storage.createNewStreamFlowHarness(
@@ -970,9 +964,6 @@ class QUICTestHarness {
                     let receivedFIN = serverStreamHarness.receivedFIN
                     XCTAssertTrue(receivedFIN, "Server failed to receive FIN from client")
                 }
-                if serverStreamHarness.receivedFIN {
-                    serverStreamHarness.stop(in: &state)
-                }
                 serverReadFinished = true
                 return
             }
@@ -989,6 +980,19 @@ class QUICTestHarness {
 
         wait(until: { serverReadFinished }, timeout: timeout, "server read \(streamIndex) to complete")
         wait(until: { clientReadFinished }, timeout: timeout, "client read \(streamIndex) to complete")
+
+        // Only stop the server stream once the client has received every echoed byte. Stopping it
+        // earlier closes both directions, and the server would then refuse to retransmit echo data
+        // that was dropped on the way to the client.
+        if dataGenerator.sendFIN {
+            context.async {
+                serverStreamHarness.fromExternal { eventContext in
+                    if serverStreamHarness.receivedFIN {
+                        serverStreamHarness.stop(in: &eventContext)
+                    }
+                }
+            }
+        }
 
         // If FINs are sent, also ensure that the streams move to disconnected
         if dataGenerator.sendFIN {
