@@ -116,3 +116,13 @@ extension NetworkUniqueDeque where Element == WriteRequest {
         insert(request, at: index)
     }
 }
+
+@available(Network 0.1.0, *)
+extension NetworkUniqueMarkedDeque where Element == WriteRequest {
+    /// Queues `request` behind every request of equal or higher priority, but never ahead of the
+    /// marked requests, which are committed to going out in their current order.
+    mutating func appendOrderedByPriority(_ request: consuming WriteRequest) {
+        let priority = request.relativePriority
+        insert(request, aheadOfTrailing: { $0.relativePriority < priority })
+    }
+}
