@@ -468,7 +468,8 @@ final class SwiftNetworkIPTests: NetTestCase {
         expectFailure: Bool = false,
         dscpValue: UInt8 = 0,
         corrumptChecksum: Bool = false,
-        hopLimit: UInt8? = nil
+        hopLimit: UInt8? = nil,
+        expectedIPSnapshot: DataTransferSnapshot? = nil
     ) {
         let parameters = Parameters()
 
@@ -605,11 +606,98 @@ final class SwiftNetworkIPTests: NetTestCase {
                 XCTAssertEqual(expectedInputBytes, readApplicationBytes, "Failed to read expected IP input data")
             }
 
+            if let expectedIPSnapshot {
+                let metrics = upperHarness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
+                switch metrics {
+                case .dataTransferSnapshot(let snapshot):
+                    XCTAssertEqual(snapshot, expectedIPSnapshot)
+                default:
+                    XCTFail("Failed to get IP harness metrics")
+                }
+            }
             upperHarness.stop()
             upperHarness.teardown()
         }
 
         wait(for: [expectation], timeout: 10.0)
+    }
+
+    /// Returns a copy of an input packet with the ECN bits of its IP header set to `ecn`.
+    /// The IPv4 header checksum is recomputed; IPv6 has no header checksum.
+    private static func inputPacket(_ packet: [UInt8], ecn: UInt8) -> [UInt8] {
+        var packet = packet
+        if packet[0] >> 4 == 4 {
+            packet[1] = (packet[1] & ~0x03) | ecn
+            let headerLength = Int(packet[0] & 0x0f) * 4
+            packet[10] = 0
+            packet[11] = 0
+            var sum: UInt32 = 0
+            for index in stride(from: 0, to: headerLength, by: 2) {
+                sum += UInt32(packet[index]) << 8 | UInt32(packet[index + 1])
+            }
+            while sum >> 16 != 0 {
+                sum = (sum & 0xffff) + (sum >> 16)
+            }
+            let checksum = ~UInt16(truncatingIfNeeded: sum)
+            packet[10] = UInt8(checksum >> 8)
+            packet[11] = UInt8(checksum & 0xff)
+        } else {
+            // ECN is the low two bits of the traffic class, which straddles bytes 0 and 1
+            packet[1] = (packet[1] & ~0x30) | (ecn << 4)
+        }
+        return packet
+    }
+
+    /// Runs one packet in each direction through IP and verifies the data transfer snapshot
+    /// reports the same IP packet counts as nw_protocol_ipv4_copy_info / nw_protocol_ipv6_copy_info.
+    private func internalTestIPDataTransferSnapshot(ipv6: Bool) {
+        let localEndpoint: Endpoint
+        let remoteEndpoint: Endpoint
+        let outputPacket: [UInt8]
+        let inputPacket: [UInt8]
+        if ipv6 {
+            localEndpoint = Endpoint(address: IPv6Address(SwiftNetworkIPTests.localIPv6Address)!, port: 0)
+            remoteEndpoint = Endpoint(address: IPv6Address(SwiftNetworkIPTests.remoteIPv6Address)!, port: 0)
+            outputPacket = SwiftNetworkIPTests.outputIPv6Packet
+            inputPacket = SwiftNetworkIPTests.inputIPv6Packet
+        } else {
+            localEndpoint = Endpoint(address: IPv4Address(SwiftNetworkIPTests.localIPv4Address)!, port: 0)
+            remoteEndpoint = Endpoint(address: IPv4Address(SwiftNetworkIPTests.remoteIPv4Address)!, port: 0)
+            outputPacket = SwiftNetworkIPTests.outputIPv4Packet
+            inputPacket = SwiftNetworkIPTests.inputIPv4Packet
+        }
+
+        // (ECN bits, expected ECT(1), ECT(0), CE counts)
+        // IPProtocol.ECN maps raw value 1 to .ect0 and 2 to .ect1
+        let cases: [(ecn: UInt8, ect1: UInt64, ect0: UInt64, ce: UInt64)] = [
+            (0x0, 0, 0, 0),  // Not-ECT
+            (0x1, 0, 1, 0),  // .ect0
+            (0x2, 1, 0, 0),  // .ect1
+            (0x3, 0, 0, 1),  // CE
+        ]
+        for testCase in cases {
+            var expected = DataTransferSnapshot()
+            expected.receivedIPPacketCount = 1
+            expected.receivedIPEct1PacketCount = testCase.ect1
+            expected.receivedIPEct0PacketCount = testCase.ect0
+            expected.receivedIPCEPacketCount = testCase.ce
+            expected.sentIPPacketCount = 1
+            internalTestIP(
+                localEndpoint: localEndpoint,
+                remoteEndpoint: remoteEndpoint,
+                outputPacket: outputPacket,
+                inputPacket: SwiftNetworkIPTests.inputPacket(inputPacket, ecn: testCase.ecn),
+                expectedIPSnapshot: expected
+            )
+        }
+    }
+
+    func testIPv4DataTransferSnapshot() {
+        internalTestIPDataTransferSnapshot(ipv6: false)
+    }
+
+    func testIPv6DataTransferSnapshot() {
+        internalTestIPDataTransferSnapshot(ipv6: true)
     }
 
     func testIPv4() {
