@@ -439,6 +439,9 @@ extension QUICStreamInstance {
     func updateFlowControlWithEnqueuedBytesToSend(_ bytes: UInt64, connection: QUICConnection) {
         flowControlState.pendingOutboundBytesToSend += bytes
         connection.flowControlState.pendingOutboundBytesToSend += bytes
+        // The room reported to the application is derived from the pending bytes, so recompute it
+        // when they change; otherwise it stays at its value from stream setup.
+        updateOutboundFlowControlCredit(connection: connection)
     }
 
     func updateFlowControlWithSentBytes(_ bytes: UInt64, connection: QUICConnection) {

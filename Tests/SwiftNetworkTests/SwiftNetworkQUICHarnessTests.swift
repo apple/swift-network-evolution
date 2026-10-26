@@ -458,6 +458,14 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICResetStreamFirstFrameOnNewStream()
     }
 
+    func testQUICOutboundRoomFollowsQueuedData() {
+        QUICTestHarness().runOutboundRoomFollowsQueuedData()
+    }
+
+    func testQUICOutboundRoomIsBoundedBeforeDataQueued() {
+        QUICTestHarness().runOutboundRoomIsBoundedBeforeDataQueued()
+    }
+
     #if canImport(SwiftNetwork)
     func testQUICRecoverySendAnnouncesReopenedRoom() {
         QUICTestHarness().runRecoverySendAnnouncesReopenedRoom()
