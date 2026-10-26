@@ -118,7 +118,11 @@ struct EndpointFlow: ~Copyable {
     let parameters: Parameters
     let context: NetworkContext
     let identifier: UInt64
-    var writeRequests = NetworkUniqueDeque<WriteRequest>()
+    /// The requests waiting for the stack. The marked ones are committed to going out in their
+    /// current order, so a request that arrives later is queued behind them whatever its priority.
+    var writeRequests = NetworkUniqueMarkedDeque<WriteRequest>()
+    /// Whether a task is already queued to hand the committed requests to the stack.
+    var isWriteFlushScheduled = false
     var readRequests = NetworkUniqueDeque<ReadRequest>()
     var stateUpdateHandler: ((State) -> Void)? = nil
     var cancelRequested = false
@@ -442,42 +446,111 @@ struct EndpointFlow: ~Copyable {
 
     private mutating func write(in eventContext: inout NetworkContext.EventContext) {
         precondition(self.state == .ready)
+        if writeRequests.isEmpty {
+            return
+        }
         do {
             switch self.flowProtocol {
             case .stream(let flow):
-                while !writeRequests.isEmpty {
-                    if try flow.getOutboundStreamDataRoomAvailable(in: &eventContext) == 0 {
-                        // The lower layer will record `outputRoomAvailable` when there is room
-                        // again, which brings us back through the drain loop.
-                        break
-                    }
-                    guard let writeRequest = writeRequests.popFirst() else {
-                        break
-                    }
-                    let completion = writeRequest.completion
-                    let success = flow.write(writeRequest.frame, in: &eventContext)
-                    deliverToApplication(in: &eventContext) {
-                        WriteRequest.runCompletion(completion, success: success)
-                    }
+                let room = try flow.getOutboundStreamDataRoomAvailable(in: &eventContext)
+                guard room > 0 else {
+                    // The lower layer will record `outputRoomAvailable` when there is room
+                    // again, which brings us back through the drain loop. Unmark the queue so a
+                    // later request of higher priority can still be placed ahead of what is
+                    // waiting.
+                    writeRequests.removeMark()
+                    return
                 }
+
+                try writeQueuedRequests(to: flow, room: room, in: &eventContext)
+
             case .datagram(let flow):
                 while let writeRequest = writeRequests.popFirst() {
-                    let completion = writeRequest.completion
-                    let success = flow.write(writeRequest.frame, in: &eventContext)
-                    deliverToApplication(in: &eventContext) {
-                        WriteRequest.runCompletion(completion, success: success)
-                    }
+                    writeSingleFrame(writeRequest, to: flow, in: &eventContext)
                 }
+
             case .inboundStream, .inboundDatagram:
                 // A multiplexing connection has no data path of its own; the application sends
                 // and receives on its individual flows. Requests never reach here because
                 // `addWriteRequestOnContext` fails them up front.
                 fatalError("Connection-level flow has no data path")
+
             case .none:
                 fatalError("No current flow")
             }
+
         } catch {
             Logger.connection.error("Failed to drain write requests: \(error)")
+        }
+    }
+
+    private func writeSingleFrame(
+        _ writeRequest: consuming WriteRequest,
+        to flow: some SingleFrameWriting,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        let completion = writeRequest.completion
+        let success = flow.write(writeRequest.frame, in: &eventContext)
+        deliverToApplication(in: &eventContext) {
+            WriteRequest.runCompletion(completion, success: success)
+        }
+    }
+
+    /// Hands the stack the queued requests it has room for, in as few calls as it can.
+    private mutating func writeQueuedRequests(
+        to flow: StreamEndpointFlowProtocol,
+        room startingRoom: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
+        var room = startingRoom
+        while room > 0 {
+            // Batching only pays when there are several requests and the first leaves room for more.
+            if writeRequests.count == 1 || writeRequests[0].frame.unclaimedLength >= room,
+                let writeRequest = writeRequests.popFirst()
+            {
+                writeSingleFrame(writeRequest, to: flow, in: &eventContext)
+            } else {
+                writeFrameBatch(to: flow, room: room, in: &eventContext)
+            }
+
+            if writeRequests.isEmpty {
+                break
+            }
+
+            room = try flow.getOutboundStreamDataRoomAvailable(in: &eventContext)
+        }
+
+        if room == 0 {
+            writeRequests.removeMark()
+        }
+    }
+
+    /// Hands the stack the leading queued requests in one call, so it does its per-call work once.
+    /// Takes whole requests until their total length reaches `room`.
+    private mutating func writeFrameBatch(
+        to flow: StreamEndpointFlowProtocol,
+        room: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        let requestCount = writeRequests.leadingRequestCount(fillingRoom: room)
+        var frames = FrameArray(capacity: requestCount)
+        var completions: [(@Sendable (Result<Void, NetworkError>) -> Void)?] = []
+        completions.reserveCapacity(requestCount)
+
+        for _ in 0..<requestCount {
+            guard let writeRequest = writeRequests.popFirst() else {
+                break
+            }
+            completions.append(writeRequest.completion)
+            frames.add(frame: writeRequest.frame)
+        }
+
+        let success = flow.write(frames, in: &eventContext)
+
+        deliverToApplication(in: &eventContext) {
+            for completion in completions {
+                WriteRequest.runCompletion(completion, success: success)
+            }
         }
     }
 
@@ -643,9 +716,41 @@ struct EndpointFlow: ~Copyable {
             writeRequests.appendOrderedByPriority(takenRequest)
         }
         if state == .ready {
-            write()
+            // No unmarked request is ahead of this one, so it would have gone straight to the
+            // stack. Marking it keeps anything arriving before the flush from overtaking it.
+            // Requests held back for lack of room stay open to reordering.
+            if writeRequests.unmarkedCount == 1 {
+                writeRequests.mark()
+            }
+            scheduleWriteFlush(parent)
         }
         self.drainPendingEvents(parent)
+    }
+
+    /// Queues one task to hand the committed requests to the stack. Submissions already waiting on
+    /// the context queue run before it, so their requests reach the stack together instead of one
+    /// at a time.
+    private mutating func scheduleWriteFlush<P: EndpointFlowParent>(_ parent: P) {
+        guard !isWriteFlushScheduled else { return }
+        isWriteFlushScheduled = true
+        let context = parameters.context
+        func requestFlush() {
+            context.async {
+                // `withFlow` returns `nil` only while another flow call is running, which cannot
+                // happen between tasks. Retrying means the requests are never stranded regardless.
+                if parent.withFlow({ $0.flushWrites() }) == nil {
+                    requestFlush()
+                }
+            }
+        }
+        requestFlush()
+    }
+
+    private mutating func flushWrites() {
+        isWriteFlushScheduled = false
+        if state == .ready && !writeRequests.isEmpty {
+            write()
+        }
     }
 
     mutating func addReadRequestOnContext<P: EndpointFlowParent>(_ readRequest: consuming ReadRequest, _ parent: P) {
@@ -947,5 +1052,32 @@ struct EndpointFlow: ~Copyable {
         if stateUpdateHandler != nil {
             stateUpdateHandler = nil
         }
+    }
+}
+
+/// A flow protocol that takes the frames of write requests one at a time.
+@available(Network 0.1.0, *)
+private protocol SingleFrameWriting {
+    func write(_ frame: consuming Frame, in eventContext: inout NetworkContext.EventContext) -> Bool
+}
+
+@available(Network 0.1.0, *)
+extension StreamEndpointFlowProtocol: SingleFrameWriting {}
+
+@available(Network 0.1.0, *)
+extension DatagramEndpointFlowProtocol: SingleFrameWriting {}
+
+@available(Network 0.1.0, *)
+fileprivate extension NetworkUniqueMarkedDeque where Element == WriteRequest {
+    /// The number of leading requests needed to reach `room` bytes, counting the request that
+    /// crosses it.
+    func leadingRequestCount(fillingRoom room: Int) -> Int {
+        var requestCount = 0
+        var length = 0
+        while length < room, requestCount < count {
+            length += self[requestCount].frame.unclaimedLength
+            requestCount += 1
+        }
+        return requestCount
     }
 }

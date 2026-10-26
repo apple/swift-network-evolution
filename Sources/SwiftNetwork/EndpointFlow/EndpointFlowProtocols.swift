@@ -338,8 +338,14 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<BaseStreamLinkageFa
     /// Completions run inline while the delivering event holds the state, so they have to use
     /// this rather than `write(_:)`.
     func write(_ frame: consuming Frame, in eventContext: inout NetworkContext.EventContext) -> Bool {
+        write(FrameArray(frame: frame), in: &eventContext)
+    }
+
+    /// Hands several frames to the stack in one call, so it does its per-call work once for all
+    /// of them. The frames succeed or fail together.
+    func write(_ frames: consuming FrameArray, in eventContext: inout NetworkContext.EventContext) -> Bool {
         do throws(NetworkError) {
-            try lower.invokeSendStreamData(.init(frame: frame), from: self.identifier, in: &eventContext)
+            try lower.invokeSendStreamData(frames, from: self.identifier, in: &eventContext)
             return true
         } catch {
             return false
