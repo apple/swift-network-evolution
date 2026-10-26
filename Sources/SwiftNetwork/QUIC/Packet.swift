@@ -682,6 +682,7 @@ extension InPlaceSerializer where Factory: ~Escapable, Factory: ~Copyable {
         try self.buffer(value.connectionID)
     }
 
+    @_optimize(speed)
     mutating func encodedPacketNumber(_ value: EncodedPacketNumber) throws(SerializationError) {
         let encodedSize = value.size.rawValue
         let offset = MemoryLayout<UInt64>.size - encodedSize

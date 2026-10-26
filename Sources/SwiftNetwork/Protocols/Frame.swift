@@ -288,6 +288,7 @@ public struct Frame: ~Copyable {
         }
     }
 
+    @_optimize(speed)
     public mutating func claim(fromStart: Int, fromEnd: Int = 0, adjustSingleIPAggregate: Bool = true) -> Bool {
         if adjustSingleIPAggregate && isSingleIPAggregate {
             guard fromEnd == 0 else {
