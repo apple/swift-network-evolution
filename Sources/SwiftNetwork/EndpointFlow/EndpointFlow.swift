@@ -502,7 +502,8 @@ struct EndpointFlow: ~Copyable {
                             minimumBytes: self.readRequests[0].minimumBytes,
                             maximumBytes: self.readRequests[0].maximumBytes,
                             in: &eventContext
-                        )
+                        ),
+                        !frames.isEmpty
                     else {
                         // The lower layer will record `inboundDataAvailable` when more data
                         // arrives, which brings us back through the drain loop.
