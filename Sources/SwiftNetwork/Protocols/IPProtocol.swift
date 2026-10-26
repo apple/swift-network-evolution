@@ -381,6 +381,14 @@ public struct IPProtocol: NetworkProtocol {
             var rxECT0Packets = 0
             var rxECT1Packets = 0
             var rxCEPackets = 0
+
+            func updateDataTransferSnapshot(_ snapshot: inout DataTransferSnapshot) {
+                snapshot.receivedIPPacketCount = UInt64(rxPackets)
+                snapshot.receivedIPEct1PacketCount = UInt64(rxECT1Packets)
+                snapshot.receivedIPEct0PacketCount = UInt64(rxECT0Packets)
+                snapshot.receivedIPCEPacketCount = UInt64(rxCEPackets)
+                snapshot.sentIPPacketCount = UInt64(txPackets)
+            }
         }
 
         struct IPPathProperties {
@@ -1672,7 +1680,8 @@ public struct IPProtocol: NetworkProtocol {
                         return .continueIterating
                     }
 
-                    let trafficClassShift = flow >> 4
+                    // Version (4 bits), traffic class (8 bits), flow label (20 bits)
+                    let trafficClassShift = flow >> 20
                     let trafficClass = UInt8(trafficClassShift & 0xFF)
                     let ipECN = IPProtocol.ECN(UInt8(trafficClass))
                     frame.ecnFlag = ipECN
@@ -2296,6 +2305,15 @@ public struct IPProtocol: NetworkProtocol {
         #if !NETWORK_EMBEDDED
         var metadata: AbstractProtocolMetadata? { nil }
         #endif
+
+        func updateDataTransferSnapshot(_ snapshot: inout DataTransferSnapshot) {
+            switch instanceType {
+            case .ipv4(let instance):
+                instance.counters.updateDataTransferSnapshot(&snapshot)
+            case .ipv6(let instance):
+                instance.counters.updateDataTransferSnapshot(&snapshot)
+            }
+        }
     }
 
     public init() {}
