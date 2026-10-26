@@ -28,6 +28,8 @@ enum Constants {
     static let minimumPacketSize = 21
     static let maximumAllowedAckDelay = UInt32.max
     static let antiAmplificationFactor = 3
+    static let quicIPv4HeaderSize = (UDPProtocol.headerLength + IPProtocol.ipv4HeaderLength)
+    static let quicIPv6HeaderSize = (UDPProtocol.headerLength + IPProtocol.ipv6HeaderLength)
 
     // Check burst every 10 packets
     static let packetBurstCount = 10
@@ -35,8 +37,12 @@ enum Constants {
     // Don't burst more than 40 packets at a time
     static let maxPacketBurstCount = 40
 
+    #if NETWORK_EMBEDDED
+    static let maxPacketBurstDuration = NetworkDuration.milliseconds(5)
+    #else
     // Don't burst for more than 1 millisecond at a time
     static let maxPacketBurstDuration = NetworkDuration.milliseconds(1)
+    #endif
 
     static let packetReorderThreshold = PacketNumber(3)
     static let timeReorderThreshold = 3
