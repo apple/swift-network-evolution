@@ -303,6 +303,7 @@ class QUICTestHarness {
         bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
         bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil,
         clientMTU: Int = 1500,
+        clientInterfaceMTU: Int? = nil,
         serverMTU: Int = 1500
     ) throws(NetworkError) {
         var clientConnected = false
@@ -357,7 +358,7 @@ class QUICTestHarness {
                     name: "lo0",
                     type: .loopback,
                     subtype: .other,
-                    mtu: clientMTU
+                    mtu: clientInterfaceMTU ?? clientMTU
                 )
                 #endif
                 clientPath.effectiveMTU = UInt32(clientMTU)
@@ -1232,6 +1233,7 @@ class QUICTestHarness {
         bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
         bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil,
         clientMTU: Int = 1500,
+        clientInterfaceMTU: Int? = nil,
         serverMTU: Int = 1500
     ) {
         // Start with the handshake
@@ -1257,6 +1259,7 @@ class QUICTestHarness {
                 bridgeObserveFirstByteHandler: bridgeObserveFirstByteHandler,
                 bridgeObserveFrameHandler: bridgeObserveFrameHandler,
                 clientMTU: clientMTU,
+                clientInterfaceMTU: clientInterfaceMTU,
                 serverMTU: serverMTU
             )
         } catch {

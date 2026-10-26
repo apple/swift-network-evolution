@@ -202,7 +202,10 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                     }
                 }
             },
-            clientMTU: 1550
+            clientMTU: 1280,
+            // The interface allows more than the starting MTU, so the PMTUD search has
+            // room to grow and isn't finished by the first probe.
+            clientInterfaceMTU: 1550
         )
     }
 }
