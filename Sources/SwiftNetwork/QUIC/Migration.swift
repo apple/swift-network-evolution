@@ -219,9 +219,11 @@ extension QUICConnection {
         switch event {
         case .available:
             if !path.isRouteEstablished {
-                path.set(interface: nil, priority: 0, isInitial: false)
-                path.changeState(to: .routeAvailable)
+                // Set before `set()`, which creates the pacer based on `pacePackets`.
                 path.pacePackets = pacingEnabled
+                path.set(interface: nil, priority: 0, isInitial: false)
+                setupL4S(on: path)
+                path.changeState(to: .routeAvailable)
                 if self.state == .connected {
                     log.debug("Bringing up path \(pathID.description)")
                     invokeEstablish(path: pathID, in: &eventContext)

@@ -165,7 +165,7 @@ public final class QUICPath: MultiplexingDatagramPath<
 
     var pmtudState = PMTUDState()
     var recoveryState = Recovery.PathState()
-    var ecnState: ECNPathState?
+    var ecnState = ECNPathState()
     var pathStatistics = Statistics()
 
     var initialMSS = 0
@@ -270,8 +270,7 @@ public final class QUICPath: MultiplexingDatagramPath<
     }
 
     func withECNState(_ block: (inout ECNPathState) -> Void) {
-        guard ecnState != nil else { return }
-        block(&self.ecnState!)
+        block(&self.ecnState)
     }
 
     func changeState(to newState: QUICPathState) {
@@ -481,38 +480,46 @@ public final class QUICPath: MultiplexingDatagramPath<
                 algorithm: .ledbat(algorithm: ledbat)
             )
         case .prague:
-            var congestionControlState = CongestionControlState()
-            let prague = Prague(
-                state: &congestionControlState,
-                pacer: &self.pacer,
-                mss: self.initialMSS,
-                qlog: parentProtocol.qLog,
-                logPrefixer: self.log
-            )
-            self.congestionControl = CongestionControl(
-                state: congestionControlState,
-                algorithm: .prague(algorithm: prague)
-            )
+            installPragueCongestionControl()
         #endif
         }
     }
+
+    #if !NETWORK_EMBEDDED
+    // Replaces the congestion controller with a fresh Prague bound to this path's pacer. Shared by
+    // `resetCongestionControl()` and `setupL4SState(l4sEnabled:)` so Prague is built in one place.
+    private func installPragueCongestionControl() {
+        var congestionControlState = CongestionControlState()
+        let prague = Prague(
+            state: &congestionControlState,
+            pacer: &self.pacer,
+            mss: self.initialMSS,
+            qlog: parentProtocol.qLog,
+            logPrefixer: self.log
+        )
+        self.congestionControl = CongestionControl(
+            state: congestionControlState,
+            algorithm: .prague(algorithm: prague)
+        )
+    }
+    #endif
 
     func idleTimeoutCongestionControl() {
         self.congestionControl.idleTimeout(mss: mss)
     }
 
-    func setupL4SState(l4sEnabled: Bool?) {
-        guard let l4sEnabled else {
-            return
-        }
+    func setupL4SState(l4sEnabled: Bool) {
         // Account for Developer / Carrier settings
         self.l4sEnabled = l4sEnabled
         if l4sEnabled {
-            // Setup the pacer. Prague always has pacing enabled
+            // Setup the pacer: Prague always has pacing enabled.
             pacer = Pacer(enabled: true)
-            // Add Prague congestion control for L4S
-            self.resetPacer()
+            #if !NETWORK_EMBEDDED
+            installPragueCongestionControl()
+            #else
+            // Prague isn't available; rebuild the current controller so it seeds the new pacer.
             resetCongestionControl()
+            #endif
         }
     }
 

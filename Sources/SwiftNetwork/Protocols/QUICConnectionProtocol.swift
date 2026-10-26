@@ -696,6 +696,13 @@ public struct QUICConnectionProtocol: NetworkProtocol {
 
         public var activeConnectionIDLimit: Int = 0
         public var remoteMaxDatagramFrameSize: UInt16 = 0
+
+        /// The metadata published by the TLS handshake that secured this QUIC connection.
+        ///
+        /// TLS is not a layer in a QUIC protocol stack -- QUIC carries the handshake in its own
+        /// CRYPTO frames -- so walking the stack for ``SwiftTLSProtocol`` finds nothing. QUIC
+        /// republishes what its TLS instance produced here instead.
+        public internal(set) var swiftTLSMetadata: ProtocolMetadata<SwiftTLSProtocol>?
         #if NETWORK_PRIVATE
         var privateStorage = QUICConnectionMetadataPrivateStorage()
         #endif

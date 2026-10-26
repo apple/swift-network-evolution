@@ -88,7 +88,7 @@ public protocol NetworkMetadataProtocol {
 
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public protocol NetworkProtocolOptions {
+public protocol NetworkProtocolOptions: Sendable {
     associatedtype BelowProtocol
     associatedtype ProtocolStorage: ConnectionStorage = DefaultProtocolStorage
     typealias Message<T> = T
@@ -629,13 +629,13 @@ public struct QUICDatagram: DatagramProtocol {
 /// Supports sending and receiving encrypted byte streams.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct TLS: StreamProtocol {
+public struct TLS: StreamProtocol, Sendable {
     private var trustedRawPublicKeyCertificates: [[UInt8]]?
     private var rawPrivateKey: [UInt8]?
     private var applicationProtocols: [String]?
     private var earlyDataEnabled: Bool?
     private var ticketsEnabled: Bool?
-    private var customOptionsHandlers: [(ProtocolOptions<SwiftTLSProtocol>) -> Void] = []
+    private var customOptionsHandlers: [@Sendable (ProtocolOptions<SwiftTLSProtocol>) -> Void] = []
 
     var options: ProtocolOptions<TLSProtocol> {
         var options = TLSProtocol.Options()
@@ -651,7 +651,7 @@ public struct TLS: StreamProtocol {
         return ProtocolOptions(protocolIdentifier: TLSProtocol.identifier, perProtocolOptions: options)
     }
 
-    public enum BelowProtocol {
+    public enum BelowProtocol: Sendable {
         case tcp(TCP)
         case noTransport(NoTransport)
     }
@@ -736,7 +736,7 @@ public struct TLS: StreamProtocol {
     ///     }
     /// ```
     @_spi(ProtocolProvider)
-    public func customOptions(_ handler: @escaping (ProtocolOptions<SwiftTLSProtocol>) -> Void) -> Self {
+    public func customOptions(_ handler: @Sendable @escaping (ProtocolOptions<SwiftTLSProtocol>) -> Void) -> Self {
         var mutableSelf = self
         mutableSelf.customOptionsHandlers.append(handler)
         return mutableSelf
@@ -748,7 +748,7 @@ public struct TLS: StreamProtocol {
 /// Supports sending and receiving byte streams.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct TCP: StreamProtocol {
+public struct TCP: StreamProtocol, Sendable {
     private var noDelay: Bool?
     private var noPush: Bool?
     private var noOptions: Bool?
@@ -1125,7 +1125,7 @@ public struct CustomLink: StreamProtocol {
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public struct NoTransport: StreamProtocol {
-    public enum BelowProtocol {
+    public enum BelowProtocol: Sendable {
         case void
         case customLink(CustomLink)
         #if !NETWORK_EMBEDDED
@@ -1170,7 +1170,7 @@ public struct NoTransport: StreamProtocol {
 /// in turn exposes the ability to handle multiple streams of data over QUIC.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct QUIC: MultiplexProtocol {
+public struct QUIC: MultiplexProtocol, @unchecked Sendable {
     private var alpn: [String]
     private var trustedRawPublicKeyCertificates: [[UInt8]]?
     private var rawPrivateKey: [UInt8]?
@@ -1490,7 +1490,7 @@ public struct QUICStream: StreamProtocol {
 /// UDP supports sending and receiving datagrams.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct UDP: DatagramProtocol {
+public struct UDP: DatagramProtocol, @unchecked Sendable {
     public typealias ContentType = [UInt8]
 
     private var preferNoChecksum: Bool?
@@ -1535,7 +1535,7 @@ public struct UDP: DatagramProtocol {
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public struct IP: NetworkProtocolOptions {
-    public enum BelowProtocol {
+    public enum BelowProtocol: Sendable {
         case void
         #if !NETWORK_EMBEDDED
         case bridge(DatagramBridge)
@@ -2037,6 +2037,30 @@ public class NetworkChannel<ApplicationProtocol: NetworkProtocolOptions>: Networ
         }
     }
 
+    /// The connection-wide metadata published by a protocol in this channel's stack, chosen by the
+    /// return type rather than by an argument:
+    ///
+    /// ```swift
+    /// let tls: ProtocolMetadata<SwiftTLSProtocol>? = connection.getMetadata()
+    /// ```
+    ///
+    /// Call this on the connection's queue: from a state update handler, or from a receive or send
+    /// completion that the framework delivers asynchronously. `.ready` is the usual place, because a
+    /// protocol that publishes at handshake completion has published by then. Unlike the other entry
+    /// points here, this one cannot hop to the queue for you -- it has to return a value -- so it
+    /// asserts the caller is already there.
+    ///
+    /// Do not call it from a completion the framework runs inline, such as the span-delivering
+    /// `receive(atLeast:atMost:maximumChunks:completion:)`; those run while the flow is held and are
+    /// not safe to re-enter.
+    ///
+    /// `nil` when the stack has no such protocol, or when it has published nothing yet -- for a
+    /// protocol that publishes at handshake completion, that means before the connection is ready.
+    public func getMetadata<P: NetworkProtocol>() -> ProtocolMetadata<P>? {
+        context.assert()
+        return withFlow { $0.getMetadata() } ?? nil
+    }
+
     /// Cancel the connection, and cause all update handlers to be cancelled.
     ///
     /// Cancel is asynchronous. The last callback will be to the stateUpdateHandler with the cancelled state. After
@@ -2468,7 +2492,7 @@ extension NetworkChannel where ApplicationProtocol: MessageProtocol {
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 extension NetworkChannel where ApplicationProtocol: StreamProtocol {
-    public struct StreamMessage {
+    public struct StreamMessage: Sendable {
         public static func message(content: [UInt8]? = nil, isComplete: Bool = false) -> StreamMessage {
             StreamMessage(content: content, isComplete: isComplete)
         }
@@ -2504,6 +2528,25 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
             }
         }
     }
+
+    #if !NETWORK_EMBEDDED
+    public func send(_ message: StreamMessage) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                send(message) { result in
+                    switch result {
+                    case .success:
+                        continuation.resume()
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } onCancel: {
+            self.forceCancel()
+        }
+    }
+    #endif
 
     internal func send(
         _ buffer: UnsafeMutableRawBufferPointer,
@@ -2544,6 +2587,28 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
         }
     }
 
+    #if !NETWORK_EMBEDDED
+    public func receive(
+        atLeast minBytes: Int,
+        atMost maxBytes: Int
+    ) async throws -> StreamMessage {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<StreamMessage, Error>) in
+                receive(atLeast: minBytes, atMost: maxBytes) { result in
+                    switch result {
+                    case .success(let message):
+                        continuation.resume(returning: message)
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } onCancel: {
+            self.forceCancel()
+        }
+    }
+    #endif
+
     public func receive(
         atLeast minBytes: Int,
         atMost maxBytes: Int,
@@ -2579,7 +2644,7 @@ extension NetworkChannel where ApplicationProtocol: StreamProtocol {
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
-    public struct DatagramMessage {
+    public struct DatagramMessage: Sendable {
         public static func message(content: [UInt8]? = nil) -> DatagramMessage {
             DatagramMessage(content: content)
         }
@@ -2595,6 +2660,25 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
             }
         }
     }
+
+    #if !NETWORK_EMBEDDED
+    public func send(_ message: DatagramMessage) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                send(message) { result in
+                    switch result {
+                    case .success:
+                        continuation.resume()
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } onCancel: {
+            self.forceCancel()
+        }
+    }
+    #endif
 
     internal func send(
         _ buffer: UnsafeMutableRawBufferPointer,
@@ -2630,4 +2714,24 @@ extension NetworkChannel where ApplicationProtocol: DatagramProtocol {
             }
         }
     }
+
+    #if !NETWORK_EMBEDDED
+    public func receive() async throws -> DatagramMessage {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<DatagramMessage, Error>) in
+                receive { result in
+                    switch result {
+                    case .success(let message):
+                        continuation.resume(returning: message)
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } onCancel: {
+            self.forceCancel()
+        }
+    }
+    #endif
 }

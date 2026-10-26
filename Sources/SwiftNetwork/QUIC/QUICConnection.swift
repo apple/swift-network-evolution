@@ -189,7 +189,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public var log = NetworkLoggerState()
     var logPrefixer: LogPrefixer
 
-    public private(set) var context: NetworkContext
+    public let context: NetworkContext
 
     public var eventManager = ProtocolEventManager()
     public let timerReference = TimerReference()
@@ -549,6 +549,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         if let path {
             pathPropertiesMTU = path.mtu
+            var headerLength = Constants.quicIPv6HeaderSize
+            if initialAddressIsIPv4 {
+                headerLength = Constants.quicIPv4HeaderSize
+            }
+            let derivedMTU = path.mtu - headerLength
+            if path.mtu > 0 && derivedMTU > Constants.initialMSS {
+                initialMSS = derivedMTU
+            }
         }
 
         if let parameters,
@@ -604,7 +612,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Datagrams containing Initial packets MAY exceed 1200 bytes if the sender
             // believes that the network path and peer both support the size that it chooses
             let requestedInitialPacketSize = Int(quicConnectionOptions.initialPacketSize)
-            if requestedInitialPacketSize > Constants.initialMSS {
+            if requestedInitialPacketSize > 0 {
                 initialMSS = requestedInitialPacketSize
             }
 
@@ -627,14 +635,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             maximumConcurrentUnidirectionalStreams =
                 quicConnectionOptions.maximumConcurrentUnidirectionalStreams
 
-            if let currentPath {
-                currentPath.pacePackets = pacingEnabled
-                currentPath.setupL4SState(l4sEnabled: enableL4s)
-                if currentPath.l4sEnabled && QUICPreferences.shared.ackCompressionEnabled {
-                    // Disable ACK compression when L4S is enabled.
-                    ack.disableAckCompression = true
-                }
-            }
             if !quicConnectionOptions.disableSpinBit {
                 // RFC9000: "Even when the spin bit is not disabled by
                 // the administrator, endpoints MUST disable their use
@@ -660,7 +660,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 echoEnabled: enableECNEcho,
                 markingEnabled: enableECN,
                 l4sEnabled: enableL4s,
-                connection: self,
                 logPrefixer: self.logPrefixer
             )
             setupLocalTransportParameters(quicOptions: quicOptions)
@@ -733,6 +732,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     func setInitialMSS(on path: QUICPath) {
         setMSS(initialMSS, on: path)
+    }
+
+    // Applies the connection's L4S setting to a path. Must run after `path.set()`, since the
+    // path's `setup()` replaces the pacer and congestion control that this configures.
+    func setupL4S(on path: QUICPath) {
+        path.setupL4SState(l4sEnabled: ecn.useECT1)
+        if path.l4sEnabled && QUICPreferences.shared.ackCompressionEnabled {
+            // Disable ACK compression when L4S is enabled.
+            ack.disableAckCompression = true
+        }
     }
 
     func updateMaxBidirectionalStreamsFromApplication(
@@ -1406,6 +1415,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         if currentPath == nil, let initialPath = self.somePath {
             initialPath.pacePackets = pacingEnabled
             initialPath.set(interface: self.initialInterface, priority: 0, isInitial: true)
+            setupL4S(on: initialPath)
             log.info("Packet Pacing is \(initialPath.pacePackets ? "enabled" : "disabled")")
             do {
                 try localCIDs.insertInitialConnectionID(scid, token: statelessResetToken)
@@ -2683,7 +2693,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
 
             accessStreamDataToSend(stream: stream) { streamData in
-                while var frame = streamData.popFirst() {
+                while !streamData.isEmpty {
+                    let frame = streamData.removeFirst()
 
                     // If the connection is complete, it is always a FIN
                     let dataLength = frame.unclaimedLength
@@ -2694,12 +2705,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     // If the metadata is connection mode (so each metadata is a new stream)
                     // and the metadata is complete, this is also a FIN
 
-                    if frame.protocolMetadatas.count > 0 {
-                        if frame.protocolMetadatas[0].metadata.matches(
-                            protocolIdentifier: QUICConnectionProtocol.identifier
-                        ) {
-                            isFinal = isFinal || metadataComplete
-                        }
+                    if frame.firstMetadataMatches(protocolIdentifier: QUICConnectionProtocol.identifier) {
+                        isFinal = isFinal || metadataComplete
                     }
                     #if DatapathLogging
                     log.datapath(
@@ -2709,21 +2716,20 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
                     if dataLength > 0 {
                         processOutbound(frame: frame, flowID: flowID, stream: stream, isLast: isFinal)
-                        continue
-                    } else if isFinal, let _ = knownFlows[streamID] {
-                        log.datapath("Treating zero length fin as a stop message")
-                        disconnect(flow: flowID, direction: .outbound, in: &eventContext)
                     } else {
-                        // For QUIC, empty frames with just metadata are not meaningful if they are not complete
-                        log.notice("Not processing outbound data of length 0")
+                        discardEmptyOutbound(
+                            frame: frame,
+                            isFinal: isFinal,
+                            streamID: streamID,
+                            flowID: flowID,
+                            in: &eventContext
+                        )
                     }
-                    frame.finalize(success: false)
                 }
             }
 
-            if !stream.send.state.dataHasAlreadyBeenSent {
-                applicationPendingItems.appendStreamToService(stream)
-            }
+            // appendStreamToService already declines streams whose data has all been sent
+            applicationPendingItems.appendStreamToService(stream, connection: self)
             // Note: trigger sending of any frames based on this external event
             checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount, in: &eventContext)
 
@@ -2734,6 +2740,26 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             sendFrames(in: &eventContext)
         }
 
+    }
+
+    // Zero length outbound frames are rare, so this is kept out of line. Inlining it would pull the
+    // disconnect path's dictionary accesses and retains into every call of serviceStreamDataToSend.
+    @inline(never)
+    private func discardEmptyOutbound(
+        frame: consuming Frame,
+        isFinal: Bool,
+        streamID: QUICStreamID,
+        flowID: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        if isFinal, let _ = knownFlows[streamID] {
+            log.datapath("Treating zero length fin as a stop message")
+            disconnect(flow: flowID, direction: .outbound, in: &eventContext)
+        } else {
+            // For QUIC, empty frames with just metadata are not meaningful if they are not complete
+            log.notice("Not processing outbound data of length 0")
+        }
+        frame.finalize(success: false)
     }
 
     #if !NETWORK_EMBEDDED
@@ -2799,21 +2825,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var l4sEnabled = false
         if let path = currentPath {
             l4sEnabled = path.l4sEnabled
-            if let ecnState = path.ecnState?.state {
-                switch ecnState {
-                case .probing, .validate:
-                    clientAccurateECNState = .ecnFeatureEnabled
-                case .manglingDetected:
-                    clientAccurateECNState = .ecnNegotiationSuccessECTManglingDetected
-                case .handshakeValidationSuccess, .capable:
-                    clientAccurateECNState = .ecnNegotiationSuccess
-                case .blackholed:
-                    clientAccurateECNState = .ecnNegotiationBlackholed
-                case .unsupported:
-                    clientAccurateECNState = .ecnNotAvailable
-                default:
-                    break
-                }
+            switch path.ecnState.state {
+            case .probing, .validate:
+                clientAccurateECNState = .ecnFeatureEnabled
+            case .manglingDetected:
+                clientAccurateECNState = .ecnNegotiationSuccessECTManglingDetected
+            case .handshakeValidationSuccess, .capable:
+                clientAccurateECNState = .ecnNegotiationSuccess
+            case .blackholed:
+                clientAccurateECNState = .ecnNegotiationBlackholed
+            case .unsupported:
+                clientAccurateECNState = .ecnNotAvailable
+            default:
+                break
             }
         }
         var protocolEstablishmentReport = ProtocolEstablishmentReport(
@@ -4027,7 +4051,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
-            ecnState: &path.ecnState!,
+            ecnState: &path.ecnState,
             applicationPendingItems: &applicationPendingItems,
             totalTxBytes: &totalTxBytes,
             totalTxPackets: &totalTxPackets,
@@ -4098,7 +4122,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 protector: &protector,
                 stats: &stats,
                 ecn: &ecn,
-                ecnState: &path.ecnState!,
+                ecnState: &path.ecnState,
                 totalTxBytes: &totalTxBytes,
                 totalTxPackets: &totalTxPackets,
                 in: &eventContext
@@ -4157,7 +4181,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         protector: &protector,
                         stats: &stats,
                         ecn: &ecn,
-                        ecnState: &path.ecnState!,
+                        ecnState: &path.ecnState,
                         totalTxBytes: &totalTxBytes,
                         totalTxPackets: &totalTxPackets,
                         in: &eventContext
@@ -4198,7 +4222,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     protector: &protector,
                     stats: &stats,
                     ecn: &ecn,
-                    ecnState: &path.ecnState!,
+                    ecnState: &path.ecnState,
                     totalTxBytes: &totalTxBytes,
                     totalTxPackets: &totalTxPackets,
                     in: &eventContext
@@ -4233,7 +4257,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             protector: &protector,
             stats: &stats,
             ecn: &ecn,
-            ecnState: &path.ecnState!,
+            ecnState: &path.ecnState,
             applicationPendingItems: &applicationPendingItems,
             totalTxBytes: &totalTxBytes,
             totalTxPackets: &totalTxPackets,
@@ -4689,16 +4713,28 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         isLast: Bool
     ) {
         if !isServer, state == .idle {
-            state.change(to: .initialSent, logIDString: logPrefixer.logIDString)
+            markInitialSent()
         }
 
         if frame.unclaimedLength > Constants.streamDataMaxSize {
-            log.error("Stream data length is too large")
-            frame.finalize(success: false)
+            rejectOversizedOutbound(frame: frame)
             return
         }
 
         stream.addStreamData(frame: frame, isLast: isLast, connection: self)
+    }
+
+    // Only the first write on a client connection takes this, so it is kept out of line to
+    // keep the String copy for the log id out of processOutbound.
+    @inline(never)
+    private func markInitialSent() {
+        state.change(to: .initialSent, logIDString: logPrefixer.logIDString)
+    }
+
+    @inline(never)
+    private func rejectOversizedOutbound(frame: consuming Frame) {
+        log.error("Stream data length is too large")
+        frame.finalize(success: false)
     }
 
     internal func handleStopRead(for stream: Flow) {
@@ -5090,7 +5126,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Now that the connection is connected check if isPacing can be set
         if !isPacing {
             if let currentPath, trafficManagementBackground == false {
-                if currentPath.ecnState?.state == .capable || currentPath.pacePackets {
+                if currentPath.pacer.enabled,
+                    currentPath.ecnState.state == .capable || currentPath.pacePackets
+                {
                     isPacing = true
                 }
             }

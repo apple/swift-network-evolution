@@ -288,6 +288,7 @@ public struct Frame: ~Copyable {
         }
     }
 
+    @_optimize(speed)
     public mutating func claim(fromStart: Int, fromEnd: Int = 0, adjustSingleIPAggregate: Bool = true) -> Bool {
         if adjustSingleIPAggregate && isSingleIPAggregate {
             guard fromEnd == 0 else {
@@ -831,6 +832,13 @@ public struct Frame: ~Copyable {
         var uuid: SystemUUID
         var metadata: AbstractProtocolMetadata
         var metadataComplete: Bool = false
+    }
+
+    /// Whether the first metadata belongs to a specific protocol
+    @inline(always)
+    func firstMetadataMatches(protocolIdentifier: ProtocolIdentifier) -> Bool {
+        protocolMetadatas.count > 0
+            && protocolMetadatas[0].metadata.protocolIdentifier == protocolIdentifier
     }
 
     public var firstMetadata: AbstractProtocolMetadata? {

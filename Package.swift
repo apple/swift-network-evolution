@@ -111,7 +111,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", .upToNextMinor(from: "1.6.0")),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "5.0.0-beta.1"),
-        .package(url: "https://github.com/apple/swift-tls.git", .upToNextMinor(from: "0.1.2")),
+        .package(url: "https://github.com/apple/swift-tls.git", .upToNextMinor(from: "0.2.0")),
     ],
     targets: [
         .target(
@@ -232,7 +232,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "FuzzQUICPackets",
-            dependencies: ["SwiftNetwork"],
+            dependencies: ["SwiftNetwork", "SwiftNetworkTestHarness"],
             path: "Tests/Fuzzers/QUICPackets",
             swiftSettings: availabilityMacros + settings + [.unsafeFlags(["-parse-as-library"])],
             linkerSettings: [.unsafeFlags(swiftFuzzFlags, fuzzBuildCondition)]

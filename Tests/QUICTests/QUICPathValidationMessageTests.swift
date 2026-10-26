@@ -33,7 +33,9 @@ class QUICPathValidationMessageTests: XCTestCase {
     var path: QUICPath!  // NOTE: This path immediately transitions to cid assigned due to setup()
 
     override func setUp() {
-        connection = QUICConnection(context: NetworkContext.implicitContext)
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
         path = connection.context.onQueue {
             QUICPath.makeFromExternalTest(parent: self.connection)
         }

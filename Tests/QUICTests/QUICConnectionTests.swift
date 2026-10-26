@@ -30,7 +30,9 @@ import XCTest
 final class QUICConnectionTests: XCTestCase {
     var connection: QUICConnection!
     override func setUp() {
-        connection = QUICConnection(context: NetworkContext.implicitContext)
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
     }
 
     override func tearDown() {
@@ -293,7 +295,9 @@ final class QUICConnectionTests: XCTestCase {
     /// connection ID it generated, which it keeps to itself.
     private func makeAsynchronousHandshakeStack() -> AsynchronousHandshakeStack? {
         let storage = TestNetworkProtocolStorage(context: .implicitContext)
-        let (streamListener, _, _) = storage.createTestQUICInstance()
+        let (streamListener, _, _) = NetworkContext.implicitContext.onQueue {
+            storage.createTestQUICInstance()
+        }
         guard let connection = storage.quicInstance(for: streamListener.base) else {
             XCTFail("Failed to create a QUIC connection")
             return nil
