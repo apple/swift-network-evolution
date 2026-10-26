@@ -153,6 +153,10 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
         // sends.
         let clientOptions = QUICProtocol.options()
         clientOptions.connectionOptions.pmtudIgnoreCost = true
+        // Start the client at the minimum MTU (1280 including the 28 byte IPv4/UDP header)
+        // while the path allows more, so the PMTUD search has room to grow and isn't
+        // finished by the first probe.
+        clientOptions.connectionOptions.initialPacketSize = 1252
         let serverOptions = QUICProtocol.options()
         serverOptions.connectionOptions.pmtudIgnoreCost = true
 
@@ -201,8 +205,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                         )
                     }
                 }
-            },
-            clientMTU: 1550
+            }
         )
     }
 }

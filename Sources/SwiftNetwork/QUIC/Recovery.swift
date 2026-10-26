@@ -821,6 +821,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     // Note: drains 'sentPackets', leaving the caller's storage empty and reusable.
+    @_optimize(speed)
     mutating func recordSentPackets(
         _ sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         connection: QUICConnection,
