@@ -84,6 +84,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     public mutating func insert(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
         assert(slot(of: flowID) == nil, "Flow \(flowID) is already in the table")
         let tableSlot: Int
+        // Lookup a free slot, otherwise get the tableSlot by the last count of the elements
         if let free = freeSlots.popLast() {
             tableSlot = free
             elements[free] = consume flow
@@ -93,17 +94,23 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
             elements.append(consume flow)
             identifiers.append(flowID)
         }
+        // Get the key for the new flow based on low 32 bits for the flowID's rawValue
         let key = Self.key(of: flowID)
         if key < Self.maximumDirectKey {
             if key >= direct.count {
+                // Grow if needed
                 direct.append(contentsOf: repeatElement(0, count: key + 1 - direct.count))
             }
             if direct[key] == 0 {
+                // Insert the slot index in an empty place
+                // Note that you can use this tableSlot to look up
+                // both the flow and the identifier.
                 direct[key] = Int32(truncatingIfNeeded: tableSlot + 1)
             } else {
                 overflow[flowID] = tableSlot
             }
         } else {
+            // Add to overflow if we have exceeded our limit
             overflow[flowID] = tableSlot
         }
         liveCount += 1
