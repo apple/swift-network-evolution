@@ -52,8 +52,8 @@ jobs:
     uses: swiftlang/github-workflows/.github/workflows/soundness.yml@main
     with:
       license_header_check_project_name: "Swift"
-      api_breakage_check_container_image: "swiftlang/swift:6.4-jammy"
-      docs_check_container_image: "swiftlang/swift:6.4-jammy"
+      api_breakage_check_container_image: "swift:6.4-jammy"
+      docs_check_container_image: "swift:6.4-jammy"
   fuzz-smoke:
     # Quick smoke check that the fuzz targets still build and don't crash
     # immediately - not a substitute for the much longer, corpus-persisting
