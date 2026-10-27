@@ -1759,7 +1759,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // This limit on the size of responses is known as the anti-amplification limit.
     private func remainingAmplificationBudget(on path: QUICPath, isServer: Bool) -> Int? {
         guard isServer, !path.isValidated else { return nil }
-        let sendLimit = path.pathStatistics[.rxBytes] * 3
+        let sendLimit = path.pathStatistics[.rxBytes] * Constants.antiAmplificationFactor
         let alreadySent = path.pathStatistics[.txBytes]
         return max(sendLimit - alreadySent, 0)
     }
