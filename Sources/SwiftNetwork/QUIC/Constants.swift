@@ -27,6 +27,7 @@ enum Constants {
     static let maxDatagramFrameSize = 65535
     static let minimumPacketSize = 21
     static let maximumAllowedAckDelay = UInt32.max
+    static let antiAmplificationFactor = 3
     static let quicIPv4HeaderSize = (UDPProtocol.headerLength + IPProtocol.ipv4HeaderLength)
     static let quicIPv6HeaderSize = (UDPProtocol.headerLength + IPProtocol.ipv6HeaderLength)
 
