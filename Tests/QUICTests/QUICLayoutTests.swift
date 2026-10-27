@@ -58,7 +58,7 @@ final class QUICLayoutTests: XCTestCase {
         // so the size of the type is what each stream costs.
         XCTAssertLessThanOrEqual(
             MemoryLayout<QUICStreamInstance>.stride,
-            512,
+            496,
             "QUICStreamInstance's size regressed past 512"
         )
         XCTAssertEqual(MemoryLayout<QUICSendState>.size, 81)

@@ -351,9 +351,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // List of streams that have app input data in their reassembly queue.
     var pendingReassemblyDequeue = QUICStreamList.pendingReassemblyDequeueList()
 
-    // Set while a stream is borrowed from the flow table. Work that would look at the table has to
-    // wait until the borrow ends; see QUICStreamAccess.swift.
-    var streamAccess = StreamAccessState()
+    // Keeps track of flow table and sendFrame work on the connection
+    var stateMachine = QUICConnectionStateMachine()
 
     private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
 
@@ -416,12 +415,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var migrationSupported = false
 
     private var pendOutboundData = false  // Don't immediately process application sends
-
-    // Set for sendFrames or sendFramesFromRecovery calls claiming the send path
-    private(set) var isSendActive = false
-    private var hasDeferredSends = false
-    private var deferredSendFrames: DeferredSend?
-    private var deferredPathSends: [MultiplexingPathIdentifier: DeferredSend] = [:]
 
     // false == IPv6, true == IPv4
     private(set) var initialAddressIsIPv4 = false
@@ -3072,12 +3065,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Closing all flows, i.e. streams, and the connection itself
     func close(sendCloseFrame: Bool = true, in eventContext: inout NetworkContext.EventContext) {
         // Closing tears down every stream, so it cannot happen while one is borrowed
-        guard !streamAccess.borrowed else {
-            // The first request wins, as it would have had it run immediately: a later one finds
-            // the connection already closing.
-            if streamAccess.close == nil {
-                streamAccess.close = sendCloseFrame
-            }
+        guard !stateMachine.isFlowBorrowed else {
+            stateMachine.deferClose(sendCloseFrame: sendCloseFrame)
             return
         }
         if state.isTerminal || drainingScheduled {
@@ -3419,147 +3408,55 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     // MARK: - Send Frames logic
 
-    // Used when the send path is active and sendFrames or sendFrames(on:) needs to be deferred
-    private struct DeferredSend {
-        var path: QUICPath?
-        init(path: QUICPath? = nil) {
-            self.path = path
-        }
-        struct Flags: OptionSet {
-            init(rawValue: Self.RawValue) {
-                self.rawValue = rawValue
-            }
-            var rawValue: UInt8
-            static let ignoreCongestionWindow = Flags(rawValue: 1 << 0)
-            static let retransmission = Flags(rawValue: 1 << 1)
-            static let delayedACK = Flags(rawValue: 1 << 2)
-        }
-        private var flags = Flags()
-        var ignoreCongestionWindow: Bool {
-            get { flags.contains(.ignoreCongestionWindow) }
-            set {
-                if newValue {
-                    flags.insert(.ignoreCongestionWindow)
-                } else {
-                    flags.remove(.ignoreCongestionWindow)
-                }
-            }
-        }
-        var retransmission: Bool {
-            get { flags.contains(.retransmission) }
-            set {
-                if newValue {
-                    flags.insert(.retransmission)
-                } else {
-                    flags.remove(.retransmission)
-                }
-            }
-        }
-        var delayedACK: Bool {
-            get { flags.contains(.delayedACK) }
-            set {
-                if newValue {
-                    flags.insert(.delayedACK)
-                } else {
-                    flags.remove(.delayedACK)
-                }
-            }
-        }
-    }
-
-    // Records a standard sendFrames calls with the standard flags
-    private func recordDeferredSendFrames(ignoreCongestionWindow: Bool, delayedACK: Bool) {
-        var deferred = deferredSendFrames ?? DeferredSend()
-        deferred.ignoreCongestionWindow = deferred.ignoreCongestionWindow || ignoreCongestionWindow
-        deferred.delayedACK = deferred.delayedACK || delayedACK
-        deferredSendFrames = deferred
-        hasDeferredSends = true
-    }
-
-    // Records a sendFrames on path call
-    private func recordDeferredPathSend(_ path: QUICPath, ignoreCongestionWindow: Bool, retransmission: Bool) {
-        var deferred =
-            deferredPathSends[path.pathIdentifier]
-            ?? DeferredSend(path: path)
-        deferred.ignoreCongestionWindow = deferred.ignoreCongestionWindow || ignoreCongestionWindow
-        deferred.retransmission = deferred.retransmission || retransmission
-        deferredPathSends[path.pathIdentifier] = deferred
-        hasDeferredSends = true
-    }
-
-    // Central check to drain deferred calls
-    @inline(always)
-    func drainDeferredSendFrames(
+    // Performs the sends that had to wait for the send path while a send or a borrowed flow was active.
+    // Only call this once the state machine reports sends ready: replaying claims the send path.
+    func replayDeferredSends(
         recoveryIsFree: Bool = true,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard hasDeferredSends else { return }
-        drainDeferredSendFramesSlowPath(recoveryIsFree: recoveryIsFree, in: &eventContext)
-    }
-
-    // Replays deferred sendFrames and sendFrames(on:) calls, then hands sentPackets to Recovery. While Recovery is borrowed, only the sendFrames(on:) calls are replayed
-    private func drainDeferredSendFramesSlowPath(
-        recoveryIsFree: Bool,
-        in eventContext: inout NetworkContext.EventContext
-    ) {
         guard recoveryIsFree else {
-            // Run when sendFramesFromRecovery hold access to recovery
-            while !deferredPathSends.isEmpty {
-                let pathSends = deferredPathSends
-                deferredPathSends.removeAll()
-                for (_, pathSend) in pathSends {
-                    guard let path = pathSend.path else { continue }
-                    replayDeferredPathSend(
-                        path,
-                        ignoreCongestionWindow: pathSend.ignoreCongestionWindow,
-                        retransmission: pathSend.retransmission,
-                        in: &eventContext
-                    )
+            // Run when sendFramesFromRecovery holds access to recovery
+            while let pathSends = takePathSends() {
+                for pathSend in pathSends {
+                    replayDeferredPathSend(pathSend, in: &eventContext)
                 }
             }
-            hasDeferredSends = deferredSendFrames != nil
             return
         }
-        while deferredSendFrames != nil || !deferredPathSends.isEmpty {
-            if let plain = deferredSendFrames {
-                deferredSendFrames = nil
+        repeat {
+            if let plain = stateMachine.takePlainSend() {
+                // Anything this send defers is replayed when it finishes
                 sendFrames(
                     ignoreCongestionWindow: plain.ignoreCongestionWindow,
                     delayedACK: plain.delayedACK,
                     in: &eventContext
                 )
             }
-            let pathSends = deferredPathSends
-            deferredPathSends.removeAll()
-            for (_, pathSend) in pathSends {
-                guard let path = pathSend.path else { continue }
-                replayDeferredPathSend(
-                    path,
-                    ignoreCongestionWindow: pathSend.ignoreCongestionWindow,
-                    retransmission: pathSend.retransmission,
-                    in: &eventContext
-                )
+            guard let pathSends = takePathSends() else { return }
+            for pathSend in pathSends {
+                replayDeferredPathSend(pathSend, in: &eventContext)
             }
-        }
-        hasDeferredSends = false
-        flushPendingRecoverySentPackets(in: &eventContext)
+            // Replaying a path send does not record its packets with Recovery, so do that now. It
+            // can also have deferred more sends, which the next time round handles.
+            flushPendingRecoverySentPackets(in: &eventContext)
+        } while stateMachine.hasDeferredSends
     }
+
     // Runs a deferred sendFrames on path
     private func replayDeferredPathSend(
-        _ path: QUICPath,
-        ignoreCongestionWindow: Bool,
-        retransmission: Bool,
+        _ pathSend: QUICConnectionStateMachine.PathSend,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        isSendActive = true
+        let path = pathSend.path
+        stateMachine.claimSendPath()
         self.sentPackets.reserveCapacity(
             capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
         )
         var discardInitialRecoveryState = false
         _ = sendFramesInternal(
             path: path,
-            ignoreCongestionWindow: ignoreCongestionWindow,
-            retransmission: retransmission,
+            ignoreCongestionWindow: pathSend.ignoreCongestionWindow,
+            retransmission: pathSend.retransmission,
             sentPackets: &self.sentPackets,
             initialPendingItems: &initialPendingItems,
             handshakePendingItems: &handshakePendingItems,
@@ -3572,7 +3469,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             recovery.resetPTOCount(path: path)
         }
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
-        isSendActive = false
+        stateMachine.releaseSendPath(wasActive: false)
     }
 
     // Makes sure that Recovery always records the sentPackets records for PTO bookkeeping
@@ -3582,23 +3479,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         shrinkSentPacketsIfNecessary(sentPackets: &sentPackets)
     }
 
-    // Claims isSendActive so sends nested inside Ack.timerFired are deferred and run afterwards
+    // Claims the send path so sends nested inside Ack.timerFired are deferred and run afterwards
     func fireDelayedAckTimer(
         at firedAt: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        let wasActive = isSendActive
-        isSendActive = true
+        let wasActive = stateMachine.claimSendPath()
         // Ack timer has a sendFrames nested inside of it.
-        // This can also trigger the PATH_CHALLENGE -> Migration.resetTimer -> sendFrames path
-        // The logic below makes sure that if `sendFrames(delayedACK: true` is deferred that its then run afterwards.
         ack.timerFired(at: firedAt, in: &eventContext)
-        isSendActive = wasActive
-        guard !wasActive else { return }
+        guard stateMachine.releaseSendPath(wasActive: wasActive) else { return }
 
-        if let plain = deferredSendFrames {
-            deferredSendFrames = nil
-            hasDeferredSends = !deferredPathSends.isEmpty
+        if let plain = stateMachine.takePlainSend() {
             sendFrames(ignoreCongestionWindow: plain.ignoreCongestionWindow, delayedACK: true, in: &eventContext)
 
             // `timerFired`'s own idle check ran before this deferred flush, while the ACK
@@ -3606,22 +3497,20 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Check again now that the flush has actually cleared the pending ACK.
             checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
         } else {
-            drainDeferredSendFrames(in: &eventContext)
+            replayDeferredSends(in: &eventContext)
         }
     }
 
-    // Claims isSendActive so sends nested inside Recovery.timerFired are deferred and run afterwards
+    // Claims the send path so sends nested inside Recovery.timerFired are deferred and run afterwards
     func fireRecoveryTimer(
         at firedAt: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        let wasActive = isSendActive
-        isSendActive = true
+        let wasActive = stateMachine.claimSendPath()
         flushPendingRecoverySentPackets(in: &eventContext)
         recovery.timerFired(at: firedAt, in: &eventContext)
-        isSendActive = wasActive
-        if !wasActive {
-            drainDeferredSendFrames(in: &eventContext)
+        if stateMachine.releaseSendPath(wasActive: wasActive) {
+            replayDeferredSends(in: &eventContext)
         }
     }
 
@@ -3633,20 +3522,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         delayedACK: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        // Sending looks at streams, so it cannot happen while one is borrowed. Keep what the
-        // caller asked for so that it still gets it when the borrow ends.
-        guard !streamAccess.borrowed else {
-            streamAccess.sendFrames = true
-            streamAccess.ignoreCongestionWindow = streamAccess.ignoreCongestionWindow || ignoreCongestionWindow
-            streamAccess.delayedACK = streamAccess.delayedACK || delayedACK
+        // Any send waits while an existing send active, and while a flow is borrowed, since sending
+        // looks at the flow tables. The state machine keeps track of this state and reports ready once released.
+        // If any future work is deferred, that will be replayed at the bottom of this function.
+        guard stateMachine.claimSendPathIfFree() else {
+            stateMachine.deferSend(ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK)
             return false
         }
-        // Check if the send path is active, if so then record and defer the call
-        guard !isSendActive else {
-            recordDeferredSendFrames(ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK)
-            return false
-        }
-        isSendActive = true
         let result = sendFrames(
             ignoreCongestionWindow: ignoreCongestionWindow,
             delayedACK: delayedACK,
@@ -3657,8 +3539,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             applicationPendingItems: &applicationPendingItems,
             in: &eventContext
         )
-        isSendActive = false
-        drainDeferredSendFrames(in: &eventContext)
+        if stateMachine.releaseSendPath(wasActive: false) {
+            replayDeferredSends(in: &eventContext)
+        }
         return result
     }
 
@@ -3746,18 +3629,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         retransmission: Bool = false,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        // Sending looks at streams, so it cannot happen while one is borrowed
-        guard !streamAccess.borrowed else {
-            recordDeferredPathSend(path, ignoreCongestionWindow: ignoreCongestionWindow, retransmission: retransmission)
-            streamAccess.hasPathSends = true
+        // Waits for the send path and for any borrowed flow, like sendFrames
+        guard stateMachine.claimSendPathIfFree() else {
+            deferPathSend(
+                path,
+                ignoreCongestionWindow: ignoreCongestionWindow,
+                retransmission: retransmission
+            )
             return false
         }
-        // Check if the send path is active, if so then record and defer the call
-        guard !isSendActive else {
-            recordDeferredPathSend(path, ignoreCongestionWindow: ignoreCongestionWindow, retransmission: retransmission)
-            return false
-        }
-        isSendActive = true
         self.sentPackets.reserveCapacity(
             capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
         )
@@ -3780,8 +3660,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             recovery.resetPTOCount(path: path)
         }
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
-        isSendActive = false
-        drainDeferredSendFrames(in: &eventContext)
+        if stateMachine.releaseSendPath(wasActive: false) {
+            replayDeferredSends(in: &eventContext)
+        }
         return success
     }
 
@@ -3795,8 +3676,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) -> NetworkUniqueDeque<SentPacketRecord> {
         // sendFramesFromRecovery should always claim the send path so anything that
         // comes in for sendFrames while this is active should drain afterwards
-        let wasActive = isSendActive
-        isSendActive = true
+        let wasActive = stateMachine.claimSendPath()
         let result = sendFramesFromRecovery(
             on: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
@@ -3807,9 +3687,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             discardInitialRecoveryState: &discardInitialRecoveryState,
             in: &eventContext
         )
-        isSendActive = wasActive
-        if !wasActive {
-            drainDeferredSendFrames(recoveryIsFree: false, in: &eventContext)
+        if stateMachine.releaseSendPath(wasActive: wasActive) {
+            replayDeferredSends(recoveryIsFree: false, in: &eventContext)
         }
         return result
     }
@@ -6093,8 +5972,7 @@ extension QUICConnection {
         // to flush frames. Suppress those nested flushes for the duration of the
         // `recovery` borrow below, then perform one flush afterwards if any were
         // requested.
-        let wasActive = isSendActive
-        isSendActive = true
+        let wasActive = stateMachine.claimSendPath()
         recovery.receivedAck(
             ack: frame,
             ackedPath: path,
@@ -6108,9 +5986,8 @@ extension QUICConnection {
         recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
 
         // The borrow of `recovery` has ended, so it is safe to flush again.
-        isSendActive = wasActive
-        if !wasActive {
-            drainDeferredSendFrames(in: &eventContext)
+        if stateMachine.releaseSendPath(wasActive: wasActive) {
+            replayDeferredSends(in: &eventContext)
         }
         return true
     }
@@ -6512,6 +6389,258 @@ extension QUICConnection {
     }
 }
 
+// MARK: - QUICStream access
+
+// A QUIC stream is a non-copyable value stored in the connection's flow table, so borrow it from
+// the table for the duration of a closure. The table is exclusively accessed for that whole time.
+// Anything that would reach the table again from inside the closure has to wait until the borrow ends.
+
+@available(Network 0.1.0, *)
+extension QUICConnection {
+
+    /// Borrows a stream, runs `body` on it, and then performs any connection work that was held
+    /// back while it was borrowed.
+    ///
+    /// Returns `nil` without running `body` if there is no stream with that identifier.
+    @inline(always)
+    func performOnStream<R: ~Copyable, E: Error>(
+        _ flowID: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext,
+        _ body: (inout QUICStreamInstance, inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R? {
+        let result: R?
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow()
+        do throws(E) {
+            result = try multiplexedFlows.withFlow(flowID) { (stream: inout QUICStreamInstance) throws(E) -> R in
+                try body(&stream, &eventContext)
+            }
+        } catch {
+            if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+                runDeferredStreamWork(work, in: &eventContext)
+            }
+            throw error
+        }
+        if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+            runDeferredStreamWork(work, in: &eventContext)
+        }
+        return result
+    }
+
+    /// Borrows each stream in turn, then performs any connection work they held back.
+    @inline(always)
+    func applyToAllStreams(
+        in eventContext: inout NetworkContext.EventContext,
+        _ body: (inout QUICStreamInstance, inout NetworkContext.EventContext) -> Void
+    ) {
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow()
+        multiplexedFlows.forEachFlow { (stream: inout QUICStreamInstance) in
+            body(&stream, &eventContext)
+        }
+        if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+            runDeferredStreamWork(work, in: &eventContext)
+        }
+    }
+
+    /// Borrows a stream from outside the protocol stack, where no event context is held.
+    /// Used in testing
+    func performOnStream<R: ~Copyable, E: Error>(
+        _ flowID: MultiplexedFlowIdentifier,
+        _ body: (inout QUICStreamInstance) throws(E) -> R
+    ) throws(E) -> R? {
+        let result: R?
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow()
+        do throws(E) {
+            result = try multiplexedFlows.withFlow(flowID, body)
+        } catch {
+            if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+                performDeferredStreamWorkFromExternal(work)
+            }
+            throw error
+        }
+        if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+            performDeferredStreamWorkFromExternal(work)
+        }
+        return result
+    }
+
+    @inline(never)
+    func runDeferredStreamWork(
+        _ work: QUICConnectionStateMachine.DeferredWork,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        if let sendCloseFrame = work.close {
+            // A close sends frames itself, so there is no point sending them first.
+            close(sendCloseFrame: sendCloseFrame, in: &eventContext)
+        } else if work.replaysSends {
+            // The sends the borrowed flows triggered, with the flags they asked for
+            replayDeferredSends(in: &eventContext)
+        }
+        if work.checkIdle {
+            checkConnectionIdle(unackedPacketCount: ack.unackedPacketCount, in: &eventContext)
+        }
+    }
+
+    func performDeferredStreamWorkFromExternal(_ work: QUICConnectionStateMachine.DeferredWork) {
+        fromExternal { eventContext in
+            runDeferredStreamWork(work, in: &eventContext)
+        }
+    }
+
+    // MARK: Operations the stream linkage calls
+
+    #if DEBUG
+    /// Checks that the upper protocol calling in is the one attached to the stream.
+    private func streamAcceptsCall(
+        flow flowID: MultiplexedFlowIdentifier,
+        from instance: InstanceIdentifier,
+        _ label: String
+    ) -> Bool {
+        let valid = performOnStream(flowID) { (stream: inout QUICStreamInstance) -> Bool in
+            do throws(ProtocolInstanceError) {
+                try stream.validate(upper: instance, label)
+                return true
+            } catch {
+                return false
+            }
+        }
+        return valid ?? false
+    }
+    #endif
+
+    /// Used in BaseProtocolLinkages
+    func attachUpperProtocolToStream(
+        flow flowID: MultiplexedFlowIdentifier,
+        _ upperProtocol: BaseInboundStreamLinkage,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {
+        // `attachUpperProtocolToNewFlow` already bound this upper when it created the flow, so
+        // seeing the same one again is the expected second leg of the attach, not a conflict.
+        // A *different* upper is still rejected.
+        let bound = performOnStream(flowID) { (stream: inout QUICStreamInstance) -> Bool in
+            guard stream.upper.isDetached || stream.upper == upperProtocol else {
+                return false
+            }
+            stream.upper = upperProtocol
+            return true
+        }
+        guard let bound else { throw NetworkError.posix(ENOENT) }
+        guard bound else { throw NetworkError.posix(EALREADY) }
+
+        do {
+            try setup(
+                flow: flowID,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+        } catch let error {
+            performOnStream(flowID) { (stream: inout QUICStreamInstance) in
+                stream.upper = .init()
+            }
+            throw error
+        }
+    }
+    /// Used in BaseProtocolLinkages
+    func connectStream(
+        flow flowID: MultiplexedFlowIdentifier,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        // The identifier lookup doubles as the check that the stream is still there; the check that
+        // the caller is the attached upper protocol only exists in debug builds.
+        #if DEBUG
+        guard streamAcceptsCall(flow: flowID, from: instance, "connect") else { return }
+        #endif
+        guard let streamIdentifier = instanceIdentifier(ofFlow: flowID) else { return }
+        if isConnected(in: &eventContext) {
+            if streamIdentifier.canCallConnect(requested: true, in: &eventContext) {
+                connect(flow: flowID, in: &eventContext)
+            }
+        } else {
+            streamIdentifier.connectRequested(in: &eventContext)
+            connectInternal(in: &eventContext)
+        }
+        // Hand over anything buffered while this flow had no upper protocol. This runs after
+        // connecting so the connected event is delivered first, matching the ordering the
+        // non-detached path in `deliverConnectedEvent` produces.
+        performOnStream(flowID, in: &eventContext) {
+            (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) in
+            stream.drainQueuedEventsForUpperProtocol(in: &ctx)
+        }
+    }
+    /// Used in BaseProtocolLinkages
+    func disconnectStream(
+        flow flowID: MultiplexedFlowIdentifier,
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        #if DEBUG
+        guard streamAcceptsCall(flow: flowID, from: instance, "disconnect") else { return }
+        #endif
+        guard let streamIdentifier = instanceIdentifier(ofFlow: flowID) else { return }
+        if streamIdentifier.canCallDisconnect(in: &eventContext) {
+            disconnect(flow: flowID, error: error, in: &eventContext)
+        }
+    }
+    /// Used in BaseProtocolLinkages
+    func handleApplicationEventForStream(
+        flow flowID: MultiplexedFlowIdentifier,
+        event: ApplicationEvent,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        // Don't validate upper, can pass through
+        if handleApplicationEvent(flow: flowID, event: event, in: &eventContext) == .consumed {
+            return
+        }
+        applyToAllPaths { path in
+            path.lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
+        }
+    }
+
+    /// Detaches the upper protocol from a stream and releases the stream.
+    /// Used in BaseProtocolLinkages
+    func detachStream(
+        flow flowID: MultiplexedFlowIdentifier,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
+        // First the stream itself: it checks the caller and closes its own side.
+        let tornDown = performOnStream(flowID, in: &eventContext) {
+            (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) -> Bool in
+            do throws(ProtocolInstanceError) {
+                try stream.validate(upper: instance, "detach")
+            } catch {
+                return false
+            }
+            stream.teardown(in: &ctx)
+            return true
+        }
+        guard tornDown == true else { throw NetworkError.posix(EINVAL) }
+
+        // Then the connection's view of the flow, which looks at the stream and so cannot happen
+        // while it is borrowed.
+        teardown(flow: flowID, in: &eventContext)
+
+        // Finally release the stream. Once it is out of the table nothing else can reach it.
+        if var stream = removeFlow(flowID) {
+            stream.upper = .init()
+            stream.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
+            stream.upperReceiveQueue.finalizeAllFramesAsFailed()
+            stream.upperSendQueue.finalizeAllFramesAsFailed()
+            stream.releaseResources()
+            stream.unregisterEventManager(in: &eventContext)
+        }
+        var connection = self
+        connection.teardownIfPossible(in: &eventContext)
+    }
+}
+
 // MARK: Inbound stream creation
 
 @available(Network 0.1.0, *)
@@ -6875,6 +7004,213 @@ extension QUICConnection {
     }
 }
 
+// MARK: - QUICDatagramFlow access
+
+// A QUIC datagram flow is a non-copyable value stored in the connection's flow table, so borrow it from
+// the table for the duration of a closure. The table is exclusively accessed for that whole time.
+// Anything that would reach the table again from inside the closure has to wait until the borrow ends.
+
+@available(Network 0.1.0, *)
+extension QUICConnection {
+
+    /// Borrows a datagram flow, runs `body` on it, and then performs any connection work that was
+    /// held back while it was borrowed.
+    ///
+    /// Returns `nil` without running `body` if there is no datagram flow with that identifier.
+    @inline(always)
+    func performOnDatagramFlow<R: ~Copyable, E: Error>(
+        _ flowID: MultiplexedFlowIdentifier,
+        in eventContext: inout NetworkContext.EventContext,
+        _ body: (inout QUICDatagramFlow, inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R? {
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow()
+        let result: R?
+        do throws(E) {
+            result = try multiplexedSecondaryFlows.withFlow(flowID) { (flow: inout QUICDatagramFlow) throws(E) -> R in
+                try body(&flow, &eventContext)
+            }
+        } catch {
+            if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+                runDeferredStreamWork(work, in: &eventContext)
+            }
+            throw error
+        }
+        if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+            runDeferredStreamWork(work, in: &eventContext)
+        }
+        return result
+    }
+
+    /// Borrows a datagram flow from outside the protocol stack, where no event context is held.
+    func performOnDatagramFlow<R: ~Copyable, E: Error>(
+        _ flowID: MultiplexedFlowIdentifier,
+        _ body: (inout QUICDatagramFlow) throws(E) -> R
+    ) throws(E) -> R? {
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow()
+        let result: R?
+        do throws(E) {
+            result = try multiplexedSecondaryFlows.withFlow(flowID, body)
+        } catch {
+            if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+                performDeferredStreamWorkFromExternal(work)
+            }
+            throw error
+        }
+        if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+            performDeferredStreamWorkFromExternal(work)
+        }
+        return result
+    }
+
+    // MARK: Operations the datagram linkage calls
+
+    #if DEBUG
+    /// Checks that the upper protocol calling in is the one attached to the datagram flow.
+    private func datagramFlowAcceptsCall(
+        flow flowID: MultiplexedFlowIdentifier,
+        from instance: InstanceIdentifier,
+        _ label: String
+    ) -> Bool {
+        let valid = performOnDatagramFlow(flowID) { (flow: inout QUICDatagramFlow) -> Bool in
+            do throws(ProtocolInstanceError) {
+                try flow.validate(upper: instance, label)
+                return true
+            } catch {
+                return false
+            }
+        }
+        return valid ?? false
+    }
+    #endif
+
+    /// Used in BaseProtocolLinkages
+    func attachUpperProtocolToDatagramFlow(
+        flow flowID: MultiplexedFlowIdentifier,
+        _ upperProtocol: BaseInboundDatagramLinkage,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {
+        // `attachUpperProtocolToNewFlow` already bound this upper when it created the flow, so
+        // seeing the same one again is the expected second leg of the attach, not a conflict.
+        // A *different* upper is still rejected.
+        let bound = performOnDatagramFlow(flowID) { (flow: inout QUICDatagramFlow) -> Bool in
+            guard flow.upper.isDetached || flow.upper == upperProtocol else {
+                return false
+            }
+            flow.upper = upperProtocol
+            return true
+        }
+        guard let bound else { throw NetworkError.posix(ENOENT) }
+        guard bound else { throw NetworkError.posix(EALREADY) }
+
+        do {
+            try setup(
+                flow: flowID,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+        } catch let error {
+            performOnDatagramFlow(flowID) { (flow: inout QUICDatagramFlow) in
+                flow.upper = .init()
+            }
+            throw error
+        }
+    }
+
+    /// Used in BaseProtocolLinkages
+    func connectDatagramFlow(
+        flow flowID: MultiplexedFlowIdentifier,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        #if DEBUG
+        guard datagramFlowAcceptsCall(flow: flowID, from: instance, "connect") else { return }
+        #endif
+        guard let flowIdentifier = secondaryInstanceIdentifier(ofFlow: flowID) else { return }
+        if isConnected(in: &eventContext) {
+            if flowIdentifier.canCallConnect(requested: true, in: &eventContext) {
+                connect(flow: flowID, in: &eventContext)
+            }
+        } else {
+            flowIdentifier.connectRequested(in: &eventContext)
+            connectInternal(in: &eventContext)
+        }
+        // Hand over anything buffered while this flow had no upper protocol. This runs after
+        // connecting so the connected event is delivered first, matching the ordering the
+        // non-detached path in `deliverConnectedEvent` produces.
+        performOnDatagramFlow(flowID, in: &eventContext) {
+            (flow: inout QUICDatagramFlow, ctx: inout NetworkContext.EventContext) in
+            flow.drainQueuedEventsForUpperProtocol(in: &ctx)
+        }
+    }
+
+    /// Used in BaseProtocolLinkages
+    func disconnectDatagramFlow(
+        flow flowID: MultiplexedFlowIdentifier,
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        #if DEBUG
+        guard datagramFlowAcceptsCall(flow: flowID, from: instance, "disconnect") else { return }
+        #endif
+        guard let flowIdentifier = secondaryInstanceIdentifier(ofFlow: flowID) else { return }
+        if flowIdentifier.canCallDisconnect(in: &eventContext) {
+            disconnect(flow: flowID, error: error, in: &eventContext)
+        }
+    }
+
+    /// Used in BaseProtocolLinkages
+    func handleApplicationEventForDatagramFlow(
+        flow flowID: MultiplexedFlowIdentifier,
+        event: ApplicationEvent,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        handleApplicationEventForStream(flow: flowID, event: event, for: instance, in: &eventContext)
+    }
+
+    /// Detaches the upper protocol from a datagram flow and releases the flow.
+    /// Used in BaseProtocolLinkages
+    func detachDatagramFlow(
+        flow flowID: MultiplexedFlowIdentifier,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
+        // First the flow itself: it checks the caller and releases whatever it holds.
+        let tornDown = performOnDatagramFlow(flowID, in: &eventContext) {
+            (flow: inout QUICDatagramFlow, ctx: inout NetworkContext.EventContext) -> Bool in
+            do throws(ProtocolInstanceError) {
+                try flow.validate(upper: instance, "detach")
+            } catch {
+                return false
+            }
+            flow.teardown(in: &ctx)
+            return true
+        }
+        guard tornDown == true else { throw NetworkError.posix(EINVAL) }
+
+        // Then the connection's view of the flow, which looks at the flow and so cannot happen
+        // while it is borrowed.
+        teardown(flow: flowID, in: &eventContext)
+
+        // Finally release the flow. Once it is out of the table nothing else can reach it.
+        if var flow = removeSecondaryFlow(flowID) {
+            flow.upper = .init()
+            flow.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
+            flow.upperReceiveQueue.finalizeAllFramesAsFailed()
+            flow.upperSendQueue.finalizeAllFramesAsFailed()
+            flow.unregisterEventManager(in: &eventContext)
+        }
+        var connection = self
+        connection.teardownIfPossible(in: &eventContext)
+    }
+}
+
 // MARK: Frame Processing helpers
 
 @available(Network 0.1.0, *)
@@ -7166,8 +7502,8 @@ extension QUICConnection {
             return
         }
         // Looking at every stream cannot happen while one is borrowed
-        guard !streamAccess.borrowed else {
-            streamAccess.checkIdle = true
+        guard !stateMachine.isFlowBorrowed else {
+            stateMachine.deferIdleCheck()
             return
         }
         let isIdle = connectionIsIdleForAllStreams(unackedPacketCount: unackedPacketCount)
