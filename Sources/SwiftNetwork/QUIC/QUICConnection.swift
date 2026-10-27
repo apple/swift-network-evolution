@@ -3719,6 +3719,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             discardInitialRecoveryState: &discardInitialRecoveryState,
             in: &eventContext
         )
+        deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
         isSendActive = wasActive
         if !wasActive {
             drainDeferredSendFrames(recoveryIsFree: false, in: &eventContext)
@@ -3769,7 +3770,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         discardInitialRecoveryState: inout Bool,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        sendFramesInternal(
+        let success = sendFramesInternal(
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
             retransmission: retransmission,
@@ -3780,6 +3781,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             discardInitialRecoveryState: &discardInitialRecoveryState,
             in: &eventContext
         )
+        deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
+        return success
     }
 
     func recordSentPackets(
