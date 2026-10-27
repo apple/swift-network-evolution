@@ -75,6 +75,12 @@ final class SwiftNetworkQUICShortLHPacketTests: NetTestCase {
         return quicOptions
     }
 
+    // 10.0.0.20
+    static let localIPv4Address: [UInt8] = [0x0a, 0x00, 0x00, 0x14]
+
+    // 10.0.0.117
+    static let remoteIPv4Address: [UInt8] = [0x0a, 0x00, 0x00, 0x75]
+
     // This packet has a short QUIC Initial Long Header packet, followed
     // by zeros to pad the UDP datagram payload to 1200 bytes.
     static let exampleShortQUICInitial: [UInt8] =
@@ -157,8 +163,8 @@ final class SwiftNetworkQUICShortLHPacketTests: NetTestCase {
         ]
 
     func testShortQUICInitialParsing() {
-        let clientEndpoint = Endpoint(address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!, port: 1234)
-        let serverEndpoint = Endpoint(address: IPv4Address(SwiftNetworkQUICStackTests.localIPv4Address)!, port: 8080)
+        let clientEndpoint = Endpoint(address: IPv4Address(Self.localIPv4Address)!, port: 1234)
+        let serverEndpoint = Endpoint(address: IPv4Address(Self.localIPv4Address)!, port: 8080)
 
         var serverParameters = Parameters()
         serverParameters.isServer = true
