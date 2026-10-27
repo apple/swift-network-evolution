@@ -81,6 +81,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         identifiers.filter { $0 != .allFlows }
     }
 
+    @_optimize(none)
     public mutating func insert(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
         assert(slot(of: flowID) == nil, "Flow \(flowID) is already in the table")
         let tableSlot: Int

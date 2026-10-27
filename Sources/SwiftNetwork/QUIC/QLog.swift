@@ -788,7 +788,7 @@ final class QLog {
     }
 
     func streamStateUpdated(
-        stream: QUICStreamInstance,
+        stream: borrowing QUICStreamInstance,
         oldStreamState: QLogStreamState,
         newStreamState: QLogStreamState,
         streamSide: QLogStreamSide?,
