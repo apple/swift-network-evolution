@@ -209,10 +209,13 @@ public struct QUICConnectionProtocol: NetworkProtocol {
             set { self._idleTimeout = newValue }
         }
 
+        internal var _maxPTODuration: NetworkDuration = .minutes(2)
         /// How long the connection may stay in PTO recovery
         /// before it is closed with ETIMEDOUT.
-        /// nil = default (2 minutes)
-        public var maxPTODuration: NetworkDuration?
+        public var maxPTODuration: NetworkDuration {
+            get { self._maxPTODuration }
+            set { self._maxPTODuration = newValue }
+        }
 
         // nil = default
         // true = enabled

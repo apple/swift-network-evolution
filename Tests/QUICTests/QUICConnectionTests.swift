@@ -540,7 +540,9 @@ final class QUICConnectionTests: XCTestCase {
                 var parameters = Parameters()
                 let quicOptions = QUICStreamProtocol.options()
                 quicOptions.setProtocolInstance(streamListener.identifier)
-                quicOptions.modifyConnectionOptions { $0.maxPTODuration = configured }
+                if let configured {
+                    quicOptions.modifyConnectionOptions { $0.maxPTODuration = configured }
+                }
                 parameters.defaultStack.prepend(applicationProtocol: .quic(quicOptions))
                 parameters.isServer = isServer
                 let path = PathProperties(parameters: parameters)

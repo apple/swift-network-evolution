@@ -600,9 +600,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             if quicConnectionOptions.keepaliveCount > 0 {
                 maxKeepaliveCount = Int(quicConnectionOptions.keepaliveCount)
             }
-            if let maxPTODuration = quicConnectionOptions.maxPTODuration {
-                self.maxPTODuration = maxPTODuration
-            }
+            maxPTODuration = quicConnectionOptions.maxPTODuration
 
             allowPMTUD = quicConnectionOptions.pmtud
             pmtudIgnoreCost = quicConnectionOptions.pmtudIgnoreCost
