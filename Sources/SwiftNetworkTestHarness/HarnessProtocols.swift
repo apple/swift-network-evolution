@@ -95,6 +95,10 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
         // thread it into any reads rather than re-deriving it.
         public var inboundDataAvailable: ((inout NetworkContext.EventContext, Bool) -> Void)?
 
+        // Called when the lower protocol has room for more outbound data again. Like
+        // `inboundDataAvailable`, it runs inline while the event's event context is held.
+        public var outboundRoomAvailable: ((inout NetworkContext.EventContext) -> Void)?
+
         public var inboundAborted: ((inout NetworkContext.EventContext, NetworkError?) -> Void)?
         public var outboundAborted: ((inout NetworkContext.EventContext, NetworkError?) -> Void)?
         public var error: ((NetworkError) -> Void)?  // invoked when error detected
@@ -105,6 +109,8 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
     public var completions = Completions()
 
     var inboundDataAvailableReceived = false
+
+    var outboundRoomAvailableReceived = false
 
     public var receivedConnected = false
     public var receivedDisconnected = false
@@ -206,6 +212,35 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
     }
 
     public func handleOutboundRoomAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
+        if let outboundRoomAvailableCompletion = self.completions.outboundRoomAvailable {
+            self.completions.outboundRoomAvailable = nil
+            outboundRoomAvailableCompletion(&eventContext)
+        } else {
+            self.outboundRoomAvailableReceived = true
+        }
+    }
+
+    /// Discards a room-available event that arrived before anyone was waiting for one, so the
+    /// next `waitForOutboundRoomAvailable` only completes on an event that arrives after this.
+    public func discardPendingOutboundRoomAvailable() {
+        outboundRoomAvailableReceived = false
+    }
+
+    /// Registers a completion for the next time the lower protocol has room for outbound data.
+    ///
+    /// The completion runs inline while the delivering event holds its event context, so it
+    /// receives that context. An event that arrived while nothing was registered completes it
+    /// at once.
+    public func waitForOutboundRoomAvailable(
+        in eventContext: inout NetworkContext.EventContext,
+        completion: @escaping (inout NetworkContext.EventContext) -> Void
+    ) {
+        if self.outboundRoomAvailableReceived {
+            self.outboundRoomAvailableReceived = false
+            completion(&eventContext)
+            return
+        }
+        completions.outboundRoomAvailable = completion
     }
 
     public func handleNetworkProtocolEvent(
