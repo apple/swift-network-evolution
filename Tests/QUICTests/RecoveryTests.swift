@@ -798,14 +798,16 @@ final class RecoveryTests: XCTestCase {
     // Once the connection has been in PTO recovery for two minutes, the next PTO sends no probe and
     // flags the connection to be closed.
     func testPTOLimitReached() {
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .initial, number: 0)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 20 + 96
-        packet.transmittedItems.ping = true
-        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
-        sentPacket(packet, connection: connection)
+        connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .initial, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.transmittedItems.ping = true
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            sentPacket(packet, connection: connection)
+        }
 
         let start = NetworkClock.Instant.systemNow
         let expectation = XCTestExpectation()
@@ -842,14 +844,16 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(connection.maxPTODuration, .minutes(2), "Unexpected default PTO limit")
         connection.maxPTODuration = .seconds(30)
 
-        var packet = SentPacketRecord()
-        packet.identifier = .init(space: .initial, number: 0)
-        packet.isInFlightEligible = true
-        packet.isAckEliciting = true
-        packet.totalLength = 20 + 96
-        packet.transmittedItems.ping = true
-        packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
-        sentPacket(packet, connection: connection)
+        connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .initial, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.transmittedItems.ping = true
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            sentPacket(packet, connection: connection)
+        }
 
         let start = NetworkClock.Instant.systemNow
         let expectation = XCTestExpectation()
@@ -873,11 +877,89 @@ final class RecoveryTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
+    // The limit is checked when the PTO timer fires, and the backoff would otherwise arm that timer well past it. Each
+    // time the timer fires the clock moves on by the delay it was armed with, so the connection has to be flagged to
+    // close at exactly the limit.
+    func testPTOTimerFiresAtTheLimit() {
+        connection.maxPTODuration = .seconds(10)
+
+        connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .initial, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.transmittedItems.ping = true
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            sentPacket(packet, connection: connection)
+        }
+
+        let start = NetworkClock.Instant.systemNow
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.fromExternal { eventContext in
+                var now = start
+                var fires = 0
+                repeat {
+                    self.connection.recovery.timerFired(at: now, in: &eventContext)
+                    fires += 1
+                    if self.connection.recovery.ptoLimitReached { break }
+                    now = now.advanced(by: self.connection.recovery.computedTimeout)
+                } while fires < 20
+
+                XCTAssertTrue(self.connection.recovery.ptoLimitReached, "The limit was never reached")
+                XCTAssertEqual(start.duration(to: now), .seconds(10), "The timer did not fire at the limit")
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // A zero delay cancels the timer, so a limit that is already reached, or about to be, must still leave the timer
+    // armed; otherwise the connection would never close.
+    func testPTOTimerStaysArmedAtTheLimit() {
+        connection.maxPTODuration = .seconds(10)
+
+        connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .initial, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.transmittedItems.ping = true
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            sentPacket(packet, connection: connection)
+        }
+
+        let start = NetworkClock.Instant.systemNow
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.fromExternal { eventContext in
+                self.connection.recovery.timerFired(at: start, in: &eventContext)
+                XCTAssertEqual(self.connection.recovery.firstPTOTimestamp, start)
+
+                for remaining in [NetworkDuration.milliseconds(1), .zero, .seconds(-5)] {
+                    let now = start.advanced(by: .seconds(10)).advanced(by: .zero - remaining)
+                    self.connection.recovery.resetTimer(now: now, connection: self.connection, in: &eventContext)
+                    XCTAssertEqual(
+                        self.connection.recovery.computedTimeout,
+                        Recovery.timerGranularity,
+                        "Timer not left armed with \(remaining) to the limit"
+                    )
+                }
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
     // An acknowledgment of new data ends the PTO episode, so the limit runs from the first PTO after
     // it rather than from the first PTO overall.
     func testPTOLimitClockRestartsAfterAck() {
         connection.recovery.received1RTTAck = true
-        recordSparsePackets([0, 1])
+        connection.context.onQueue {
+            recordSparsePackets([0, 1])
+        }
 
         let start = NetworkClock.Instant.systemNow
         let expectation = XCTestExpectation()

@@ -1512,6 +1512,13 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 } else {
                     computedTimeout = timeout
                 }
+                // The limit is only checked when the timer fires, so do not let the backoff carry the timer past
+                // it: the connection closes when the limit is reached, not at the first backed-off PTO after it.
+                // A zero delay cancels the timer, so keep the delay at least a timer granularity.
+                if let firstPTOTimestamp {
+                    let untilLimit = now.duration(to: firstPTOTimestamp.advanced(by: connection.maxPTODuration))
+                    computedTimeout = min(computedTimeout, max(untilLimit, Recovery.timerGranularity))
+                }
                 log.datapath("Resetting recovery timer to \(computedTimeout)")
                 setTimer(delay: computedTimeout, now: now, connection: connection, in: &eventContext)
             }

@@ -529,7 +529,9 @@ final class QUICConnectionTests: XCTestCase {
         for isServer in [false, true] {
             for (configured, expected) in limits {
                 let storage = TestNetworkProtocolStorage(context: .implicitContext)
-                let (streamListener, _, _) = storage.createTestQUICInstance()
+                let (streamListener, _, _) = NetworkContext.implicitContext.onQueue {
+                    storage.createTestQUICInstance()
+                }
                 guard let connection = storage.quicInstance(for: streamListener.base) else {
                     XCTFail("Failed to create a QUIC connection")
                     return
