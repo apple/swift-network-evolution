@@ -1068,10 +1068,10 @@ extension StreamEndpointFlowProtocol: SingleFrameWriting {}
 extension DatagramEndpointFlowProtocol: SingleFrameWriting {}
 
 @available(Network 0.1.0, *)
-fileprivate extension NetworkUniqueMarkedDeque where Element == WriteRequest {
+extension NetworkUniqueMarkedDeque where Element == WriteRequest {
     /// The number of leading requests needed to reach `room` bytes, counting the request that
     /// crosses it.
-    func leadingRequestCount(fillingRoom room: Int) -> Int {
+    fileprivate func leadingRequestCount(fillingRoom room: Int) -> Int {
         var requestCount = 0
         var length = 0
         while length < room, requestCount < count {
