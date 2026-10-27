@@ -3838,7 +3838,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) -> FrameArray {
         var outboundBatch = FrameArray()
         // If ACK is only set or the connection is blocked just send empty batch
-        if applicationPendingItems.isAckSet || self.hasSentDataBlocked {
+        if applicationPendingItems.isAckOnly || self.hasSentDataBlocked {
             return outboundBatch
         }
         let sendDataLength = self.flowControlState.pendingOutboundBytesToSend
