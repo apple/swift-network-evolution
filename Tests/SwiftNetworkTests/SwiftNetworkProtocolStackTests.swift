@@ -101,11 +101,13 @@ final class SwiftNetworkProtocolStackTests: NetTestCase {
         quicOptions.modifyConnectionOptions { $0.maximumConcurrentBidirectionalStreams = 5 }
         quicOptions.modifyConnectionOptions { $0.maximumConcurrentUnidirectionalStreams = 7 }
         quicOptions.modifyConnectionOptions { $0.maxPathsPerInterface = 3 }
+        quicOptions.modifyConnectionOptions { $0.maxPTODuration = .seconds(30) }
 
         let copy = quicOptions.deepCopy()
         XCTAssertEqual(copy.connectionOptions.maximumConcurrentBidirectionalStreams, 5)
         XCTAssertEqual(copy.connectionOptions.maximumConcurrentUnidirectionalStreams, 7)
         XCTAssertEqual(copy.connectionOptions.maxPathsPerInterface, 3)
+        XCTAssertEqual(copy.connectionOptions.maxPTODuration, .seconds(30))
     }
 
     // Changes made through the shared connection options must reach the stream options they came from, since callers
