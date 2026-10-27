@@ -1844,7 +1844,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         var coalesced = false
         while frame.unclaimedLength > 0 {
-            let continueProcessing = handleInboundPacket(
+            let result = handleInboundPacket(
                 frame: &frame,
                 path: path,
                 ecnFlags: frame.ecnFlag,
@@ -1870,14 +1870,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 return
             }
 
-            if !continueProcessing {
+            switch result {
+            case .stop:
                 frame.finalize(success: true)
                 return
+            case .processed:
+                // Update the receive timestamp used later in keep-alive timer
+                // expiry and idle time. Do it only for valid packets
+                lastPacketReceivedTimestamp = self.now
+            case .skipped:
+                break
             }
-
-            // Update the receive timestamp used later in keep-alive timer
-            // expiry and idle time. Do it only for valid packets
-            lastPacketReceivedTimestamp = self.now
             // If we parsed at least one packet and there are still
             // more, consider all packets of this batch coalesced.
             if frame.unclaimedLength > 0 && !coalesced {
@@ -1898,6 +1901,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         body(&ack, &stats, &protector)
     }
 
+    /// What `handleInboundPacket` did with the packet at the start of the frame.
+    private enum InboundPacketResult {
+        /// The packet was processed. The packets coalesced after it follow.
+        case processed
+        /// The packet could not be opened and was stepped over unprocessed. The packets
+        /// coalesced after it still follow (RFC 9000 Section 12.2).
+        case skipped
+        /// The rest of the datagram is not processed.
+        case stop
+    }
+
     private func handleInboundPacket(
         frame: inout Frame,
         path: QUICPath,
@@ -1907,10 +1921,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         isServerConnection: Bool,
         packetParser: inout PacketParser,
         in eventContext: inout NetworkContext.EventContext
-    ) -> Bool {
+    ) -> InboundPacketResult {
         //
         var ceMarked = false
         var continueProcessing = false
+        var skippedPacket = false
         let packet = withPacketParsingState { (ack, stats, protector) -> Packet? in
             var parsedPacket = packetParser.parse(
                 frame: &frame,
@@ -1919,6 +1934,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 ack: &ack,
                 protector: &protector,
                 stats: &stats,
+                skippedPacket: &skippedPacket,
                 in: &eventContext
             )
             // Dont proceed if long header with vn / retry / or a packet that cannot be decrypted
@@ -1960,7 +1976,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             } else {
                 log.info("Unable to parse packet (decryption keys may not be ready)")
             }
-            return false
+            // RFC 9000 Section 12.2: the packets coalesced after one that cannot be processed are
+            // still processed.
+            return skippedPacket ? .skipped : .stop
         }
 
         defer {
@@ -1982,17 +2000,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
          */
         if packet.versionNegotiation {
             handleInboundVersionNegotiation(packet, in: &eventContext)
-            return true
+            return .processed
         } else if packet.retry {
             handleInboundRetry(packet, in: &eventContext)
-            return true
+            return .processed
         } else if packet.failedDecryption {
             failedDecryption(packet, in: &eventContext)
-            return false
+            return .stop
         }
 
         if !continueProcessing {
-            return true
+            return .processed
         }
 
         var isAckEliciting = false
@@ -2008,7 +2026,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         in: &eventContext
                     )
                     QUICFrame.discard(quicFrame)
-                    return false
+                    return .stop
                 }
             }
             if QUICFrame.isAckEliciting(frame: quicFrame) {
@@ -2031,7 +2049,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 closeFrameType = quicFrame.frameType
                 close(with: .protocolViolation, "invalid frame type during the handshake", in: &eventContext)
                 QUICFrame.discard(quicFrame)
-                return false
+                return .stop
             }
             if !processFrame(quicFrame, packetNumberSpace: packet.numberSpace, path: path, in: &eventContext) {
                 break
@@ -2086,7 +2104,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        return true
+        return .processed
     }
 
     private func handleInboundVersionNegotiation(
