@@ -2607,6 +2607,9 @@ struct FrameRetireConnectionID: QUICFrameProtocol {
 struct FramePathChallenge: QUICFrameProtocol {
     let type = FrameType.pathChallenge
 
+    // The type, a 1-byte variable length integer, followed by the 8 bytes of data.
+    static let encodedLength = 1 + MemoryLayout<UInt64>.size
+
     private(set) var data: UInt64 = 0
     private(set) var destinationConnectionID: QUICConnectionID?
 

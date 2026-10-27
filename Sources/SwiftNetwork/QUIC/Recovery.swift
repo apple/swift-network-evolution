@@ -85,8 +85,23 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         // Entries are always added in order of packet number (larger numbers appended to the end)
         var outstandingPackets = NetworkUniqueDeque<PacketContainerEntry>(minimumCapacity: 10)
 
+        // Number of entries in `outstandingPackets` that have been declared lost. Lost packets
+        // stay for at least one RTT, until the next ACK that newly acknowledges something, so
+        // that a late ACK for one can be recognized as a spurious loss.
+        var lostPacketCount = 0
+
+        // Whether any packet is still awaiting acknowledgment.
         var hasOutstandingPackets: Bool {
-            !outstandingPackets.isEmpty
+            outstandingPackets.count > lostPacketCount
+        }
+
+        // The number of the oldest packet that is still awaiting acknowledgment and hasn't
+        // been declared lost.
+        var oldestUnlostPacketNumber: PacketNumber? {
+            for index in 0..<outstandingPackets.count where outstandingPackets[index].lostTime == .zero {
+                return outstandingPackets[index].packet.number
+            }
+            return nil
         }
 
         mutating func iterateSentPacketEntries(_ access: (inout PacketContainerEntry) -> Bool) {
@@ -168,20 +183,43 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         @_optimize(speed)
         mutating func removeSentPacket(_ packetNumber: PacketNumber) -> PacketContainerEntry? {
             if let index = indexOfPacketNumber(packetNumber) {
-                // `remove(at:)` is O(count) and runs the full gap-closing analysis
-                // even when there is nothing to shift. Acknowledgements arrive
-                // oldest-first, so the front case dominates; `removeFirst()` is
-                // documented O(1) and just advances the head slot.
-                let removedEntry =
-                    index == 0
-                    ? outstandingPackets.removeFirst()
-                    : outstandingPackets.remove(at: index)
-                if removedEntry.packet.largerPacket, largerPacketCount > 0 {
-                    largerPacketCount &-= 1
-                }
-                return removedEntry
+                return removeSentPacket(at: index)
             }
             return nil
+        }
+
+        @_optimize(speed)
+        mutating func removeSentPacket(at index: Int) -> PacketContainerEntry {
+            // `remove(at:)` is O(count) and runs the full gap-closing analysis
+            // even when there is nothing to shift. Acknowledgements arrive
+            // oldest-first, so the front case dominates; `removeFirst()` is
+            // documented O(1) and just advances the head slot.
+            let removedEntry =
+                index == 0
+                ? outstandingPackets.removeFirst()
+                : outstandingPackets.remove(at: index)
+            if removedEntry.packet.largerPacket, largerPacketCount > 0 {
+                largerPacketCount &-= 1
+            }
+            if removedEntry.lostTime != .zero, lostPacketCount > 0 {
+                lostPacketCount &-= 1
+            }
+            return removedEntry
+        }
+
+        // Keeps a packet that was declared lost after its contents have been queued for
+        // retransmission. Its frames now belong to the retransmission, so they are cleared to
+        // keep a late ACK for this packet from acknowledging them a second time.
+        mutating func retainLostPacket(_ packetNumber: PacketNumber) {
+            guard let index = indexOfPacketNumber(packetNumber) else { return }
+            // A lost packet no longer counts as a large packet in flight for PMTUD.
+            if outstandingPackets[index].packet.largerPacket {
+                outstandingPackets[index].packet.largerPacket = false
+                if largerPacketCount > 0 {
+                    largerPacketCount &-= 1
+                }
+            }
+            outstandingPackets[index].packet.transmittedItems = TransmittedItems()
         }
 
         func findSentPacketEntry<R>(index: Int, access: (borrowing PacketContainerEntry) -> R) -> R {
@@ -212,17 +250,18 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     return true
                 }
 
-                let pathID = entry.packet.sentPath
-                guard let path = connection?.path(for: pathID) else {
+                let sentPathID = entry.packet.sentPath
+                guard let sentPath = connection?.path(for: sentPathID) else {
                     return true
                 }
 
                 let sentLength = entry.packet.totalLength
                 connection?.log.datapath("Discarding packet of length \(sentLength)")
-                path.congestionControlPacketDiscarded(bytesSent: sentLength, qlog: connection?.qLog)
+                sentPath.congestionControlPacketDiscarded(bytesSent: sentLength, qlog: connection?.qLog)
                 return true
             }
             outstandingPackets.removeAll()
+            lostPacketCount = 0
             ackElicitingPacketsInFlight = 0
             timeOfLastSentAckElicitingPacket = .zero
             largestSentPacketNumber = PacketNumber.none
@@ -248,18 +287,22 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             timeThreshold = Constants.timeReorderThreshold
         }
 
+        // `largestLostSentTime` must be the sent time of the largest packet in the loss batch
+        // being reported. Congestion control compares it to the start of its recovery period, so
+        // passing a time from an earlier batch can hide a new congestion event.
         func notifyLossToPath(
             packetNumber: PacketNumber,
-            pathID: MultiplexingPathIdentifier,
+            sentPathID: MultiplexingPathIdentifier,
             bytesLost: Int,
+            largestLostSentTime: NetworkClock.Instant,
             connection: QUICConnection
         ) -> Bool {
-            guard let path = connection.path(for: pathID) else {
+            guard let path = connection.path(for: sentPathID) else {
                 return false
             }
             var reducedCongestionWindow: Bool = false
             log.datapath(
-                "In-flight bytes declared lost on path \(pathID), largest lost packet \(largestLostPacketNumber) was sent at \(largestLostSentTime)"
+                "In-flight bytes declared lost on path \(sentPathID), largest lost packet \(packetNumber) was sent at \(largestLostSentTime)"
             )
             reducedCongestionWindow = path.congestionControlPacketsLost(
                 bytesLost: bytesLost,
@@ -269,17 +312,17 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             )
             if reducedCongestionWindow {
                 log.datapath(
-                    "\(packetNumber) detected lost on path \(pathID) and caused congestion window reduction"
+                    "\(packetNumber) detected lost on path \(sentPathID) and caused congestion window reduction"
                 )
             }
             return reducedCongestionWindow
         }
 
         mutating func updateCongestionOnPath(
-            _ pathID: MultiplexingPathIdentifier,
+            _ sentPathID: MultiplexingPathIdentifier,
             connection: QUICConnection
         ) {
-            guard let path = connection.path(for: pathID) else {
+            guard let path = connection.path(for: sentPathID) else {
                 return
             }
 
@@ -329,79 +372,110 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             }
         }
 
+        // Reports the lost packets to the path each of them was sent on.
         mutating func declarePacketLost(
             _ lostPackets: [PacketIdentifier],
             connection: QUICConnection
         ) {
             // We assume that the packets are in packet-number order. Verify that
             // the sent time of each packet is after that of the earlier packet.
-            var totalLength: Int = 0
-            let lostPacketCount = lostPackets.count
-            for lostPacketIndex in 0..<lostPacketCount {
-                let isLastPacket = (lostPacketIndex == (lostPacketCount - 1))
-                let lostPacketIdentifier = lostPackets[lostPacketIndex]
-                var reducedCongestionWindow = false
-                var smallestLostSentTime = self.smallestLostSentTime
-                var largestLostSentTime = self.largestLostSentTime
-                var largestLostPacketNumber = self.largestLostPacketNumber
-                var pathID: MultiplexingPathIdentifier = .none
+            var totalLength = 0
+            var previousSentPathID: MultiplexingPathIdentifier = .none
+            var lastPacketNumber = PacketNumber.none
 
-                findSentPacketEntry(packetNumber: lostPacketIdentifier.number) { entry in
+            for lostPacketIdentifier in lostPackets {
+                var sentPathID: MultiplexingPathIdentifier = .none
+                var sentTime: NetworkClock.Instant = .zero
+                var isPmtudProbe = false
+                var packetLength = 0
+
+                let found = findSentPacketEntry(packetNumber: lostPacketIdentifier.number) { entry in
+                    sentPathID = entry.packet.sentPath
+                    sentTime = entry.sentTime
+                    isPmtudProbe = entry.packet.transmittedItems.pmtudProbeMSS != nil
                     if entry.packet.isInFlightEligible {
-                        totalLength += entry.packet.totalLength
+                        packetLength = entry.packet.totalLength
                     }
 
-                    if entry.packet.isECNValidationPacket, let path = connection.path(for: entry.packet.sentPath) {
+                    if entry.packet.isECNValidationPacket, let path = connection.path(for: sentPathID) {
                         path.ecnState.validationPacketLost()
                     }
 
-                    if largestLostPacketNumber + 1 != entry.packet.number {
-                        // Not a continuous loss, reset sent times.
-                        smallestLostSentTime = entry.sentTime
-                    } else {
-                        smallestLostSentTime = min(
-                            smallestLostSentTime,
-                            entry.sentTime
-                        )
-                    }
-
-                    if _slowPath(largestLostSentTime > entry.sentTime) {
-                        connection.log.fault("Later packets should always be sent later")
-                    }
-                    largestLostSentTime = entry.sentTime
-                    largestLostPacketNumber = entry.packet.number
-
-                    if _slowPath(largestLostSentTime < smallestLostSentTime) {
-                        connection.log.fault("Later packets should have later sent time")
-                    }
                     Recovery.logPacketLost(
                         packet: entry.packet,
                         trigger: .reordering,
                         connection: connection
                     )
+                }
+                guard found else { continue }
 
-                    if isLastPacket {
-                        reducedCongestionWindow = notifyLossToPath(
-                            packetNumber: entry.packet.number,
-                            pathID: entry.packet.sentPath,
+                // If the path is now different, stop counting totalLength.
+                if sentPathID != previousSentPathID {
+                    if previousSentPathID != .none {
+                        let reducedCongestionWindow = notifyLossToPath(
+                            packetNumber: lastPacketNumber,
+                            sentPathID: previousSentPathID,
                             bytesLost: totalLength,
+                            largestLostSentTime: largestLostSentTime,
                             connection: connection
                         )
-                        pathID = entry.packet.sentPath
+                        if reducedCongestionWindow {
+                            modifySentPacketEntry(packetNumber: lastPacketNumber) { entry in
+                                entry.reducedCongestionWindow = true
+                            }
+                        }
+                        updateCongestionOnPath(previousSentPathID, connection: connection)
                     }
+                    totalLength = 0
                 }
 
-                self.smallestLostSentTime = smallestLostSentTime
-                self.largestLostSentTime = largestLostSentTime
-                self.largestLostPacketNumber = largestLostPacketNumber
+                totalLength += packetLength
+                previousSentPathID = sentPathID
+                lastPacketNumber = lostPacketIdentifier.number
 
-                if reducedCongestionWindow, let lastPacketIdentifier = lostPackets.last {
-                    modifySentPacketEntry(packetNumber: lastPacketIdentifier.number) { entry in
+                // The loss of a PMTUD probe is not a reliable signal of congestion (RFC 9000
+                // section 14.4), so a probe does not update the persistent congestion
+                // detection variables.
+                if isPmtudProbe {
+                    continue
+                }
+
+                if largestLostPacketNumber + 1 != lostPacketIdentifier.number {
+                    // Not a continuous loss, reset sent times.
+                    smallestLostSentTime = sentTime
+                } else {
+                    smallestLostSentTime = min(
+                        smallestLostSentTime,
+                        sentTime
+                    )
+                }
+
+                if _slowPath(largestLostSentTime > sentTime) {
+                    connection.log.fault("Later packets should always be sent later")
+                }
+                largestLostSentTime = sentTime
+                largestLostPacketNumber = lostPacketIdentifier.number
+
+                if _slowPath(largestLostSentTime < smallestLostSentTime) {
+                    connection.log.fault("Later packets should have later sent time")
+                }
+            }
+
+            // Report the final run of lost packets to the path it was sent on.
+            if previousSentPathID != .none {
+                let reducedCongestionWindow = notifyLossToPath(
+                    packetNumber: lastPacketNumber,
+                    sentPathID: previousSentPathID,
+                    bytesLost: totalLength,
+                    largestLostSentTime: largestLostSentTime,
+                    connection: connection
+                )
+                if reducedCongestionWindow {
+                    modifySentPacketEntry(packetNumber: lastPacketNumber) { entry in
                         entry.reducedCongestionWindow = true
                     }
                 }
-
-                updateCongestionOnPath(pathID, connection: connection)
+                updateCongestionOnPath(previousSentPathID, connection: connection)
             }
         }
 
@@ -558,10 +632,15 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     continue
                 }
                 if ackedEntry.lostTime != .zero {
+                    connection.stats.increment(.txSpuriousLostPackets)
+                    let lostPacketNumber = ackedEntry.packet.number
+                    log.datapath(
+                        "Packet \(lostPacketNumber) was acknowledged after being declared lost (spurious loss)"
+                    )
                     let sRTT = sentPath.rtt.smoothedRTT
                     let latestRTT = sentPath.rtt.latestRTT
                     spuriousLoss(
-                        packetNumber: ackedEntry.packet.number,
+                        packetNumber: lostPacketNumber,
                         packetNumberSpace: packetNumberSpace,
                         packetSentTime: ackedEntry.sentTime,
                         ackedTime: now,
@@ -571,7 +650,10 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                         connection: connection
                     )
                     if ackedEntry.reducedCongestionWindow {
-                        path.congestionControlSpuriousRetransmit(qlog: connection.qLog)
+                        log.datapath(
+                            "Spurious loss of \(lostPacketNumber) undoes the congestion window reduction on path \(sentPath.pathIdentifier)"
+                        )
+                        sentPath.congestionControlSpuriousRetransmit(qlog: connection.qLog)
                     }
                 }
 
@@ -985,8 +1067,9 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     if entry.packet.ectMarked {
                         connection.stats.increment(.ecnCapablePacketsLost)
                     }
-                    // Defer removing from sent_packet up to 1 RTT
-                    // and set the lost time.
+                    // Defer removing from sent_packet for at least one
+                    // RTT and set the lost time.
+                    // See `retransmitPackets` and `removeLostPackets`.
                     entry.lostTime = timeNow
                     if entry.packet.isAckEliciting {
                         if ackElicitingPacketsInFlight > 0 {
@@ -1013,6 +1096,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             }
             innerState.ackElicitingPacketsInFlight = ackElicitingPacketsInFlight
             innerState.lossTime = lossTime
+            innerState.lostPacketCount += lostPackets.count
         }
 
         if !lostPackets.isEmpty {
@@ -1035,15 +1119,23 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             var discardInitialRecoveryState = false
             withMutableInnerState(packetNumberSpace: identifier.space) {
                 innerState in
-                guard let entry = innerState.removeSentPacket(identifier.number) else {
+                // The lost packet stays in `outstandingPackets` (see `removeLostPackets`), so a
+                // late ACK for it is still recognized as a spurious loss.
+                var sentPackets: NetworkUniqueDeque<SentPacketRecord>?
+                let found = innerState.findSentPacketEntry(packetNumber: identifier.number) { entry in
+                    sentPackets = connection.retransmitPacket(
+                        entry.packet,
+                        discardInitialRecoveryState: &discardInitialRecoveryState,
+                        in: &eventContext
+                    )
+                }
+                guard found else {
                     return
                 }
-                let sentPackets = connection.retransmitPacket(
-                    entry.packet,
-                    discardInitialRecoveryState: &discardInitialRecoveryState,
-                    in: &eventContext
-                )
-                innerState.recordSentPackets(sentPackets, connection: connection)
+                innerState.retainLostPacket(identifier.number)
+                if let sentPackets {
+                    innerState.recordSentPackets(sentPackets, connection: connection)
+                }
             }
             if discardInitialRecoveryState {
                 self.resetPNSpace(packetNumberSpace: .initial, connection: connection)
@@ -1118,23 +1210,35 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         return packetLost
     }
 
-    mutating func removeLostPackets(ackedPath: QUICPath, now: NetworkClock.Instant) {
-        applyToAllInnerStatesMutable { innerState, pnSpace in
+    // Drops packets that were declared lost more than one RTT ago, measured on the path they
+    // were sent on. This only runs from ACK processing, when the ACK newly acknowledges
+    // something, so a lost packet is kept for at least one RTT, until the next ACK.
+    mutating func removeLostPackets(
+        ackedPath: QUICPath,
+        now: NetworkClock.Instant,
+        connection: QUICConnection
+    ) {
+        applyToAllInnerStatesMutable { innerState, _ in
+            // Nothing is ever lost in the common case, so skip the walk.
+            guard innerState.lostPacketCount > 0 else { return }
             var index = 0
             while index < innerState.outstandingPackets.count {
-                let packetNumber = innerState.outstandingPackets[index].packet.number
                 let lostTime = innerState.outstandingPackets[index].lostTime
-                let connection = ackedPath.parentProtocol
-                let largestAckedPacketNumber = connection.largestAckedPacketNumber(space: pnSpace)
-                if lostTime != .zero, packetNumber > largestAckedPacketNumber {
-                    let lostDuration = lostTime.duration(to: now)
-                    if lostDuration > ackedPath.rtt.smoothedRTT {
-                        // Remove packet and don't increment index (so the next loop looks at the new value in this index)
-                        if index == 0 {
-                            // O(1), unlike the general remove(at:).
-                            innerState.outstandingPackets.removeFirst()
-                        } else {
-                            innerState.outstandingPackets.remove(at: index)
+                if lostTime != .zero {
+                    let sentPathID = innerState.outstandingPackets[index].packet.sentPath
+                    let smoothedRTT: NetworkDuration
+                    if sentPathID == ackedPath.pathIdentifier {
+                        smoothedRTT = ackedPath.rtt.smoothedRTT
+                    } else if let sentPath = connection.path(for: sentPathID) {
+                        smoothedRTT = sentPath.rtt.smoothedRTT
+                    } else {
+                        // An ACK can't be matched to a path that is gone, so remove it now.
+                        smoothedRTT = .zero
+                    }
+                    if lostTime.duration(to: now) > smoothedRTT {
+                        _ = innerState.removeSentPacket(at: index)
+                        if innerState.lostPacketCount == 0 {
+                            return
                         }
                         continue
                     }
@@ -1267,7 +1371,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
                     var packets: NetworkUniqueDeque<SentPacketRecord>?
                     var packetIsAckEliciting: Bool?
+                    var packetIsLost = false
                     innerState.findSentPacketEntry(index: i) { entry in
+                        // Its contents were already queued for retransmission when it was
+                        // declared lost.
+                        guard entry.lostTime == .zero else {
+                            packetIsLost = true
+                            return
+                        }
                         Recovery.logPacketLost(
                             packet: entry.packet,
                             trigger: .pto,
@@ -1283,6 +1394,9 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                             discardInitialRecoveryState: &discardInitialRecoveryState,
                             in: &eventContext
                         )
+                    }
+                    if packetIsLost {
+                        continue
                     }
 
                     if let packets, innerState.recordSentPackets(packets, connection: connection) {
@@ -1444,6 +1558,13 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         // establishing persistent congestion with potentially too few probes.
         //
         guard rtt.hasInitialMeasurement else {
+            return false
+        }
+        // There is no persistent congestion period before a lost packet has updated the sent
+        // times, when `smallestTime` still holds its initial (or post-persistent-congestion
+        // reset) maximum and `largestTime` is zero or stale. Skipping here also keeps the
+        // addition below from overflowing.
+        guard largestTime >= smallestTime else {
             return false
         }
         let pto = Recovery.computedPTO(rtt: rtt)
@@ -1676,11 +1797,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         let largestAckedPacketNumber = connection.largestAckedPacketNumber(space: packetNumberSpace)
         withImmutableInnerState(packetNumberSpace: packetNumberSpace) {
             innerState in
-            if !innerState.outstandingPackets.isEmpty {
-                oldestSentEntryPacketNumber = innerState.findSentPacketEntry(index: 0) {
-                    $0.packet.number
-                }
-            }
+            // Packets already declared lost can't be declared lost again.
+            oldestSentEntryPacketNumber = innerState.oldestUnlostPacketNumber
         }
 
         // Don't detect lost packets when this ACK has no impact on the list of outstanding packets.
@@ -1704,7 +1822,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             packetsLost: packetsLost,
             qlog: connection.qLog
         )
-        removeLostPackets(ackedPath: ackedPath, now: timeNow)
+        removeLostPackets(ackedPath: ackedPath, now: timeNow, connection: connection)
 
         // Any work/frames to send triggered by receiving this ACK is scheduled
         // in pendingItems and will be sent as part after inboundStopping
