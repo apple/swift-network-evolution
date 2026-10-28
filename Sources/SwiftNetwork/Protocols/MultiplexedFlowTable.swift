@@ -18,10 +18,6 @@ import BasicContainers
 
 // A flow and its identifier. A free entry has no flow, the identifier `.allFlows`, and holds in
 // `nextFree` the position of the next free entry, or -1 if it is the last.
-//
-// This is internal and not nested in the table on purpose. With the compiler in use, a generic
-// noncopyable type that holds the flow produces invalid code (the build stops with "Broken module
-// found") when it is private, whether it is nested in the table or at file scope.
 @available(Network 0.1.0, *)
 struct MultiplexedFlowTableEntry<Flow: ~Copyable>: ~Copyable {
     var identifier: MultiplexedFlowIdentifier
@@ -36,9 +32,7 @@ struct MultiplexedFlowTableEntry<Flow: ~Copyable>: ~Copyable {
 // its own.
 //
 // `index` finds the entry for an identifier. A flow identifier carries the slot of the flow's event
-// state in its low 32 bits, and those slots are small and dense, so they are used as they are:
-// the identifier's low bits, masked to the size of `index`, say where to start looking. No hash
-// function is involved. The size of `index` follows the number of flows, not the largest event
+// state in its low 32 bits. The size of `index` follows the number of flows, not the largest event
 // state slot there has been. Two identifiers that start at the same place, such as two generations
 // of one event state slot, just sit next to each other.
 //
@@ -73,6 +67,8 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     // The position of `flowID` in `index` and the position of its entry, if it is in the table. The
     // whole identifier is compared, so the identifier of a flow that has gone, whose event state slot
     // has been reused, is not found.
+    //
+    // Time: expected O(1), worst case O(n).
     @inline(always)
     private func find(_ flowID: MultiplexedFlowIdentifier) -> (inIndex: Int, entry: Int)? {
         guard !index.isEmpty else { return nil }
@@ -87,6 +83,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         }
     }
 
+    // Time: expected O(1), worst case O(n).
     public func contains(_ flowID: MultiplexedFlowIdentifier) -> Bool {
         find(flowID) != nil
     }
@@ -111,9 +108,12 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
 
     // Makes `index` big enough for one more flow, rebuilding it if it has to grow. Only positions are
     // moved; the flows stay where they are.
+    //
+    // Time: O(1) when `index` has room. When it has to grow, O(m) to rebuild it, but it doubles each
+    // time, so across a run of inserts that is amortized O(1) for each one.
     private mutating func makeRoomInIndex() {
         guard (liveCount + 1) &* 2 > index.count else { return }
-        var capacity = Swift.max(8, index.count)
+        var capacity = max(8, index.count)
         while (liveCount + 1) &* 2 > capacity { capacity &*= 2 }
         index = [Int32](repeating: 0, count: capacity)
         for position in 0..<entries.count where entries[position].identifier != .allFlows {
@@ -121,6 +121,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         }
     }
 
+    // Time: expected O(1), worst case O(n).
     @inline(always)
     private mutating func placeInIndex(entry: Int, for flowID: MultiplexedFlowIdentifier) {
         let mask = index.count &- 1
@@ -131,13 +132,16 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         index[position] = Int32(truncatingIfNeeded: entry &+ 1)
     }
 
+    // Time: expected amortized O(1). Reusing a free entry, or adding one to `entries`, is O(1) (amortized
+    // for the add); placing it in `index` is expected O(1); and `makeRoomInIndex` is amortized O(1). A
+    // single insert that makes `index` grow takes O(m).
     public mutating func insert(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
         assert(flowID != .allFlows, "A flow cannot have the identifier that means all flows")
         assert(find(flowID) == nil, "Flow \(flowID) is already in the table")
         makeRoomInIndex()
         let entry: Int
         if firstFree >= 0 {
-            // Reuse a free entry
+            // Reuse a free entry base on firstFree
             entry = Int(firstFree)
             firstFree = entries[entry].nextFree
             entries[entry].identifier = flowID
@@ -151,18 +155,26 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     }
 
     // Removes the flow and hands it to the caller.
+    //
+    // Time: expected O(1), worst case O(n). Finding the flow, closing the gap it leaves in `index`, and
+    // putting its entry on the free list each take no more than that. Nothing is given back, so `m` and
+    // the size of `index` stay as they are.
     public mutating func remove(_ flowID: MultiplexedFlowIdentifier) -> Flow? {
         guard let (inIndex, entry) = find(flowID) else { return nil }
         removeFromIndex(at: inIndex)
         entries[entry].identifier = .allFlows
         entries[entry].nextFree = firstFree
+        // Update firstFree so any future inserts are handled correctly
         firstFree = Int32(truncatingIfNeeded: entry)
         liveCount -= 1
         return entries[entry].flow.take()
     }
 
-    // Takes the position at `hole` out of `index` without leaving a gap that would end a search early:
-    // the entries after it that could have been placed at or before it move back to fill it.
+    // Takes the position at `hole` out of `index` without leaving a gap that would end a search early.
+    // The entries after it that could have been placed at or before it move back to fill it.
+    //
+    // Time: proportional to the run of occupied places that follows the hole, so expected O(1) and worst
+    // case O(n). Only the positions in `index` move, not the flows.
     private mutating func removeFromIndex(at start: Int) {
         let mask = index.count &- 1
         var hole = start
@@ -182,6 +194,8 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     }
 
     // Lends out the flow with the given identifier, or returns `nil` if there is none.
+    //
+    // Time: expected O(1), worst case O(n), plus whatever `body` takes.
     public mutating func withFlow<R: ~Copyable, E: Error>(
         _ flowID: MultiplexedFlowIdentifier,
         _ body: (inout Flow) throws(E) -> R
@@ -191,6 +205,9 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     }
 
     // Lends out every flow in turn.
+    //
+    // Time: O(m), plus whatever `body` takes for each flow. That counts the free entries too, which are
+    // skipped.
     public mutating func forEachFlow(_ body: (inout Flow) -> Void) {
         for position in 0..<entries.count where entries[position].identifier != .allFlows {
             body(&entries[position].flow!)
@@ -198,6 +215,9 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     }
 
     // The identifier of the first flow `predicate` accepts, or `nil` if it accepts none.
+    //
+    // Time: O(m) in the worst case, plus whatever `predicate` takes for each flow it is asked about. It
+    // stops at the first flow it accepts.
     public mutating func firstFlowIdentifier(where predicate: (inout Flow) -> Bool) -> MultiplexedFlowIdentifier? {
         for position in 0..<entries.count where entries[position].identifier != .allFlows {
             if predicate(&entries[position].flow!) {
@@ -207,6 +227,10 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         return nil
     }
 
+    // Destroys every flow as it is, without any cleanup of its own. A flow that holds frames which must be
+    // finalized first (a QUIC stream's `releaseResources()`) has to be released before this is called.
+    //
+    // Time: O(m), to destroy the flows and give back the storage.
     public mutating func removeAll() {
         entries = NetworkUniqueArray<MultiplexedFlowTableEntry<Flow>>()
         firstFree = -1

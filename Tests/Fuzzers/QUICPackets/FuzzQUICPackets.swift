@@ -138,7 +138,9 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
             connection.applyToAllFlows { stream in
                 stream.upperSendQueue.finalizeAllFramesAsFailed()
                 stream.upperReceiveQueue.finalizeAllFramesAsFailed()
-                stream.receive.reassemblyQueue.dequeueAll()
+                // Gives back the send buffer as well as the reassembly queue, since removing the
+                // stream from the table below would otherwise drop frames that were never finalized
+                stream.releaseResources()
                 stream.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
             }
             connection.applyToAllSecondaryFlows { secondaryFlow in

@@ -1420,15 +1420,11 @@ extension MultiplexedFlow where Self: ~Copyable {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
-        teardown(in: &eventContext)
-        parentProtocol.teardown(flow: flowIdentifier, in: &eventContext)
-        _ = parentProtocol.removeFlow(flowIdentifier)
-        upper = UpperProtocol()
-        self.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
-        upperReceiveQueue.finalizeAllFramesAsFailed()
-        upperSendQueue.finalizeAllFramesAsFailed()
-        parentProtocol.teardownIfPossible(in: &eventContext)
+        // Only here to satisfy `LowerProtocolHandler`. A flow lives inside its protocol's flow table and is
+        // only reachable by borrowing it from there, so it cannot remove itself from that table. Detaching
+        // goes through the protocol, which holds the table: see `detachFlow(_:for:in:)`.
+        assertionFailure("Flows are detached through their protocol, not directly")
+        throw NetworkError.posix(EINVAL)
     }
 
     public func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
@@ -1590,16 +1586,10 @@ extension MultiplexedFlow where ParentProtocol: HeterogeneousManyToManyProtocolH
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
-        teardown(in: &eventContext)
-        parentProtocol.teardown(flow: flowIdentifier, in: &eventContext)
-        _ = parentProtocol.removeFlow(flowIdentifier)
-        _ = parentProtocol.removeSecondaryFlow(flowIdentifier)
-        upper = UpperProtocol()
-        self.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
-        upperReceiveQueue.finalizeAllFramesAsFailed()
-        upperSendQueue.finalizeAllFramesAsFailed()
-        parentProtocol.teardownIfPossible(in: &eventContext)
+        // A flow lives inside its protocol's flow table and is only reachable by borrowing it from there.
+        // Detaching goes through the protocol, which holds the table: see `detachFlow(_:for:in:)`.
+        assertionFailure("Flows are detached through their protocol, not directly")
+        throw NetworkError.posix(EINVAL)
     }
 }
 

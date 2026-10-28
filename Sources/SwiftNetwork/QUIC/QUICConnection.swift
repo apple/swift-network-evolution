@@ -169,7 +169,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public var inboundFlowLinkage = UpperProtocol()
     public var secondaryInboundFlowLinkage = SecondaryUpperProtocol()
 
-    public var multiplexedFlows = MultiplexedFlowTable<Flow>()
+    var multiplexedFlows = MultiplexedFlowTable<Flow>()
 
     public func withMultiplexedFlows<R: ~Copyable, E: Error>(
         _ body: (inout MultiplexedFlowTable<Flow>) throws(E) -> R
@@ -183,7 +183,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         multiplexedFlows.insert(flow, for: flowID)
     }
 
-    public var multiplexedSecondaryFlows = MultiplexedFlowTable<SecondaryFlow>()
+    var multiplexedSecondaryFlows = MultiplexedFlowTable<SecondaryFlow>()
 
     public func withMultiplexedSecondaryFlows<R: ~Copyable, E: Error>(
         _ body: (inout MultiplexedFlowTable<SecondaryFlow>) throws(E) -> R
@@ -1675,11 +1675,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             } else {
                 log.error("No stream for \(flowID), cannot close")
             }
-        }
 
-        if state == .connected {
-            //  Possibly send CONNECTION_CLOSE, STOP_SENDING and/or RESET_STREAM, STREAM FIN
-            sendFrames(in: &eventContext)
+            if state == .connected {
+                //  Possibly send CONNECTION_CLOSE, STOP_SENDING and/or RESET_STREAM, STREAM FIN
+                sendFrames(in: &eventContext)
+            }
         }
     }
 
@@ -3803,7 +3803,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         streamsWithReopenedOutboundRoom.append(stream.flowIdentifier)
     }
 
-    private func deliverQueuedOutboundRoomAvailableEvents(
+    func deliverQueuedOutboundRoomAvailableEvents(
         in eventContext: inout NetworkContext.EventContext
     ) {
         guard !streamsWithReopenedOutboundRoom.isEmpty else { return }
@@ -6471,22 +6471,46 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext,
         _ body: (inout QUICStreamInstance, inout NetworkContext.EventContext) throws(E) -> R
     ) throws(E) -> R? {
-        let result: R?
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: .streams)
-        do throws(E) {
-            result = try multiplexedFlows.withFlow(flowID) { (stream: inout QUICStreamInstance) throws(E) -> R in
+        try withFlowBorrowed(of: .streams, in: &eventContext) {
+            (eventContext: inout NetworkContext.EventContext) throws(E) -> R? in
+            try multiplexedFlows.withFlow(flowID) { (stream: inout QUICStreamInstance) throws(E) -> R in
                 try body(&stream, &eventContext)
             }
-        } catch {
-            if let work = stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed) {
+        }
+    }
+
+    /// Marks a flow table as borrowed while `body` runs, then performs the connection work that was held
+    /// back while it was borrowed. The `defer` makes that happen on every way out, including a throw,
+    /// so a borrow cannot be left open or its deferred work lost.
+    ///
+    /// Borrows nest: only the outermost one performs the deferred work.
+    @inline(always)
+    func withFlowBorrowed<R: ~Copyable, E: Error>(
+        of table: QUICConnectionStateMachine.Table,
+        in eventContext: inout NetworkContext.EventContext,
+        _ body: (inout NetworkContext.EventContext) throws(E) -> R
+    ) throws(E) -> R {
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: table)
+        defer {
+            if let work = stateMachine.endFlowBorrow(of: table, wasFlowBorrowed: wasFlowBorrowed) {
                 runDeferredStreamWork(work, in: &eventContext)
             }
-            throw error
         }
-        if let work = stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed) {
-            runDeferredStreamWork(work, in: &eventContext)
+        return try body(&eventContext)
+    }
+
+    /// The same, from outside the protocol stack, where no event context is held.
+    func withFlowBorrowed<R: ~Copyable, E: Error>(
+        of table: QUICConnectionStateMachine.Table,
+        _ body: () throws(E) -> R
+    ) throws(E) -> R {
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: table)
+        defer {
+            if let work = stateMachine.endFlowBorrow(of: table, wasFlowBorrowed: wasFlowBorrowed) {
+                performDeferredStreamWorkFromExternal(work)
+            }
         }
-        return result
+        return try body()
     }
 
     /// Borrows a stream for the packet builder, which writes it while sending frames. Sending holds the
@@ -6497,6 +6521,7 @@ extension QUICConnection {
         _ flowID: MultiplexedFlowIdentifier,
         _ body: (inout QUICStreamInstance) throws(E) -> R
     ) throws(E) -> R? {
+        assert(stateMachine.isSendActive, "A stream is borrowed for sending without the send path claimed")
         stateMachine.beginTableBorrow(.streams)
         defer { stateMachine.endTableBorrow(.streams) }
         return try multiplexedFlows.withFlow(flowID, body)
@@ -6508,12 +6533,10 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext,
         _ body: (inout QUICStreamInstance, inout NetworkContext.EventContext) -> Void
     ) {
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: .streams)
-        multiplexedFlows.forEachFlow { (stream: inout QUICStreamInstance) in
-            body(&stream, &eventContext)
-        }
-        if let work = stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed) {
-            runDeferredStreamWork(work, in: &eventContext)
+        withFlowBorrowed(of: .streams, in: &eventContext) { (eventContext: inout NetworkContext.EventContext) in
+            multiplexedFlows.forEachFlow { (stream: inout QUICStreamInstance) in
+                body(&stream, &eventContext)
+            }
         }
     }
 
@@ -6523,20 +6546,9 @@ extension QUICConnection {
         _ flowID: MultiplexedFlowIdentifier,
         _ body: (inout QUICStreamInstance) throws(E) -> R
     ) throws(E) -> R? {
-        let result: R?
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: .streams)
-        do throws(E) {
-            result = try multiplexedFlows.withFlow(flowID, body)
-        } catch {
-            if let work = stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed) {
-                performDeferredStreamWorkFromExternal(work)
-            }
-            throw error
+        try withFlowBorrowed(of: .streams) { () throws(E) -> R? in
+            try multiplexedFlows.withFlow(flowID, body)
         }
-        if let work = stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed) {
-            performDeferredStreamWorkFromExternal(work)
-        }
-        return result
     }
 
     @inline(never)
@@ -7110,22 +7122,12 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext,
         _ body: (inout QUICDatagramFlow, inout NetworkContext.EventContext) throws(E) -> R
     ) throws(E) -> R? {
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: .secondary)
-        let result: R?
-        do throws(E) {
-            result = try multiplexedSecondaryFlows.withFlow(flowID) { (flow: inout QUICDatagramFlow) throws(E) -> R in
+        try withFlowBorrowed(of: .secondary, in: &eventContext) {
+            (eventContext: inout NetworkContext.EventContext) throws(E) -> R? in
+            try multiplexedSecondaryFlows.withFlow(flowID) { (flow: inout QUICDatagramFlow) throws(E) -> R in
                 try body(&flow, &eventContext)
             }
-        } catch {
-            if let work = stateMachine.endFlowBorrow(of: .secondary, wasFlowBorrowed: wasFlowBorrowed) {
-                runDeferredStreamWork(work, in: &eventContext)
-            }
-            throw error
         }
-        if let work = stateMachine.endFlowBorrow(of: .secondary, wasFlowBorrowed: wasFlowBorrowed) {
-            runDeferredStreamWork(work, in: &eventContext)
-        }
-        return result
     }
 
     /// Borrows a datagram flow from outside the protocol stack, where no event context is held.
@@ -7133,20 +7135,9 @@ extension QUICConnection {
         _ flowID: MultiplexedFlowIdentifier,
         _ body: (inout QUICDatagramFlow) throws(E) -> R
     ) throws(E) -> R? {
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: .secondary)
-        let result: R?
-        do throws(E) {
-            result = try multiplexedSecondaryFlows.withFlow(flowID, body)
-        } catch {
-            if let work = stateMachine.endFlowBorrow(of: .secondary, wasFlowBorrowed: wasFlowBorrowed) {
-                performDeferredStreamWorkFromExternal(work)
-            }
-            throw error
+        try withFlowBorrowed(of: .secondary) { () throws(E) -> R? in
+            try multiplexedSecondaryFlows.withFlow(flowID, body)
         }
-        if let work = stateMachine.endFlowBorrow(of: .secondary, wasFlowBorrowed: wasFlowBorrowed) {
-            performDeferredStreamWorkFromExternal(work)
-        }
-        return result
     }
 
     // MARK: Operations the datagram linkage calls
