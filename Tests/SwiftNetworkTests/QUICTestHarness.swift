@@ -2151,6 +2151,67 @@ class QUICTestHarness {
         stop()
     }
 
+    #if canImport(SwiftNetwork)
+    /// A send started by loss recovery builds packets without an event context to hand the
+    /// application. When it reopens a stream's room for more data, the announcement has to reach
+    /// the application once the send completes; nothing else is guaranteed to run afterwards.
+    func runRecoverySendAnnouncesReopenedRoom(timeout: TimeInterval = 5.0) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1"), let clientConnection = state?.clientInstance else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        var attempted = false
+        var prerequisitesMet = false
+        var announced = false
+
+        context.async {
+            clientConnection.fromExternal { eventContext in
+                defer { attempted = true }
+                guard let flow = clientConnection.multiplexedFlows.values.first,
+                    let path = clientConnection.currentPath
+                else {
+                    return
+                }
+                prerequisitesMet = true
+
+                clientStream.discardPendingOutboundRoomAvailable()
+
+                clientStream.waitForOutboundRoomAvailable(in: &eventContext) { _ in
+                    announced = true
+                }
+
+                // Queue the announcement the way packet building does when space reopens, so the
+                // recovery send has an event to deliver.
+                clientConnection.queueOutboundRoomAvailableEvent(for: flow)
+
+                var discardInitialRecoveryState = false
+                clientConnection.sendFramesFromRecovery(
+                    on: path,
+                    discardInitialRecoveryState: &discardInitialRecoveryState,
+                    in: &eventContext
+                )
+            }
+        }
+
+        // Without a stream flow and path there is nothing to announce, so stop waiting once the
+        // attempt has been made; otherwise a missing announcement shows up as the timeout.
+        wait(until: { announced || (attempted && !prerequisitesMet) }, timeout: timeout, "the room announcement")
+
+        XCTAssertTrue(prerequisitesMet, "The client connection has no stream flow or path to send on")
+        XCTAssertTrue(announced, "The recovery send did not deliver the queued room-available event")
+
+        stop()
+    }
+    #endif
+
     func runQUICServerTestForPendingBidirectional(
         identifier: String = #function,
         dataBlock: [UInt8],

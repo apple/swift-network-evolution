@@ -17,14 +17,14 @@ jobs:
       swift_flags: "-Xswiftc -warnings-as-errors"
       swift_nightly_flags: "-Xswiftc -warnings-as-errors"
       enable_macos_checks: true
-      macos_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}]"
+      macos_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}, {\"xcode_version\": \"swift_6.3\"}]"
       macos_build_command: bash .github/workflows/scripts/ci-macos.sh
       enable_ios_checks: true
-      ios_host_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}]"
+      ios_host_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}, {\"xcode_version\": \"swift_6.3\"}]"
       ios_build_command: bash .github/workflows/scripts/ci-ios.sh
       enable_linux_checks: true
-      linux_swift_versions: '["nightly-6.4.x", "6.3", "6.4"]'
-      linux_static_sdk_versions: '["nightly-6.4.x", "6.3", "6.4"]'
+      linux_swift_versions: '["nightly-6.4.x", "6.4"]'
+      linux_static_sdk_versions: '["nightly-6.4.x", "6.4"]'
       linux_build_command: bash .github/workflows/scripts/ci-linux.sh
       enable_windows_checks: false
       android_sdk_versions: '["nightly-6.4.x", "6.4"]'
@@ -39,7 +39,7 @@ jobs:
       swift_flags: "-Xswiftc -warnings-as-errors -Xswiftc -DSWIFT_NETWORK_TEST_REAL_TIME"
       swift_nightly_flags: "-Xswiftc -warnings-as-errors -Xswiftc -DSWIFT_NETWORK_TEST_REAL_TIME"
       enable_macos_checks: true
-      macos_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}]"
+      macos_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}, {\"xcode_version\": \"swift_6.3\"}]"
       macos_build_command: bash .github/workflows/scripts/ci-macos.sh
       enable_ios_checks: false
       enable_linux_checks: true
