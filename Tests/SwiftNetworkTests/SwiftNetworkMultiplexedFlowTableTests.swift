@@ -174,8 +174,8 @@ final class SwiftNetworkMultiplexedFlowTableTests: XCTestCase {
         XCTAssertEqual(table.count, 1)
     }
 
-    // Two live flows can share an event state slot (different generations). The second cannot use
-    // the direct array and must still be reachable, and removing either must leave the other alone.
+    // Two live flows can share an event state slot (different generations), so their searches start
+    // at the same place. Both must be reachable, and removing either must leave the other alone.
     func testFlowsSharingAnEventStateSlotAreBothReachable() throws {
         var table = MultiplexedFlowTable<TestFlow>()
         let first = id(slot: 9, generation: 1)
@@ -187,7 +187,7 @@ final class SwiftNetworkMultiplexedFlowTableTests: XCTestCase {
         XCTAssertEqual(value(&table, first), 1)
         XCTAssertEqual(value(&table, second), 2)
 
-        // Removing the one in the direct array leaves the other findable
+        // Removing the one that was placed first leaves the other findable
         XCTAssertEqual(removed(&table, first), 1)
         XCTAssertFalse(table.contains(first))
         XCTAssertEqual(value(&table, second), 2)
@@ -196,7 +196,7 @@ final class SwiftNetworkMultiplexedFlowTableTests: XCTestCase {
         XCTAssertTrue(table.isEmpty)
     }
 
-    func testRemovingTheOverflowFlowLeavesTheDirectFlow() throws {
+    func testRemovingTheLaterFlowOfASharedEventStateSlotLeavesTheEarlierOne() throws {
         var table = MultiplexedFlowTable<TestFlow>()
         let first = id(slot: 9, generation: 1)
         let second = id(slot: 9, generation: 2)
@@ -209,7 +209,8 @@ final class SwiftNetworkMultiplexedFlowTableTests: XCTestCase {
         XCTAssertEqual(value(&table, first), 1)
     }
 
-    // Slots beyond the direct array's range are still stored and found.
+    // Event state slots of any size are stored and found; the size of the table follows the number of
+    // flows, not the largest slot.
     func testLargeEventStateSlotsAreSupported() throws {
         var table = MultiplexedFlowTable<TestFlow>()
         let large = id(slot: 1 << 20)
@@ -227,6 +228,187 @@ final class SwiftNetworkMultiplexedFlowTableTests: XCTestCase {
         XCTAssertEqual(removed(&table, large), 2)
         XCTAssertFalse(table.contains(large))
         XCTAssertEqual(value(&table, huge), 3)
+    }
+
+    // MARK: Searches that share a starting place
+    //
+    // The table finds a flow by starting at a place taken from the low bits of its identifier, and
+    // looking along from there. With room for up to four flows the table has eight places, so
+    // slots 1, 9 and 17 (and 7, 15 and 23) all start at the same place.
+
+    func testIdentifiersThatStartAtTheSamePlaceAreAllReachable() throws {
+        var table = MultiplexedFlowTable<TestFlow>()
+        let ids = [1, 9, 17].map { id(slot: UInt64($0)) }
+        for (offset, flowID) in ids.enumerated() {
+            table.insert(TestFlow(value: offset), for: flowID)
+        }
+        for (offset, flowID) in ids.enumerated() {
+            XCTAssertEqual(value(&table, flowID), offset)
+        }
+        // A slot that starts at the same place but is not in the table is not found
+        XCTAssertNil(value(&table, id(slot: 25)))
+        XCTAssertFalse(table.contains(id(slot: 25)))
+    }
+
+    // Removing a flow from the middle of a run must not hide the flows after it
+    func testRemovingFromTheMiddleOfARunKeepsTheFlowsAfterIt() throws {
+        for removedOffset in 0..<3 {
+            var table = MultiplexedFlowTable<TestFlow>()
+            let ids = [1, 9, 17].map { id(slot: UInt64($0)) }
+            for (offset, flowID) in ids.enumerated() {
+                table.insert(TestFlow(value: offset), for: flowID)
+            }
+            XCTAssertEqual(removed(&table, ids[removedOffset]), removedOffset)
+            for (offset, flowID) in ids.enumerated() where offset != removedOffset {
+                XCTAssertEqual(value(&table, flowID), offset, "removed \(removedOffset)")
+            }
+            XCTAssertFalse(table.contains(ids[removedOffset]))
+            XCTAssertEqual(table.count, 2)
+        }
+    }
+
+    // A flow that starts later in a run than a flow removed ahead of it can move up to fill the gap,
+    // but one that starts after the gap must stay where its own search will find it.
+    func testRemovingKeepsFlowsWithDifferentStartsReachable() throws {
+        var table = MultiplexedFlowTable<TestFlow>()
+        // 1 and 9 start at the same place; 2 starts one place on and is pushed along by 9
+        let a = id(slot: 1)
+        let b = id(slot: 9)
+        let c = id(slot: 2)
+        let d = id(slot: 3)
+        for (offset, flowID) in [a, b, c, d].enumerated() {
+            table.insert(TestFlow(value: offset), for: flowID)
+        }
+        XCTAssertEqual(removed(&table, a), 0)
+        XCTAssertEqual(value(&table, b), 1)
+        XCTAssertEqual(value(&table, c), 2)
+        XCTAssertEqual(value(&table, d), 3)
+        XCTAssertEqual(removed(&table, c), 2)
+        XCTAssertEqual(value(&table, b), 1)
+        XCTAssertEqual(value(&table, d), 3)
+    }
+
+    // A run that starts near the end of the table carries on at the start of it
+    func testARunThatWrapsAroundTheEndSurvivesRemovals() throws {
+        for removedOffset in 0..<3 {
+            var table = MultiplexedFlowTable<TestFlow>()
+            let ids = [7, 15, 23].map { id(slot: UInt64($0)) }
+            for (offset, flowID) in ids.enumerated() {
+                table.insert(TestFlow(value: offset), for: flowID)
+            }
+            XCTAssertEqual(removed(&table, ids[removedOffset]), removedOffset)
+            for (offset, flowID) in ids.enumerated() where offset != removedOffset {
+                XCTAssertEqual(value(&table, flowID), offset, "removed \(removedOffset)")
+            }
+        }
+    }
+
+    // MARK: Growth
+
+    func testTableGrowsAndKeepsEveryFlow() throws {
+        var table = MultiplexedFlowTable<TestFlow>()
+        for slot in 1...300 {
+            table.insert(TestFlow(value: slot), for: id(slot: UInt64(slot)))
+        }
+        XCTAssertEqual(table.count, 300)
+        for slot in 1...300 {
+            XCTAssertEqual(value(&table, id(slot: UInt64(slot))), slot)
+        }
+
+        // Remove every other flow, then add more: freed entries are reused and nothing is lost
+        for slot in stride(from: 2, through: 300, by: 2) {
+            XCTAssertEqual(removed(&table, id(slot: UInt64(slot))), slot)
+        }
+        for slot in 301...400 {
+            table.insert(TestFlow(value: slot), for: id(slot: UInt64(slot)))
+        }
+        XCTAssertEqual(table.count, 250)
+        for slot in stride(from: 1, through: 300, by: 2) {
+            XCTAssertEqual(value(&table, id(slot: UInt64(slot))), slot)
+        }
+        for slot in 301...400 {
+            XCTAssertEqual(value(&table, id(slot: UInt64(slot))), slot)
+        }
+        for slot in stride(from: 2, through: 300, by: 2) {
+            XCTAssertFalse(table.contains(id(slot: UInt64(slot))))
+        }
+    }
+
+    func testGrowthKeepsFlowsThatShareAStartingPlace() throws {
+        var table = MultiplexedFlowTable<TestFlow>()
+        // Slots that are all multiples of 64 start at the same place until the table is large
+        let ids = (1...40).map { id(slot: UInt64($0) * 64) }
+        for (offset, flowID) in ids.enumerated() {
+            table.insert(TestFlow(value: offset), for: flowID)
+        }
+        for (offset, flowID) in ids.enumerated() {
+            XCTAssertEqual(value(&table, flowID), offset)
+        }
+    }
+
+    // MARK: Against a model
+
+    // Inserts, removals and lookups of a mix of identifiers chosen to collide a lot (few slots, several
+    // generations of each, and some very large slots), checked at every step against a dictionary.
+    func testRandomOperationsAgreeWithADictionary() throws {
+        struct SplitMix64 {
+            var state: UInt64
+            mutating func next() -> UInt64 {
+                state &+= 0x9E37_79B9_7F4A_7C15
+                var z = state
+                z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+                z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+                return z ^ (z >> 31)
+            }
+        }
+        var random = SplitMix64(state: 0x5EED)
+        func randomIdentifier() -> MultiplexedFlowIdentifier {
+            let slot: UInt64
+            switch random.next() % 8 {
+            case 0: slot = 0x1_0000 + random.next() % 4
+            case 1: slot = 0xFFFF_FFF0 + random.next() % 8
+            default: slot = 1 + random.next() % 48
+            }
+            return id(slot: slot, generation: 1 + random.next() % 4)
+        }
+
+        var table = MultiplexedFlowTable<TestFlow>()
+        var model = [MultiplexedFlowIdentifier: Int]()
+        var nextValue = 0
+
+        for step in 0..<20_000 {
+            switch random.next() % 3 {
+            case 0:
+                let flowID = randomIdentifier()
+                guard model[flowID] == nil else { break }
+                nextValue += 1
+                table.insert(TestFlow(value: nextValue), for: flowID)
+                model[flowID] = nextValue
+            case 1:
+                guard !model.isEmpty else { break }
+                let flowID = Array(model.keys)[Int(random.next() % UInt64(model.count))]
+                XCTAssertEqual(removed(&table, flowID), model[flowID], "step \(step)")
+                model.removeValue(forKey: flowID)
+            default:
+                let flowID = randomIdentifier()
+                XCTAssertEqual(value(&table, flowID), model[flowID], "step \(step)")
+                XCTAssertEqual(table.contains(flowID), model[flowID] != nil, "step \(step)")
+            }
+            XCTAssertEqual(table.count, model.count, "step \(step)")
+
+            if step % 500 == 0 {
+                XCTAssertEqual(Set(table.flowIdentifiers), Set(model.keys), "step \(step)")
+                var sum = 0
+                table.forEachFlow { sum += $0.value }
+                XCTAssertEqual(sum, model.values.reduce(0, +), "step \(step)")
+            }
+        }
+
+        // Everything that is left is still reachable, and removing it empties the table
+        for (flowID, expected) in model {
+            XCTAssertEqual(removed(&table, flowID), expected)
+        }
+        XCTAssertTrue(table.isEmpty)
     }
 
     // The slots of removed flows are reused, so a table that churns flows keeps working and never
