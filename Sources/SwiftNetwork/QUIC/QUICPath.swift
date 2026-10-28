@@ -628,12 +628,20 @@ public final class QUICPath: MultiplexingDatagramPath<
     }
 
     func shouldSendPathChallenge(now: NetworkClock.Instant) -> Bool {
-        guard case .probing = state else {
+        guard case .probing = state, challengesSent < QUICPath.maximumPendingChallenges else {
             return false
         }
         if challengesSent == 0 {
             // Still need to send first challenge
             return true
+        }
+        return now >= lastChallengeSentTime + nextChallengeDuration
+    }
+
+    // All challenges were sent and the last went unanswered for its full backoff.
+    func shouldMarkUnreachable(now: NetworkClock.Instant) -> Bool {
+        guard case .probing = state, challengesSent >= QUICPath.maximumPendingChallenges else {
+            return false
         }
         return now >= lastChallengeSentTime + nextChallengeDuration
     }
@@ -659,34 +667,6 @@ public final class QUICPath: MultiplexingDatagramPath<
         in eventContext: inout NetworkContext.EventContext
     ) {
         guard shouldSendPathChallenge(now: now) else { return }
-
-        guard challengesSent < QUICPath.maximumPendingChallenges else {
-            // Exceeded limit, move to unreachable, and retire the CID
-            changeState(to: .unreachable)
-            if let dcid, !hasPreAssignedCIDs {
-                if let sequenceNumber = parentProtocol.retireConnectionID(dcid, in: &eventContext) {
-                    pendingItems.addRetireConnectionID(
-                        FrameRetireConnectionID(sequence: sequenceNumber)
-                    )
-                }
-            }
-            if let localEndpoint, let remoteEndpoint,
-                case .address(let localAddress) = localEndpoint.type,
-                case .address(let remoteAddress) = remoteEndpoint.type
-            {
-                let pathInfo = QUICPathInfo(
-                    isValidated: self.isValidated,
-                    remote: remoteAddress,
-                    local: localAddress
-                )
-                parentProtocol.deliverNetworkProtocolEvent(
-                    flow: .allFlows,
-                    event: .init(quicEvent: .pathUnreachable(pathInfo)),
-                    in: &eventContext
-                )
-            }
-            return
-        }
 
         let challenge = PendingChallenge(sentTime: now)
         pendingOutboundChallenges.append(challenge)
