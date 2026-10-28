@@ -44,6 +44,7 @@ final class MigrationTests: XCTestCase {
 
     static let oldCID = QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!
     static let newCID = QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!
+    static let probeCID = QUICConnectionID([0xC1, 0xC2, 0xC3, 0xC4])!
 
     override func setUp() {
         let expectation = XCTestExpectation()
@@ -193,6 +194,52 @@ final class MigrationTests: XCTestCase {
                 self.connection.timer.nextDeadline,
                 nextChallengeTime,
                 "Migration timer left disarmed after an early fire"
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // A probe path that never gets a PATH_RESPONSE gives up after `maximumPendingChallenges`. It must retire
+    // the DCID the peer issued for it, and queue the RETIRE_CONNECTION_ID on the connection rather than on
+    // the dead path. Otherwise the peer never issues a replacement.
+    func testUnreachableProbePathRetiresItsCIDOnTheConnection() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            let probePath = self.makePath(dcid: Self.probeCID, sequenceNumber: 3, validated: false)
+            self.connection.currentPath = currentPath
+            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
+            self.connection.multiplexingPaths[probePath.pathIdentifier] = probePath
+            probePath.changeState(to: .probing)
+
+            // Send every allowed challenge, far enough in the past that the next one is due now.
+            var challengeTime = self.connection.now.advanced(by: .seconds(-30))
+            var probeItems = PendingItems(packetNumberSpace: .applicationData)
+            self.connection.fromExternal { eventContext in
+                for _ in 0..<QUICPath.maximumPendingChallenges {
+                    probePath.addPathChallenge(to: &probeItems, now: challengeTime, in: &eventContext)
+                    guard let nextChallengeTime = probePath.nextChallengeTime else { break }
+                    challengeTime = nextChallengeTime
+                }
+            }
+            XCTAssertEqual(probePath.challengesSent, QUICPath.maximumPendingChallenges)
+
+            // The next send on the probe path is the one that gives up on it.
+            self.connection.fromExternal { eventContext in
+                _ = self.connection.sendFrames(on: probePath, in: &eventContext)
+            }
+
+            XCTAssertTrue(probePath.state == .unreachable, "Probe path not marked unreachable")
+            XCTAssertNil(
+                self.connection.remoteCIDs.find(connectionID: Self.probeCID),
+                "Probe path DCID still held in remoteCIDs"
+            )
+            XCTAssertEqual(
+                self.connection.applicationPendingItems.retireConnectionIDs.map(\.sequence),
+                [3],
+                "RETIRE_CONNECTION_ID not queued on the connection"
             )
 
             expectation.fulfill()

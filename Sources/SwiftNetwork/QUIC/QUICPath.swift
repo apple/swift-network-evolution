@@ -664,9 +664,9 @@ public final class QUICPath: MultiplexingDatagramPath<
             // Exceeded limit, move to unreachable, and retire the CID
             changeState(to: .unreachable)
             if let dcid, !hasPreAssignedCIDs {
-                if let sequenceNumber = parentProtocol.retireConnectionID(dcid, in: &eventContext) {
+                if let retiredCID = parentProtocol.remoteCIDs.retire(connectionID: dcid) {
                     pendingItems.addRetireConnectionID(
-                        FrameRetireConnectionID(sequence: sequenceNumber)
+                        FrameRetireConnectionID(sequence: retiredCID.sequenceNumber)
                     )
                 }
             }
