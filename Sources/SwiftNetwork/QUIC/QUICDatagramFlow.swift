@@ -100,7 +100,11 @@ public struct QUICDatagramFlow: ~Copyable, AutomaticUpperDatagramProcessing, Mul
     // The flow is borrowed from the connection's secondary flow table while this runs, so the
     // connection cannot look the flow up again. Sending frames is held back until the borrow ends.
     public mutating func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext) {
-        parentProtocol.serviceDatagramsToSend(borrowedFlow: flowIdentifier, in: &eventContext)
+        parentProtocol.serviceDatagramsToSend(
+            borrowedFlow: flowIdentifier,
+            sendQueue: &upperSendQueue,
+            in: &eventContext
+        )
     }
 
     public func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {

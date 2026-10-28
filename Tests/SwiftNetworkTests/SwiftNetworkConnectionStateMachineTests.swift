@@ -30,37 +30,37 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
         XCTAssertFalse(machine.isSendActive)
         XCTAssertFalse(machine.isSendBlocked)
         XCTAssertFalse(machine.hasDeferredSends)
-        XCTAssertNil(machine.endFlowBorrow(wasFlowBorrowed: false))
+        XCTAssertNil(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: false))
     }
 
     func testBorrowTransitions() throws {
         var machine = QUICConnectionStateMachine()
-        let wasFlowBorrowed = machine.beginFlowBorrow()
+        let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         XCTAssertFalse(wasFlowBorrowed)
         XCTAssertTrue(machine.isFlowBorrowed)
         XCTAssertTrue(machine.isSendBlocked)
         XCTAssertFalse(machine.isSendActive)
 
-        XCTAssertNil(machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed))
+        XCTAssertNil(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed))
         XCTAssertFalse(machine.isFlowBorrowed)
         XCTAssertFalse(machine.isSendBlocked)
     }
 
     func testNestedBorrowStaysBorrowedAndReturnsNoWork() throws {
         var machine = QUICConnectionStateMachine()
-        let outer = machine.beginFlowBorrow()
+        let outer = machine.beginFlowBorrow(of: .streams)
         XCTAssertFalse(outer)
-        let inner = machine.beginFlowBorrow()
+        let inner = machine.beginFlowBorrow(of: .secondary)
         XCTAssertTrue(inner)
         machine.deferIdleCheck()
         machine.deferSend(ignoreCongestionWindow: true, delayedACK: false)
 
-        let innerWork = machine.endFlowBorrow(wasFlowBorrowed: inner)
+        let innerWork = machine.endFlowBorrow(of: .secondary, wasFlowBorrowed: inner)
         XCTAssertNil(innerWork)
         XCTAssertTrue(machine.isFlowBorrowed)
 
         // The enclosing borrow collects what the nested one deferred
-        let outerWork = machine.endFlowBorrow(wasFlowBorrowed: outer)
+        let outerWork = machine.endFlowBorrow(of: .streams, wasFlowBorrowed: outer)
         XCTAssertEqual(outerWork?.checkIdle, true)
         XCTAssertEqual(outerWork?.replaysSends, true)
         XCTAssertFalse(machine.isFlowBorrowed)
@@ -86,10 +86,10 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
 
     func testSendPathCannotBeClaimedWhileBorrowed() throws {
         var machine = QUICConnectionStateMachine()
-        let wasFlowBorrowed = machine.beginFlowBorrow()
+        let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         XCTAssertFalse(machine.claimSendPathIfFree())
         XCTAssertFalse(machine.isSendActive)
-        _ = machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)
+        _ = machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
         XCTAssertTrue(machine.claimSendPathIfFree())
     }
 
@@ -97,10 +97,10 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
         // A stream closed by an ACK that is being processed borrows while sending is claimed
         var machine = QUICConnectionStateMachine()
         XCTAssertTrue(machine.claimSendPathIfFree())
-        let wasFlowBorrowed = machine.beginFlowBorrow()
+        let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         XCTAssertTrue(machine.isFlowBorrowed)
         XCTAssertTrue(machine.isSendActive)
-        _ = machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)
+        _ = machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
         XCTAssertTrue(machine.isSendActive)
         XCTAssertFalse(machine.isFlowBorrowed)
     }
@@ -147,10 +147,10 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
 
     func testSendDeferredWhileBorrowedIsReadyWhenTheBorrowEnds() throws {
         var machine = QUICConnectionStateMachine()
-        let wasFlowBorrowed = machine.beginFlowBorrow()
+        let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         machine.deferSend(ignoreCongestionWindow: false, delayedACK: true)
 
-        let work = machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)
+        let work = machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
         XCTAssertNotNil(work)
         XCTAssertEqual(work?.replaysSends, true)
         XCTAssertNil(work?.close)
@@ -202,11 +202,11 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
     func testSendWaitingForBothBlockersIsReadyWhenTheLastOneClears_sendPathLast() throws {
         var machine = QUICConnectionStateMachine()
         let wasActive = machine.claimSendPath()
-        let wasFlowBorrowed = machine.beginFlowBorrow()
+        let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         machine.deferSend(ignoreCongestionWindow: false, delayedACK: false)
 
         // The borrow ends first, while the send path is still held: not ready
-        let work = machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)
+        let work = machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
         XCTAssertNil(work)
         XCTAssertTrue(machine.hasDeferredSends)
 
@@ -216,7 +216,7 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
 
     func testSendWaitingForBothBlockersIsReadyWhenTheLastOneClears_borrowLast() throws {
         var machine = QUICConnectionStateMachine()
-        let wasFlowBorrowed = machine.beginFlowBorrow()
+        let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         let wasActive = machine.claimSendPath()
         machine.deferSend(ignoreCongestionWindow: false, delayedACK: false)
 
@@ -225,17 +225,17 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
         XCTAssertTrue(machine.hasDeferredSends)
 
         // The borrow ends last, and reports the send ready
-        XCTAssertEqual(machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)?.replaysSends, true)
+        XCTAssertEqual(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)?.replaysSends, true)
     }
 
     func testPathSendsAreRecordedSeparatelyFromPlainSends() throws {
         var machine = QUICConnectionStateMachine()
-        let wasFlowBorrowed = machine.beginFlowBorrow()
+        let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         machine.requestPathSends()
         XCTAssertTrue(machine.hasDeferredSends)
         XCTAssertNil(machine.takePlainSend())
 
-        XCTAssertEqual(machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)?.replaysSends, true)
+        XCTAssertEqual(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)?.replaysSends, true)
         XCTAssertTrue(machine.takePathSendsRequest())
         XCTAssertFalse(machine.takePathSendsRequest())
         XCTAssertFalse(machine.hasDeferredSends)
@@ -247,10 +247,10 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
         var machine = QUICConnectionStateMachine()
         // Even with the send path held, the idle check is handed back when the borrow ends
         let wasActive = machine.claimSendPath()
-        let wasFlowBorrowed = machine.beginFlowBorrow()
+        let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         machine.deferIdleCheck()
 
-        let work = machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)
+        let work = machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
         XCTAssertEqual(work?.checkIdle, true)
         XCTAssertEqual(work?.replaysSends, false)
         _ = machine.releaseSendPath(wasActive: wasActive)
@@ -259,9 +259,9 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
     func testDeferredCloseKeepsWhetherToSendTheFrame() throws {
         for sendCloseFrame in [true, false] {
             var machine = QUICConnectionStateMachine()
-            let wasFlowBorrowed = machine.beginFlowBorrow()
+            let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
             machine.deferClose(sendCloseFrame: sendCloseFrame)
-            let work = machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)
+            let work = machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
             XCTAssertNotNil(work)
             XCTAssertEqual(work?.close, sendCloseFrame)
         }
@@ -272,44 +272,58 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
     func testFirstDeferredCloseWins() throws {
         for (first, second) in [(true, false), (false, true), (true, true), (false, false)] {
             var machine = QUICConnectionStateMachine()
-            let wasFlowBorrowed = machine.beginFlowBorrow()
+            let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
             machine.deferClose(sendCloseFrame: first)
             machine.deferClose(sendCloseFrame: second)
-            XCTAssertEqual(machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)?.close, first)
+            XCTAssertEqual(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)?.close, first)
         }
+    }
+
+    func testACloseWaitingForTheBorrowIsReportedUntilTheBorrowEnds() throws {
+        var machine = QUICConnectionStateMachine()
+        let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
+        XCTAssertFalse(machine.isCloseDeferred)
+        machine.deferClose(sendCloseFrame: false)
+        XCTAssertTrue(machine.isCloseDeferred)
+        // A second request leaves it waiting, and it is the same close
+        machine.deferClose(sendCloseFrame: true)
+        XCTAssertTrue(machine.isCloseDeferred)
+
+        XCTAssertEqual(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)?.close, false)
+        XCTAssertFalse(machine.isCloseDeferred)
     }
 
     func testCloseDeferredBeforeANestedBorrowStillWins() throws {
         var machine = QUICConnectionStateMachine()
-        let outer = machine.beginFlowBorrow()
+        let outer = machine.beginFlowBorrow(of: .streams)
         machine.deferClose(sendCloseFrame: true)
-        let inner = machine.beginFlowBorrow()
+        let inner = machine.beginFlowBorrow(of: .secondary)
         machine.deferClose(sendCloseFrame: false)
-        _ = machine.endFlowBorrow(wasFlowBorrowed: inner)
-        XCTAssertEqual(machine.endFlowBorrow(wasFlowBorrowed: outer)?.close, true)
+        _ = machine.endFlowBorrow(of: .secondary, wasFlowBorrowed: inner)
+        XCTAssertEqual(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: outer)?.close, true)
     }
 
     // The next borrow must not see work from the last one, or it would be performed twice.
     func testEndingABorrowForgetsWhatItHandedBack() throws {
         var machine = QUICConnectionStateMachine()
-        var wasFlowBorrowed = machine.beginFlowBorrow()
+        var wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         machine.deferClose(sendCloseFrame: true)
         machine.deferIdleCheck()
-        XCTAssertNotNil(machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed))
+        XCTAssertNotNil(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed))
 
-        wasFlowBorrowed = machine.beginFlowBorrow()
+        wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         XCTAssertFalse(wasFlowBorrowed)
-        XCTAssertNil(machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed))
+        XCTAssertNil(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed))
 
         // And a close requested in the first borrow does not count as already requested
-        wasFlowBorrowed = machine.beginFlowBorrow()
+        wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         machine.deferClose(sendCloseFrame: false)
-        XCTAssertEqual(machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)?.close, false)
+        XCTAssertEqual(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)?.close, false)
     }
 
     func testBlockersAndRequestsDoNotDisturbEachOther() throws {
         var machine = QUICConnectionStateMachine()
-        let wasFlowBorrowed = machine.beginFlowBorrow()
+        let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
         machine.deferSend(ignoreCongestionWindow: true, delayedACK: true)
         machine.requestPathSends()
         machine.deferClose(sendCloseFrame: true)
@@ -317,7 +331,7 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
         XCTAssertTrue(machine.isFlowBorrowed)
         XCTAssertFalse(machine.isSendActive)
 
-        let work = machine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed)
+        let work = machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
         XCTAssertEqual(work?.close, true)
         XCTAssertEqual(work?.checkIdle, true)
         XCTAssertEqual(work?.replaysSends, true)
@@ -325,8 +339,76 @@ final class SwiftNetworkConnectionStateMachineTests: XCTestCase {
         XCTAssertNotNil(machine.takePlainSend())
         XCTAssertTrue(machine.takePathSendsRequest())
         XCTAssertFalse(machine.isFlowBorrowed)
-        XCTAssertNil(machine.endFlowBorrow(wasFlowBorrowed: false))
+        XCTAssertNil(machine.endFlowBorrow(of: .streams, wasFlowBorrowed: false))
     }
+
+    // MARK: Which table is borrowed (tracked in debug builds only)
+
+    #if DEBUG
+    func testBorrowingATableIsTrackedPerTable() throws {
+        var machine = QUICConnectionStateMachine()
+        XCTAssertFalse(machine.isBorrowed(.streams))
+        XCTAssertFalse(machine.isBorrowed(.secondary))
+
+        machine.beginTableBorrow(.streams)
+        XCTAssertTrue(machine.isBorrowed(.streams))
+        XCTAssertFalse(machine.isBorrowed(.secondary))
+
+        // Borrowing the other table at the same time is fine
+        machine.beginTableBorrow(.secondary)
+        XCTAssertTrue(machine.isBorrowed(.streams))
+        XCTAssertTrue(machine.isBorrowed(.secondary))
+
+        machine.endTableBorrow(.streams)
+        XCTAssertFalse(machine.isBorrowed(.streams))
+        XCTAssertTrue(machine.isBorrowed(.secondary))
+        machine.endTableBorrow(.secondary)
+        XCTAssertFalse(machine.isBorrowed(.secondary))
+    }
+
+    // A table that is only noted as borrowed defers nothing: that is for the borrows that can run the
+    // work afterwards
+    func testNotingATableBorrowDoesNotBlockSends() throws {
+        var machine = QUICConnectionStateMachine()
+        machine.beginTableBorrow(.streams)
+        XCTAssertFalse(machine.isFlowBorrowed)
+        XCTAssertFalse(machine.isSendBlocked)
+        XCTAssertTrue(machine.claimSendPathIfFree())
+    }
+
+    func testAFlowBorrowNotesItsTableAndClearsItWhenItEnds() throws {
+        var machine = QUICConnectionStateMachine()
+        let outer = machine.beginFlowBorrow(of: .streams)
+        XCTAssertTrue(machine.isFlowBorrowed)
+        XCTAssertTrue(machine.isBorrowed(.streams))
+        XCTAssertFalse(machine.isBorrowed(.secondary))
+
+        // Nested in the other table: both are borrowed, and each is cleared by its own end
+        let inner = machine.beginFlowBorrow(of: .secondary)
+        XCTAssertTrue(machine.isBorrowed(.streams))
+        XCTAssertTrue(machine.isBorrowed(.secondary))
+        _ = machine.endFlowBorrow(of: .secondary, wasFlowBorrowed: inner)
+        XCTAssertTrue(machine.isBorrowed(.streams))
+        XCTAssertFalse(machine.isBorrowed(.secondary))
+        XCTAssertTrue(machine.isFlowBorrowed)
+
+        _ = machine.endFlowBorrow(of: .streams, wasFlowBorrowed: outer)
+        XCTAssertFalse(machine.isBorrowed(.streams))
+        XCTAssertFalse(machine.isFlowBorrowed)
+    }
+
+    // The same table can be borrowed again once the first borrow has ended
+    func testATableCanBeBorrowedAgainAfterTheBorrowEnds() throws {
+        var machine = QUICConnectionStateMachine()
+        for _ in 0..<3 {
+            machine.beginTableBorrow(.streams)
+            machine.endTableBorrow(.streams)
+            let wasFlowBorrowed = machine.beginFlowBorrow(of: .streams)
+            _ = machine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
+        }
+        XCTAssertFalse(machine.isBorrowed(.streams))
+    }
+    #endif
 
     func testIsSmall() throws {
         // Two bytes of state plus the per-path sends; checking the blockers must stay a single small load.

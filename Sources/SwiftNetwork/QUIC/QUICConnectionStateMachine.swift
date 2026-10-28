@@ -30,7 +30,7 @@
 ///
 /// Either one blocks a send, so they live here together:
 ///
-///     idle ──beginFlowBorrow()────▶ flowBorrowed ──endFlowBorrow()────▶ idle
+///     idle ──beginFlowBorrow(of:)────▶ flowBorrowed ──endFlowBorrow(of:)────▶ idle
 ///     idle ──claimSendPath()──▶ sending  ──releaseSendPath()▶ idle
 ///
 /// A connection can have a flow borrowed and be sending at once (a stream closed by an ACK that is
@@ -69,11 +69,37 @@ struct QUICConnectionStateMachine {
         static let closeRequested = Status(rawValue: 1 << 6)
         static let closeSendsFrame = Status(rawValue: 1 << 7)
         static let checkIdle = Status(rawValue: 1 << 8)
+        // Which flow table is borrowed, so a second borrow of the same table can be caught.
+        // These only ever run in DEBUG mode to catch errors
+        static let streamTableBorrowed = Status(rawValue: 1 << 9)
+        static let secondaryTableBorrowed = Status(rawValue: 1 << 10)
 
         static let sendBlockers: Status = [.flowBorrowed, .sendActive]
         static let pendingSends: Status = [.sendFrames, .pathSends]
         static let plainSend: Status = [.sendFrames, .ignoreCongestionWindow, .delayedACK]
         static let afterBorrow: Status = [.closeRequested, .closeSendsFrame, .checkIdle]
+    }
+
+    /// One of the connection's two flow tables.
+    enum Table: CustomStringConvertible {
+        /// The table of stream flows
+        case streams
+        /// The table of secondary flows, which is the datagram flows
+        case secondary
+
+        fileprivate var status: Status {
+            switch self {
+            case .streams: .streamTableBorrowed
+            case .secondary: .secondaryTableBorrowed
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .streams: "stream"
+            case .secondary: "secondary"
+            }
+        }
     }
 
     /// A send on one path that had to wait.
@@ -118,23 +144,28 @@ struct QUICConnectionStateMachine {
         !status.isDisjoint(with: .sendBlockers)
     }
 
-    /// Starts a flow borrow. Returns whether one was already under way, which the matching
-    /// `endFlowBorrow` needs in order to tell an outermost borrow from a nested one.
+    /// Starts borrowing a flow table, and defers the work that must wait for the borrow. Returns
+    /// whether a flow borrow was already under way, which the matching `endFlowBorrow` needs in order
+    /// to tell an outermost borrow from a nested one.
     @inline(always)
     @discardableResult
-    mutating func beginFlowBorrow() -> Bool {
+    mutating func beginFlowBorrow(of table: Table) -> Bool {
         let wasFlowBorrowed = status.contains(.flowBorrowed)
         status.insert(.flowBorrowed)
+        beginTableBorrow(table)
         return wasFlowBorrowed
     }
 
     /// Ends a flow borrow and hands back what the connection can now do.
     ///
-    /// - Parameter wasFlowBorrowed: What `beginFlowBorrow` returned. A nested borrow returns `nil`
-    ///   and leaves the flow borrowed; the enclosing borrow collects everything when it ends.
+    /// - Parameters:
+    ///   - table: The table `beginFlowBorrow` was given.
+    ///   - wasFlowBorrowed: What `beginFlowBorrow` returned. A nested borrow returns `nil` and leaves
+    ///     the flow borrowed; the enclosing borrow collects everything when it ends.
     /// - Returns: The work to do, or `nil` if there is none.
     @inline(always)
-    mutating func endFlowBorrow(wasFlowBorrowed: Bool) -> DeferredWork? {
+    mutating func endFlowBorrow(of table: Table, wasFlowBorrowed: Bool) -> DeferredWork? {
+        endTableBorrow(table)
         guard !wasFlowBorrowed else { return nil }
         let requests = status.intersection(.afterBorrow)
         let replaysSends = !status.contains(.sendActive) && !status.isDisjoint(with: .pendingSends)
@@ -142,6 +173,39 @@ struct QUICConnectionStateMachine {
         guard !requests.isEmpty || replaysSends else { return nil }
         return DeferredWork(requests: requests, replaysSends: replaysSends)
     }
+
+    // MARK: Which table is borrowed
+    //
+    // A flow table is reached by borrowing it, and a table is exclusively accessed for the whole of a
+    // borrow, so borrowing the same table again can cause problems. There are no places in the code where
+    // this is causing a problem today, but the table borrowing logic should help prevent this in the future.
+
+    /// Notes that `table` is being borrowed. Asserts that it is not already.
+    @inline(always)
+    mutating func beginTableBorrow(_ table: Table) {
+        #if DEBUG
+        assert(
+            !status.contains(table.status),
+            "Overlapping flow borrowing: \(table) caught"
+        )
+        status.insert(table.status)
+        #endif
+    }
+
+    /// Notes that `table` is no longer borrowed.
+    @inline(always)
+    mutating func endTableBorrow(_ table: Table) {
+        #if DEBUG
+        status.remove(table.status)
+        #endif
+    }
+
+    #if DEBUG
+    /// Whether `table` is borrowed. Only tracked in debug builds.
+    func isBorrowed(_ table: Table) -> Bool {
+        status.contains(table.status)
+    }
+    #endif
 
     /// Claims the send path if nothing is holding it back, in one step. Returns `false` if the send
     /// path is claimed or a flow is borrowed, in which case the caller defers its send instead.
@@ -217,6 +281,13 @@ struct QUICConnectionStateMachine {
     }
 
     // MARK: Work that waits for the flow borrow
+
+    /// Whether a close is waiting for the flow borrow to end. The first request wins, so a caller that
+    /// is about to record a reason for closing can use this to keep the reason of the one already
+    /// waiting.
+    @inline(always) var isCloseDeferred: Bool {
+        status.contains(.closeRequested)
+    }
 
     @inline(always)
     mutating func deferClose(sendCloseFrame: Bool) {

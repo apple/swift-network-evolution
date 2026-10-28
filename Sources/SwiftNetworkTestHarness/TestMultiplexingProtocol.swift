@@ -92,7 +92,11 @@ public struct TestDatagramFlow: ~Copyable, MultiplexedDatapathFlow, AutomaticUpp
     }
 
     public mutating func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext) {
-        base.serviceUpperSendQueue(in: &eventContext)
+        parentProtocol.serviceDatagramsToSend(
+            borrowedFlow: flowIdentifier,
+            sendQueue: &upperSendQueue,
+            in: &eventContext
+        )
     }
 
     // Hands back a linkage that routes to this flow, so its upper protocol can reach it. The
@@ -176,6 +180,30 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
             drained = frames.drainArray()
         }
         guard let datagrams = drained.take() else { return }
+        forwardDatagrams(datagrams, onPath: path, in: &eventContext)
+    }
+
+    // The flow is borrowed, so its queue is handed in and nothing here looks a flow up. The datagrams go to
+    // the path, which has a table of its own.
+    public func serviceDatagramsToSend(
+        borrowedFlow flow: MultiplexedFlowIdentifier,
+        sendQueue: inout FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        log.debug(
+            "Multiplexing protocol asked to service datagrams to send from borrowed flow \(flow.debugDescription)"
+        )
+        guard let path = somePathIdentifier else {
+            return
+        }
+        forwardDatagrams(sendQueue.drainArray(), onPath: path, in: &eventContext)
+    }
+
+    private func forwardDatagrams(
+        _ datagrams: consuming FrameArray,
+        onPath path: MultiplexingPathIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         // The event context is already held here, so use the `in:`-taking variants rather than the
         // external entry points, which would re-derive it.
         try? enqueueOutboundDatagrams(path: path, datagrams: datagrams)

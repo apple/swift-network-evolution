@@ -177,8 +177,9 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
     }
 
     // Removes the element at `index` and hands it back to the caller instead of destroying it.
+    // Returns `nil`, and changes nothing, if there is no element to take.
     mutating func take(index: NetworkStateIndex) -> Element? {
-        guard !index.isNone else { return nil }
+        guard !index.isNone, index.slot < elements.count, elements[index.slot] != nil else { return nil }
         defer { cleanupGapsIfNecessary() }
         if index.slot == elements.count - 1 {
             // Removing last element

@@ -695,7 +695,7 @@ extension FrameStreamSendMetadata: SendableItem {
             let retransmitStreamFlowID = pendingItems.retransmitStreams[0].flowID
 
             // The stream is borrowed from the connection's flow table while it is written
-            let wroteRetransmission = try connection.multiplexedFlows.withFlow(retransmitStreamFlowID) {
+            let wroteRetransmission = try connection.withStreamBorrowed(retransmitStreamFlowID) {
                 (stream: inout QUICStreamInstance) throws(QUICError) -> Bool in
                 try writeRetransmission(
                     into: &frame,
@@ -719,7 +719,7 @@ extension FrameStreamSendMetadata: SendableItem {
         while !sentStream, !pendingItems.streamsToService.isEmpty {
             let streamToService = pendingItems.streamsToService.first!
 
-            let wroteStreamData = try connection.multiplexedFlows.withFlow(streamToService) {
+            let wroteStreamData = try connection.withStreamBorrowed(streamToService) {
                 (stream: inout QUICStreamInstance) throws(QUICError) -> Bool in
                 try writeNewStreamData(
                     into: &frame,
@@ -1034,7 +1034,7 @@ extension FrameStreamDataBlocked: SendableItem {
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
         guard let firstFlowID = pendingItems.streamDataBlockedFlows.first,
-            let (streamIDValue, limit) = connection.multiplexedFlows.withFlow(
+            let (streamIDValue, limit) = connection.withStreamBorrowed(
                 firstFlowID,
                 { (stream: inout QUICStreamInstance) -> (UInt64, UInt64)? in
                     guard let streamID = stream.streamID else { return nil }
@@ -1208,7 +1208,7 @@ extension FrameMaxStreamData: SendableItem {
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
         guard let firstFlowID = pendingItems.maxStreamDataFlows.first,
-            let (streamIDValue, localMaxData) = connection.multiplexedFlows.withFlow(
+            let (streamIDValue, localMaxData) = connection.withStreamBorrowed(
                 firstFlowID,
                 { (stream: inout QUICStreamInstance) -> (UInt64, UInt64)? in
                     guard let streamID = stream.streamID else { return nil }
@@ -1698,6 +1698,11 @@ extension FrameDatagram: SendableItem {
             // Thrown once the closure has returned, because `accessDatagramsToSend` takes a
             // non-throwing closure. It tells the packet builder that this packet is full.
             var writeError: QUICError? = nil
+            // Frames the write is finished with. A frame's finalizer is a closure the sender supplied,
+            // and it can do anything, so it must not run while the flow is borrowed from the table.
+            // They are finalized once the borrow has ended.
+            var oversizedFrames = FrameArray()
+            var writtenFrame: Frame? = nil
             // The flow is borrowed from the secondary flow table for the whole write, so nothing
             // below may look the table up again.
             let accessed: Void? = connection.withSecondaryFlow(firstFlowID) {
@@ -1715,8 +1720,8 @@ extension FrameDatagram: SendableItem {
                             connection.log.error(
                                 "Unable to send datagram frame, length \(dataLength) exceeds usable size \(usableDatagramSize)"
                             )
-                            guard var oversized = datagrams.popFirst() else { break }
-                            oversized.finalize(success: false)
+                            guard let oversized = datagrams.popFirst() else { break }
+                            oversizedFrames.add(frame: oversized)
                             continue
                         }
 
@@ -1758,13 +1763,16 @@ extension FrameDatagram: SendableItem {
                                 length: UInt64(dataLength)
                             )
                         )
-                        if var written = datagrams.popFirst() {
-                            written.finalize(success: true)
-                        }
+                        writtenFrame = datagrams.popFirst()
                         break
                     }
                     datagramsListIsEmpty = datagrams.isEmpty
                 }
+            }
+            // The borrow has ended, so the frames' finalizers can run
+            oversizedFrames.finalizeAllFramesAsFailed()
+            if var written = writtenFrame.take() {
+                written.finalize(success: true)
             }
             guard accessed != nil else {
                 connection.log.error("Unable to access state for flow \(firstFlowID)")

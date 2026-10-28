@@ -21,8 +21,8 @@ jobs:
       ios_host_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}, {\"xcode_version\": \"swift_6.3\"}]"
       ios_build_command: bash .github/workflows/scripts/ci-ios.sh
       enable_linux_checks: true
-      linux_swift_versions: '["nightly-6.4.x", "6.4"]'
-      linux_static_sdk_versions: '["nightly-6.4.x", "6.4"]'
+      linux_swift_versions: '["6.4"]'
+      linux_static_sdk_versions: '["6.4"]'
       linux_build_command: bash .github/workflows/scripts/ci-linux.sh
       enable_windows_checks: false
       android_sdk_versions: '["6.4"]'

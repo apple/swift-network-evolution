@@ -183,13 +183,27 @@ where Flow.UpperProtocol: InboundDataLinkage, Path.LowerProtocol: OutboundDataLi
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol ManyToManyApplicationStreamProtocol: ManyToManyDatapathProtocol {
+    /// Services the data a flow has queued to send, for a caller that only has its identifier.
     func serviceStreamDataToSend(flow: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext)
+
+    /// Services the data a flow has queued to send, for a flow that is already borrowed from the
+    /// protocol's flow table.
+    func serviceStreamDataToSend(stream: inout Flow, in eventContext: inout NetworkContext.EventContext)
 }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol ManyToManyApplicationDatagramProtocol: ManyToManyDatapathProtocol {
+    /// Services the datagrams a flow has queued to send, for a caller that only has its identifier.
     func serviceDatagramsToSend(flow: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext)
+
+    /// Services the datagrams a flow has queued to send, for a flow that is already borrowed from the
+    /// protocol's flow table.
+    func serviceDatagramsToSend(
+        borrowedFlow flow: MultiplexedFlowIdentifier,
+        sendQueue: inout FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    )
 }
 
 @_spi(ProtocolProvider)
@@ -1740,9 +1754,7 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
 public struct MultiplexedStreamFlow<
     ParentProtocol: ManyToManyApplicationStreamProtocol,
     LinkageType: InboundStreamLinkage
->: ~Copyable, MultiplexedDatapathFlow,
-    AutomaticUpperStreamProcessing
-{
+>: ~Copyable, MultiplexedDatapathFlow {
     public typealias ParentProtocol = ParentProtocol
     public typealias UpperProtocol = LinkageType
 
@@ -1761,10 +1773,6 @@ public struct MultiplexedStreamFlow<
     public var identifier: InstanceIdentifier
 
     public var blockUpperSendQueue: Bool = false
-
-    public mutating func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext) {
-        parentProtocol.serviceStreamDataToSend(flow: flowIdentifier, in: &eventContext)
-    }
 
     public init(parent: ParentProtocol, inbound: Bool) {
         self.parentProtocol = parent
@@ -2116,9 +2124,7 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
 public struct MultiplexedDatagramFlow<
     ParentProtocol: ManyToManyApplicationDatagramProtocol,
     LinkageType: InboundDatagramLinkage
->: ~Copyable, MultiplexedDatapathFlow,
-    AutomaticUpperDatagramProcessing
-{
+>: ~Copyable, MultiplexedDatapathFlow {
     public typealias ParentProtocol = ParentProtocol
     public typealias UpperProtocol = LinkageType
 
@@ -2136,10 +2142,6 @@ public struct MultiplexedDatagramFlow<
     public let flowIdentifier: MultiplexedFlowIdentifier
 
     public var identifier: InstanceIdentifier
-
-    public mutating func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext) {
-        parentProtocol.serviceDatagramsToSend(flow: flowIdentifier, in: &eventContext)
-    }
 
     public init(parent: ParentProtocol, inbound: Bool) {
         self.parentProtocol = parent

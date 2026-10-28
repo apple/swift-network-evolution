@@ -16,6 +16,62 @@
 import BasicContainers
 #endif
 
+// The part of a flow identifier that indexes the table's lookup array (direct).
+@available(Network 0.1.0, *)
+private struct DirectKey {
+    // Keys below this are looked up through the array; the rest go to the dictionary. A computed
+    // property so that it is always a constant, never lazily initialized.
+    static var limit: Int { 1 << 16 }
+
+    let rawValue: Int
+
+    @inline(always)
+    init(_ flowID: MultiplexedFlowIdentifier) {
+        rawValue = Int(truncatingIfNeeded: flowID.rawValue & 0xFFFF_FFFF)
+    }
+
+    // Whether the array can hold this key at all.
+    @inline(always)
+    var isDirectlyIndexable: Bool { rawValue < Self.limit }
+}
+
+// A index to the `elements` and `identifiers` storage, used by DirectEntry and freeSlots.
+@available(Network 0.1.0, *)
+private struct TableSlot {
+    let rawValue: Int
+
+    @inline(always)
+    init(_ rawValue: Int) { self.rawValue = rawValue }
+}
+
+// DirectEntry is holding the free or new index available to lookup a Flow.
+// This storage index should allow you to look up the indentifier also
+@available(Network 0.1.0, *)
+private struct DirectEntry {
+    private let storage: Int32
+
+    @inline(always)
+    private init(storage: Int32) { self.storage = storage }
+
+    @inline(always)
+    init(_ slot: TableSlot) { storage = Int32(truncatingIfNeeded: slot.rawValue + 1) }
+
+    // No flow owns the key.
+    @inline(always)
+    static var none: DirectEntry { DirectEntry(storage: 0) }
+
+    @inline(always)
+    var isEmpty: Bool { storage == 0 }
+
+    // The slot of the flow that owns the key, if there is one.
+    @inline(always)
+    var tableSlot: TableSlot? { storage == 0 ? nil : TableSlot(Int(storage) - 1) }
+
+    // Whether `slot` is the flow that owns the key.
+    @inline(always)
+    func isOwned(by slot: TableSlot) -> Bool { Int(storage) - 1 == slot.rawValue }
+}
+
 // A table of the flows a many-to-many protocol multiplexes, keyed by flow identifier.
 //
 // A flow identifier carries the slot of the flow's event state in its low 32 bits. Those slots are
@@ -27,18 +83,15 @@ import BasicContainers
 @available(Network 0.1.0, *)
 @_spi(ProtocolProvider)
 public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
-    // The largest event state slot that is looked up through the array
-    private static var maximumDirectKey: Int { 1 << 16 }
-
     // Flows by table slot. A slot with no flow holds `nil`
     private var elements = NetworkUniqueArray<Flow?>()
     // The identifier of the flow in each table slot, or `.allFlows` if the slot is free
     private var identifiers: [MultiplexedFlowIdentifier] = []
     // Table slots that are free to reuse
-    private var freeSlots: [Int] = []
-    // Table slot plus one, indexed by event state slot. Zero means no flow
-    private var direct: [Int32] = []
-    private var overflow: [MultiplexedFlowIdentifier: Int] = [:]
+    private var freeSlots: [TableSlot] = []
+    // The owner of each event state slot (a `DirectKey`), if any
+    private var direct: [DirectEntry] = []
+    private var overflow: [MultiplexedFlowIdentifier: TableSlot] = [:]
     private var liveCount = 0
 
     public init() {}
@@ -48,17 +101,11 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     public var isEmpty: Bool { liveCount == 0 }
 
     @inline(always)
-    static private func key(of flowID: MultiplexedFlowIdentifier) -> Int {
-        Int(truncatingIfNeeded: flowID.rawValue & 0xFFFF_FFFF)
-    }
-
-    @inline(always)
-    private func slot(of flowID: MultiplexedFlowIdentifier) -> Int? {
-        let key = Self.key(of: flowID)
-        if key < direct.count {
-            let entry = Int(direct[key]) - 1
-            if entry >= 0, identifiers[entry] == flowID {
-                return entry
+    private func slot(of flowID: MultiplexedFlowIdentifier) -> TableSlot? {
+        let key = DirectKey(flowID)
+        if key.rawValue < direct.count {
+            if let slot = direct[key.rawValue].tableSlot, identifiers[slot.rawValue] == flowID {
+                return slot
             }
         }
         if !overflow.isEmpty {
@@ -81,32 +128,31 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         identifiers.filter { $0 != .allFlows }
     }
 
-    @_optimize(none)
     public mutating func insert(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
         assert(slot(of: flowID) == nil, "Flow \(flowID) is already in the table")
-        let tableSlot: Int
+        let tableSlot: TableSlot
         // Lookup a free slot, otherwise get the tableSlot by the last count of the elements
         if let free = freeSlots.popLast() {
             tableSlot = free
-            elements[free] = consume flow
-            identifiers[free] = flowID
+            elements[free.rawValue] = consume flow
+            identifiers[free.rawValue] = flowID
         } else {
-            tableSlot = elements.count
+            tableSlot = TableSlot(elements.count)
             elements.append(consume flow)
             identifiers.append(flowID)
         }
         // Get the key for the new flow based on low 32 bits for the flowID's rawValue
-        let key = Self.key(of: flowID)
-        if key < Self.maximumDirectKey {
-            if key >= direct.count {
+        let key = DirectKey(flowID)
+        if key.isDirectlyIndexable {
+            if key.rawValue >= direct.count {
                 // Grow if needed
-                direct.append(contentsOf: repeatElement(0, count: key + 1 - direct.count))
+                direct.append(contentsOf: repeatElement(.none, count: key.rawValue + 1 - direct.count))
             }
-            if direct[key] == 0 {
+            if direct[key.rawValue].isEmpty {
                 // Insert the slot index in an empty place
                 // Note that you can use this tableSlot to look up
                 // both the flow and the identifier.
-                direct[key] = Int32(truncatingIfNeeded: tableSlot + 1)
+                direct[key.rawValue] = DirectEntry(tableSlot)
             } else {
                 overflow[flowID] = tableSlot
             }
@@ -120,16 +166,16 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     // Removes the flow and hands it to the caller.
     public mutating func remove(_ flowID: MultiplexedFlowIdentifier) -> Flow? {
         guard let tableSlot = slot(of: flowID) else { return nil }
-        let key = Self.key(of: flowID)
-        if key < direct.count, Int(direct[key]) - 1 == tableSlot {
-            direct[key] = 0
+        let key = DirectKey(flowID)
+        if key.rawValue < direct.count, direct[key.rawValue].isOwned(by: tableSlot) {
+            direct[key.rawValue] = .none
         } else {
             overflow.removeValue(forKey: flowID)
         }
-        identifiers[tableSlot] = .allFlows
+        identifiers[tableSlot.rawValue] = .allFlows
         freeSlots.append(tableSlot)
         liveCount -= 1
-        return elements[tableSlot].take()
+        return elements[tableSlot.rawValue].take()
     }
 
     // Lends out the flow with the given identifier, or returns `nil` if there is none.
@@ -138,7 +184,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         _ body: (inout Flow) throws(E) -> R
     ) throws(E) -> R? {
         guard let tableSlot = slot(of: flowID) else { return nil }
-        return try body(&elements[tableSlot]!)
+        return try body(&elements[tableSlot.rawValue]!)
     }
 
     // Lends out every flow in turn.

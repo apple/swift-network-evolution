@@ -174,7 +174,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public func withMultiplexedFlows<R: ~Copyable, E: Error>(
         _ body: (inout MultiplexedFlowTable<Flow>) throws(E) -> R
     ) throws(E) -> R {
-        try body(&multiplexedFlows)
+        stateMachine.beginTableBorrow(.streams)
+        defer { stateMachine.endTableBorrow(.streams) }
+        return try body(&multiplexedFlows)
     }
 
     public func insertFlow(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
@@ -186,7 +188,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public func withMultiplexedSecondaryFlows<R: ~Copyable, E: Error>(
         _ body: (inout MultiplexedFlowTable<SecondaryFlow>) throws(E) -> R
     ) throws(E) -> R {
-        try body(&multiplexedSecondaryFlows)
+        stateMachine.beginTableBorrow(.secondary)
+        defer { stateMachine.endTableBorrow(.secondary) }
+        return try body(&multiplexedSecondaryFlows)
     }
 
     public func insertSecondaryFlow(_ flow: consuming SecondaryFlow, for flowID: MultiplexedFlowIdentifier) {
@@ -2744,7 +2748,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     // The stream is already borrowed from the flow table, so everything here works from the stream
     // itself. Sending frames looks at streams and so is held back until the borrow ends.
-    func serviceStreamDataToSend(
+    public func serviceStreamDataToSend(
         stream: inout Flow,
         in eventContext: inout NetworkContext.EventContext
     ) {
@@ -3050,7 +3054,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         _ reason: String? = nil,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        closeError = QUICTransportError(cryptoError: error, reason)
+        if !stateMachine.isCloseDeferred {
+            // A close already waiting for a borrowed flow keeps its error to make sure the correct error is sent
+            closeError = QUICTransportError(cryptoError: error, reason)
+        }
         if !deferClosing {
             close(sendCloseFrame: true, in: &eventContext)
         }
@@ -3062,7 +3069,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         sendCloseFrame: Bool = true,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        closeError = QUICTransportError(error, reason)
+        if !stateMachine.isCloseDeferred {
+            // A close already waiting for a borrowed flow keeps its error to make sure the correct error is sent
+            closeError = QUICTransportError(error, reason)
+        }
         if !deferClosing {
             close(sendCloseFrame: sendCloseFrame, in: &eventContext)
         }
@@ -6462,21 +6472,34 @@ extension QUICConnection {
         _ body: (inout QUICStreamInstance, inout NetworkContext.EventContext) throws(E) -> R
     ) throws(E) -> R? {
         let result: R?
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow()
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: .streams)
         do throws(E) {
             result = try multiplexedFlows.withFlow(flowID) { (stream: inout QUICStreamInstance) throws(E) -> R in
                 try body(&stream, &eventContext)
             }
         } catch {
-            if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+            if let work = stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed) {
                 runDeferredStreamWork(work, in: &eventContext)
             }
             throw error
         }
-        if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+        if let work = stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed) {
             runDeferredStreamWork(work, in: &eventContext)
         }
         return result
+    }
+
+    /// Borrows a stream for the packet builder, which writes it while sending frames. Sending holds the
+    /// send path, so nothing here can defer work; this only notes the borrow of the table so that a
+    /// second borrow of it is caught in debug builds.
+    @inline(always)
+    func withStreamBorrowed<R: ~Copyable, E: Error>(
+        _ flowID: MultiplexedFlowIdentifier,
+        _ body: (inout QUICStreamInstance) throws(E) -> R
+    ) throws(E) -> R? {
+        stateMachine.beginTableBorrow(.streams)
+        defer { stateMachine.endTableBorrow(.streams) }
+        return try multiplexedFlows.withFlow(flowID, body)
     }
 
     /// Borrows each stream in turn, then performs any connection work they held back.
@@ -6485,11 +6508,11 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext,
         _ body: (inout QUICStreamInstance, inout NetworkContext.EventContext) -> Void
     ) {
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow()
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: .streams)
         multiplexedFlows.forEachFlow { (stream: inout QUICStreamInstance) in
             body(&stream, &eventContext)
         }
-        if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+        if let work = stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed) {
             runDeferredStreamWork(work, in: &eventContext)
         }
     }
@@ -6501,16 +6524,16 @@ extension QUICConnection {
         _ body: (inout QUICStreamInstance) throws(E) -> R
     ) throws(E) -> R? {
         let result: R?
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow()
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: .streams)
         do throws(E) {
             result = try multiplexedFlows.withFlow(flowID, body)
         } catch {
-            if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+            if let work = stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed) {
                 performDeferredStreamWorkFromExternal(work)
             }
             throw error
         }
-        if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+        if let work = stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed) {
             performDeferredStreamWorkFromExternal(work)
         }
         return result
@@ -6524,7 +6547,15 @@ extension QUICConnection {
         if let sendCloseFrame = work.close {
             // A close sends frames itself, so there is no point sending them first.
             close(sendCloseFrame: sendCloseFrame, in: &eventContext)
-        } else if work.replaysSends {
+            // The connection is closing, so the sends that waited no longer matter, and neither does
+            // whether it is idle. A close that did not reach its own send (the connection was already
+            // closing, or never started) would leave those sends, and the paths they hold, to fire on
+            // some later release, so drop them here.
+            _ = stateMachine.takePlainSend()
+            _ = takePathSends()
+            return
+        }
+        if work.replaysSends {
             // The sends the borrowed flows triggered, with the flags they asked for
             replayDeferredSends(in: &eventContext)
         }
@@ -6912,9 +6943,12 @@ extension QUICConnection {
     }
 
     // The datagram flow is already borrowed from the secondary flow table, so it is known to
-    // exist and cannot be looked up again. Sending frames waits until the borrow ends.
-    func serviceDatagramsToSend(
+    // exist and cannot be looked up again. Sending frames waits until the borrow ends. The datagrams
+    // stay in the flow's own queue: the packet builder takes them from there when it sends, so the
+    // queue is not needed here.
+    public func serviceDatagramsToSend(
         borrowedFlow flowID: MultiplexedFlowIdentifier,
+        sendQueue: inout FrameArray,
         in eventContext: inout NetworkContext.EventContext
     ) {
         serviceDatagramsToSendUnchecked(flow: flowID, in: &eventContext)
@@ -7076,19 +7110,19 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext,
         _ body: (inout QUICDatagramFlow, inout NetworkContext.EventContext) throws(E) -> R
     ) throws(E) -> R? {
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow()
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: .secondary)
         let result: R?
         do throws(E) {
             result = try multiplexedSecondaryFlows.withFlow(flowID) { (flow: inout QUICDatagramFlow) throws(E) -> R in
                 try body(&flow, &eventContext)
             }
         } catch {
-            if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+            if let work = stateMachine.endFlowBorrow(of: .secondary, wasFlowBorrowed: wasFlowBorrowed) {
                 runDeferredStreamWork(work, in: &eventContext)
             }
             throw error
         }
-        if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+        if let work = stateMachine.endFlowBorrow(of: .secondary, wasFlowBorrowed: wasFlowBorrowed) {
             runDeferredStreamWork(work, in: &eventContext)
         }
         return result
@@ -7099,17 +7133,17 @@ extension QUICConnection {
         _ flowID: MultiplexedFlowIdentifier,
         _ body: (inout QUICDatagramFlow) throws(E) -> R
     ) throws(E) -> R? {
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow()
+        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: .secondary)
         let result: R?
         do throws(E) {
             result = try multiplexedSecondaryFlows.withFlow(flowID, body)
         } catch {
-            if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+            if let work = stateMachine.endFlowBorrow(of: .secondary, wasFlowBorrowed: wasFlowBorrowed) {
                 performDeferredStreamWorkFromExternal(work)
             }
             throw error
         }
-        if let work = stateMachine.endFlowBorrow(wasFlowBorrowed: wasFlowBorrowed) {
+        if let work = stateMachine.endFlowBorrow(of: .secondary, wasFlowBorrowed: wasFlowBorrowed) {
             performDeferredStreamWorkFromExternal(work)
         }
         return result

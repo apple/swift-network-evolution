@@ -285,10 +285,14 @@ final class SendItemsTests: XCTestCase {
     // `usableDatagramSize` is a maximum payload and excludes the DATAGRAM frame header, so
     // every queued payload is sendable as far as the flow is concerned, except the one at
     // `oversizedAtIndex`, which is a byte beyond it.
+    //
+    // With `onFinalize`, each queued datagram is a frame whose finalizer runs it, which is how a
+    // sender-supplied finalizer behaves.
     func writeDatagrams(
         queued: Int,
         roomFor: Int,
-        oversizedAtIndex: Int? = nil
+        oversizedAtIndex: Int? = nil,
+        onFinalize: ((QUICConnection, MultiplexedFlowIdentifier) -> Void)? = nil
     ) -> DatagramWriteOutcome {
         let clock = TestClockContext("SendItemsTests")
         let connection = clock.onQueue {
@@ -320,7 +324,21 @@ final class SendItemsTests: XCTestCase {
             flow.usableDatagramSize = payload.count
             for index in 0..<queued {
                 let count = index == oversizedAtIndex ? payload.count + 1 : payload.count
-                flow.upperSendQueue.add(frame: Frame(copyBuffer: [UInt8](repeating: 0xAB, count: count)))
+                if let onFinalize {
+                    let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: count, alignment: 1)
+                    buffer.initializeMemory(as: UInt8.self, repeating: 0xAB)
+                    flow.upperSendQueue.add(
+                        frame: Frame(
+                            buffer: buffer,
+                            finalizer: { buffer in
+                                buffer.deallocate()
+                                onFinalize(connection, flowIdentifier)
+                            }
+                        )
+                    )
+                } else {
+                    flow.upperSendQueue.add(frame: Frame(copyBuffer: [UInt8](repeating: 0xAB, count: count)))
+                }
             }
         }
 
@@ -366,6 +384,33 @@ final class SendItemsTests: XCTestCase {
         outcome.bytesWritten = roomBeforeWriting - packet.unclaimedLength
         outcome.framedSize = framedSize
         return outcome
+    }
+
+    // A frame's finalizer is a closure the sender supplied. The write must not run it while the flow is
+    // borrowed from the secondary flow table, or a finalizer that looks at the table overlaps the
+    // borrow. Both ways a datagram is finished are covered: dropped for being too large, and written.
+    func testDatagram_finalizersRunAfterTheFlowBorrowEnds() {
+        final class Observations: @unchecked Sendable {
+            var flowWasVisible = [Bool]()
+        }
+        let observations = Observations()
+
+        let outcome = writeDatagrams(
+            queued: 2,
+            roomFor: 1,
+            oversizedAtIndex: 0,
+            onFinalize: { connection, flowIdentifier in
+                // Looking a flow up is an access to the table that the write would be holding
+                observations.flowWasVisible.append(connection.hasSecondaryFlow(flowIdentifier))
+            }
+        )
+
+        XCTAssertNil(outcome.thrownError)
+        XCTAssertTrue(outcome.wroteFrame)
+        XCTAssertEqual(outcome.datagramsWritten, 1)
+        // One finalizer for the datagram that was too large, one for the datagram that was written,
+        // and each found the flow still in the table
+        XCTAssertEqual(observations.flowWasVisible, [true, true])
     }
 
     func testDatagram_requeuedAndReportedFullWhenItDoesNotFit() {

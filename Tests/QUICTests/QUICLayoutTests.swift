@@ -59,7 +59,7 @@ final class QUICLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             MemoryLayout<QUICStreamInstance>.stride,
             496,
-            "QUICStreamInstance's size regressed past 512"
+            "QUICStreamInstance's size regressed past 496"
         )
         XCTAssertEqual(MemoryLayout<QUICSendState>.size, 81)
         XCTAssertEqual(MemoryLayout<QUICReceiveState>.size, 90)

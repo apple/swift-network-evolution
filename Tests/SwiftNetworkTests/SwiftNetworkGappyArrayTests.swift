@@ -252,6 +252,89 @@ final class SwiftNetworkGappyArrayTests: XCTestCase {
         XCTAssertTrue(ga.isEmpty)
     }
 
+    // `take` hands back the value, or `nil` if there was nothing at the index. `XCTAssertNil` cannot
+    // look at a noncopyable element, so report the element's value instead.
+    func took(_ ga: inout NetworkGappyArray<GappyElement>, _ index: NetworkStateIndex) -> Int? {
+        if let element = ga.take(index: index) {
+            return element.value
+        }
+        return nil
+    }
+
+    // Removing an index that was already removed must change nothing. If it recorded the slot as
+    // free a second time, two later inserts would be given the same slot and the first element
+    // would be overwritten and destroyed.
+    func testRemovingTheSameIndexTwiceDoesNotCorruptTheFreeSlots() throws {
+        var ga = NetworkGappyArray<GappyElement>()
+        let indices = (1...5).map { ga.insert(GappyElement(value: $0)) }
+
+        XCTAssertEqual(took(&ga, indices[2]), 3)
+        XCTAssertEqual(ga.count, 4)
+        // The second removal finds nothing and leaves the array as it was
+        XCTAssertNil(took(&ga, indices[2]))
+        XCTAssertEqual(ga.count, 4)
+
+        // Two inserts fill the one gap and then grow the array: they must not share a slot
+        let first = ga.insert(GappyElement(value: 100))
+        let second = ga.insert(GappyElement(value: 200))
+        XCTAssertEqual(ga.count, 6)
+        XCTAssertEqual(ga[first].value, 100)
+        XCTAssertEqual(ga[second].value, 200)
+        for (position, expected) in [(0, 1), (1, 2), (3, 4), (4, 5)] {
+            XCTAssertEqual(ga[indices[position]].value, expected)
+        }
+    }
+
+    func testTakingAnEmptySlotReturnsNil() throws {
+        var ga = NetworkGappyArray<GappyElement>()
+        let indices = (1...4).map { ga.insert(GappyElement(value: $0)) }
+        XCTAssertEqual(took(&ga, indices[1]), 2)
+        XCTAssertNil(took(&ga, indices[1]))
+        XCTAssertNil(took(&ga, indices[1]))
+        XCTAssertEqual(ga.count, 3)
+        // And the array still works
+        let added = ga.insert(GappyElement(value: 9))
+        XCTAssertEqual(ga[added].value, 9)
+        XCTAssertEqual(ga.count, 4)
+    }
+
+    // Removing the last slot leaves an empty slot behind it when that one was already free. Removing
+    // that slot again must not record a free slot beyond the end of the array, which the next insert
+    // would pop and write to.
+    func testRemovingAFreedSlotThatIsNowLastDoesNotLeaveAFreeSlotPastTheEnd() throws {
+        var ga = NetworkGappyArray<GappyElement>()
+        // Enough elements that a single gap is too small a share to trim the array
+        let indices = (0..<100).map { ga.insert(GappyElement(value: $0)) }
+        XCTAssertEqual(took(&ga, indices[98]), 98)
+        XCTAssertEqual(took(&ga, indices[99]), 99)
+        XCTAssertEqual(ga.count, 98)
+
+        // Slot 98 is free and is now the last slot. Removing it again finds nothing.
+        XCTAssertNil(took(&ga, indices[98]))
+        XCTAssertEqual(ga.count, 98)
+
+        let added = (0..<3).map { ga.insert(GappyElement(value: 1000 + $0)) }
+        XCTAssertEqual(ga.count, 101)
+        for (offset, index) in added.enumerated() {
+            XCTAssertEqual(ga[index].value, 1000 + offset)
+        }
+        for position in 0..<98 {
+            XCTAssertEqual(ga[indices[position]].value, position)
+        }
+    }
+
+    // An index for a slot that no longer exists, because the array was trimmed, finds nothing.
+    func testTakingAnIndexPastTheEndReturnsNil() throws {
+        var ga = NetworkGappyArray<GappyElement>()
+        let indices = (1...3).map { ga.insert(GappyElement(value: $0)) }
+        XCTAssertEqual(took(&ga, indices[2]), 3)
+        XCTAssertEqual(took(&ga, indices[1]), 2)
+        XCTAssertNil(took(&ga, indices[2]))
+        XCTAssertNil(took(&ga, indices[1]))
+        XCTAssertEqual(ga.count, 1)
+        XCTAssertEqual(ga[indices[0]].value, 1)
+    }
+
     // `NetworkStateIndex` exists to fit in a single 64-bit word, and to need no `Optional`.
     func testIndexFitsInOneWord() throws {
         XCTAssertEqual(MemoryLayout<NetworkStateIndex>.size, 8)
