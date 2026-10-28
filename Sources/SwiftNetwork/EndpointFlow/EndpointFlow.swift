@@ -534,22 +534,27 @@ struct EndpointFlow: ~Copyable {
     ) {
         let requestCount = writeRequests.leadingRequestCount(fillingRoom: room)
         var frames = FrameArray(capacity: requestCount)
-        var completions: [(@Sendable (Result<Void, NetworkError>) -> Void)?] = []
+        var completions: [BatchedWriteCompletion] = []
         completions.reserveCapacity(requestCount)
 
         for _ in 0..<requestCount {
             guard let writeRequest = writeRequests.popFirst() else {
                 break
             }
-            completions.append(writeRequest.completion)
+            if let completion = writeRequest.completion {
+                completions.append(BatchedWriteCompletion(run: completion))
+            }
             frames.add(frame: writeRequest.frame)
         }
 
         let success = flow.write(frames, in: &eventContext)
 
+        if completions.isEmpty {
+            return
+        }
         deliverToApplication(in: &eventContext) {
             for completion in completions {
-                WriteRequest.runCompletion(completion, success: success)
+                WriteRequest.runCompletion(completion.run, success: success)
             }
         }
     }
@@ -1053,6 +1058,14 @@ struct EndpointFlow: ~Copyable {
             stateUpdateHandler = nil
         }
     }
+}
+
+/// A write request's completion, wrapped so an array of them keeps each closure in its natural
+/// representation. A closure stored directly in an `Array` is converted to the most general
+/// representation, which allocates a thunk for every element.
+@available(Network 0.1.0, *)
+private struct BatchedWriteCompletion {
+    let run: @Sendable (Result<Void, NetworkError>) -> Void
 }
 
 /// A flow protocol that takes the frames of write requests one at a time.

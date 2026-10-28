@@ -244,4 +244,54 @@ final class SwiftNetworkEndpointFlowWriteOrderingTests: NetTestCase {
         XCTAssertEqual(receive(on: pair, count: writeCount), Array(0..<UInt8(writeCount)))
         pair.cancel()
     }
+
+    /// Writes submitted together are all sent in order, and only the ones that asked for a
+    /// completion get one, once.
+    func testWritesWithAndWithoutCompletionsSubmittedTogether() {
+        let pair = makeConnectionPair(senderPort: 7799, receiverPort: 7800)
+        waitUntilReady(pair)
+
+        let writeCount = 8
+        let observed = pair.observed
+        for byte in 0..<writeCount {
+            let content = [UInt8(byte)]
+            if byte.isMultiple(of: 2) {
+                pair.sender.send(.message(content: content)) { result in
+                    switch result {
+                    case .success: observed.completedWrites += 1
+                    case .failure: observed.failedWrites += 1
+                    }
+                }
+            } else {
+                pair.sender.send(.message(content: content))
+            }
+        }
+        let completionCount = writeCount / 2
+        wait(
+            pair,
+            until: { observed.completedWrites + observed.failedWrites >= completionCount },
+            "every write that asked for a completion to complete"
+        )
+
+        // A completion delivered twice would show once the rest of the queued work has run.
+        pair.manual.run()
+        XCTAssertEqual(observed.completedWrites, completionCount)
+        XCTAssertEqual(observed.failedWrites, 0)
+        XCTAssertEqual(receive(on: pair, count: writeCount), Array(0..<UInt8(writeCount)))
+        pair.cancel()
+    }
+
+    /// Writes submitted together, none of which asks for a completion, are still sent in order.
+    func testWritesWithoutCompletionsSubmittedTogether() {
+        let pair = makeConnectionPair(senderPort: 7801, receiverPort: 7802)
+        waitUntilReady(pair)
+
+        let writeCount = 8
+        for byte in 0..<writeCount {
+            pair.sender.send(.message(content: [UInt8(byte)]))
+        }
+
+        XCTAssertEqual(receive(on: pair, count: writeCount), Array(0..<UInt8(writeCount)))
+        pair.cancel()
+    }
 }
