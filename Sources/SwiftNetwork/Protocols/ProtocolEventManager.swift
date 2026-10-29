@@ -32,6 +32,10 @@ internal import os
 
 @available(Network 0.1.0, *)
 struct ProtocolEventManagerState: ~Copyable {
+    /// For the event state of a standalone link: where its `StandaloneLinkState` is. A standalone
+    /// link's linkage holds nothing but its identifier, so the state is found through this.
+    var standaloneSlot: NetworkStateIndex = .none
+
     enum EventState {
         case idle
         case handlingCallFromUpperProtocol
@@ -460,7 +464,7 @@ extension NetworkContext.EventContext {
     }
 
     // Retires the event state for `index`, removing it now if nothing still holds it.
-    fileprivate mutating func retireProtocolEventState(_ index: NetworkStateIndex) {
+    mutating func retireProtocolEventState(_ index: NetworkStateIndex) {
         guard protocolEventStates[index].canRemove else {
             protocolEventStates[index].retiring = true
             return

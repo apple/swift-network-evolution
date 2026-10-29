@@ -56,6 +56,9 @@ public struct BaseStreamLinkageFamily: StreamLinkageFamily {
 public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
     enum ProtocolType {
         case unknown
+        #if !NETWORK_EMBEDDED
+        case standalone
+        #endif
         case udp(NetworkStateIndex)
         case ip(NetworkStateIndex)
         case tcp(NetworkStateIndex)
@@ -91,6 +94,18 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case .quicPath(let box):
             var path = box.instance
             overrideUpperLinkage = try path.attachLowerProtocol(lowerProtocol)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            guard let context = parameters?.context else { throw NetworkError.posix(EINVAL) }
+            try StandaloneFlowLink(resolving: identifier, context: context).invokeAttachLowerProtocol(
+                lowerProtocol,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+            return
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -133,6 +148,10 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             box.instance.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleConnectedEvent(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleConnectedEvent call")
@@ -158,6 +177,10 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicPath(let box):
             box.instance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -189,6 +212,10 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             protocolInstance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
@@ -217,6 +244,10 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             protocolInstance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             external.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #endif
@@ -243,6 +274,10 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case .quicPath(let box):
             var protocolInstance = box.instance
             protocolInstance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -294,6 +329,10 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
 public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
     enum ProtocolType {
         case unknown
+        #if !NETWORK_EMBEDDED
+        case standalone
+        case standaloneSuppliedUpper
+        #endif
         case udp(NetworkStateIndex)
         case ip(NetworkStateIndex)
         case demux(NetworkStateIndex)
@@ -361,6 +400,10 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             case .some(let datagrams): return datagrams
             case .none: return nil
             }
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone, .standaloneSuppliedUpper:
+            return try StandaloneLowerLink(resolving: identifier, in: &eventContext).receiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -436,6 +479,15 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             }
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone, .standaloneSuppliedUpper:
+            return try StandaloneLowerLink(resolving: identifier, in: &eventContext).getDatagramsToSend(
+                maximumDatagramCount: maximumDatagramCount,
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             return try external.getDatagramsToSend(
                 maximumDatagramCount: maximumDatagramCount,
@@ -480,6 +532,10 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             }
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone, .standaloneSuppliedUpper:
+            try StandaloneLowerLink(resolving: identifier, in: &eventContext).sendDatagrams(datagrams, from: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             try external.sendDatagrams(datagrams, from: instance, in: &eventContext)
         #endif
@@ -518,6 +574,10 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             box.instance.connectDatagramFlow(flow: flowID, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone, .standaloneSuppliedUpper:
+            StandaloneLowerLink(resolving: identifier, in: &eventContext).connect(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.connect(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept connect call")
@@ -543,6 +603,10 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicDatagramFlow(let box, let flowID):
             box.instance.disconnectDatagramFlow(flow: flowID, error: error, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone, .standaloneSuppliedUpper:
+            StandaloneLowerLink(resolving: identifier, in: &eventContext).disconnect(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
@@ -571,6 +635,10 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicDatagramFlow(let box, let flowID):
             try box.instance.detachDatagramFlow(flow: flowID, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone, .standaloneSuppliedUpper:
+            try StandaloneLowerLink(resolving: identifier, in: &eventContext).detach(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -606,6 +674,10 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         case .quicDatagramFlow:
             // The connection releases the flow, and its event state, as part of detaching it.
             break
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone, .standaloneSuppliedUpper:
+            StandaloneLowerLink(resolving: identifier, in: &eventContext).teardown(in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -651,6 +723,10 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone, .standaloneSuppliedUpper:
+            StandaloneLowerLink(resolving: identifier, in: &eventContext).handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleApplicationEvent call")
@@ -674,6 +750,10 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicDatagramFlow(let box, let flowID):
             return box.instance.getMetadata(flow: flowID)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone, .standaloneSuppliedUpper:
+            return StandaloneLowerLink(resolving: identifier, in: &eventContext).getMetadata(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
@@ -723,6 +803,14 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicDatagramFlow(let box, let flowID):
             return box.instance.getMetrics(flow: flowID, requestedNetworkMetric: requestedNetworkMetric)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone, .standaloneSuppliedUpper:
+            return StandaloneLowerLink(resolving: identifier, in: &eventContext).getMetrics(
+                requestedNetworkMetric: requestedNetworkMetric,
+                for: instance,
+                in: &eventContext
+            )
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -792,6 +880,20 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
                 parameters: parameters,
                 path: path
             )
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            guard let context = parameters?.context else { throw NetworkError.posix(EINVAL) }
+            try StandaloneLowerLink(resolving: identifier, context: context).invokeAttachUpperProtocol(
+                upperProtocol,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+        case .standaloneSuppliedUpper:
+            // The driver supplies the upper afterwards; see `StandaloneLinks.swift`.
+            break
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -1121,6 +1223,9 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
 public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     enum ProtocolType {
         case unknown
+        #if !NETWORK_EMBEDDED
+        case standalone
+        #endif
         case inboundDatagramEndpointFlow(ProtocolInstanceBox<InboundDatagramEndpointFlowProtocol>)
         #if !NETWORK_EMBEDDED
         case external(any ExternalInboundDatagramFlowLinkage)
@@ -1160,6 +1265,17 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     ) throws(NetworkError) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            guard let context = parameters?.context else { throw NetworkError.posix(EINVAL) }
+            try StandaloneConnectionLink(resolving: identifier, context: context).invokeAttachLowerProtocol(
+                lowerProtocol,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             try external.invokeAttachLowerProtocol(
                 lowerProtocol,
@@ -1195,6 +1311,10 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneConnectionLink(resolving: identifier, in: &eventContext).handleConnectedEvent(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         case .inboundDatagramEndpointFlow(let flow):
@@ -1210,6 +1330,10 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneConnectionLink(resolving: identifier, in: &eventContext).handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
         case .inboundDatagramEndpointFlow(let flow):
@@ -1224,6 +1348,10 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneConnectionLink(resolving: identifier, in: &eventContext).handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
             external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
@@ -1241,6 +1369,15 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneConnectionLink(resolving: identifier, in: &eventContext).handleNewInboundFlowEvent(
+                flowInstance: flowInstance,
+                flowMetadata: flowMetadata,
+                for: instance,
+                in: &eventContext
+            )
+        #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
             external.handleNewInboundFlowEvent(
@@ -1372,6 +1509,9 @@ public struct BaseDatagramMultipathLinkage: DatagramMultipathLinkage {
 public struct BaseInboundStreamLinkage: InboundStreamLinkage {
     enum ProtocolType {
         case unknown
+        #if !NETWORK_EMBEDDED
+        case standalone
+        #endif
         case streamEndpointFlow(ProtocolInstanceBox<StreamEndpointFlowProtocol>)
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case swiftTLSRecord(
@@ -1401,6 +1541,18 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
         case .swiftTLSRecord(let box):
             var protocolInstance = box.instance
             overrideUpperLinkage = try protocolInstance.attachLowerProtocol(lowerProtocol)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            guard let context = parameters?.context else { throw NetworkError.posix(EINVAL) }
+            try StandaloneFlowLink(resolving: identifier, context: context).invokeAttachLowerProtocol(
+                lowerProtocol,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+            return
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -1438,6 +1590,10 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleConnectedEvent(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleConnectedEvent call")
@@ -1456,6 +1612,10 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
         case .swiftTLSRecord(let box):
             var protocolInstance = box.instance
             protocolInstance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
@@ -1478,6 +1638,10 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
@@ -1498,6 +1662,10 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleInboundDataAvailableEvent call")
@@ -1515,6 +1683,10 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
         case .swiftTLSRecord(let box):
             var protocolInstance = box.instance
             protocolInstance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
@@ -1537,6 +1709,10 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             protocolInstance.handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleInboundAbortedEvent call")
@@ -1555,6 +1731,10 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
         case .swiftTLSRecord(let box):
             var protocolInstance = box.instance
             protocolInstance.handleOutboundAbortedEvent(error: error, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneFlowLink(resolving: identifier, in: &eventContext).handleOutboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -1605,6 +1785,9 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
 public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
     enum ProtocolType {
         case unknown
+        #if !NETWORK_EMBEDDED
+        case standalone
+        #endif
         case tcp(NetworkStateIndex)
         case bridgeStream(NetworkStateIndex)
         case customLink(NetworkStateIndex)
@@ -1690,6 +1873,15 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            return try StandaloneLowerLink(resolving: identifier, in: &eventContext).receiveStreamData(
+                minimumBytes: minimumBytes,
+                maximumBytes: maximumBytes,
+                for: instance,
+                in: &eventContext
+            )
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             return try external.receiveStreamData(
                 minimumBytes: minimumBytes,
@@ -1743,6 +1935,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             )
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            return try StandaloneLowerLink(resolving: identifier, in: &eventContext).getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             return try external.getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
         #endif
@@ -1785,6 +1981,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             try protocolInstance.sendStreamData(streamData, from: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            try StandaloneLowerLink(resolving: identifier, in: &eventContext).sendStreamData(streamData, from: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             try external.sendStreamData(streamData, from: instance, in: &eventContext)
         #endif
@@ -1814,6 +2014,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             }
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            try StandaloneLowerLink(resolving: identifier, in: &eventContext).sendEarlyStreamData(streamData, from: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             try external.sendEarlyStreamData(streamData, from: instance, in: &eventContext)
         #endif
@@ -1839,6 +2043,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             }
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            try StandaloneLowerLink(resolving: identifier, in: &eventContext).abortInbound(error: error, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             try external.abortInbound(error: error, for: instance, in: &eventContext)
         #endif
@@ -1859,6 +2067,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
                 (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) in
                 stream.abortOutbound(error: error, for: instance, in: &ctx)
             }
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            try StandaloneLowerLink(resolving: identifier, in: &eventContext).abortOutbound(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -1900,6 +2112,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             protocolInstance.connect(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneLowerLink(resolving: identifier, in: &eventContext).connect(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.connect(for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept connect call")
@@ -1931,6 +2147,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             protocolInstance.disconnect(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneLowerLink(resolving: identifier, in: &eventContext).disconnect(error: error, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept disconnect call")
@@ -1960,6 +2180,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
         case .swiftTLSRecord(let box):
             var protocolInstance = box.instance
             try protocolInstance.detach(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            try StandaloneLowerLink(resolving: identifier, in: &eventContext).detach(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -1995,6 +2219,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             box.instance.unregisterEventManager(in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneLowerLink(resolving: identifier, in: &eventContext).teardown(in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             external.teardown(in: &eventContext)
         #endif
@@ -2028,6 +2256,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             protocolInstance.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneLowerLink(resolving: identifier, in: &eventContext).handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         case .unknown: fatalError("Protocol cannot accept handleApplicationEvent call")
@@ -2055,6 +2287,10 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
             return box.instance.getMetadata(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            return StandaloneLowerLink(resolving: identifier, in: &eventContext).getMetadata(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
@@ -2102,6 +2338,14 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):
             return box.instance.getMetrics(
+                requestedNetworkMetric: requestedNetworkMetric,
+                for: instance,
+                in: &eventContext
+            )
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            return StandaloneLowerLink(resolving: identifier, in: &eventContext).getMetrics(
                 requestedNetworkMetric: requestedNetworkMetric,
                 for: instance,
                 in: &eventContext
@@ -2172,6 +2416,17 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
         case .swiftTLSRecord(let box):
             var protocolInstance = box.instance
             try protocolInstance.attachUpperProtocol(
+                upperProtocol,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+        #endif
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            guard let context = parameters?.context else { throw NetworkError.posix(EINVAL) }
+            try StandaloneLowerLink(resolving: identifier, context: context).invokeAttachUpperProtocol(
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -2506,6 +2761,9 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
 public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     enum ProtocolType {
         case unknown
+        #if !NETWORK_EMBEDDED
+        case standalone
+        #endif
         case inboundStreamEndpointFlow(ProtocolInstanceBox<InboundStreamEndpointFlowProtocol>)
         #if !NETWORK_EMBEDDED
         case external(any ExternalInboundStreamFlowLinkage)
@@ -2545,6 +2803,17 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     ) throws(NetworkError) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            guard let context = parameters?.context else { throw NetworkError.posix(EINVAL) }
+            try StandaloneConnectionLink(resolving: identifier, context: context).invokeAttachLowerProtocol(
+                lowerProtocol,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external):
             try external.invokeAttachLowerProtocol(
                 lowerProtocol,
@@ -2580,6 +2849,10 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneConnectionLink(resolving: identifier, in: &eventContext).handleConnectedEvent(for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
         case .inboundStreamEndpointFlow(let flow):
@@ -2595,6 +2868,10 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneConnectionLink(resolving: identifier, in: &eventContext).handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        #endif
+        #if !NETWORK_EMBEDDED
         case .external(let external): external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
         case .inboundStreamEndpointFlow(let flow):
@@ -2609,6 +2886,10 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneConnectionLink(resolving: identifier, in: &eventContext).handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
             external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
@@ -2626,6 +2907,15 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
+        #if !NETWORK_EMBEDDED
+        case .standalone:
+            StandaloneConnectionLink(resolving: identifier, in: &eventContext).handleNewInboundFlowEvent(
+                flowInstance: flowInstance,
+                flowMetadata: flowMetadata,
+                for: instance,
+                in: &eventContext
+            )
+        #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
             external.handleNewInboundFlowEvent(

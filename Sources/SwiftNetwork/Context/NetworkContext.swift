@@ -151,6 +151,14 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         #endif
 
         internal var protocolEventStates = NetworkGappyArray<ProtocolEventManagerState>()
+        #if !NETWORK_EMBEDDED
+        // State for the links of a standalone protocol, keyed by the slot a link holds, and the
+        // events those links have queued for their owner. See `StandaloneLinks.swift`.
+        internal var standaloneLinks = NetworkGappyArray<StandaloneLinkState>()
+        internal var standaloneEvents: [StandaloneEvent] = []
+        internal var standaloneFlows: [StandaloneFlowID: StandaloneFlowLink] = [:]
+        internal var standaloneNextID = 1
+        #endif
         internal mutating func registerProtocolEventState() -> NetworkStateIndex {
             protocolEventStates.insert(.init())
         }
