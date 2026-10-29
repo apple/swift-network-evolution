@@ -303,6 +303,7 @@ class QUICTestHarness {
         bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
         bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil,
         clientMTU: Int = 1500,
+        clientInterfaceMTU: Int? = nil,
         serverMTU: Int = 1500
     ) throws(NetworkError) {
         var clientConnected = false
@@ -347,21 +348,18 @@ class QUICTestHarness {
             clientParameters.defaultStack.link = .custom(clientBridgeOptions)
 
             var clientPath = PathProperties(parameters: clientParameters)
-            if clientMTU == 1500 {
-                clientPath.effectiveMTU = 1500
-            } else {
-                #if !NETWORK_PRIVATE
-                // Note that this reaches cross module on an internal property
-                clientPath.directInterface = Interface(
-                    index: 1,
-                    name: "lo0",
-                    type: .loopback,
-                    subtype: .other,
-                    mtu: clientMTU
-                )
-                #endif
-                clientPath.effectiveMTU = UInt32(clientMTU)
-            }
+            #if !NETWORK_PRIVATE
+            // Note that this reaches cross module on an internal property.
+            // PathProperties.mtu reports 0 without a direct interface, so always set one.
+            clientPath.directInterface = Interface(
+                index: 1,
+                name: "lo0",
+                type: .loopback,
+                subtype: .other,
+                mtu: clientInterfaceMTU ?? clientMTU
+            )
+            #endif
+            clientPath.effectiveMTU = UInt32(clientMTU)
 
             // Setup server parameters
             var serverParameters = Parameters(context: self.context)
@@ -394,21 +392,18 @@ class QUICTestHarness {
             serverParameters.defaultStack.link = .custom(serverBridgeOptions)
 
             var serverPath = PathProperties(parameters: serverParameters)
-            if serverMTU == 1500 {
-                serverPath.effectiveMTU = 1500
-            } else {
-                #if !NETWORK_PRIVATE
-                // Note that this reaches cross module on an internal property
-                serverPath.directInterface = Interface(
-                    index: 1,
-                    name: "lo0",
-                    type: .loopback,
-                    subtype: .other,
-                    mtu: serverMTU
-                )
-                #endif
-                serverPath.effectiveMTU = UInt32(serverMTU)
-            }
+            #if !NETWORK_PRIVATE
+            // Note that this reaches cross module on an internal property.
+            // PathProperties.mtu reports 0 without a direct interface, so always set one.
+            serverPath.directInterface = Interface(
+                index: 1,
+                name: "lo0",
+                type: .loopback,
+                subtype: .other,
+                mtu: serverMTU
+            )
+            #endif
+            serverPath.effectiveMTU = UInt32(serverMTU)
 
             // Attach client
             let (clientHarness, clientHarnessLinkage) = self.storage.createNewStreamFlowHarness(
@@ -969,9 +964,6 @@ class QUICTestHarness {
                     let receivedFIN = serverStreamHarness.receivedFIN
                     XCTAssertTrue(receivedFIN, "Server failed to receive FIN from client")
                 }
-                if serverStreamHarness.receivedFIN {
-                    serverStreamHarness.stop(in: &state)
-                }
                 serverReadFinished = true
                 return
             }
@@ -988,6 +980,19 @@ class QUICTestHarness {
 
         wait(until: { serverReadFinished }, timeout: timeout, "server read \(streamIndex) to complete")
         wait(until: { clientReadFinished }, timeout: timeout, "client read \(streamIndex) to complete")
+
+        // Only stop the server stream once the client has received every echoed byte. Stopping it
+        // earlier closes both directions, and the server would then refuse to retransmit echo data
+        // that was dropped on the way to the client.
+        if dataGenerator.sendFIN {
+            context.async {
+                serverStreamHarness.fromExternal { eventContext in
+                    if serverStreamHarness.receivedFIN {
+                        serverStreamHarness.stop(in: &eventContext)
+                    }
+                }
+            }
+        }
 
         // If FINs are sent, also ensure that the streams move to disconnected
         if dataGenerator.sendFIN {
@@ -1232,6 +1237,7 @@ class QUICTestHarness {
         bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
         bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil,
         clientMTU: Int = 1500,
+        clientInterfaceMTU: Int? = nil,
         serverMTU: Int = 1500
     ) {
         // Start with the handshake
@@ -1257,6 +1263,7 @@ class QUICTestHarness {
                 bridgeObserveFirstByteHandler: bridgeObserveFirstByteHandler,
                 bridgeObserveFrameHandler: bridgeObserveFrameHandler,
                 clientMTU: clientMTU,
+                clientInterfaceMTU: clientInterfaceMTU,
                 serverMTU: serverMTU
             )
         } catch {
@@ -2143,6 +2150,67 @@ class QUICTestHarness {
         _ = serverStream  // silence unused-warning; harness keeps strong ref
         stop()
     }
+
+    #if canImport(SwiftNetwork)
+    /// A send started by loss recovery builds packets without an event context to hand the
+    /// application. When it reopens a stream's room for more data, the announcement has to reach
+    /// the application once the send completes; nothing else is guaranteed to run afterwards.
+    func runRecoverySendAnnouncesReopenedRoom(timeout: TimeInterval = 5.0) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1"), let clientConnection = state?.clientInstance else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        var attempted = false
+        var prerequisitesMet = false
+        var announced = false
+
+        context.async {
+            clientConnection.fromExternal { eventContext in
+                defer { attempted = true }
+                guard let flow = clientConnection.multiplexedFlows.values.first,
+                    let path = clientConnection.currentPath
+                else {
+                    return
+                }
+                prerequisitesMet = true
+
+                clientStream.discardPendingOutboundRoomAvailable()
+
+                clientStream.waitForOutboundRoomAvailable(in: &eventContext) { _ in
+                    announced = true
+                }
+
+                // Queue the announcement the way packet building does when space reopens, so the
+                // recovery send has an event to deliver.
+                clientConnection.queueOutboundRoomAvailableEvent(for: flow)
+
+                var discardInitialRecoveryState = false
+                clientConnection.sendFramesFromRecovery(
+                    on: path,
+                    discardInitialRecoveryState: &discardInitialRecoveryState,
+                    in: &eventContext
+                )
+            }
+        }
+
+        // Without a stream flow and path there is nothing to announce, so stop waiting once the
+        // attempt has been made; otherwise a missing announcement shows up as the timeout.
+        wait(until: { announced || (attempted && !prerequisitesMet) }, timeout: timeout, "the room announcement")
+
+        XCTAssertTrue(prerequisitesMet, "The client connection has no stream flow or path to send on")
+        XCTAssertTrue(announced, "The recovery send did not deliver the queued room-available event")
+
+        stop()
+    }
+    #endif
 
     func runQUICServerTestForPendingBidirectional(
         identifier: String = #function,
