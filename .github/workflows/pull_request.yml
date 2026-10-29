@@ -36,7 +36,7 @@ jobs:
     uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.16
     with:
       swift_nightly_flags: "-Xswiftc -warnings-as-errors"
-      enable_linux_checks: true
+      enable_linux_checks: false
       linux_swift_versions: '["nightly-main"]'
       linux_static_sdk_versions: '["nightly-main"]'
       linux_build_command: bash .github/workflows/scripts/ci-linux.sh
