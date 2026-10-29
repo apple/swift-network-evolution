@@ -1721,7 +1721,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 let isServerConnection: Bool = isServer
                 let inConnectedState = state == .connected
                 var receivedBytes: Int = 0
-                let receivedPackets: Int = datagrams.count
+                var receivedPackets: Int = 0
                 datagrams.iterateMutableFrames { frame in
                     if state.isTerminal {
                         log.debug(
@@ -1730,6 +1730,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         frame.finalize(success: false)
                         return .removeFrameAndContinue
                     }
+                    receivedPackets &+= 1
                     receivedBytes &+= frame.unclaimedLength
                     // Count the bytes on the path before handling the packet: replies sent while
                     // handling it are limited by what has been received on an unvalidated path.
