@@ -484,6 +484,76 @@ final class QUICStreamUpperProtocolBorrowingTests: XCTestCase {
         }
     }
 
+    // The connection reports every flow disconnected when it closes, by walking the whole flow table.
+    func testUpperProtocolCanCallBackFromDisconnectedForAllFlows() {
+        forEachUpperAction { action, stack, _ in
+            var called = false
+            stack.harness.completions.connected = { eventContext, connected in
+                called = true
+                XCTAssertFalse(connected)
+                self.upperCallback(action, stack, &eventContext)
+            }
+            stack.connection.fromExternal { eventContext in
+                stack.connection.deliverDisconnectedEvent(flow: .allFlows, error: nil, in: &eventContext)
+            }
+            XCTAssertTrue(called, "disconnected never reached the upper protocol (\(action))")
+        }
+    }
+
+    // Reporting one flow connected looks the flow up in the table and delivers to its upper from there.
+    func testUpperProtocolCanCallBackFromConnectedForOneFlow() {
+        forEachUpperAction { action, stack, flowID in
+            var called = false
+            stack.harness.completions.connected = { eventContext, connected in
+                called = true
+                XCTAssertTrue(connected)
+                self.upperCallback(action, stack, &eventContext)
+            }
+            stack.connection.fromExternal { eventContext in
+                stack.connection.deliverConnectedEvent(flow: flowID, in: &eventContext)
+            }
+            XCTAssertTrue(called, "connected never reached the upper protocol (\(action))")
+        }
+    }
+
+    // `connectFlow` ends by handing the flow whatever was queued for it, which it does with the flow looked up
+    // in the table. An upper that calls back in from the connect it asked for must still be safe.
+    func testUpperProtocolCanCallBackFromConnectFlow() {
+        forEachUpperAction { action, stack, flowID in
+            stack.harness.completions.connected = { eventContext, _ in
+                self.upperCallback(action, stack, &eventContext)
+            }
+            stack.connection.fromExternal { eventContext in
+                stack.connection.connectFlow(flowID, for: stack.harness.identifier, in: &eventContext)
+            }
+        }
+    }
+
+    // Unblocking a stream's sending tells its upper there is room to write again, from the table lookup of
+    // that stream. It is public API that nothing in the stack calls itself, so this drives it directly.
+    func testUpperProtocolCanCallBackFromUnblockSending() {
+        // Through the stream protocol, so the call is not ambiguous with the datagram flow overload
+        func unblock<Handler: ManyToManyApplicationStreamProtocol>(
+            _ handler: Handler,
+            _ flowID: MultiplexedFlowIdentifier,
+            _ eventContext: inout NetworkContext.EventContext
+        ) where Handler.Flow: AutomaticUpperStreamProcessing {
+            handler.blockSending(flow: flowID)
+            handler.unblockSending(flow: flowID, in: &eventContext)
+        }
+        forEachUpperAction { action, stack, flowID in
+            var called = false
+            stack.harness.completions.outboundRoomAvailable = { eventContext in
+                called = true
+                self.upperCallback(action, stack, &eventContext)
+            }
+            stack.connection.fromExternal { eventContext in
+                unblock(stack.connection, flowID, &eventContext)
+            }
+            XCTAssertTrue(called, "outboundRoomAvailable never reached the upper protocol (\(action))")
+        }
+    }
+
     // Completing the handshake readies the streams that were opened early. The connection reports each
     // one connected while it holds that stream.
     func testUpperProtocolCanCallBackFromConnected() {

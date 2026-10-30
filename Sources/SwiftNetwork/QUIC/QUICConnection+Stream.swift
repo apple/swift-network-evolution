@@ -177,9 +177,11 @@ extension QUICConnection {
     private func streamAcceptsCall(
         flow flowID: MultiplexedFlowIdentifier,
         from instance: InstanceIdentifier,
-        _ label: String
+        _ label: String,
+        in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        let valid = performOnStream(flowID) { (stream: inout QUICStreamInstance) -> Bool in
+        let valid = performOnStream(flowID, in: &eventContext) {
+            (stream: inout QUICStreamInstance, _: inout NetworkContext.EventContext) -> Bool in
             do throws(ProtocolInstanceError) {
                 try stream.validate(upper: instance, label)
                 return true
@@ -237,7 +239,7 @@ extension QUICConnection {
         // The identifier lookup doubles as the check that the stream is still there; the check that
         // the caller is the attached upper protocol only exists in debug builds.
         #if DEBUG
-        guard streamAcceptsCall(flow: flowID, from: instance, "connect") else { return }
+        guard streamAcceptsCall(flow: flowID, from: instance, "connect", in: &eventContext) else { return }
         #endif
         guard let streamIdentifier = instanceIdentifier(ofFlow: flowID) else { return }
         if isConnected(in: &eventContext) {
@@ -264,7 +266,7 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext
     ) {
         #if DEBUG
-        guard streamAcceptsCall(flow: flowID, from: instance, "disconnect") else { return }
+        guard streamAcceptsCall(flow: flowID, from: instance, "disconnect", in: &eventContext) else { return }
         #endif
         guard let streamIdentifier = instanceIdentifier(ofFlow: flowID) else { return }
         if streamIdentifier.canCallDisconnect(in: &eventContext) {
@@ -365,9 +367,11 @@ extension QUICConnection {
     private func datagramFlowAcceptsCall(
         flow flowID: MultiplexedFlowIdentifier,
         from instance: InstanceIdentifier,
-        _ label: String
+        _ label: String,
+        in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        let valid = performOnDatagramFlow(flowID) { (flow: inout QUICDatagramFlow) -> Bool in
+        let valid = performOnDatagramFlow(flowID, in: &eventContext) {
+            (flow: inout QUICDatagramFlow, _: inout NetworkContext.EventContext) -> Bool in
             do throws(ProtocolInstanceError) {
                 try flow.validate(upper: instance, label)
                 return true
@@ -424,7 +428,7 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext
     ) {
         #if DEBUG
-        guard datagramFlowAcceptsCall(flow: flowID, from: instance, "connect") else { return }
+        guard datagramFlowAcceptsCall(flow: flowID, from: instance, "connect", in: &eventContext) else { return }
         #endif
         guard let flowIdentifier = secondaryInstanceIdentifier(ofFlow: flowID) else { return }
         if isConnected(in: &eventContext) {
@@ -452,7 +456,7 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext
     ) {
         #if DEBUG
-        guard datagramFlowAcceptsCall(flow: flowID, from: instance, "disconnect") else { return }
+        guard datagramFlowAcceptsCall(flow: flowID, from: instance, "disconnect", in: &eventContext) else { return }
         #endif
         guard let flowIdentifier = secondaryInstanceIdentifier(ofFlow: flowID) else { return }
         if flowIdentifier.canCallDisconnect(in: &eventContext) {

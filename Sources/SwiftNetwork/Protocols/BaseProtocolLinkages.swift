@@ -899,7 +899,8 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index):
-            try storage!.quicInstances[index].attachUpperProtocol(
+            var connection = storage!.quicInstances[index]
+            try connection.attachUpperProtocol(
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -936,7 +937,8 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index):
-            lowerProtocol = try storage!.quicInstances[index].attachUpperProtocolToNewFlow(
+            var connection = storage!.quicInstances[index]
+            lowerProtocol = try connection.attachUpperProtocolToNewFlow(
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -976,7 +978,8 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index):
-            return try storage!.quicInstances[index].attachUpperProtocolToExistingFlow(
+            var connection = storage!.quicInstances[index]
+            return try connection.attachUpperProtocolToExistingFlow(
                 upperProtocol,
                 existingFlowInstance: existingFlowInstance
             ).completingQUICFlow(storage: storage!, index: index)
@@ -1004,7 +1007,9 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
     public func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quic(let index): storage!.quicInstances[index].connect(for: instance, in: &eventContext)
+        case .quic(let index):
+            let connection = storage!.quicInstances[index]
+            connection.connect(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.connect(for: instance, in: &eventContext)
@@ -1020,7 +1025,9 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quic(let index): storage!.quicInstances[index].disconnect(error: error, for: instance, in: &eventContext)
+        case .quic(let index):
+            let connection = storage!.quicInstances[index]
+            connection.disconnect(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
@@ -1035,7 +1042,9 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
     ) throws(NetworkError) {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quic(let index): try storage!.quicInstances[index].detach(for: instance, in: &eventContext)
+        case .quic(let index):
+            var connection = storage!.quicInstances[index]
+            try connection.detach(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): try external.detach(for: instance, in: &eventContext)
@@ -1067,7 +1076,8 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index):
-            storage!.quicInstances[index].handleApplicationEvent(event: event, for: instance, in: &eventContext)
+            let connection = storage!.quicInstances[index]
+            connection.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
@@ -1082,7 +1092,9 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
     ) -> ProtocolMetadata<P>? {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quic(let index): return storage!.quicInstances[index].getMetadata(for: instance, in: &eventContext)
+        case .quic(let index):
+            let connection = storage!.quicInstances[index]
+            return connection.getMetadata(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
@@ -1099,7 +1111,8 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index):
-            return storage!.quicInstances[index].getMetrics(
+            let connection = storage!.quicInstances[index]
+            return connection.getMetrics(
                 requestedNetworkMetric: requestedNetworkMetric,
                 for: instance,
                 in: &eventContext
@@ -1362,7 +1375,8 @@ public struct BaseDatagramMultipathLinkage: DatagramMultipathLinkage {
             switch protocolType {
             #if !NETWORK_NO_SWIFT_QUIC
             case .quic(let index):
-                _ = try storage!.quicInstances[index].attachLowerProtocolForNewPath(
+                var connection = storage!.quicInstances[index]
+                _ = try connection.attachLowerProtocolForNewPath(
                     lowerProtocol,
                     remote: remote,
                     local: local,
@@ -2298,7 +2312,8 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index):
-            try storage!.quicInstances[index].attachUpperProtocol(
+            var connection = storage!.quicInstances[index]
+            try connection.attachUpperProtocol(
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -2335,7 +2350,8 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index):
-            lowerProtocol = try storage!.quicInstances[index].attachUpperProtocolToNewFlow(
+            var connection = storage!.quicInstances[index]
+            lowerProtocol = try connection.attachUpperProtocolToNewFlow(
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -2374,7 +2390,8 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index):
-            return try storage!.quicInstances[index].attachUpperProtocolToExistingFlow(
+            var connection = storage!.quicInstances[index]
+            return try connection.attachUpperProtocolToExistingFlow(
                 upperProtocol,
                 existingFlowInstance: existingFlowInstance
             ).completingQUICFlow(storage: storage!, index: index)
@@ -2402,7 +2419,9 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
     public func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quic(let index): storage!.quicInstances[index].connect(for: instance, in: &eventContext)
+        case .quic(let index):
+            let connection = storage!.quicInstances[index]
+            connection.connect(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.connect(for: instance, in: &eventContext)
@@ -2418,7 +2437,9 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
     ) {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quic(let index): storage!.quicInstances[index].disconnect(error: error, for: instance, in: &eventContext)
+        case .quic(let index):
+            let connection = storage!.quicInstances[index]
+            connection.disconnect(error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
@@ -2433,7 +2454,9 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
     ) throws(NetworkError) {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quic(let index): try storage!.quicInstances[index].detach(for: instance, in: &eventContext)
+        case .quic(let index):
+            var connection = storage!.quicInstances[index]
+            try connection.detach(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): try external.detach(for: instance, in: &eventContext)
@@ -2465,7 +2488,8 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index):
-            storage!.quicInstances[index].handleApplicationEvent(event: event, for: instance, in: &eventContext)
+            let connection = storage!.quicInstances[index]
+            connection.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
@@ -2480,7 +2504,9 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
     ) -> ProtocolMetadata<P>? {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quic(let index): return storage!.quicInstances[index].getMetadata(for: instance, in: &eventContext)
+        case .quic(let index):
+            let connection = storage!.quicInstances[index]
+            return connection.getMetadata(for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
@@ -2497,7 +2523,8 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
         switch protocolType {
         #if !NETWORK_NO_SWIFT_QUIC
         case .quic(let index):
-            return storage!.quicInstances[index].getMetrics(
+            let connection = storage!.quicInstances[index]
+            return connection.getMetrics(
                 requestedNetworkMetric: requestedNetworkMetric,
                 for: instance,
                 in: &eventContext
@@ -3067,7 +3094,7 @@ open class BaseNetworkProtocolStorage {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 extension BaseOutboundStreamLinkage {
-    public init(quicConnection: QUICConnection, flow: MultiplexedFlowIdentifier, identifier: InstanceIdentifier) {
+    internal init(quicConnection: QUICConnection, flow: MultiplexedFlowIdentifier, identifier: InstanceIdentifier) {
         // The connection does not know the storage that holds it or where. The listener linkage that
         // asked for the flow does, and completes this with `completingQUICFlow(storage:index:)`.
         self.init(identifier: identifier, storage: nil, protocolType: .quicStream(.none, flow))
