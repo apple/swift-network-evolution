@@ -581,8 +581,14 @@ extension ManyToManyProtocolHandler {
         return instanceIdentifier(ofFlow: flowID)
     }
 
+    /// Calls `closure` with the identifier of each flow in turn. The table is borrowed only to find the
+    /// next identifier, not while `closure` runs, so `closure` can look flows up or remove them. A flow
+    /// removed before it is reached is skipped.
     public func allFlowIdentifiers(_ closure: (MultiplexedFlowIdentifier) -> Void) {
-        withMultiplexedFlows { $0.flowIdentifiers }.forEach(closure)
+        var position = 0
+        while let flowID = withMultiplexedFlows({ $0.nextFlowIdentifier(from: &position) }) {
+            closure(flowID)
+        }
     }
 
     /// Lends out each flow in turn. The flow table is exclusively accessed for the whole walk, so
@@ -1267,8 +1273,12 @@ extension HeterogeneousManyToManyProtocolHandler {
         withMultiplexedSecondaryFlows { $0.firstFlowIdentifier(where: closure) }
     }
 
+    /// The same for the secondary flows.
     public func allSecondaryFlowIdentifiers(_ closure: (MultiplexedFlowIdentifier) -> Void) {
-        withMultiplexedSecondaryFlows { $0.flowIdentifiers }.forEach(closure)
+        var position = 0
+        while let flowID = withMultiplexedSecondaryFlows({ $0.nextFlowIdentifier(from: &position) }) {
+            closure(flowID)
+        }
     }
 
     /// Lends out each secondary flow in turn. The secondary flow table is exclusively accessed for
@@ -2329,8 +2339,8 @@ extension ManyToManyProtocolHandler {
         case .allFlows:
             inboundFlowLinkage.deliverConnectedEvent(from: identifier, in: &eventContext)
             // `connect(flow:)` looks at the flow again, so it cannot run while the flows are being
-            // walked; walk a snapshot of their identifiers instead.
-            for flowID in withMultiplexedFlows({ $0.flowIdentifiers }) {
+            // walked; `allFlowIdentifiers` borrows the table only to find each next identifier.
+            allFlowIdentifiers { flowID in
                 let canConnect = withFlow(flowID) { (flow: inout Flow) in
                     flow.canCallConnect(requested: false, in: &eventContext)
                 }
@@ -2409,8 +2419,8 @@ extension HeterogeneousManyToManyProtocolHandler {
         case .allFlows:
             inboundFlowLinkage.deliverConnectedEvent(from: identifier, in: &eventContext)
             // `connect(flow:)` looks at the flow again, so it cannot run while the flows are being
-            // walked; walk a snapshot of their identifiers instead.
-            for flowID in withMultiplexedFlows({ $0.flowIdentifiers }) {
+            // walked; `allFlowIdentifiers` borrows the table only to find each next identifier.
+            allFlowIdentifiers { flowID in
                 let canConnect = withFlow(flowID) { (flow: inout Flow) in
                     flow.canCallConnect(requested: false, in: &eventContext)
                 }
@@ -2418,7 +2428,7 @@ extension HeterogeneousManyToManyProtocolHandler {
                     connect(flow: flowID, in: &eventContext)
                 }
             }
-            for flowID in withMultiplexedSecondaryFlows({ $0.flowIdentifiers }) {
+            allSecondaryFlowIdentifiers { flowID in
                 let canConnect = withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
                     flow.canCallConnect(requested: false, in: &eventContext)
                 }

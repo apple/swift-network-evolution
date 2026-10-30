@@ -16,6 +16,8 @@ import XCTest
 
 #if canImport(SwiftNetwork)
 @testable @_spi(ProtocolProvider) import SwiftNetwork
+#elseif canImport(Network)
+@testable @_spi(Essentials) @_spi(ProtocolProvider) import Network
 #endif
 
 @available(Network 0.1.0, *)
@@ -455,6 +457,69 @@ final class SwiftNetworkMultiplexedFlowTableTests: XCTestCase {
         XCTAssertEqual(seen.sorted(), [1, 3, 4, 6, 100])
         XCTAssertEqual(value(&table, id(slot: 1)), 1001)
         XCTAssertEqual(value(&table, id(slot: 50)), 1100)
+    }
+
+    // The cursor visits each live flow once, in table order, and skips the free entries between them.
+    func testNextFlowIdentifierVisitsEveryLiveFlowOnce() throws {
+        var table = MultiplexedFlowTable<TestFlow>()
+        var position = 0
+        XCTAssertNil(table.nextFlowIdentifier(from: &position))
+
+        let ids = (1...5).map { id(slot: UInt64($0)) }
+        for (index, flowID) in ids.enumerated() {
+            table.insert(TestFlow(value: index), for: flowID)
+        }
+        _ = table.remove(ids[1])
+        _ = table.remove(ids[3])
+
+        var visited: [MultiplexedFlowIdentifier] = []
+        position = 0
+        while let flowID = table.nextFlowIdentifier(from: &position) {
+            visited.append(flowID)
+        }
+        XCTAssertEqual(visited, [ids[0], ids[2], ids[4]])
+        // The cursor stays at the end
+        XCTAssertNil(table.nextFlowIdentifier(from: &position))
+    }
+
+    // Between steps the table can be changed: a flow removed before it is reached is not visited, and the
+    // flow just visited can be removed without disturbing the walk.
+    func testNextFlowIdentifierToleratesRemovalBetweenSteps() throws {
+        var table = MultiplexedFlowTable<TestFlow>()
+        let ids = (1...5).map { id(slot: UInt64($0)) }
+        for (index, flowID) in ids.enumerated() {
+            table.insert(TestFlow(value: index), for: flowID)
+        }
+
+        var visited: [MultiplexedFlowIdentifier] = []
+        var position = 0
+        while let flowID = table.nextFlowIdentifier(from: &position) {
+            visited.append(flowID)
+            // Remove the one just visited, and the one two ahead of it
+            XCTAssertNotNil(removed(&table, flowID))
+            if flowID == ids[0] { XCTAssertNotNil(removed(&table, ids[2])) }
+        }
+        XCTAssertEqual(visited, [ids[0], ids[1], ids[3], ids[4]])
+        XCTAssertTrue(table.isEmpty)
+    }
+
+    // A walk agrees with the snapshot when nothing changes, including after entries have been reused.
+    func testNextFlowIdentifierAgreesWithTheSnapshot() throws {
+        var table = MultiplexedFlowTable<TestFlow>()
+        for slot in 1...6 { table.insert(TestFlow(value: slot), for: id(slot: UInt64(slot))) }
+        _ = table.remove(id(slot: 2))
+        _ = table.remove(id(slot: 5))
+        // Reuses free entries
+        table.insert(TestFlow(value: 7), for: id(slot: 7))
+        table.insert(TestFlow(value: 8), for: id(slot: 2, generation: 2))
+
+        var walked: [MultiplexedFlowIdentifier] = []
+        var position = 0
+        while let flowID = table.nextFlowIdentifier(from: &position) {
+            walked.append(flowID)
+        }
+        XCTAssertEqual(walked, table.flowIdentifiers)
+        XCTAssertEqual(walked.count, table.count)
     }
 
     func testFlowIdentifiersAreASnapshotOfLiveFlows() throws {

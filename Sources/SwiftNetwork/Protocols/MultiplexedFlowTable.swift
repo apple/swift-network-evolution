@@ -54,7 +54,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
 
     public init() {}
 
-    public var count: Int { liveCount }
+    var count: Int { liveCount }
 
     public var isEmpty: Bool { liveCount == 0 }
 
@@ -68,7 +68,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     // whole identifier is compared, so the identifier of a flow that has gone, whose event state slot
     // has been reused, is not found.
     //
-    // Time: expected O(1), worst case O(n).
+    // Time: average O(1), worst case O(n).
     @inline(always)
     private func find(_ flowID: MultiplexedFlowIdentifier) -> (inIndex: Int, entry: Int)? {
         guard !index.isEmpty else { return nil }
@@ -83,7 +83,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         }
     }
 
-    // Time: expected O(1), worst case O(n).
+    // Time: average O(1), worst case O(n).
     public func contains(_ flowID: MultiplexedFlowIdentifier) -> Bool {
         find(flowID) != nil
     }
@@ -92,6 +92,22 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
     public var firstFlowIdentifier: MultiplexedFlowIdentifier? {
         for position in 0..<entries.count where entries[position].identifier != .allFlows {
             return entries[position].identifier
+        }
+        return nil
+    }
+
+    // The identifier of the first flow at or after `position` in the table, moving `position` just past
+    // it. Start with 0 and call again until it returns `nil` to visit every flow without making a
+    // list of them. Only a position is kept between calls, so the table can be changed between them
+    // (by whatever is done with each identifier): a flow removed before it is reached is not visited,
+    // and no flow is visited twice. A flow added meanwhile is visited if it lands after `position`.
+    //
+    // Time: O(g) for a call that skips g free entries, so O(m) for a walk of the whole table.
+    public func nextFlowIdentifier(from position: inout Int) -> MultiplexedFlowIdentifier? {
+        while position < entries.count {
+            let entryIdentifier = entries[position].identifier
+            position += 1
+            if entryIdentifier != .allFlows { return entryIdentifier }
         }
         return nil
     }
@@ -121,7 +137,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         }
     }
 
-    // Time: expected O(1), worst case O(n).
+    // Time: average O(1), worst case O(n).
     @inline(always)
     private mutating func placeInIndex(entry: Int, for flowID: MultiplexedFlowIdentifier) {
         let mask = index.count &- 1
@@ -132,8 +148,8 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
         index[position] = Int32(truncatingIfNeeded: entry &+ 1)
     }
 
-    // Time: expected amortized O(1). Reusing a free entry, or adding one to `entries`, is O(1) (amortized
-    // for the add); placing it in `index` is expected O(1); and `makeRoomInIndex` is amortized O(1). A
+    // Time: average amortized O(1). Reusing a free entry, or adding one to `entries`, is O(1) (amortized
+    // for the add); placing it in `index` is average O(1); and `makeRoomInIndex` is amortized O(1). A
     // single insert that makes `index` grow takes O(m).
     public mutating func insert(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
         assert(flowID != .allFlows, "A flow cannot have the identifier that means all flows")
@@ -156,7 +172,7 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
 
     // Removes the flow and hands it to the caller.
     //
-    // Time: expected O(1), worst case O(n). Finding the flow, closing the gap it leaves in `index`, and
+    // Time: average O(1), worst case O(n). Finding the flow, closing the gap it leaves in `index`, and
     // putting its entry on the free list each take no more than that. Nothing is given back, so `m` and
     // the size of `index` stay as they are.
     public mutating func remove(_ flowID: MultiplexedFlowIdentifier) -> Flow? {
@@ -229,8 +245,6 @@ public struct MultiplexedFlowTable<Flow: ~Copyable>: ~Copyable {
 
     // Destroys every flow as it is, without any cleanup of its own. A flow that holds frames which must be
     // finalized first (a QUIC stream's `releaseResources()`) has to be released before this is called.
-    //
-    // Time: O(m), to destroy the flows and give back the storage.
     public mutating func removeAll() {
         entries = NetworkUniqueArray<MultiplexedFlowTableEntry<Flow>>()
         firstFree = -1

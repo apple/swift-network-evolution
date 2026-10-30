@@ -117,6 +117,9 @@ struct QUICConnectionStateMachine {
         var replaysSends: Bool
 
         /// A close was requested; holds whether a CONNECTION_CLOSE frame should be sent.
+        /// - nil: no close was requested while the flow was borrowed.
+        /// - true: a close was requested, and it should send a CONNECTION_CLOSE frame.
+        /// - false: a close was requested, and it should not send one.
         var close: Bool? {
             requests.contains(.closeRequested) ? requests.contains(.closeSendsFrame) : nil
         }
@@ -130,17 +133,20 @@ struct QUICConnectionStateMachine {
     // MARK: Send blockers
 
     /// Whether a flow is borrowed from its flow table.
-    @inline(always) var isFlowBorrowed: Bool {
+    @inline(always)
+    var isFlowBorrowed: Bool {
         status.contains(.flowBorrowed)
     }
 
     /// Whether the send path is claimed.
-    @inline(always) var isSendActive: Bool {
+    @inline(always)
+    var isSendActive: Bool {
         status.contains(.sendActive)
     }
 
     /// Whether a send has to wait, because a flow is borrowed or the send path is claimed.
-    @inline(always) var isSendBlocked: Bool {
+    @inline(always)
+    var isSendBlocked: Bool {
         !status.isDisjoint(with: .sendBlockers)
     }
 
@@ -241,7 +247,10 @@ struct QUICConnectionStateMachine {
     // MARK: Sends that waited
 
     /// Whether any send is waiting.
-    @inline(always) var hasDeferredSends: Bool { !status.isDisjoint(with: .pendingSends) }
+    @inline(always)
+    var hasDeferredSends: Bool {
+        !status.isDisjoint(with: .pendingSends)
+    }
 
     /// Remembers a send, keeping the flags it asked for.
     @inline(always)
