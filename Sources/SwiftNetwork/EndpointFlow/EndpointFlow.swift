@@ -200,6 +200,8 @@ struct EndpointFlow: ~Copyable {
         case datagram(DatagramEndpointFlowProtocol)
         case inboundStream(InboundStreamEndpointFlowProtocol)
         case inboundDatagram(InboundDatagramEndpointFlowProtocol)
+        case passthroughStream(PassthroughStreamEndpointFlowProtocol)
+        case passthroughDatagram(PassthroughDatagramEndpointFlowProtocol)
     }
 
     /// The metadata published by a protocol in this flow's stack, or `nil` if that protocol is not
@@ -212,17 +214,30 @@ struct EndpointFlow: ~Copyable {
             return flow.invokeGetMetadata()
         case .inboundStream(let flow):
             return flow.invokeGetMetadata()
+        case .passthroughStream(let flow):
+            return flow.invokeGetMetadata()
         case .inboundDatagram(let flow):
+            return flow.invokeGetMetadata()
+        case .passthroughDatagram(let flow):
             return flow.invokeGetMetadata()
         case .none:
             return nil
         }
     }
 
+    /// Whether the flow has no data path of its own: a multiplexing connection's flows are opened from
+    /// it, and a passthrough flow's data belongs to the parent above it.
+    var hasNoDataPath: Bool {
+        switch self.flowProtocol {
+        case .inboundStream, .inboundDatagram, .passthroughStream, .passthroughDatagram: return true
+        case .stream, .datagram, .none: return false
+        }
+    }
+
     var isInboundFlowHandler: Bool {
         switch self.flowProtocol {
         case .inboundStream, .inboundDatagram: return true
-        case .stream, .datagram, .none: return false
+        case .stream, .datagram, .passthroughStream, .passthroughDatagram, .none: return false
         }
     }
     var flowProtocol: FlowProtocol? = nil
@@ -336,11 +351,11 @@ struct EndpointFlow: ~Copyable {
                 self.startCompleted(connectedError, in: &eventContext)
             }
             if let additionalDataAvailable = events.inboundDataAvailable, self.state == .ready,
-                !self.isInboundFlowHandler
+                !self.hasNoDataPath
             {
                 self.inputAvailable(additionalDataAvailable, in: &eventContext)
             }
-            if events.outputRoomAvailable, self.state == .ready, !self.isInboundFlowHandler {
+            if events.outputRoomAvailable, self.state == .ready, !self.hasNoDataPath {
                 self.outputAvailable(in: &eventContext)
             }
             for inboundFlow in events.inboundFlows {
@@ -357,7 +372,9 @@ struct EndpointFlow: ~Copyable {
         case .stream(let flow): return !flow.pending.isEmpty
         case .datagram(let flow): return !flow.pending.isEmpty
         case .inboundStream(let flow): return !flow.pending.isEmpty
+        case .passthroughStream(let flow): return !flow.pending.isEmpty
         case .inboundDatagram(let flow): return !flow.pending.isEmpty
+        case .passthroughDatagram(let flow): return !flow.pending.isEmpty
         case .none: return false
         }
     }
@@ -373,7 +390,9 @@ struct EndpointFlow: ~Copyable {
         case .stream(let flow): return take(&flow.pending)
         case .datagram(let flow): return take(&flow.pending)
         case .inboundStream(let flow): return take(&flow.pending)
+        case .passthroughStream(let flow): return take(&flow.pending)
         case .inboundDatagram(let flow): return take(&flow.pending)
+        case .passthroughDatagram(let flow): return take(&flow.pending)
         case .none: return nil
         }
     }
@@ -415,7 +434,7 @@ struct EndpointFlow: ~Copyable {
         self.state = .ready
         // A multiplexing connection has no data path of its own; coming up means its flows can
         // now be opened, not that there is anything to send or receive here.
-        guard !self.isInboundFlowHandler else { return }
+        guard !self.hasNoDataPath else { return }
         self.write(in: &eventContext)
         self.read(in: &eventContext)
     }
@@ -471,6 +490,10 @@ struct EndpointFlow: ~Copyable {
             case .inboundStream, .inboundDatagram:
                 // A multiplexing connection has no data path of its own; the application sends
                 // and receives on its individual flows. Requests never reach here because
+                // `addWriteRequestOnContext` fails them up front.
+                fatalError("Connection-level flow has no data path")
+            case .passthroughStream, .passthroughDatagram:
+                // A passthrough flow has no data path of its own. Requests never reach here because
                 // `addWriteRequestOnContext` fails them up front.
                 fatalError("Connection-level flow has no data path")
             case .none:
@@ -590,6 +613,9 @@ struct EndpointFlow: ~Copyable {
         case .inboundStream, .inboundDatagram:
             // See the note in `write(in:)`: a connection-level flow has no data path.
             fatalError("Connection-level flow has no data path")
+        case .passthroughStream, .passthroughDatagram:
+            // See the note in `write(in:)`: a passthrough flow has no data path.
+            fatalError("Connection-level flow has no data path")
         case .none:
             fatalError("No current flow")
         }
@@ -616,7 +642,9 @@ struct EndpointFlow: ~Copyable {
         case .stream(let flow): flow.fromExternal { eventContext in body(&eventContext, &self) }
         case .datagram(let flow): flow.fromExternal { eventContext in body(&eventContext, &self) }
         case .inboundStream(let flow): flow.fromExternal { eventContext in body(&eventContext, &self) }
+        case .passthroughStream(let flow): flow.fromExternal { eventContext in body(&eventContext, &self) }
         case .inboundDatagram(let flow): flow.fromExternal { eventContext in body(&eventContext, &self) }
+        case .passthroughDatagram(let flow): flow.fromExternal { eventContext in body(&eventContext, &self) }
         case .none: fatalError("No current flow")
         }
     }
@@ -628,7 +656,7 @@ struct EndpointFlow: ~Copyable {
     mutating func addWriteRequestOnContext<P: EndpointFlowParent>(_ writeRequest: consuming WriteRequest, _ parent: P) {
         var writeRequest: WriteRequest? = writeRequest
         start(parent)
-        guard !self.isInboundFlowHandler else {
+        guard !self.hasNoDataPath else {
             // The application sends on a multiplexing connection's individual flows, not on the
             // connection itself. Fail rather than enqueue, so the frame is finalized.
             Logger.connection.error("Cannot send on a multiplexing connection; open a flow first")
@@ -651,7 +679,7 @@ struct EndpointFlow: ~Copyable {
     mutating func addReadRequestOnContext<P: EndpointFlowParent>(_ readRequest: consuming ReadRequest, _ parent: P) {
         var readRequest: ReadRequest? = readRequest
         start(parent)
-        guard !self.isInboundFlowHandler else {
+        guard !self.hasNoDataPath else {
             // See `addWriteRequestOnContext`: a multiplexing connection has no data path.
             Logger.connection.error("Cannot receive on a multiplexing connection; open a flow first")
             if let takenRequest = readRequest.take() {
@@ -692,7 +720,15 @@ struct EndpointFlow: ~Copyable {
             flow.fromExternal { eventContext in
                 flow.invokeApplicationEvent(event, in: &eventContext)
             }
+        case .passthroughStream(let flow):
+            flow.fromExternal { eventContext in
+                flow.invokeApplicationEvent(event, in: &eventContext)
+            }
         case .inboundDatagram(let flow):
+            flow.fromExternal { eventContext in
+                flow.invokeApplicationEvent(event, in: &eventContext)
+            }
+        case .passthroughDatagram(let flow):
             flow.fromExternal { eventContext in
                 flow.invokeApplicationEvent(event, in: &eventContext)
             }
@@ -768,7 +804,27 @@ struct EndpointFlow: ~Copyable {
             }
             flow.stop()
             return false
+        case .passthroughStream(let flow):
+            Logger.connection.debug("EndpointFlow: \(description) stopping connection flow protocol")
+            if force {
+                flow.abort(error: error)
+                return false
+            }
+            if self.shouldDeferTeardown {
+                flow.stop()
+                return true
+            }
+            flow.stop()
+            return false
         case .inboundDatagram(let flow):
+            Logger.connection.debug("EndpointFlow: \(description) stopping connection datagram flow protocol")
+            if force {
+                flow.abort(error: error)
+            } else {
+                flow.stop()
+            }
+            return false
+        case .passthroughDatagram(let flow):
             Logger.connection.debug("EndpointFlow: \(description) stopping connection datagram flow protocol")
             if force {
                 flow.abort(error: error)
@@ -828,7 +884,9 @@ struct EndpointFlow: ~Copyable {
             case .stream(let flowProtocol): flowProtocol.wakeFlow = nil
             case .datagram(let flowProtocol): flowProtocol.wakeFlow = nil
             case .inboundStream(let flowProtocol): flowProtocol.wakeFlow = nil
+            case .passthroughStream(let flowProtocol): flowProtocol.wakeFlow = nil
             case .inboundDatagram(let flowProtocol): flowProtocol.wakeFlow = nil
+            case .passthroughDatagram(let flowProtocol): flowProtocol.wakeFlow = nil
             case .none: break
             }
             #if !NETWORK_NO_SWIFT_QUIC
@@ -842,7 +900,9 @@ struct EndpointFlow: ~Copyable {
             case .stream(let flowProtocol): flowProtocol.teardown(in: &eventContext)
             case .datagram(let flowProtocol): flowProtocol.teardown(in: &eventContext)
             case .inboundStream(let flowProtocol): flowProtocol.teardown(in: &eventContext)
+            case .passthroughStream(let flowProtocol): flowProtocol.teardown(in: &eventContext)
             case .inboundDatagram(let flowProtocol): flowProtocol.teardown(in: &eventContext)
+            case .passthroughDatagram(let flowProtocol): flowProtocol.teardown(in: &eventContext)
             case .none: break
             }
             #if !NETWORK_NO_SWIFT_QUIC
@@ -860,7 +920,11 @@ struct EndpointFlow: ~Copyable {
                 flowProtocol.fromExternal { eventContext in self.teardown(in: &eventContext) }
             case .inboundStream(let flowProtocol):
                 flowProtocol.fromExternal { eventContext in self.teardown(in: &eventContext) }
+            case .passthroughStream(let flowProtocol):
+                flowProtocol.fromExternal { eventContext in self.teardown(in: &eventContext) }
             case .inboundDatagram(let flowProtocol):
+                flowProtocol.fromExternal { eventContext in self.teardown(in: &eventContext) }
+            case .passthroughDatagram(let flowProtocol):
                 flowProtocol.fromExternal { eventContext in self.teardown(in: &eventContext) }
             case .none:
                 #if !NETWORK_NO_SWIFT_QUIC
@@ -902,7 +966,9 @@ struct EndpointFlow: ~Copyable {
         case .stream(let flow): flow.fromExternal { eventContext in completeTeardown(in: &eventContext) }
         case .datagram(let flow): flow.fromExternal { eventContext in completeTeardown(in: &eventContext) }
         case .inboundStream(let flow): flow.fromExternal { eventContext in completeTeardown(in: &eventContext) }
+        case .passthroughStream(let flow): flow.fromExternal { eventContext in completeTeardown(in: &eventContext) }
         case .inboundDatagram(let flow): flow.fromExternal { eventContext in completeTeardown(in: &eventContext) }
+        case .passthroughDatagram(let flow): flow.fromExternal { eventContext in completeTeardown(in: &eventContext) }
         case .none: finishTeardownBookkeeping()
         }
     }
@@ -917,7 +983,11 @@ struct EndpointFlow: ~Copyable {
             flow.teardown(in: &eventContext)
         case .inboundStream(let flow):
             flow.teardown(in: &eventContext)
+        case .passthroughStream(let flow):
+            flow.teardown(in: &eventContext)
         case .inboundDatagram(let flow):
+            flow.teardown(in: &eventContext)
+        case .passthroughDatagram(let flow):
             flow.teardown(in: &eventContext)
         case .none:
             break
