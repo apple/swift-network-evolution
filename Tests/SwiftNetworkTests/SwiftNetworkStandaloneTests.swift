@@ -481,6 +481,52 @@ final class SwiftNetworkStandaloneTests: NetTestCase {
         server.close()
     }
 
+    /// A unidirectional stream gets a unidirectional stream ID (bit 1 of the ID, RFC 9000 Section 2.1),
+    /// which the peer is told with the new flow, and the data arrives.
+    func testStandaloneQUICUnidirectionalStream() throws {
+        let loopback = StandaloneLoopback()
+        let client = try makeClient(loopback)
+        let server = try makeServer(loopback)
+        server.connect()
+        client.connect()
+
+        let bidirectional = try client.openStream()
+        let unidirectional = try client.openStream(unidirectional: true)
+        client.connect(flow: bidirectional)
+        client.connect(flow: unidirectional)
+        XCTAssertTrue(
+            drive(loopback, client, server) {
+                loopback.clientEvents.contains(connected: bidirectional)
+                    && loopback.clientEvents.contains(connected: unidirectional)
+            },
+            "both streams should connect"
+        )
+        XCTAssertTrue(client.writeStream(flow: bidirectional, Array("both ways".utf8), sendFIN: true))
+        XCTAssertTrue(client.writeStream(flow: unidirectional, Array("one way".utf8), sendFIN: true))
+
+        func streamIDs() -> [UInt64] {
+            loopback.serverEvents.compactMap { if case .newInboundFlow(_, let tag) = $0 { return tag } else { return nil } }
+        }
+        XCTAssertTrue(drive(loopback, client, server) { streamIDs().count == 2 }, "the server should see both streams")
+        let ids = streamIDs().sorted()
+        XCTAssertEqual(ids.map { $0 & 0x3 }, [0x0, 0x2], "client-initiated bidirectional, then client-initiated unidirectional")
+
+        let oneWay = try XCTUnwrap(
+            loopback.serverEvents.compactMap { event -> StandaloneFlowID? in
+                if case .newInboundFlow(let flow, let tag) = event, tag & 0x2 != 0 { return flow } else { return nil }
+            }.first
+        )
+        let read = try XCTUnwrap(server.readStream(flow: oneWay))
+        XCTAssertEqual(read.bytes, Array("one way".utf8))
+        XCTAssertTrue(read.isFinal)
+
+        client.teardown(flow: bidirectional)
+        client.teardown(flow: unidirectional)
+        for case .newInboundFlow(let flow, _) in loopback.serverEvents { server.teardown(flow: flow) }
+        client.close()
+        server.close()
+    }
+
     func testStandaloneQUICConnectionIDEvents() throws {
         let loopback = StandaloneLoopback()
         let client = try makeClient(loopback)

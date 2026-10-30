@@ -279,7 +279,19 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
         return link
     }
 
-    public func openStream() throws(NetworkError) -> StandaloneFlowID {
+    /// Opens a stream.
+    ///
+    /// - Parameter unidirectional: Whether the stream carries data in one direction only, from this
+    ///   side to the peer. A stream is bidirectional by default.
+    public func openStream(unidirectional: Bool) throws(NetworkError) -> StandaloneFlowID {
+        var parameters = self.parameters
+        if unidirectional {
+            // The stream's own options say which kind of stream it is.
+            let options = QUICStreamProtocol.options()
+            options.isUnidirectional = true
+            options.setProtocolInstance(streamListener.identifier)
+            parameters.defaultStack.prepend(applicationProtocol: options)
+        }
         let link = StandaloneFlowLink.make(
             kind: .stream,
             hasFlowID: true,

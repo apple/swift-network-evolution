@@ -117,7 +117,10 @@ public protocol StandaloneManyToManyProtocol: StandaloneProtocol, ~Copyable {
     // MARK: Flows
 
     /// Creates a stream. The stream is not connected until `connect(flow:)`.
-    func openStream() throws(NetworkError) -> StandaloneFlowID
+    ///
+    /// - Parameter unidirectional: Whether the stream carries data from this side to the peer only,
+    ///   for a protocol that has such streams. Otherwise it carries data both ways.
+    func openStream(unidirectional: Bool) throws(NetworkError) -> StandaloneFlowID
 
     /// Creates a datagram flow. Throws `ENOTSUP` for a protocol without datagram flows.
     func openDatagramFlow() throws(NetworkError) -> StandaloneFlowID
@@ -171,6 +174,15 @@ public protocol StandaloneManyToManyProtocol: StandaloneProtocol, ~Copyable {
 
     /// Whether every flow has been torn down.
     var isFullyDetached: Bool { get }
+}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+extension StandaloneManyToManyProtocol where Self: ~Copyable {
+    /// Creates a bidirectional stream. The stream is not connected until `connect(flow:)`.
+    public func openStream() throws(NetworkError) -> StandaloneFlowID {
+        try openStream(unidirectional: false)
+    }
 }
 
 @_spi(ProtocolProvider)
