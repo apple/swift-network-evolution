@@ -418,6 +418,487 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<BaseStreamLinkageFa
     }
 }
 
+// MARK: - Passthrough flows
+
+// A flow with a parent above it. Where the top flows above serve the application's requests, these are
+// the end of a stack that something else will sit on: a leaf, or a flow between a parent and a leaf. The
+// flow's owner drives the stack while nothing is above it -- connecting it, and waiting for it to be
+// ready -- and when the parent's connection is made by this one, the parent's stack attaches above and
+// the flow passes data and events through. Passthrough flows hold no read or write requests of their own.
+
+@available(Network 0.1.0, *)
+final class PassthroughStreamEndpointFlowProtocol: OneToOneStreamProtocol {
+    typealias UpperProtocol = BaseInboundStreamLinkage
+    typealias LowerProtocol = BaseOutboundStreamLinkage
+
+    var upper = UpperProtocol()
+    var lower = LowerProtocol()
+
+    /// Events recorded for the owning flow, and the hook that nudges it to consume them.
+    var pending = EndpointFlowPendingEvents()
+    var wakeFlow: ((inout NetworkContext.EventContext) -> Void)? = nil
+
+    var log = NetworkLoggerState()
+    private(set) var context: NetworkContext
+    var identifier: InstanceIdentifier
+    var eventManager = ProtocolEventManager()
+    var passthroughEvents = false
+
+    #if !NETWORK_EMBEDDED
+    var metadata: AbstractProtocolMetadata? { nil }
+    #endif
+
+    /// Whether the stack below connected while nothing was above to tell.
+    private var lowerConnected = false
+
+    init(identifier: String = "", context: NetworkContext) {
+        log.logPrefix = "[PassthroughStreamFlow:\(identifier)]"
+        self.context = context
+        self.identifier = .init(context: context, eventManager: &self.eventManager)
+    }
+
+    private func recordEvent(
+        in eventContext: inout NetworkContext.EventContext,
+        _ record: (inout EndpointFlowPendingEvents) -> Void
+    ) {
+        record(&self.pending)
+        self.wakeFlow?(&eventContext)
+    }
+
+    // MARK: Driven by the owning flow
+
+    func start() {
+        log.debug("Starting passthrough flow")
+        fromExternal { eventContext in
+            connectRequested(in: &eventContext)
+            invokeConnect(in: &eventContext)
+        }
+    }
+
+    func stop() {
+        log.debug("Stopping passthrough flow")
+        fromExternal { eventContext in
+            guard !lower.isDetached else { return }
+            invokeDisconnect(error: nil, in: &eventContext)
+        }
+    }
+
+    func abort(error: NetworkError? = nil) {
+        log.debug("Aborting passthrough flow")
+        fromExternal { eventContext in
+            guard !lower.isDetached else { return }
+            do throws(NetworkError) {
+                try lower.invokeAbortOutbound(error: error, for: identifier, in: &eventContext)
+                try lower.invokeAbortInbound(error: error, for: identifier, in: &eventContext)
+            } catch {
+                log.error("Failed to abort stream: \(error)")
+            }
+            invokeDisconnect(error: error, in: &eventContext)
+        }
+    }
+
+    func invokeApplicationEvent(_ event: ApplicationEvent, in eventContext: inout NetworkContext.EventContext) {
+        lower.invokeApplicationEvent(event: event, for: identifier, in: &eventContext)
+    }
+
+    func invokeGetMetadata<P: NetworkProtocol>() -> ProtocolMetadata<P>? {
+        fromExternal { eventContext in
+            lower.invokeGetMetadata(for: identifier, in: &eventContext)
+        }
+    }
+
+    func protocolEstablishmentReports(
+        in eventContext: inout NetworkContext.EventContext
+    ) -> [ProtocolEstablishmentReport] {
+        guard
+            case .protocolEstablishmentReports(let reports)? = lower.invokeGetMetrics(
+                requestedNetworkMetric: .protocolEstablishmentReports,
+                for: identifier,
+                in: &eventContext
+            )
+        else { return [] }
+        return reports
+    }
+
+    /// Detaches from the stack below, and hands this instance's event state back.
+    func teardown(in eventContext: inout NetworkContext.EventContext) {
+        guard !identifier.isNone else { return }
+        wakeFlow = nil
+        upper = .init()
+        if !lower.isDetached {
+            do throws(NetworkError) {
+                try lower.invokeDetach(for: identifier, in: &eventContext)
+            } catch {
+                log.error("Failed to detach lower protocol: \(error)")
+            }
+            lower = .init()
+        }
+        unregisterEventManager(in: &eventContext)
+    }
+
+    // MARK: Events from below
+
+    func connect(in eventContext: inout NetworkContext.EventContext) {
+        lowerConnected = true
+        if upper.isDetached {
+            log.debug("Received connected event")
+            recordEvent(in: &eventContext) { $0.connected = .some(nil) }
+        } else {
+            deliverConnectedEvent(in: &eventContext)
+        }
+    }
+
+    /// The parent's stack asks to connect once it is attached. This stack may have connected already.
+    func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+        if lowerConnected {
+            deliverConnectedEvent(in: &eventContext)
+        } else if lower.protocolIsConnected(in: &eventContext) {
+            if canCallConnect(requested: true, in: &eventContext) {
+                connect(in: &eventContext)
+            }
+        } else {
+            connectRequested(in: &eventContext)
+            invokeConnect(in: &eventContext)
+        }
+    }
+
+    func handleDisconnectedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
+        log.debug("Received disconnected event")
+        let disconnectError = error ?? .posix(ENOTCONN)
+        recordEvent(in: &eventContext) {
+            // A disconnect before the connect completed is reported as a failed connect, and it
+            // also wakes any outstanding read.
+            $0.connected = .some(disconnectError)
+            $0.inboundDataAvailable = false
+            $0.disconnected = disconnectError
+        }
+        if !upper.isDetached {
+            deliverDisconnectedEvent(error: error, in: &eventContext)
+        }
+    }
+
+    func handleInboundDataAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
+        recordEvent(in: &eventContext) { $0.inboundDataAvailable = true }
+        if !upper.isDetached {
+            deliverInboundDataAvailableEvent(in: &eventContext)
+        }
+    }
+
+    func handleOutboundRoomAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
+        recordEvent(in: &eventContext) { $0.outputRoomAvailable = true }
+        if !upper.isDetached {
+            deliverOutboundRoomAvailableEvent(in: &eventContext)
+        }
+    }
+
+    func handleInboundAbortedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
+        if !upper.isDetached {
+            upper.deliverInboundAbortedEvent(error: error, from: identifier, in: &eventContext)
+        }
+    }
+
+    func handleOutboundAbortedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
+        if !upper.isDetached {
+            upper.deliverOutboundAbortedEvent(error: error, from: identifier, in: &eventContext)
+        }
+    }
+
+    func handleNetworkProtocolEvent(
+        _ event: NetworkProtocolEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> HandleNetworkEventResult {
+        // With nothing above, there is nowhere to send it
+        upper.isDetached ? .consumed : .unconsumed
+    }
+
+    // MARK: Data from above, passed down
+
+    func receiveStreamData(
+        minimumBytes: Int,
+        maximumBytes: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
+        try lower.invokeReceiveStreamData(
+            minimumBytes: minimumBytes,
+            maximumBytes: maximumBytes,
+            for: identifier,
+            in: &eventContext
+        )
+    }
+
+    func getOutboundStreamDataRoomAvailable(
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Int {
+        try lower.invokeGetOutboundStreamDataRoomAvailable(for: identifier, in: &eventContext)
+    }
+
+    func sendStreamData(
+        _ streamData: consuming FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
+        try lower.invokeSendStreamData(streamData, from: identifier, in: &eventContext)
+    }
+}
+
+@available(Network 0.1.0, *)
+extension PassthroughStreamEndpointFlowProtocol {
+    /// The linkage the protocol below holds in order to reach this one.
+    var asUpper: BaseInboundStreamLinkage {
+        .init(identifier: identifier, storage: nil, protocolType: .endpointFlowPassthrough(.init(self)))
+    }
+
+    /// The linkage the protocol above holds in order to reach this one.
+    var asLower: BaseOutboundStreamLinkage {
+        .init(identifier: identifier, storage: nil, protocolType: .endpointFlowPassthrough(.init(self)))
+    }
+
+    /// Attaches the stack below, in both directions.
+    func attachLower(
+        _ lowerProtocol: BaseOutboundStreamLinkage,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {
+        var mutableSelf = self
+        let overrideUpperLinkage = try mutableSelf.attachLowerProtocol(lowerProtocol)
+        try lowerProtocol.invokeAttachUpperProtocol(
+            overrideUpperLinkage ?? asUpper,
+            remote: remote,
+            local: local,
+            parameters: parameters,
+            path: path
+        )
+    }
+}
+
+@available(Network 0.1.0, *)
+final class PassthroughDatagramEndpointFlowProtocol: OneToOneDatagramProtocol {
+    typealias UpperProtocol = BaseInboundDatagramLinkage
+    typealias LowerProtocol = BaseOutboundDatagramLinkage
+
+    var upper = UpperProtocol()
+    var lower = LowerProtocol()
+
+    /// Events recorded for the owning flow, and the hook that nudges it to consume them.
+    var pending = EndpointFlowPendingEvents()
+    var wakeFlow: ((inout NetworkContext.EventContext) -> Void)? = nil
+
+    var log = NetworkLoggerState()
+    private(set) var context: NetworkContext
+    var identifier: InstanceIdentifier
+    var eventManager = ProtocolEventManager()
+    var passthroughEvents = false
+
+    #if !NETWORK_EMBEDDED
+    var metadata: AbstractProtocolMetadata? { nil }
+    #endif
+
+    /// Whether the stack below connected while nothing was above to tell.
+    private var lowerConnected = false
+
+    init(identifier: String = "", context: NetworkContext) {
+        log.logPrefix = "[PassthroughDatagramFlow:\(identifier)]"
+        self.context = context
+        self.identifier = .init(context: context, eventManager: &self.eventManager)
+    }
+
+    private func recordEvent(
+        in eventContext: inout NetworkContext.EventContext,
+        _ record: (inout EndpointFlowPendingEvents) -> Void
+    ) {
+        record(&self.pending)
+        self.wakeFlow?(&eventContext)
+    }
+
+    // MARK: Driven by the owning flow
+
+    func start() {
+        log.debug("Starting passthrough flow")
+        fromExternal { eventContext in
+            connectRequested(in: &eventContext)
+            invokeConnect(in: &eventContext)
+        }
+    }
+
+    func stop() {
+        log.debug("Stopping passthrough flow")
+        fromExternal { eventContext in
+            guard !lower.isDetached else { return }
+            invokeDisconnect(error: nil, in: &eventContext)
+        }
+    }
+
+    func abort(error: NetworkError? = nil) {
+        log.debug("Aborting passthrough flow")
+        fromExternal { eventContext in
+            invokeDisconnect(error: error, in: &eventContext)
+        }
+    }
+
+    func invokeApplicationEvent(_ event: ApplicationEvent, in eventContext: inout NetworkContext.EventContext) {
+        lower.invokeApplicationEvent(event: event, for: identifier, in: &eventContext)
+    }
+
+    func invokeGetMetadata<P: NetworkProtocol>() -> ProtocolMetadata<P>? {
+        fromExternal { eventContext in
+            lower.invokeGetMetadata(for: identifier, in: &eventContext)
+        }
+    }
+
+    func protocolEstablishmentReports(
+        in eventContext: inout NetworkContext.EventContext
+    ) -> [ProtocolEstablishmentReport] {
+        guard
+            case .protocolEstablishmentReports(let reports)? = lower.invokeGetMetrics(
+                requestedNetworkMetric: .protocolEstablishmentReports,
+                for: identifier,
+                in: &eventContext
+            )
+        else { return [] }
+        return reports
+    }
+
+    /// Detaches from the stack below, and hands this instance's event state back.
+    func teardown(in eventContext: inout NetworkContext.EventContext) {
+        guard !identifier.isNone else { return }
+        wakeFlow = nil
+        upper = .init()
+        if !lower.isDetached {
+            do throws(NetworkError) {
+                try lower.invokeDetach(for: identifier, in: &eventContext)
+            } catch {
+                log.error("Failed to detach lower protocol: \(error)")
+            }
+            lower = .init()
+        }
+        unregisterEventManager(in: &eventContext)
+    }
+
+    // MARK: Events from below
+
+    func connect(in eventContext: inout NetworkContext.EventContext) {
+        lowerConnected = true
+        if upper.isDetached {
+            log.debug("Received connected event")
+            recordEvent(in: &eventContext) { $0.connected = .some(nil) }
+        } else {
+            deliverConnectedEvent(in: &eventContext)
+        }
+    }
+
+    /// The parent's stack asks to connect once it is attached. This stack may have connected already.
+    func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
+        if lowerConnected {
+            deliverConnectedEvent(in: &eventContext)
+        } else if lower.protocolIsConnected(in: &eventContext) {
+            if canCallConnect(requested: true, in: &eventContext) {
+                connect(in: &eventContext)
+            }
+        } else {
+            connectRequested(in: &eventContext)
+            invokeConnect(in: &eventContext)
+        }
+    }
+
+    func handleDisconnectedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
+        log.debug("Received disconnected event")
+        let disconnectError = error ?? .posix(ENOTCONN)
+        recordEvent(in: &eventContext) {
+            // A disconnect before the connect completed is reported as a failed connect, and it
+            // also wakes any outstanding read.
+            $0.connected = .some(disconnectError)
+            $0.inboundDataAvailable = false
+            $0.disconnected = disconnectError
+        }
+        if !upper.isDetached {
+            deliverDisconnectedEvent(error: error, in: &eventContext)
+        }
+    }
+
+    func handleInboundDataAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
+        recordEvent(in: &eventContext) { $0.inboundDataAvailable = true }
+        if !upper.isDetached {
+            deliverInboundDataAvailableEvent(in: &eventContext)
+        }
+    }
+
+    func handleOutboundRoomAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
+        recordEvent(in: &eventContext) { $0.outputRoomAvailable = true }
+        if !upper.isDetached {
+            deliverOutboundRoomAvailableEvent(in: &eventContext)
+        }
+    }
+
+    func handleNetworkProtocolEvent(
+        _ event: NetworkProtocolEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> HandleNetworkEventResult {
+        // With nothing above, there is nowhere to send it
+        upper.isDetached ? .consumed : .unconsumed
+    }
+
+    // MARK: Data from above, passed down
+
+    func receiveDatagrams(
+        maximumDatagramCount: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
+        try invokeReceiveDatagrams(maximumDatagramCount: maximumDatagramCount, in: &eventContext)
+    }
+
+    func getDatagramsToSend(
+        maximumDatagramCount: Int,
+        minimumDatagramSize: Int,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
+        try invokeGetDatagramsToSend(
+            maximumDatagramCount: maximumDatagramCount,
+            minimumDatagramSize: minimumDatagramSize,
+            in: &eventContext
+        )
+    }
+
+    func sendDatagrams(
+        _ datagrams: consuming FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
+        try invokeSendDatagrams(datagrams, in: &eventContext)
+    }
+}
+
+@available(Network 0.1.0, *)
+extension PassthroughDatagramEndpointFlowProtocol {
+    /// The linkage the protocol below holds in order to reach this one.
+    var asUpper: BaseInboundDatagramLinkage {
+        .init(identifier: identifier, storage: nil, protocolType: .endpointFlowPassthrough(.init(self)))
+    }
+
+    /// The linkage the protocol above holds in order to reach this one.
+    var asLower: BaseOutboundDatagramLinkage {
+        .init(identifier: identifier, storage: nil, protocolType: .endpointFlowPassthrough(.init(self)))
+    }
+
+    /// Attaches the stack below, in both directions.
+    func attachLower(
+        _ lowerProtocol: BaseOutboundDatagramLinkage,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {
+        var mutableSelf = self
+        let overrideUpperLinkage = try mutableSelf.attachLowerProtocol(lowerProtocol)
+        try lowerProtocol.invokeAttachUpperProtocol(
+            overrideUpperLinkage ?? asUpper,
+            remote: remote,
+            local: local,
+            parameters: parameters,
+            path: path
+        )
+    }
+}
+
 // MARK: - Inbound flow handlers
 
 /// The top of a multiplexing connection's own stack, as opposed to one of its flows.
