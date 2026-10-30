@@ -209,6 +209,14 @@ public struct QUICConnectionProtocol: NetworkProtocol {
             set { self._idleTimeout = newValue }
         }
 
+        internal var _maxPTODuration: NetworkDuration = .minutes(2)
+        /// How long the connection may stay in PTO recovery
+        /// before it is closed with ETIMEDOUT.
+        public var maxPTODuration: NetworkDuration {
+            get { self._maxPTODuration }
+            set { self._maxPTODuration = newValue }
+        }
+
         // nil = default
         // true = enabled
         // false = disabled
@@ -557,7 +565,8 @@ public struct QUICConnectionProtocol: NetworkProtocol {
                 && lhs.peerMaxData == rhs.peerMaxData && lhs.peerMaxDataUnidirectional == rhs.peerMaxDataUnidirectional
                 && lhs.peerMaxStreamsBidirectional == rhs.peerMaxStreamsBidirectional
                 && lhs.peerMaxStreamsUnidirectional == rhs.peerMaxStreamsUnidirectional
-                && lhs.idleTimeout == rhs.idleTimeout && lhs.enableL4S == rhs.enableL4S
+                && lhs.idleTimeout == rhs.idleTimeout && lhs.maxPTODuration == rhs.maxPTODuration
+                && lhs.enableL4S == rhs.enableL4S
                 && lhs.maxUDPPayloadSize == rhs.maxUDPPayloadSize
                 && rhs.maxDatagramFrameSize == lhs.maxDatagramFrameSize
                 && lhs.initialPacketSize == rhs.initialPacketSize && lhs.keepaliveCount == rhs.keepaliveCount
