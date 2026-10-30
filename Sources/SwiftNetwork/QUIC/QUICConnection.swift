@@ -2019,19 +2019,22 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var isNonProbing = false
 
         while let quicFrame = packetParser.framesReceived.popFirst() {
-            if state == .initialReceived {
-                if !QUICFrame.isValidInInitial(frame: quicFrame) {
-                    close(
-                        with:
-                            .protocolViolation,
-                        "Client sent initial packet with invalid QUIC frames",
-                        in: &eventContext
-                    )
+            if let packetKeystate = packet.keyState {
+                if packetKeystate == .initial || packetKeystate == .handshake, !quicFrame.isAllowedInHandshake {
+                    log.error("Invalid frame type during the handshake: \(quicFrame.frameType)")
+                    closeFrameType = quicFrame.frameType
+                    close(with: .protocolViolation, "invalid frame type during the handshake", in: &eventContext)
+                    QUICFrame.discard(quicFrame)
+                    return false
+                } else if packetKeystate == .earlyData, !quicFrame.isAllowedIn0RTT {
+                    log.error("Invalid frame type in 0-RTT: \(quicFrame.frameType)")
+                    closeFrameType = quicFrame.frameType
+                    close(with: .protocolViolation, "invalid frame type in 0-RTT", in: &eventContext)
                     QUICFrame.discard(quicFrame)
                     return false
                 }
             }
-            if QUICFrame.isAckEliciting(frame: quicFrame) {
+            if quicFrame.isAckEliciting {
                 isAckEliciting = true
                 /*
                  * Mark it as transmittable here so we have a chance
@@ -2040,18 +2043,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                  */
                 ack.shouldTransmit(packetNumberSpace: packet.numberSpace)
             }
-            if !QUICFrame.isProbing(frame: quicFrame) {
+            if !quicFrame.isProbing {
                 isNonProbing = true
-            }
-            if let packetKeystate = packet.keyState,
-                packetKeystate == .initial || packetKeystate == .handshake,
-                !QUICFrame.isAllowedDuringHandshake(frame: quicFrame)
-            {
-                log.error("Invalid frame type during the handshake: \(quicFrame.frameType)")
-                closeFrameType = quicFrame.frameType
-                close(with: .protocolViolation, "invalid frame type during the handshake", in: &eventContext)
-                QUICFrame.discard(quicFrame)
-                return false
             }
             if !processFrame(quicFrame, packetNumberSpace: packet.numberSpace, path: path, in: &eventContext) {
                 break
