@@ -118,10 +118,8 @@ struct EndpointFlow: ~Copyable {
     let parameters: Parameters
     let context: NetworkContext
     let identifier: UInt64
-    /// The requests waiting for the stack. The marked ones are committed to going out in their
-    /// current order, so a request that arrives later is queued behind them whatever its priority.
-    var writeRequests = NetworkUniqueMarkedDeque<WriteRequest>()
-    /// Whether a task is already queued to hand the committed requests to the stack.
+    var writeRequests = NetworkUniqueDeque<WriteRequest>()
+    /// Whether a task is already queued to hand the queued requests to the stack.
     var isWriteFlushScheduled = false
     var readRequests = NetworkUniqueDeque<ReadRequest>()
     var stateUpdateHandler: ((State) -> Void)? = nil
@@ -455,10 +453,7 @@ struct EndpointFlow: ~Copyable {
                 let room = try flow.getOutboundStreamDataRoomAvailable(in: &eventContext)
                 guard room > 0 else {
                     // The lower layer will record `outputRoomAvailable` when there is room
-                    // again, which brings us back through the drain loop. Unmark the queue so a
-                    // later request of higher priority can still be placed ahead of what is
-                    // waiting.
-                    writeRequests.removeMark()
+                    // again, which brings us back through the drain loop.
                     return
                 }
 
@@ -518,10 +513,6 @@ struct EndpointFlow: ~Copyable {
             }
 
             room = try flow.getOutboundStreamDataRoomAvailable(in: &eventContext)
-        }
-
-        if room == 0 {
-            writeRequests.removeMark()
         }
     }
 
@@ -718,21 +709,15 @@ struct EndpointFlow: ~Copyable {
             return
         }
         if let takenRequest = writeRequest.take() {
-            writeRequests.appendOrderedByPriority(takenRequest)
+            writeRequests.append(takenRequest)
         }
         if state == .ready {
-            // No unmarked request is ahead of this one, so it would have gone straight to the
-            // stack. Marking it keeps anything arriving before the flush from overtaking it.
-            // Requests held back for lack of room stay open to reordering.
-            if writeRequests.unmarkedCount == 1 {
-                writeRequests.mark()
-            }
             scheduleWriteFlush(parent)
         }
         self.drainPendingEvents(parent)
     }
 
-    /// Queues one task to hand the committed requests to the stack. Submissions already waiting on
+    /// Queues one task to hand the queued requests to the stack. Submissions already waiting on
     /// the context queue run before it, so their requests reach the stack together instead of one
     /// at a time.
     private mutating func scheduleWriteFlush<P: EndpointFlowParent>(_ parent: P) {
@@ -1081,7 +1066,7 @@ extension StreamEndpointFlowProtocol: SingleFrameWriting {}
 extension DatagramEndpointFlowProtocol: SingleFrameWriting {}
 
 @available(Network 0.1.0, *)
-extension NetworkUniqueMarkedDeque where Element == WriteRequest {
+extension NetworkUniqueDeque where Element == WriteRequest {
     /// The number of leading requests needed to reach `room` bytes, counting the request that
     /// crosses it.
     fileprivate func leadingRequestCount(fillingRoom room: Int) -> Int {
