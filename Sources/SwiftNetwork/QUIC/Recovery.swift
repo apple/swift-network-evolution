@@ -846,6 +846,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     var receivedHandshakeAck: Bool = false
     var received1RTTAck: Bool = false
     private(set) var computedTimeout: NetworkDuration = .zero
+    private(set) var firstPTOTimestamp: NetworkClock.Instant?
+    private(set) var ptoLimitReached: Bool = false
 
     static let adaptiveTimeThreshold: Bool = true
     static let adaptivePacketThreshold: Bool = true
@@ -1312,8 +1314,9 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         log.datapath("Reset loss recovery timer [T\(timerID)] to \(delay)")
     }
 
-    func resetPTOCount(path: QUICPath) {
+    mutating func resetPTOCount(path: QUICPath) {
         path.recoveryState.PTOCount = 0
+        firstPTOTimestamp = nil
         log.datapath("PTO count reset to 0")
     }
 
@@ -1504,6 +1507,15 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             findLostPacket(timeNow: timeNow, connection: connection, in: &eventContext)
         } else {
             log.datapath("Recovery timer fired, PTO")
+            if let firstPTOTimestamp {
+                let ptoDuration = firstPTOTimestamp.duration(to: timeNow)
+                if ptoDuration >= connection.maxPTODuration {
+                    log.error("PTO limit reached after \(ptoDuration), closing connection")
+                    ptoLimitReached = true
+                    return
+                }
+            }
+            firstPTOTimestamp = firstPTOTimestamp ?? timeNow
             connection.withCurrentPath { path in
                 sendPTO(connection: connection, path: path, in: &eventContext)
             }
@@ -1567,6 +1579,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         // if there are ack eliciting packets on any of the innerStates, the L4S error should not be emitted
         if totalAckElicitingPacketsInFlight == 0 && peerCompletedValidation(connection: connection) {
             log.datapath("No ack eliciting packets in flight, cancelling timer")
+            // Nothing is in flight to probe for, so no PTO episode is running.
+            firstPTOTimestamp = nil
             setTimer(delay: .zero, now: now, connection: connection, in: &eventContext)
             connection.withCurrentPath { path in
                 guard path.isValidated else { return }
@@ -1618,6 +1632,13 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     computedTimeout = now.duration(to: sentTime + timeout)
                 } else {
                     computedTimeout = timeout
+                }
+                // The limit is only checked when the timer fires, so do not let the backoff carry the timer past
+                // it: the connection closes when the limit is reached, not at the first backed-off PTO after it.
+                // A zero delay cancels the timer, so keep the delay at least a timer granularity.
+                if let firstPTOTimestamp {
+                    let untilLimit = now.duration(to: firstPTOTimestamp.advanced(by: connection.maxPTODuration))
+                    computedTimeout = min(computedTimeout, max(untilLimit, Recovery.timerGranularity))
                 }
                 log.datapath("Resetting recovery timer to \(computedTimeout)")
                 setTimer(delay: computedTimeout, now: now, connection: connection, in: &eventContext)
@@ -1808,6 +1829,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
         if peerCompletedValidation(connection: connection) {
             ackedPath.recoveryState.PTOCount = 0
+            firstPTOTimestamp = nil
         }
 
         if inBatch {

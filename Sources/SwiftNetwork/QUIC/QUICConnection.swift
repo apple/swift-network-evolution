@@ -282,6 +282,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var maxKeepaliveCount = 0
     var unackedKeepaliveCount = 0
 
+    var maxPTODuration: NetworkDuration = Constants.defaultMaxPTODuration
+
     /// A continuous and an absolute reading of the clock, taken back to back.
     struct ClockSample {
         let continuous: NetworkClock.Instant
@@ -541,6 +543,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 in: &eventContext
             ) { firedAt, timerState in
                 self.fireRecoveryTimer(at: firedAt, in: &timerState)
+                if self.recovery.ptoLimitReached, !self.state.isTerminal {
+                    self.errorToReport = .posix(ETIMEDOUT)
+                    self.close(with: .noError, "PTO limit reached", in: &timerState)
+                }
             }
             self.recovery = Recovery(
                 connection: self,
@@ -616,6 +622,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             if quicConnectionOptions.keepaliveCount > 0 {
                 maxKeepaliveCount = Int(quicConnectionOptions.keepaliveCount)
             }
+            maxPTODuration = quicConnectionOptions.maxPTODuration
 
             allowPMTUD = quicConnectionOptions.pmtud
             pmtudIgnoreCost = quicConnectionOptions.pmtudIgnoreCost
@@ -2056,19 +2063,22 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var isNonProbing = false
 
         while let quicFrame = packetParser.framesReceived.popFirst() {
-            if state == .initialReceived {
-                if !QUICFrame.isValidInInitial(frame: quicFrame) {
-                    close(
-                        with:
-                            .protocolViolation,
-                        "Client sent initial packet with invalid QUIC frames",
-                        in: &eventContext
-                    )
+            if let packetKeystate = packet.keyState {
+                if packetKeystate == .initial || packetKeystate == .handshake, !quicFrame.isAllowedInHandshake {
+                    log.error("Invalid frame type during the handshake: \(quicFrame.frameType)")
+                    closeFrameType = quicFrame.frameType
+                    close(with: .protocolViolation, "invalid frame type during the handshake", in: &eventContext)
+                    QUICFrame.discard(quicFrame)
+                    return false
+                } else if packetKeystate == .earlyData, !quicFrame.isAllowedIn0RTT {
+                    log.error("Invalid frame type in 0-RTT: \(quicFrame.frameType)")
+                    closeFrameType = quicFrame.frameType
+                    close(with: .protocolViolation, "invalid frame type in 0-RTT", in: &eventContext)
                     QUICFrame.discard(quicFrame)
                     return false
                 }
             }
-            if QUICFrame.isAckEliciting(frame: quicFrame) {
+            if quicFrame.isAckEliciting {
                 isAckEliciting = true
                 /*
                  * Mark it as transmittable here so we have a chance
@@ -2077,18 +2087,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                  */
                 ack.shouldTransmit(packetNumberSpace: packet.numberSpace)
             }
-            if !QUICFrame.isProbing(frame: quicFrame) {
+            if !quicFrame.isProbing {
                 isNonProbing = true
-            }
-            if let packetKeystate = packet.keyState,
-                packetKeystate == .initial || packetKeystate == .handshake,
-                !QUICFrame.isAllowedDuringHandshake(frame: quicFrame)
-            {
-                log.error("Invalid frame type during the handshake: \(quicFrame.frameType)")
-                closeFrameType = quicFrame.frameType
-                close(with: .protocolViolation, "invalid frame type during the handshake", in: &eventContext)
-                QUICFrame.discard(quicFrame)
-                return false
             }
             if !processFrame(quicFrame, packetNumberSpace: packet.numberSpace, path: path, in: &eventContext) {
                 break

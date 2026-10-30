@@ -36,11 +36,8 @@ internal import os
 
 @available(Network 0.1.0, *)
 protocol SendableItem: ~Copyable {
-    static var isAckEliciting: Bool { get }
-    static var isInFlightEligible: Bool { get }
-
+    static var frameType: FrameType { get }
     static var isRepeatable: Bool { get }  // More than one of this frame can be in one packet
-
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool
 
     static func addToTransmittedItems(
@@ -65,9 +62,6 @@ protocol SendableItem: ~Copyable {
 
 @available(Network 0.1.0, *)
 extension SendableItem where Self: ~Copyable {
-    static var isAckEliciting: Bool { true }  // Default to true for most frames
-    static var isInFlightEligible: Bool { isAckEliciting }  // Default to being the same as ack-eliciting
-
     static var isRepeatable: Bool { false }  // Default to false for most frames
 
     static func write(
@@ -86,7 +80,7 @@ extension SendableItem where Self: ~Copyable {
 
                 let availableRoom = frame.unclaimedLength
                 let amountClaimedFromEndForCongestionWindow: Int
-                if isInFlightEligible, availableCongestionWindow < availableRoom {
+                if Self.frameType.traits.isInFlightEligible, availableCongestionWindow < availableRoom {
                     amountClaimedFromEndForCongestionWindow =
                         (availableRoom - Int(availableCongestionWindow))
                     _ = frame.claim(fromStart: 0, fromEnd: amountClaimedFromEndForCongestionWindow)
@@ -143,8 +137,7 @@ extension SendableItem where Self: ~Copyable {
 
 @available(Network 0.1.0, *)
 extension FramePadding: SendableItem {
-    static var isAckEliciting: Bool { false }
-    static var isInFlightEligible: Bool { true }
+    static var frameType: FrameType { .padding }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         switch pendingItems.paddingApproach {
@@ -200,6 +193,8 @@ extension FramePadding: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FramePing: SendableItem {
+    static var frameType: FrameType { .ping }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool { pendingItems.ping }
 
     static func addToTransmittedItems(
@@ -239,7 +234,7 @@ extension FramePing: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameAck: SendableItem {
-    static var isAckEliciting: Bool { false }
+    static var frameType: FrameType { .ack }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         #if DEBUG
@@ -294,6 +289,8 @@ extension FrameAck: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameResetStream: SendableItem {
+    static var frameType: FrameType { .resetStream }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -359,6 +356,8 @@ extension FrameResetStream: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameStopSending: SendableItem {
+    static var frameType: FrameType { .stopSending }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -420,6 +419,8 @@ extension FrameStopSending: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameCrypto: SendableItem {
+    static var frameType: FrameType { .crypto }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -577,6 +578,8 @@ extension FrameCrypto: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameNewToken: SendableItem {
+    static var frameType: FrameType { .newToken }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.newToken
     }
@@ -612,6 +615,8 @@ extension FrameNewToken: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameStreamSendMetadata: SendableItem {
+    static var frameType: FrameType { .stream() }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -950,6 +955,8 @@ extension FrameStreamSendMetadata: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameDataBlocked: SendableItem {
+    static var frameType: FrameType { .dataBlocked }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.dataBlocked
     }
@@ -985,6 +992,8 @@ extension FrameDataBlocked: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameStreamDataBlocked: SendableItem {
+    static var frameType: FrameType { .streamDataBlocked }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -1050,6 +1059,8 @@ extension FrameStreamDataBlocked: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameStreamsBlockedBidirectional: SendableItem {
+    static var frameType: FrameType { .streamsBlockedBidirectional }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.streamsBlockedBidirectional
     }
@@ -1087,6 +1098,8 @@ extension FrameStreamsBlockedBidirectional: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameStreamsBlockedUnidirectional: SendableItem {
+    static var frameType: FrameType { .streamsBlockedUnidirectional }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.streamsBlockedUnidirectional
     }
@@ -1124,6 +1137,8 @@ extension FrameStreamsBlockedUnidirectional: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameMaxData: SendableItem {
+    static var frameType: FrameType { .maxData }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool { pendingItems.maxData }
 
     static func addToTransmittedItems(
@@ -1157,6 +1172,8 @@ extension FrameMaxData: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameMaxStreamData: SendableItem {
+    static var frameType: FrameType { .maxStreamData }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -1224,6 +1241,8 @@ extension FrameMaxStreamData: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameMaxStreamsBidirectional: SendableItem {
+    static var frameType: FrameType { .maxStreamsBidirectional }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.maxStreamsBidirectional
     }
@@ -1262,6 +1281,8 @@ extension FrameMaxStreamsBidirectional: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameMaxStreamsUnidirectional: SendableItem {
+    static var frameType: FrameType { .maxStreamsUnidirectional }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.maxStreamsUnidirectional
     }
@@ -1302,6 +1323,8 @@ extension FrameMaxStreamsUnidirectional: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameNewConnectionID: SendableItem {
+    static var frameType: FrameType { .newConnectionID }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -1362,6 +1385,8 @@ extension FrameNewConnectionID: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameRetireConnectionID: SendableItem {
+    static var frameType: FrameType { .retireConnectionID }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -1416,6 +1441,8 @@ extension FrameRetireConnectionID: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FramePathChallenge: SendableItem {
+    static var frameType: FrameType { .pathChallenge }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         #if DEBUG
         let flagValue = pendingItems.pathChallenge
@@ -1456,6 +1483,8 @@ extension FramePathChallenge: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FramePathResponse: SendableItem {
+    static var frameType: FrameType { .pathResponse }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         #if DEBUG
         let flagValue = pendingItems.pathResponse
@@ -1497,7 +1526,7 @@ extension FramePathResponse: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameConnectionClose: SendableItem {
-    static var isAckEliciting: Bool { false }
+    static var frameType: FrameType { .connectionClose }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.connectionClose
@@ -1549,7 +1578,7 @@ extension FrameConnectionClose: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameApplicationClose: SendableItem {
-    static var isAckEliciting: Bool { false }
+    static var frameType: FrameType { .applicationClose }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.applicationClose
@@ -1620,6 +1649,8 @@ extension FrameApplicationClose: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameHandshakeDone: SendableItem {
+    static var frameType: FrameType { .handshakeDone }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.handshakeDone
     }
@@ -1654,6 +1685,8 @@ extension FrameHandshakeDone: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameDatagram: SendableItem {
+    static var frameType: FrameType { .datagram() }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -1794,8 +1827,7 @@ extension FrameDatagram: SendableItem {
 
 // MARK: - Prioritized List of Sendable Items
 
-// This list the priority order in which to send frames
-// Note: This list may be updated after review
+// This list is the priority order in which to send frames.
 @available(Network 0.1.0, *)
 enum PrioritizedSendableItems: CaseIterable {
     // Control frames come first so that they fit in the earliest outgoing frame
@@ -1839,6 +1871,35 @@ enum PrioritizedSendableItems: CaseIterable {
 
     // Padding should be last and may consume rest of the outbound frame
     case padding
+
+    var frameType: FrameType {
+        switch self {
+        case .crypto: FrameCrypto.frameType
+        case .newToken: FrameNewToken.frameType
+        case .newConnectionID: FrameNewConnectionID.frameType
+        case .retireConnectionID: FrameRetireConnectionID.frameType
+        case .pathChallenge: FramePathChallenge.frameType
+        case .pathResponse: FramePathResponse.frameType
+        case .handshakeDone: FrameHandshakeDone.frameType
+        case .ack: FrameAck.frameType
+        case .ping: FramePing.frameType
+        case .datagram: FrameDatagram.frameType
+        case .dataBlocked: FrameDataBlocked.frameType
+        case .streamDataBlocked: FrameStreamDataBlocked.frameType
+        case .streamsBlockedBidirectional: FrameStreamsBlockedBidirectional.frameType
+        case .streamsBlockedUnidirectional: FrameStreamsBlockedUnidirectional.frameType
+        case .maxData: FrameMaxData.frameType
+        case .maxStreamData: FrameMaxStreamData.frameType
+        case .maxStreamsBidirectional: FrameMaxStreamsBidirectional.frameType
+        case .maxStreamsUnidirectional: FrameMaxStreamsUnidirectional.frameType
+        case .stream: FrameStreamSendMetadata.frameType
+        case .resetStream: FrameResetStream.frameType
+        case .stopSending: FrameStopSending.frameType
+        case .connectionClose: FrameConnectionClose.frameType
+        case .applicationClose: FrameApplicationClose.frameType
+        case .padding: FramePadding.frameType
+        }
+    }
 
     func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         switch self {
@@ -2299,66 +2360,8 @@ enum PrioritizedSendableItems: CaseIterable {
         }
     }
 
-    var isAckEliciting: Bool {
-        switch self {
-        case .datagram: return FrameDatagram.isAckEliciting
-        case .crypto: return FrameCrypto.isAckEliciting
-        case .newToken: return FrameNewToken.isAckEliciting
-        case .newConnectionID: return FrameNewConnectionID.isAckEliciting
-        case .retireConnectionID: return FrameRetireConnectionID.isAckEliciting
-        case .pathChallenge: return FramePathChallenge.isAckEliciting
-        case .pathResponse: return FramePathResponse.isAckEliciting
-        case .handshakeDone: return FrameHandshakeDone.isAckEliciting
-        case .ack: return FrameAck.isAckEliciting
-        case .dataBlocked: return FrameDataBlocked.isAckEliciting
-        case .streamDataBlocked: return FrameStreamDataBlocked.isAckEliciting
-        case .streamsBlockedBidirectional: return FrameStreamsBlockedBidirectional.isAckEliciting
-        case .streamsBlockedUnidirectional: return FrameStreamsBlockedUnidirectional.isAckEliciting
-        case .maxData: return FrameMaxData.isAckEliciting
-        case .maxStreamData: return FrameMaxStreamData.isAckEliciting
-        case .maxStreamsBidirectional: return FrameMaxStreamsBidirectional.isAckEliciting
-        case .maxStreamsUnidirectional: return FrameMaxStreamsUnidirectional.isAckEliciting
-        case .ping: return FramePing.isAckEliciting
-        case .stream: return FrameStreamSendMetadata.isAckEliciting
-        case .resetStream: return FrameResetStream.isAckEliciting
-        case .stopSending: return FrameStopSending.isAckEliciting
-        case .connectionClose: return FrameConnectionClose.isAckEliciting
-        case .applicationClose: return FrameApplicationClose.isAckEliciting
-        case .padding: return FramePadding.isAckEliciting
-        }
-    }
-
-    // Packets are considered in flight when they are ack-eliciting or contain a PADDING frame
-    var isInFlightEligible: Bool {
-        switch self {
-        case .datagram: return FrameDatagram.isInFlightEligible
-        case .crypto: return FrameCrypto.isInFlightEligible
-        case .newToken: return FrameNewToken.isInFlightEligible
-        case .newConnectionID: return FrameNewConnectionID.isInFlightEligible
-        case .retireConnectionID: return FrameRetireConnectionID.isInFlightEligible
-        case .pathChallenge: return FramePathChallenge.isInFlightEligible
-        case .pathResponse: return FramePathResponse.isInFlightEligible
-        case .handshakeDone: return FrameHandshakeDone.isInFlightEligible
-        case .ack: return FrameAck.isInFlightEligible
-        case .dataBlocked: return FrameDataBlocked.isInFlightEligible
-        case .streamDataBlocked: return FrameStreamDataBlocked.isInFlightEligible
-        case .streamsBlockedBidirectional:
-            return FrameStreamsBlockedBidirectional.isInFlightEligible
-        case .streamsBlockedUnidirectional:
-            return FrameStreamsBlockedUnidirectional.isInFlightEligible
-        case .maxData: return FrameMaxData.isInFlightEligible
-        case .maxStreamData: return FrameMaxStreamData.isInFlightEligible
-        case .maxStreamsBidirectional: return FrameMaxStreamsBidirectional.isInFlightEligible
-        case .maxStreamsUnidirectional: return FrameMaxStreamsUnidirectional.isInFlightEligible
-        case .ping: return FramePing.isInFlightEligible
-        case .stream: return FrameStreamSendMetadata.isInFlightEligible
-        case .resetStream: return FrameResetStream.isInFlightEligible
-        case .stopSending: return FrameStopSending.isInFlightEligible
-        case .connectionClose: return FrameConnectionClose.isInFlightEligible
-        case .applicationClose: return FrameApplicationClose.isInFlightEligible
-        case .padding: return FramePadding.isInFlightEligible
-        }
-    }
+    var isAckEliciting: Bool { frameType.traits.isAckEliciting }
+    var isInFlightEligible: Bool { frameType.traits.isInFlightEligible }
 }
 
 // MARK: - PendingItems (State for pending send)
@@ -2985,7 +2988,7 @@ struct PendingItems: ~Copyable {
         if payloadLength < Constants.minimumPayloadLength {
             let extraPaddingSize = Constants.minimumPayloadLength - payloadLength
             paddingApproach = .fixedSize(extraPaddingSize)
-            if try FramePadding.write(
+            _ = try FramePadding.write(
                 into: &frame,
                 pendingItems: &self,
                 connection: connection,
@@ -2993,9 +2996,7 @@ struct PendingItems: ~Copyable {
                 stats: &stats,
                 transmittedItems: &transmittedItems,
                 shorthandFrames: &shorthandFrames
-            ) {
-                if FramePadding.isAckEliciting { isAckEliciting = true }
-            }
+            )
         }
     }
 
