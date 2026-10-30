@@ -164,6 +164,28 @@ public final class QUICPath: MultiplexingDatagramPath<
     var pacer: Pacer
 
     var pmtudState = PMTUDState()
+
+    // The bytes sent in full-size packets since the current round of path MTU probing began. A
+    // packet that is not full would be the same size at a larger MTU, so only full packets show
+    // what a larger MTU would save. Kept here, not in `pmtudState`, because packets are sent while
+    // `pmtudState` is sending a probe and already has exclusive access.
+    var fullSizeBytesSentInRound: UInt64 = 0
+
+    // A packet within this many bytes of the maximum segment size had no room for another useful
+    // frame.
+    private static let fullPacketMargin = 32
+
+    func updateForSentPacket(length: Int, isLongHeader: Bool, isProbe: Bool) {
+        // Handshake packets are padded and probes are padded to the size under test, so neither
+        // shows how full an ordinary packet is.
+        if isLongHeader || isProbe {
+            return
+        }
+        if length + QUICPath.fullPacketMargin >= mss {
+            // A count of bytes sent cannot reach the range of `UInt64`.
+            fullSizeBytesSentInRound &+= UInt64(length)
+        }
+    }
     var recoveryState = Recovery.PathState()
     var ecnState = ECNPathState()
     var pathStatistics = Statistics()

@@ -183,7 +183,7 @@ struct PMTUDState: ~Copyable {
 
         self.startPacketNumber = connection.protector.getPacketNumber(for: .applicationData)
 
-        searchCompleted = false
+        beginRound(on: path)
 
         let maximumPathMTU = self.maximumPathMTU
         let ipUDPHeaderSize = self.ipUDPHeaderSize
@@ -435,6 +435,8 @@ struct PMTUDState: ~Copyable {
         path.log.info("Probe for MTU \(nextProbeMTU) sent")
         canProbe = false
         probedMTU = nextProbeMTU
+        // Each probe has to be paid for by the full-size bytes sent after the previous one.
+        path.fullSizeBytesSentInRound = 0
     }
 
     mutating func stop(on path: QUICPath) {
@@ -460,7 +462,7 @@ struct PMTUDState: ~Copyable {
         in eventContext: inout NetworkContext.EventContext
     ) {
         path.log.debug("PMTUD timer fired")
-        self.searchCompleted = false
+        self.beginRound(on: path)
         self.updateProbeSize(on: path, in: &eventContext)
         path.parentProtocol.recordSentPackets(in: &eventContext) { sentPackets, blockState in
             sendProbe(on: path, sentPackets: &sentPackets, in: &blockState)
@@ -475,7 +477,7 @@ struct PMTUDState: ~Copyable {
         guard enabled else { return }
         path.log.info("Entering blackhole detection, setting path MTU to \(PMTUDState.minimumMTU)")
         currentPathMTU = PMTUDState.minimumMTU
-        searchCompleted = false
+        beginRound(on: path)
         failedProbeCount = 0
 
         let connection = path.parentProtocol
@@ -515,6 +517,11 @@ struct PMTUDState: ~Copyable {
         }
     }
 
+    private mutating func beginRound(on path: QUICPath) {
+        searchCompleted = false
+        path.fullSizeBytesSentInRound = 0
+    }
+
     private mutating func searchComplete(
         on path: QUICPath,
         in eventContext: inout NetworkContext.EventContext
@@ -533,13 +540,15 @@ struct PMTUDState: ~Copyable {
         let checkLength = PMTUDState.maxProbeCount * (nextProbeMTU - ipUDPHeaderSize)
         guard path.congestionControlCanSend(packetLength: checkLength) else { return false }
 
-        // Bytes already sent plus bytes queued is a lower bound on the transfer. It grows for as
-        // long as the connection sends, so an application that writes in small increments still
-        // reaches the amortization threshold below, while a connection that sends little never
-        // does.
+        // Bytes sent in full packets since the round began, plus bytes queued, is a lower bound on
+        // the transfer that a larger MTU would carry. It grows for as long as the connection
+        // sends full packets, so a bulk transfer written in small increments reaches the
+        // amortization threshold below, while an idle connection, or one that sends little or only
+        // small messages, never does.
+        // `Int(clamping:)` keeps the conversion safe where `Int` is 32 bits. The sum of two byte
+        // counts cannot overflow `UInt64`.
         let transferLength = Int(
-            clamping: connection.flowControlState.totalOutboundBytesSent
-                + connection.flowControlState.pendingOutboundBytesToSend
+            clamping: path.fullSizeBytesSentInRound + connection.flowControlState.pendingOutboundBytesToSend
         )
         let currentPacketsNeeded = transferLength / currentPathMTU
         let nextPacketsNeeded = transferLength / nextProbeMTU

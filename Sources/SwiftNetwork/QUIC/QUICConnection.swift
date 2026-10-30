@@ -4579,6 +4579,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             sentPacketRecord.sentPath = path.pathIdentifier
             log(packet: &packet, outbound: true)
 
+            path.updateForSentPacket(
+                length: Int(totalPacketLength),
+                isLongHeader: longHeader,
+                isProbe: sentPacketRecord.transmittedItems.pmtudProbeMSS != nil
+            )
+
             sentPackets.append(sentPacketRecord)
 
             if isInFlightEligible {

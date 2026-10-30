@@ -2042,6 +2042,7 @@ class QUICTestHarness {
         stop()
     }
 
+    #if canImport(SwiftNetwork)
     /// Sends `totalBytes` from a client stream in `chunkSize` writes, one per `interval`, as an
     /// application that produces data at its own pace does.
     ///
@@ -2050,16 +2051,31 @@ class QUICTestHarness {
     /// much has been sent, its length says nothing about the size of the transfer. Returns the
     /// maximum segment size the client's path started and ended with, or `nil` if the transfer
     /// did not complete.
+    ///
+    /// With `startingSizeIsPathMaximum`, path MTU discovery is told that the path allows no more
+    /// than the starting size, which ends its first search. It then searches again only when its
+    /// timer fires, every `pmtudUpdateInterval`. With `idleTime`, the connection sits idle that
+    /// long after the transfer, so the timer fires with nothing to send.
     func runPacedTransfer(
         totalBytes: Int,
         chunkSize: Int,
         interval: NetworkDuration,
+        startingSizeIsPathMaximum: Bool = false,
+        pmtudUpdateInterval: NetworkDuration? = nil,
+        idleTime: NetworkDuration = .zero,
         timeout: TimeInterval = 30.0
     ) -> (initial: Int, final: Int)? {
         // The client starts at the minimum packet size on a path that allows more, so only path
         // MTU discovery can raise it.
         do {
-            try quicHandshake(clientMTU: 1200, clientInterfaceMTU: 1500)
+            if startingSizeIsPathMaximum {
+                let clientOptions = QUICProtocol.options()
+                clientOptions.connectionOptions.initialPacketSize = 1252
+                clientOptions.connectionOptions.pmtudUpdateInterval = pmtudUpdateInterval
+                try quicHandshake(clientOptions: clientOptions)
+            } else {
+                try quicHandshake(clientMTU: 1200, clientInterfaceMTU: 1500)
+            }
         } catch {
             XCTFail("Handshake failed: \(error)")
             return nil
@@ -2073,6 +2089,22 @@ class QUICTestHarness {
         var initialMaximumSegmentSize = 0
         onContext {
             initialMaximumSegmentSize = clientConnection.currentPath?.mss ?? 0
+        }
+
+        if startingSizeIsPathMaximum {
+            onContext {
+                clientConnection.fromExternal { eventContext in
+                    guard let path = clientConnection.currentPath else {
+                        XCTFail("Client path missing")
+                        return
+                    }
+                    path.pmtudState.packetTooBigReceived(
+                        on: path,
+                        nextMTU: path.pmtudState.currentPathMTU,
+                        in: &eventContext
+                    )
+                }
+            }
         }
 
         var bytesReceived = 0
@@ -2123,6 +2155,14 @@ class QUICTestHarness {
 
         wait(until: { bytesReceived == totalBytes }, timeout: timeout, "the server to receive every byte")
 
+        if idleTime > .zero {
+            var idleElapsed = false
+            context.async {
+                pacingTimers.append(self.context.scheduleTimer(duration: idleTime) { idleElapsed = true })
+            }
+            wait(until: { idleElapsed }, timeout: timeout, "the connection to sit idle")
+        }
+
         var finalMaximumSegmentSize = 0
         onContext {
             finalMaximumSegmentSize = clientConnection.currentPath?.mss ?? 0
@@ -2130,6 +2170,7 @@ class QUICTestHarness {
         stop()
         return (initialMaximumSegmentSize, finalMaximumSegmentSize)
     }
+    #endif
 
     /// A clean close of a send side that never wrote any data must be encoded as a
     /// zero-length `STREAM` frame with the FIN bit set (RFC 9000 §3.1 / §19.8), not
