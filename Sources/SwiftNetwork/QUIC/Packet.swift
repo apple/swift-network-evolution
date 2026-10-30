@@ -172,6 +172,15 @@ struct Packet: ~Copyable {
     static let longHeaderBaseSize = 5
     static let shortHeaderBaseSize = 1
 
+    // Room reserved for the packet number, which is at most 4 bytes.
+    static let maximumPacketNumberLength = 4
+
+    /// The size of the smallest short header packet that carries `payloadLength` bytes of frames,
+    /// allowing for the longest packet number.
+    static func shortPacketSize(destinationConnectionIDLength: Int, tagSize: Int, payloadLength: Int) -> Int {
+        shortHeaderBaseSize + tagSize + destinationConnectionIDLength + payloadLength + maximumPacketNumberLength
+    }
+
     private(set) var destinationConnectionID: QUICConnectionID?
     private(set) var sourceConnectionID: QUICConnectionID?
 

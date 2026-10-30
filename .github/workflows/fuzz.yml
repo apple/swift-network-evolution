@@ -36,7 +36,7 @@ jobs:
     name: Fuzzing
     runs-on: ubuntu-latest
     container:
-      image: swift:6.3
+      image: swift:6.4
     timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
       - name: Checkout repository

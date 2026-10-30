@@ -90,6 +90,7 @@ enum QUICStatistic: Int, CaseIterable {
     case txRetransmittedPackets
     case txLostBytes
     case txLostPackets
+    case txSpuriousLostPackets
 
     case rxApplicationCloseError
     case txApplicationCloseError
@@ -152,7 +153,7 @@ enum QUICStatistic: Int, CaseIterable {
 @available(anyAppleOS 26, *)
 struct Statistics: ~Copyable {
 
-    private var statisticsArray: [98 of Int]
+    private var statisticsArray: [99 of Int]
 
     init() {
         statisticsArray = .init(repeating: 0)
