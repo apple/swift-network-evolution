@@ -1828,37 +1828,42 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     return
                 }
             }
-            guard let packet = packetParser.parsePrelude(frame: &frame) else {
+            guard let parsedHeader = packetParser.parsePrelude(frame: &frame) else {
                 log.datapath("Unable to parse a packet from the frame")
                 return
             }
-
-            if !preDecryption(frame: &frame, path: path, packet: packet, in: &eventContext) {
+            switch parsedHeader {
+            case .versionNegotiation:
+                log.error("Dropping VN from a client")
                 return
-            }
-
-            if state == .retrySent {
-                // The token was validated and is no longer needed.
-                self.initialToken = nil
-            }
-
-            // Change state from idle to initial received with key state = handshake
-            state.change(to: .initialReceived, logIDString: logPrefixer.logIDString)
-            keyState = .handshake
-            handshakeStartTime = self.now
-            #if SignpostOutput
-            signpostConnectInterval = QUICSignpost.connectBegin(id: signpostID)
-            #endif
-
-            guard serverStartIdleTimer(in: &eventContext) else {
-                let error = "Unable to start server idle timer"
-                log.error(error)
-                close(with: .internalError, error, in: &eventContext)
+            case .retry:
+                log.error("Dropping RETRY from a client")
                 return
-            }
+            case .protected(let packet):
+                if !preDecryption(frame: &frame, path: path, packet: packet, in: &eventContext) {
+                    return
+                }
+                if state == .retrySent {
+                    // The token was validated and is no longer needed.
+                    self.initialToken = nil
+                }
+                state.change(to: .initialReceived, logIDString: logPrefixer.logIDString)
+                keyState = .handshake
+                handshakeStartTime = self.now
+                #if SignpostOutput
+                signpostConnectInterval = QUICSignpost.connectBegin(id: signpostID)
+                #endif
 
-            guard frame.unclaim(fromStart: Int(packet.headerLength), fromEnd: 0) else {
-                return
+                guard serverStartIdleTimer(in: &eventContext) else {
+                    let error = "Unable to start server idle timer"
+                    log.error(error)
+                    close(with: .internalError, error, in: &eventContext)
+                    return
+                }
+
+                guard frame.unclaim(fromStart: Int(packet.headerLength), fromEnd: 0) else {
+                    return
+                }
             }
         }
 
@@ -1928,53 +1933,58 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         packetParser: inout PacketParser,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        //
         var ceMarked = false
         var continueProcessing = false
-        let packet = withPacketParsingState { (ack, stats, protector) -> Packet? in
-            var parsedPacket = packetParser.parse(
+
+        let parsedPacket = withPacketParsingState { (ack, stats, protector) -> PacketParser.ParsedPacket? in
+            let parsedPacket = packetParser.parse(
                 frame: &frame,
                 connection: self,
-                ecn: ecnFlags,
                 ack: &ack,
                 protector: &protector,
                 stats: &stats,
                 in: &eventContext
             )
-            // Dont proceed if long header with vn / retry / or a packet that cannot be decrypted
-            guard let transferredPacket = parsedPacket.take() else { return nil }
-            guard !transferredPacket.versionNegotiation, !transferredPacket.retry, !transferredPacket.failedDecryption
-            else {
-                return transferredPacket
+            guard let parsedPacket else {
+                return nil
             }
-            // Process ECN for all packets, this should be done
-            // before packet is appended for ACK below.
-            ceMarked = ECN.processIPCodpoint(
-                ecn: self.ecn,
-                path: path,
-                stats: &stats,
-                packetNumberSpace: transferredPacket.numberSpace,
-                flag: ecnFlags
-            )
-            if transferredPacket.longHeader {
-                continueProcessing = handleInboundLongHeader(
-                    transferredPacket,
-                    isServerConnection: isServerConnection,
-                    ack: &ack,
-                    protector: &protector,
-                    in: &eventContext
-                )
-            } else {
-                continueProcessing = handleInboundShortHeader(
-                    transferredPacket,
+            switch parsedPacket {
+            case .versionNegotiation:
+                continueProcessing = false
+            case .retry:
+                continueProcessing = false
+            case .failedDecryption:
+                continueProcessing = false
+            case .protected(let packet):
+                // Process ECN for all packets, this should be done
+                // before packet is appended for ACK below.
+                ceMarked = ECN.processIPCodpoint(
+                    ecn: self.ecn,
                     path: path,
-                    ack: &ack,
-                    in: &eventContext
+                    stats: &stats,
+                    packetNumberSpace: packet.numberSpace,
+                    flag: ecnFlags
                 )
+                if packet.longHeader {
+                    continueProcessing = handleInboundLongHeader(
+                        packet,
+                        isServerConnection: isServerConnection,
+                        ack: &ack,
+                        protector: &protector,
+                        in: &eventContext
+                    )
+                } else {
+                    continueProcessing = handleInboundShortHeader(
+                        packet,
+                        path: path,
+                        ack: &ack,
+                        in: &eventContext
+                    )
+                }
             }
-            return transferredPacket
+            return parsedPacket
         }
-        guard var packet else {
+        guard let parsedPacket else {
             if state == .connected {
                 log.error("Unable to parse packet")
             } else {
@@ -1982,57 +1992,49 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             return false
         }
-
         defer {
             // Make sure to always clean up any unprocessed frames when exiting
             packetParser.cleanupReceivedFrames()
         }
+        log(parsedPacket: parsedPacket, coalesced: coalesced)
 
-        log(packet: &packet, coalesced: coalesced, outbound: false)
-        path.updateBDP(length: packet.totalLength, now: self.now)
-
-        /*
-         * Both VN and Retry packets are special.
-         * While processing these packets themselves, we should discard
-         * these when they are not valid. We MUST not close the
-         * connection while processing these packets as their fields are
-         * not protected. We may do so when validating version
-         * negotiation or retry later while parsing through transport
-         * parameters.
-         */
-        if packet.versionNegotiation {
-            handleInboundVersionNegotiation(packet, in: &eventContext)
+        var packet: Packet
+        switch consume parsedPacket {
+        case .versionNegotiation(let vn):
+            handleInboundVersionNegotiation(vn, in: &eventContext)
             return true
-        } else if packet.retry {
-            handleInboundRetry(packet, in: &eventContext)
+        case .retry(let retry):
+            handleInboundRetry(retry, in: &eventContext)
             return true
-        } else if packet.failedDecryption {
-            failedDecryption(packet, in: &eventContext)
+        case .failedDecryption(let statelessResetToken):
+            failedDecryption(statelessResetToken, in: &eventContext)
             return false
+        case .protected(let protectedPacket):
+            packet = protectedPacket
+            // Now that we had a chance to log the frames, release the memory.
+            packet.shorthandFrames?.removeAll()
         }
-
         if !continueProcessing {
             return true
         }
-
+        path.updateBDP(length: packet.totalLength, now: self.now)
         var isAckEliciting = false
         var isNonProbing = false
 
         while let quicFrame = packetParser.framesReceived.popFirst() {
-            if let packetKeystate = packet.keyState {
-                if packetKeystate == .initial || packetKeystate == .handshake, !quicFrame.isAllowedInHandshake {
-                    log.error("Invalid frame type during the handshake: \(quicFrame.frameType)")
-                    closeFrameType = quicFrame.frameType
-                    close(with: .protocolViolation, "invalid frame type during the handshake", in: &eventContext)
-                    QUICFrame.discard(quicFrame)
-                    return false
-                } else if packetKeystate == .earlyData, !quicFrame.isAllowedIn0RTT {
-                    log.error("Invalid frame type in 0-RTT: \(quicFrame.frameType)")
-                    closeFrameType = quicFrame.frameType
-                    close(with: .protocolViolation, "invalid frame type in 0-RTT", in: &eventContext)
-                    QUICFrame.discard(quicFrame)
-                    return false
-                }
+            let packetKeystate = packet.keyState
+            if packetKeystate == .initial || packetKeystate == .handshake, !quicFrame.isAllowedInHandshake {
+                log.error("Invalid frame type during the handshake: \(quicFrame.frameType)")
+                closeFrameType = quicFrame.frameType
+                close(with: .protocolViolation, "invalid frame type during the handshake", in: &eventContext)
+                QUICFrame.discard(quicFrame)
+                return false
+            } else if packetKeystate == .earlyData, !quicFrame.isAllowedIn0RTT {
+                log.error("Invalid frame type in 0-RTT: \(quicFrame.frameType)")
+                closeFrameType = quicFrame.frameType
+                close(with: .protocolViolation, "invalid frame type in 0-RTT", in: &eventContext)
+                QUICFrame.discard(quicFrame)
+                return false
             }
             if quicFrame.isAckEliciting {
                 isAckEliciting = true
@@ -2103,7 +2105,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     private func handleInboundVersionNegotiation(
-        _ packet: borrowing Packet,
+        _ packet: borrowing QUICVersionNegotiationPacket,
         in eventContext: inout NetworkContext.EventContext
     ) {
         if isServer {
@@ -2118,9 +2120,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return
         }
 
-        guard let packetDCID = packet.destinationConnectionID,
-            let packetSCID = packet.sourceConnectionID,
-            let currentPath = self.currentPath,
+        let packetDCID = packet.destinationConnectionID
+        let packetSCID = packet.sourceConnectionID
+        guard let currentPath = self.currentPath,
             let currentSCID = currentPath.scid,
             let currentDCID = currentPath.dcid
         else {
@@ -2135,10 +2137,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             log.error("VN with invalid SCID: \(packetSCID) != \(currentDCID)")
             return
         }
-        guard let packetVersions = packet.versions else {
-            log.error("No versions available from inbound packet")
-            return
-        }
+        let packetVersions = packet.supportedVersions
         var matchedVersion: QUICVersion?
         for packetVersion in packetVersions {
             // A client MUST ignore a Version Negotiation packet
@@ -2178,7 +2177,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     private func handleInboundRetry(
-        _ packet: borrowing Packet,
+        _ retryPacket: borrowing QUICRetryPacket,
         in eventContext: inout NetworkContext.EventContext
     ) {
         guard !isServer else {
@@ -2186,18 +2185,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             log.error("Received a RETRY packet from a client")
             return
         }
-        guard packet.tokenLength > 0,
-            packet.tokenLength <= Constants.retryTokenMaxLength
+        guard retryPacket.token.count > 0,
+            retryPacket.token.count <= Constants.retryTokenMaxLength
         else {
             log.error("Discarding RETRY with a bad length token")
             return
         }
-        guard let token = packet.token,
-            let tag = packet.tag
-        else {
-            log.error("Discarding RETRY could not parse token or tag")
-            return
-        }
+        let token = retryPacket.token
         guard state == .initialSent else {
             log.error("Received RETRY in state \(state)")
             return
@@ -2209,50 +2203,30 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             log.error("Received second RETRY")
             return
         }
-
         guard let path = currentPath,
             let pathDCID = path.dcid,
-            let pathSCID = path.scid,
-            let firstOctet = packet.retryFirstOctet
+            let pathSCID = path.scid
         else {
             log.error("Received RETRY with path in a bad state")
             return
         }
-        guard let version = packet.version else {
-            log.error("Received RETRY without a version")
+        let version = retryPacket.version
+        guard version == .v1 else {
+            log.error("Received RETRY for non v1 version")
             return
         }
-        guard let dcid = packet.destinationConnectionID,
-            let scid = packet.sourceConnectionID
-        else {
-            log.error("Received RETRY with bad CIDs")
+        guard retryPacket.open(originalDCID: pathDCID) else {
+            log.error("Unable to authenticate retry")
             return
         }
-        // From a clients perspective:
-        // The value in the Unused field is set to an arbitrary value by the server;
-        // So the packet's first octet here needs to be captured from the server
-        let pseudoRetry = QUICPseudoRetry.assemble(
-            firstByte: firstOctet,
-            version: version,
-            destinationCID: dcid,
-            sourceCID: scid,
-            originalDCID: pathDCID,
-            token: token
-        )
-        do throws(QUICError) {
-            try Protector.openRetry(retryPseudo: pseudoRetry.span.bytes, retryTag: tag.span.bytes)
-        } catch {
-            log.error("Unable to authenticate retry with error: \(error)")
-            return
-        }
-        guard dcid == pathSCID else {
-            log.error("RETRY with invalid DCID: \(dcid) != \(pathSCID)")
+        guard retryPacket.destinationConnectionID == pathSCID else {
+            log.error("RETRY with invalid DCID: \(retryPacket.destinationConnectionID) != \(pathSCID)")
             return
         }
         state.change(to: .retryReceived, logIDString: logIDString)
         retryReceived = true
-        retrySCID = scid
-        path.assignDCID(scid, in: &eventContext)
+        retrySCID = retryPacket.sourceConnectionID
+        path.assignDCID(retryPacket.sourceConnectionID, in: &eventContext)
         // NOTE: similar to packet builder setting the token to be used with initial / LH packets
         initialToken = token
         recovery.resetPNSpace(packetNumberSpace: .initial, connection: self)
@@ -2261,9 +2235,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         path.resetCongestionControl()
 
         // The protector needs to derive new initial keys using the RETRY's SCID as the new DCID
-        protector.deriveInitialSecrets(destinationCID: scid)
+        protector.deriveInitialSecrets(destinationCID: retryPacket.sourceConnectionID)
 
-        log.info("Retransmitting INITIAL with token len: \(packet.tokenLength)")
+        log.info("Retransmitting INITIAL with token len: \(retryPacket.token.count)")
         guard let tlsOptions else {
             log.error("Failed to start TLS: missing TLS options")
             return
@@ -2377,7 +2351,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             if packet.keyState != .initial {
                 close(with: .protocolViolation, "non-initial packet during VN", in: &eventContext)
                 log.error(
-                    "Bogus server first packet \(packet.keyState?.description ?? "nil"), expecting version negotiation"
+                    "Bogus server first packet \(packet.keyState.description), expecting version negotiation"
                 )
                 return false
             }
@@ -2412,7 +2386,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             guard packet.keyState == .initial else {
                 close(with: .protocolViolation, "bogus server first packet", in: &eventContext)
                 log.error(
-                    "Bogus server first packet \(packet.keyState?.description ?? "nil")"
+                    "Bogus server first packet \(packet.keyState.description)"
                 )
                 return false
             }
@@ -2566,15 +2540,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         ack: inout Ack,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        guard let packetKeyState = packet.keyState else {
-            log.error("Received short header without keystate set")
-            return false
+        if packet.keyState != keyState {
+            log.notice("Switching to keyState \(packet.keyState)")
+            keyState = packet.keyState
         }
-        if packetKeyState != keyState {
-            log.notice("Switching to keystate \(packetKeyState)")
-            keyState = packetKeyState
-        }
-
         ack.append(
             packetNumberSpace: packet.numberSpace,
             packetNumber: packet.number,
@@ -4577,7 +4546,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
             let longHeader = packet.longHeader
             sentPacketRecord.sentPath = path.pathIdentifier
-            log(packet: &packet, outbound: true)
+            log(packet: packet)
 
             sentPackets.append(sentPacketRecord)
 
@@ -4703,7 +4672,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         )
     }
 
-    private func log(packet: inout Packet, coalesced: Bool = false, outbound: Bool) {
+    private func log(packet: borrowing Packet, coalesced: Bool = false) {
         #if !NETWORK_EMBEDDED
         if Logger.swiftNetworkDatapathLoggingEnabled {
             let now = self.now
@@ -4711,8 +4680,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             if lastShorthandTimestamp != .zero {
                 delta = lastShorthandTimestamp.duration(to: now)
             }
-            let arrow = outbound ? "→ " : "← "
-            let entry = ShorthandPacket(packet: packet, outgoing: outbound, delta: delta)
+            let arrow = "→ "
+            let entry = ShorthandPacket(packet: packet, delta: delta)
             log.datapath(entry.description)
             if let shorthandFrames = packet.shorthandFrames {
                 for shorthandFrame in shorthandFrames {
@@ -4724,22 +4693,48 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Support for qlog
         #if QlogOutput
         if let qLog {
-            if outbound {
-                qLog.packetSent(packet, ackDelayExponent: ack.localDelayExponent, timestamp: self.now)
-            } else {
-                qLog.packetReceived(
-                    packet,
-                    coalesced: coalesced,
-                    ackDelayExponent: ack.remoteDelayExponent,
-                    timestamp: self.now
-                )
-            }
+            qLog.packetSent(packet, ackDelayExponent: ack.localDelayExponent, timestamp: self.now)
         }
         #endif
         #endif
+        // packet.shorthandFrames is not set for outbound packets.
+    }
 
-        // Now that we had a chance to log the frames, release the memory.
-        packet.shorthandFrames?.removeAll()
+    private func log(parsedPacket: borrowing PacketParser.ParsedPacket, coalesced: Bool = false) {
+        #if !NETWORK_EMBEDDED
+        if Logger.swiftNetworkDatapathLoggingEnabled {
+            let now = self.now
+            var delta: NetworkDuration = .milliseconds(0)
+            if lastShorthandTimestamp != .zero {
+                delta = lastShorthandTimestamp.duration(to: now)
+            }
+            let arrow = "← "
+            let entry = ShorthandPacket(parsedPacket: parsedPacket, delta: delta)
+            log.datapath(entry.description)
+            switch parsedPacket {
+            case .protected(let packet):
+                if let shorthandFrames = packet.shorthandFrames {
+                    for shorthandFrame in shorthandFrames {
+                        log.datapath(arrow + shorthandFrame.description)
+                    }
+                }
+            default:
+                break
+            }
+            lastShorthandTimestamp = now
+        }
+        // Support for qlog
+        #if QlogOutput
+        if let qLog {
+            qLog.packetReceived(
+                parsedPacket,
+                coalesced: coalesced,
+                ackDelayExponent: ack.remoteDelayExponent,
+                timestamp: self.now
+            )
+        }
+        #endif
+        #endif
     }
 
     private func processOutbound(
@@ -4922,18 +4917,24 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 }
             }
             retrySCID = scid
-            var _token: [UInt8] = Array(repeating: 0, count: Int(Constants.retryTokenMaxLength))
-            var randomNumberGenerator = SystemRandomNumberGenerator()
-            for index in 0..<Constants.retryTokenMaxLength {
-                _token[Int(index)] = UInt8.random(in: 0..<UInt8.max, using: &randomNumberGenerator)
+            var rng = SystemRandomNumberGenerator()
+            let token = (0..<Int(Constants.retryTokenMaxLength)).map { _ in
+                UInt8.random(in: .min ... .max, using: &rng)
             }
-            initialToken = _token
-            sendRetry(path: path, packet: packet, in: &eventContext)
-            log.notice("New SCID: \(scid)")
+            initialToken = token
             guard let dcid = packet.destinationConnectionID else {
                 log.error("Packet does not contain dcid")
                 return false
             }
+            // Moving to retrySent without having sent a RETRY would drop every later
+            // Initial for lacking the token, leaving the client to hang until the idle timeout.
+            guard sendRetry(path: path, inboundPacket: packet, in: &eventContext) else {
+                let error = "Failed to send RETRY"
+                log.error(error)
+                close(with: .internalError, error, sendCloseFrame: false, in: &eventContext)
+                return false
+            }
+            log.notice("New SCID: \(scid)")
             initialDCID = dcid
             log.info("Server setting initial to \(dcid)")
             state.change(to: .retrySent, logIDString: logIDString)
@@ -4951,22 +4952,20 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     private func failedDecryption(
-        _ packet: borrowing Packet,
+        _ statelessResetToken: QUICStatelessResetToken?,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if packet.tagLength == Constants.statelessResetTokenSize,
-            let packetToken = packet.tag,
-            let statelessToken = QUICStatelessResetToken(packetToken)
-        {
-            self.stats.increment(.statelessResetReceived)
-            if remoteCIDs.find(statelessResetToken: statelessToken) != nil {
-                if migration.probingPathCount(self) > 0 {
-                    self.stats.increment(.statelessResetDuringPathProbe)
-                }
-                log.info("Received valid stateless reset token")
-                errorToReport = NetworkError.posix(ECONNRESET)
-                close(in: &eventContext)
+        guard let statelessResetToken else {
+            return
+        }
+        self.stats.increment(.statelessResetReceived)
+        if remoteCIDs.find(statelessResetToken: statelessResetToken) != nil {
+            if migration.probingPathCount(self) > 0 {
+                self.stats.increment(.statelessResetDuringPathProbe)
             }
+            log.info("Received valid stateless reset token")
+            errorToReport = NetworkError.posix(ECONNRESET)
+            close(in: &eventContext)
         }
     }
 
@@ -6197,20 +6196,16 @@ extension QUICConnection {
         }
         let supportedVersions: [QUICVersion] = [initialVersion, .negotiationPattern]
 
-        // Version Negotiation packets are special, they are not a specific frame type and they do not sealed so they can be sent as a one-off.
-        // N.B.: The packet scid/dcid are swapped when constructing QUICVersionNegotiation
-        guard
-            let versionNegotiation = try? QUICVersionNegotiation(
-                destinationConnectionID: scid,
-                sourceConnectionID: dcid,
-                supportedVersions: supportedVersions
-            )
-        else {
-            log.error("Failed to create QUICVersionNegotiation")
-            return
-        }
+        // Version Negotiation packets are special, they are not a specific frame type and they
+        // are not sealed so they can be sent as a one-off.
+        // N.B.: The packet scid/dcid are swapped when constructing QUICVersionNegotiationPacket
+        let versionNegotiation = QUICVersionNegotiationPacket(
+            destinationConnectionID: scid,
+            sourceConnectionID: dcid,
+            supportedVersions: supportedVersions
+        )
 
-        let requestedFrameLength = versionNegotiation.header.count
+        let requestedFrameLength = versionNegotiation.length
         guard
             var outFrames = try? getDatagramsToSend(
                 path: path.pathIdentifier,
@@ -6248,44 +6243,39 @@ extension QUICConnection {
 
     func sendRetry(
         path: QUICPath,
-        packet: borrowing Packet,
+        inboundPacket: borrowing Packet,
         in eventContext: inout NetworkContext.EventContext
-    ) {
-
-        guard let packetSCID = packet.sourceConnectionID,
-            let packetDCID = packet.destinationConnectionID
+    ) -> Bool {
+        guard let packetSCID = inboundPacket.sourceConnectionID,
+            let packetDCID = inboundPacket.destinationConnectionID
         else {
             log.error("Failed to parse CIDs from packet")
-            return
+            return false
         }
-        guard let version = packet.version
-        else {
-            log.error("Failed to parse version value from packet")
-            return
+        guard inboundPacket.version == .v1 else {
+            log.error("Unsupported version")
+            return false
         }
-        guard let scid = path.scid
-        else {
+        guard let scid = path.scid else {
             log.error("Failed to path dcid value from path")
-            return
+            return false
         }
-        guard let _token = initialToken
-        else {
+        guard let token = initialToken else {
             log.error("Failed to obtain token for retry")
-            return
+            return false
         }
         guard
             let retryPacket = try? QUICRetryPacket(
-                version: version,
                 destinationConnectionID: packetSCID,
                 sourceConnectionID: scid,
                 originalDCID: packetDCID,
-                token: _token
+                token: token
             )
         else {
             log.error("Failed to create QUICRetryPacket")
-            return
+            return false
         }
-        let requestedFrameLength = retryPacket.header.count
+        let requestedFrameLength = retryPacket.length
         guard
             var outFrames = try? getDatagramsToSend(
                 path: path.pathIdentifier,
@@ -6296,13 +6286,13 @@ extension QUICConnection {
             var outFrame = outFrames.popFirst()
         else {
             log.debug("QUIC path failed to get a frame")
-            return
+            return false
         }
         let frameLength = outFrame.unclaimedLength
         guard frameLength >= requestedFrameLength else {
             log.error("Invalid frame length")
             outFrame.finalize(success: false)
-            return
+            return false
         }
         if frameLength > requestedFrameLength {
             _ = outFrame.collapse(to: requestedFrameLength)
@@ -6310,12 +6300,13 @@ extension QUICConnection {
         guard let _ = try? retryPacket.write(outputFrame: &outFrame, claim: false) else {
             log.error("Failed to write retry frame")
             outFrame.finalize(success: false)
-            return
+            return false
         }
         var sendPath = path
         sendPath.enqueueOutboundDatagram(outFrame)
         sendPath.serviceLowerSendQueue(in: &eventContext)
         log.info("Sent retry packet")
+        return true
     }
 }
 

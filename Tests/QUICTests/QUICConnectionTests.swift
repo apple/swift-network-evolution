@@ -574,6 +574,68 @@ final class QUICConnectionTests: XCTestCase {
             }
         }
     }
+
+    /// A packet whose header protection can be removed but whose payload fails authentication is
+    /// reported as undecryptable, carrying the last 16 bytes of the datagram as a candidate
+    /// Stateless Reset token (RFC 9000 Section 10.3.1).
+    func testParseUndecryptablePacketReturnsStatelessResetToken() {
+        let destinationConnectionID = QUICConnectionID([0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08])!
+        let statelessResetToken: [UInt8] = (0..<16).map { UInt8(0xA0 + $0) }
+        // Packet number, payload and what would be the AEAD tag. None of it is valid ciphertext.
+        let protectedPayload = [UInt8](repeating: 0x5A, count: 48) + statelessResetToken
+        let bytes: [UInt8] =
+            [
+                0xc0,  // Long header, Initial
+                0x00, 0x00, 0x00, 0x01,  // Version
+                UInt8(destinationConnectionID.length),
+            ] + destinationConnectionID.connectionID
+            + [
+                0x00,  // SCIL
+                0x00,  // Token length
+                0x40 | UInt8(protectedPayload.count >> 8), UInt8(protectedPayload.count & 0xff),  // Length
+            ] + protectedPayload
+
+        connection.context.onQueue {
+            // Initial keys derived from the DCID, so header protection can be removed.
+            self.connection.protector = Protector(
+                isClient: false,
+                destinationCID: destinationConnectionID,
+                logPrefixer: LogPrefixer("[QUICConnectionTests]")
+            )
+            var parser = PacketParser(logPrefixer: LogPrefixer("[QUICConnectionTests]"))
+            var frame = Frame(copyBuffer: bytes)
+            defer {
+                frame.finalize(success: true)
+            }
+            self.connection.fromExternal { eventContext in
+                let parsedPacket = self.connection.withPacketParsingState { ack, stats, protector in
+                    parser.parse(
+                        frame: &frame,
+                        connection: self.connection,
+                        ack: &ack,
+                        protector: &protector,
+                        stats: &stats,
+                        in: &eventContext
+                    )
+                }
+                guard let parsedPacket else {
+                    XCTFail("Expected an undecryptable packet, got nothing")
+                    return
+                }
+                switch consume parsedPacket {
+                case .failedDecryption(let token):
+                    XCTAssertEqual(token, QUICStatelessResetToken(statelessResetToken))
+                case .versionNegotiation:
+                    XCTFail("Expected an undecryptable packet, got a VN packet")
+                case .retry:
+                    XCTFail("Expected an undecryptable packet, got a RETRY packet")
+                case .protected:
+                    XCTFail("Expected an undecryptable packet, got a protected packet")
+                }
+            }
+            XCTAssertTrue(parser.framesReceived.isEmpty, "No frames must be parsed from an undecryptable packet")
+        }
+    }
 }
 
 #endif

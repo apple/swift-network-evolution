@@ -227,7 +227,7 @@ struct Packet: ~Copyable {
         return sampleStart..<(sampleStart + Int(tagLength))
     }
 
-    private(set) var keyState: PacketKeyState?
+    private(set) var keyState: PacketKeyState
 
     var identifier: PacketIdentifier
     var number: PacketNumber {
@@ -247,13 +247,9 @@ struct Packet: ~Copyable {
     var tokenLength: Int {
         token?.count ?? 0
     }
-    var tag: [UInt8]?
 
-    // Initial and Version Negotiation Packet
+    // The version carried in the long header. nil for received short header packets.
     private(set) var version: QUICVersion?
-
-    // Version Negotiation
-    private(set) var versions: [QUICVersion]?
 
     // Flags
     struct Flags: OptionSet {
@@ -263,8 +259,6 @@ struct Packet: ~Copyable {
         var rawValue: UInt8
         static let longHeader = Flags(rawValue: 1 << 0)
         static let spinValue = Flags(rawValue: 1 << 2)
-        static let versionNegotiation = Flags(rawValue: 1 << 3)
-        static let failedDecryption = Flags(rawValue: 1 << 4)
     }
     private var flags = Flags()
     var longHeader: Bool {
@@ -287,31 +281,6 @@ struct Packet: ~Copyable {
             }
         }
     }
-    var versionNegotiation: Bool {
-        get { flags.contains(.versionNegotiation) }
-        set {
-            if newValue {
-                flags.insert(.versionNegotiation)
-            } else {
-                flags.remove(.versionNegotiation)
-            }
-        }
-    }
-    var failedDecryption: Bool {
-        get { flags.contains(.failedDecryption) }
-        set {
-            if newValue {
-                flags.insert(.failedDecryption)
-            } else {
-                flags.remove(.failedDecryption)
-            }
-        }
-    }
-
-    private(set) var retryFirstOctet: UInt8?
-    var retry: Bool {
-        retryFirstOctet != nil
-    }
 
     // Note well: For use ONLY with test vectors from RFC 9001
     private var _overrideSentNumberSize: EncodedPacketNumber.Size?
@@ -333,8 +302,8 @@ struct Packet: ~Copyable {
         }
     }
 
+    // Generic init used by packet specific initializers.
     init(
-        versionNegotiation: Bool = false,
         number: PacketNumber,
         lastAcked: PacketNumber,
         keyState: PacketKeyState,
@@ -346,50 +315,22 @@ struct Packet: ~Copyable {
             space: PacketNumberSpace.fromKeyState(keyState: keyState),
             number: number
         )
-        self.versionNegotiation = versionNegotiation
+        self.keyState = keyState
         self.longHeader = Packet.requiresLongHeader(keyState: keyState)
         self.lastAcked = lastAcked
-        self.keyState = keyState
         self.destinationConnectionID = destinationConnectionID
         self.sourceConnectionID = sourceConnectionID
         self.version = version
     }
 
-    // Version Negotiation Packet
+    // Initial Packet.
     init(
-        destinationConnectionID: QUICConnectionID,
-        sourceConnectionID: QUICConnectionID,
-        version: QUICVersion,
-        versions: [QUICVersion]
-    ) {
-        identifier = PacketIdentifier(space: .initial, number: .none)
-        longHeader = true
-        versionNegotiation = true
-
-        self.destinationConnectionID = destinationConnectionID
-        self.sourceConnectionID = sourceConnectionID
-        self.versions = versions
-
-        var headerLength = Packet.longHeaderBaseSize
-        headerLength += QUICConnectionID.headerCIDLength + destinationConnectionID.length
-        headerLength += QUICConnectionID.headerCIDLength + sourceConnectionID.length
-        headerLength += 4 * versions.count
-
-        self.headerLength = UInt16(headerLength)
-
-        self.version = version
-    }
-
-    // Initial Packet
-    init(
-        retryFirstOctet: UInt8? = nil,
         destinationConnectionID: QUICConnectionID,
         sourceConnectionID: QUICConnectionID,
         keyState: PacketKeyState,
         space: PacketNumberSpace,
         version: QUICVersion,
         token: [UInt8],
-        tag: [UInt8]? = nil,
         payloadLength: UInt16,
         headerLength: UInt16
     ) {
@@ -401,14 +342,11 @@ struct Packet: ~Copyable {
             payloadLength: payloadLength,
             headerLength: headerLength
         )
-
         self.token = token
         self.version = version
-        self.tag = tag
-        self.retryFirstOctet = retryFirstOctet
     }
 
-    // 0-RTT Packet, Handshake Packet, and Initial Packets
+    // 0-RTT and Handshake Packets.
     init(
         destinationConnectionID: QUICConnectionID,
         sourceConnectionID: QUICConnectionID,
@@ -422,16 +360,14 @@ struct Packet: ~Copyable {
             space: PacketNumberSpace.fromKeyState(keyState: keyState),
             number: .none
         )
-        longHeader = true
-
         self.destinationConnectionID = destinationConnectionID
         self.sourceConnectionID = sourceConnectionID
         self.keyState = keyState
-
         self.payloadLength = payloadLength
-
         self.headerLength = headerLength
         self.version = version
+        assert(Packet.requiresLongHeader(keyState: keyState))
+        longHeader = Packet.requiresLongHeader(keyState: keyState)
     }
 
     // Short Header Packet
@@ -439,16 +375,15 @@ struct Packet: ~Copyable {
         identifier = PacketIdentifier(space: .applicationData, number: .none)
         self.destinationConnectionID = destinationConnectionID
         self.headerLength = headerLength
-        spinValue = spin
-
         keyState = .phase0
+        spinValue = spin
     }
 
-    static func requiresLongHeader(keyState: PacketKeyState?) -> Bool {
+    static func requiresLongHeader(keyState: PacketKeyState) -> Bool {
         switch keyState {
         case .phase0, .phase1:
             return false
-        default:
+        case .initial, .handshake, .earlyData:
             return true
         }
     }
@@ -500,7 +435,7 @@ struct Packet: ~Copyable {
             headerType = 0x02
         case .earlyData:
             headerType = 0x01
-        case .phase0, .phase1, .none:
+        case .phase0, .phase1:
             throw QUICError.packet(.invalidHeaderType)
         }
 
@@ -656,7 +591,7 @@ struct Packet: ~Copyable {
 
     // MARK: Update KeyState
     // During shortheader processing, keyState will change from .phase0 to phase1
-    // Note: keystate is part of the protected region of the header so cannot be
+    // Note: keyState is part of the protected region of the header so cannot be
     // determined during initial deserialization when a Packet is initialized
     mutating func updateKeyState(to newState: PacketKeyState) throws(QUICError) {
         if longHeader {

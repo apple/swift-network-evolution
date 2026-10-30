@@ -565,6 +565,250 @@ final class PacketTests: XCTestCase {
             XCTAssertEqual(packetNumber, vector.expected, "Failed test: \(vector.description)")
         }
     }
+
+    // RFC 9001 Appendix A.4.
+    private static let rfc9001RetryPacket: [UInt8] = [
+        0xff,  // First byte
+        0x00, 0x00, 0x00, 0x01,  // Version
+        0x00,  // DCIL
+        0x08,  // SCIL
+        0xf0, 0x67, 0xa5, 0x50, 0x2a, 0x42, 0x62, 0xb5,  // SCID
+        0x74, 0x6f, 0x6b, 0x65, 0x6e,  // Token
+        0x04, 0xa2, 0x65, 0xba, 0x2e, 0xff, 0x4d, 0x82,  // Retry Integrity Tag
+        0x90, 0x58, 0xfb, 0x3f, 0x0f, 0x24, 0x96, 0xba,
+    ]
+    private static let rfc9001OriginalDCID = QUICConnectionID([
+        0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08,
+    ])!
+
+    private struct NotARetryPacket: Error {}
+
+    private func parseRetry(_ bytes: [UInt8]) throws -> QUICRetryPacket {
+        let parser = PacketParser(logPrefixer: LogPrefixer("[PacketTests]"))
+        var frame = Frame(copyBuffer: bytes)
+        defer {
+            frame.finalize(success: true)
+        }
+        guard let parsedHeader = parser.parsePrelude(frame: &frame) else {
+            throw NotARetryPacket()
+        }
+        switch consume parsedHeader {
+        case .retry(let retryPacket):
+            return retryPacket
+        case .versionNegotiation:
+            throw NotARetryPacket()
+        case .protected:
+            throw NotARetryPacket()
+        }
+    }
+
+    func testRetryPacketParseRFC9001() throws {
+        let retryPacket = try parseRetry(Self.rfc9001RetryPacket)
+
+        XCTAssertEqual(retryPacket.firstByte, 0xff, "First byte must be kept as received")
+        XCTAssertEqual(retryPacket.version, QUICVersion.v1)
+        XCTAssertEqual(retryPacket.destinationConnectionID.length, 0)
+        XCTAssertEqual(
+            retryPacket.sourceConnectionID.connectionID,
+            [0xf0, 0x67, 0xa5, 0x50, 0x2a, 0x42, 0x62, 0xb5]
+        )
+        XCTAssertEqual(retryPacket.token, Array("token".utf8))
+        XCTAssertEqual(retryPacket.retryTag, Array(Self.rfc9001RetryPacket[20...]))
+        XCTAssertEqual(retryPacket.length, Self.rfc9001RetryPacket.count)
+
+        XCTAssertTrue(
+            retryPacket.open(originalDCID: Self.rfc9001OriginalDCID),
+            "RFC 9001 RETRY should authenticate"
+        )
+        XCTAssertFalse(
+            retryPacket.open(originalDCID: QUICConnectionID([0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x09])!),
+            "RETRY must not authenticate with a different original DCID"
+        )
+
+        // Re-serializing a received packet must produce the same bytes.
+        XCTAssertEqual(try retryPacket.serialize(), Self.rfc9001RetryPacket)
+    }
+
+    func testRetryPacketUnusedBitsAreAuthenticated() throws {
+        // The unused bits of the first byte are covered by the integrity tag.
+        var bytes = Self.rfc9001RetryPacket
+        bytes[0] = 0xf0
+        let retryPacket = try parseRetry(bytes)
+        XCTAssertEqual(retryPacket.firstByte, 0xf0)
+        XCTAssertFalse(retryPacket.open(originalDCID: Self.rfc9001OriginalDCID))
+    }
+
+    func testRetryPacketTamperedTag() throws {
+        var bytes = Self.rfc9001RetryPacket
+        bytes[bytes.count - 1] ^= 0x01
+        let retryPacket = try parseRetry(bytes)
+        XCTAssertFalse(retryPacket.open(originalDCID: Self.rfc9001OriginalDCID))
+    }
+
+    func testRetryPacketSerializeRoundTrip() throws {
+        let destinationConnectionID = QUICConnectionID([0xAA, 0xBB, 0xCC, 0xDD])!
+        let sourceConnectionID = QUICConnectionID([
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        ])!
+        let originalDCID = QUICConnectionID([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])!
+        let token = [UInt8](repeating: 0x5A, count: Int(Constants.retryTokenMaxLength))
+
+        let retryPacket = try QUICRetryPacket(
+            destinationConnectionID: destinationConnectionID,
+            sourceConnectionID: sourceConnectionID,
+            originalDCID: originalDCID,
+            token: token
+        )
+        XCTAssertEqual(retryPacket.firstByte & 0xF0, 0xF0, "Should be a long header RETRY packet")
+        XCTAssertEqual(retryPacket.retryTag.count, Int(Constants.retryTokenIntegrityTagLength))
+
+        let bytes = try retryPacket.serialize()
+        // firstByte(1) + version(4) + dcidLen(1) + dcid(4) + scidLen(1) + scid(8) + token + tag(16)
+        XCTAssertEqual(bytes.count, 1 + 4 + 1 + 4 + 1 + 8 + token.count + 16)
+        XCTAssertEqual(bytes.count, retryPacket.length)
+        XCTAssertEqual(bytes[0], retryPacket.firstByte)
+
+        let parsedPacket = try parseRetry(bytes)
+        XCTAssertEqual(parsedPacket.firstByte, retryPacket.firstByte)
+        XCTAssertEqual(parsedPacket.version, QUICVersion.v1)
+        XCTAssertEqual(parsedPacket.destinationConnectionID, destinationConnectionID)
+        XCTAssertEqual(parsedPacket.sourceConnectionID, sourceConnectionID)
+        XCTAssertEqual(parsedPacket.token, token)
+        XCTAssertEqual(parsedPacket.retryTag, retryPacket.retryTag)
+        XCTAssertTrue(parsedPacket.open(originalDCID: originalDCID), "Serialized RETRY should authenticate")
+        XCTAssertFalse(parsedPacket.open(originalDCID: destinationConnectionID))
+    }
+
+    func testRetryPacketWriteToFrame() throws {
+        let retryPacket = try QUICRetryPacket(
+            destinationConnectionID: QUICConnectionID([0xAA, 0xBB, 0xCC, 0xDD])!,
+            sourceConnectionID: QUICConnectionID([0x11, 0x22, 0x33, 0x44])!,
+            originalDCID: QUICConnectionID([0x01, 0x02, 0x03, 0x04])!,
+            token: [0x01, 0x02, 0x03]
+        )
+        // Mirrors sendRetry(), which sizes the frame using `length`.
+        var frame = Frame(count: retryPacket.length)
+        defer {
+            frame.finalize(success: true)
+        }
+        XCTAssertNoThrow(try retryPacket.write(outputFrame: &frame, claim: false))
+    }
+
+    private struct NotAVersionNegotiationPacket: Error {}
+
+    private func parseVersionNegotiation(_ bytes: [UInt8]) throws -> QUICVersionNegotiationPacket {
+        let parser = PacketParser(logPrefixer: LogPrefixer("[PacketTests]"))
+        var frame = Frame(copyBuffer: bytes)
+        defer {
+            frame.finalize(success: true)
+        }
+        guard let parsedHeader = parser.parsePrelude(frame: &frame) else {
+            throw NotAVersionNegotiationPacket()
+        }
+        switch consume parsedHeader {
+        case .versionNegotiation(let versionNegotiationPacket):
+            return versionNegotiationPacket
+        case .retry:
+            throw NotAVersionNegotiationPacket()
+        case .protected:
+            throw NotAVersionNegotiationPacket()
+        }
+    }
+
+    func testVersionNegotiationPacketParse() throws {
+        let bytes: [UInt8] = [
+            0x95,  // First byte, the unused bits are arbitrary
+            0x00, 0x00, 0x00, 0x00,  // Version
+            0x04,  // DCIL
+            0xAA, 0xBB, 0xCC, 0xDD,  // DCID
+            0x08,  // SCIL
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,  // SCID
+            0x00, 0x00, 0x00, 0x01,  // v1
+            0x1a, 0x2a, 0x3a, 0x4a,  // Negotiation pattern
+            0x01, 0x02, 0x03, 0x04,  // Unknown version
+        ]
+        let versionNegotiationPacket = try parseVersionNegotiation(bytes)
+
+        XCTAssertEqual(versionNegotiationPacket.firstByte, 0x95, "First byte must be kept as received")
+        XCTAssertEqual(versionNegotiationPacket.destinationConnectionID.connectionID, [0xAA, 0xBB, 0xCC, 0xDD])
+        XCTAssertEqual(
+            versionNegotiationPacket.sourceConnectionID.connectionID,
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]
+        )
+        XCTAssertEqual(
+            versionNegotiationPacket.supportedVersions,
+            [.v1],
+            "The negotiation pattern and unknown versions must be filtered out"
+        )
+    }
+
+    func testVersionNegotiationPacketTruncatedVersion() {
+        let bytes: [UInt8] = [
+            0x80,  // First byte
+            0x00, 0x00, 0x00, 0x00,  // Version
+            0x04,  // DCIL
+            0xAA, 0xBB, 0xCC, 0xDD,  // DCID
+            0x04,  // SCIL
+            0x11, 0x22, 0x33, 0x44,  // SCID
+            0x00, 0x00, 0x00, 0x01,  // v1
+            0x00, 0x00,  // Truncated version
+        ]
+        XCTAssertThrowsError(try { _ = try self.parseVersionNegotiation(bytes) }())
+    }
+
+    func testVersionNegotiationPacketSerializeRoundTrip() throws {
+        let destinationConnectionID = QUICConnectionID([0xAA, 0xBB, 0xCC, 0xDD])!
+        let sourceConnectionID = QUICConnectionID([
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        ])!
+
+        // The unused bits are random, so build a few packets to exercise them.
+        for _ in 0..<32 {
+            let versionNegotiationPacket = QUICVersionNegotiationPacket(
+                destinationConnectionID: destinationConnectionID,
+                sourceConnectionID: sourceConnectionID,
+                supportedVersions: [.v1]
+            )
+            XCTAssertEqual(
+                versionNegotiationPacket.firstByte & 0xC0,
+                0xC0,
+                "Long header and fixed bits must be set"
+            )
+
+            let bytes = try versionNegotiationPacket.serialize()
+            // firstByte(1) + version(4) + dcidLen(1) + dcid(4) + scidLen(1) + scid(8) + v1(4)
+            XCTAssertEqual(bytes.count, 1 + 4 + 1 + 4 + 1 + 8 + 4)
+            XCTAssertEqual(bytes.count, versionNegotiationPacket.length)
+            XCTAssertEqual(bytes[0], versionNegotiationPacket.firstByte)
+            XCTAssertEqual(Array(bytes[1..<5]), [0x00, 0x00, 0x00, 0x00], "Version field must be zero")
+
+            let parsedPacket = try parseVersionNegotiation(bytes)
+            XCTAssertEqual(parsedPacket.firstByte, versionNegotiationPacket.firstByte)
+            XCTAssertEqual(parsedPacket.destinationConnectionID, destinationConnectionID)
+            XCTAssertEqual(parsedPacket.sourceConnectionID, sourceConnectionID)
+            XCTAssertEqual(parsedPacket.supportedVersions, [.v1])
+            XCTAssertEqual(parsedPacket.length, bytes.count)
+            XCTAssertEqual(
+                try parsedPacket.serialize(),
+                bytes,
+                "Re-serializing a received packet must produce the same bytes"
+            )
+        }
+    }
+
+    func testVersionNegotiationPacketWriteToFrame() throws {
+        let versionNegotiationPacket = QUICVersionNegotiationPacket(
+            destinationConnectionID: QUICConnectionID([0xAA, 0xBB, 0xCC, 0xDD])!,
+            sourceConnectionID: QUICConnectionID([0x11, 0x22, 0x33, 0x44])!,
+            supportedVersions: [.v1, .negotiationPattern]
+        )
+        // Mirrors sendVersionNegotiation(), which sizes the frame using `length`.
+        var frame = Frame(count: versionNegotiationPacket.length)
+        defer {
+            frame.finalize(success: true)
+        }
+        XCTAssertNoThrow(try versionNegotiationPacket.write(outputFrame: &frame, claim: false))
+    }
 }
 
 #endif
