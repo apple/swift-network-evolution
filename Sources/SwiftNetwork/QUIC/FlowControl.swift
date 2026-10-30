@@ -251,7 +251,7 @@ struct FlowControlState: ~Copyable {
     fileprivate(set) var outboundMaxData: UInt64 = 0
 
     // Number of bytes that have been sent to the peer.
-    fileprivate var totalOutboundBytesSent: UInt64 = 0
+    fileprivate(set) var totalOutboundBytesSent: UInt64 = 0
 
     // Number of bytes enqueued that have not yet been sent to the peer.
     fileprivate(set) var pendingOutboundBytesToSend: UInt64 = 0

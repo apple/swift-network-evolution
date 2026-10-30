@@ -464,6 +464,46 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     }
     #endif
 
+    #if canImport(SwiftNetwork)
+    func testQUICPacedTransferRaisesMaximumSegmentSize() {
+        guard
+            let segmentSizes = QUICTestHarness().runPacedTransfer(
+                totalBytes: 600_000,
+                chunkSize: 6000,
+                interval: .milliseconds(15)
+            )
+        else {
+            XCTFail("The transfer did not complete")
+            return
+        }
+
+        XCTAssertGreaterThan(
+            segmentSizes.final,
+            segmentSizes.initial,
+            "Path MTU discovery must not depend on the length of the send queue"
+        )
+    }
+
+    func testQUICSmallPacedTransferDoesNotProbePathMTU() {
+        guard
+            let segmentSizes = QUICTestHarness().runPacedTransfer(
+                totalBytes: 30_000,
+                chunkSize: 6000,
+                interval: .milliseconds(15)
+            )
+        else {
+            XCTFail("The transfer did not complete")
+            return
+        }
+
+        XCTAssertEqual(
+            segmentSizes.final,
+            segmentSizes.initial,
+            "A connection that sends little must not probe the path"
+        )
+    }
+    #endif
+
     func testQUICEmptyFinCleanCloseSendsFinNotReset() {
         QUICTestHarness().runEmptyFinCleanCloseSendsFinNotReset()
     }

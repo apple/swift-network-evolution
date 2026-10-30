@@ -533,9 +533,16 @@ struct PMTUDState: ~Copyable {
         let checkLength = PMTUDState.maxProbeCount * (nextProbeMTU - ipUDPHeaderSize)
         guard path.congestionControlCanSend(packetLength: checkLength) else { return false }
 
-        let sendQueueLength = Int(connection.flowControlState.pendingOutboundBytesToSend)
-        let currentPacketsNeeded = sendQueueLength / currentPathMTU
-        let nextPacketsNeeded = sendQueueLength / nextProbeMTU
+        // Bytes already sent plus bytes queued is a lower bound on the transfer. It grows for as
+        // long as the connection sends, so an application that writes in small increments still
+        // reaches the amortization threshold below, while a connection that sends little never
+        // does.
+        let transferLength = Int(
+            clamping: connection.flowControlState.totalOutboundBytesSent
+                + connection.flowControlState.pendingOutboundBytesToSend
+        )
+        let currentPacketsNeeded = transferLength / currentPathMTU
+        let nextPacketsNeeded = transferLength / nextProbeMTU
 
         let tagSize = connection.protector.getTagSize(for: connection.keyState)
         let shortHeaderSize = Packet.shortHeaderBaseSize

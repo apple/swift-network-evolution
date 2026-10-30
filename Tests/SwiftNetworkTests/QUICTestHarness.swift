@@ -2042,6 +2042,95 @@ class QUICTestHarness {
         stop()
     }
 
+    /// Sends `totalBytes` from a client stream in `chunkSize` writes, one per `interval`, as an
+    /// application that produces data at its own pace does.
+    ///
+    /// The interval must be long enough that acknowledgments keep up, since otherwise the
+    /// congestion window fills and the queue grows. With the queue kept to about one chunk however
+    /// much has been sent, its length says nothing about the size of the transfer. Returns the
+    /// maximum segment size the client's path started and ended with, or `nil` if the transfer
+    /// did not complete.
+    func runPacedTransfer(
+        totalBytes: Int,
+        chunkSize: Int,
+        interval: NetworkDuration,
+        timeout: TimeInterval = 30.0
+    ) -> (initial: Int, final: Int)? {
+        // The client starts at the minimum packet size on a path that allows more, so only path
+        // MTU discovery can raise it.
+        do {
+            try quicHandshake(clientMTU: 1200, clientInterfaceMTU: 1500)
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return nil
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1"), let clientConnection = state?.clientInstance else {
+            XCTFail("Failed to create client stream")
+            return nil
+        }
+
+        var initialMaximumSegmentSize = 0
+        onContext {
+            initialMaximumSegmentSize = clientConnection.currentPath?.mss ?? 0
+        }
+
+        var bytesReceived = 0
+        var serverReadHandler: ((inout NetworkContext.EventContext, Bool) -> Void)?
+        defer { serverReadHandler = nil }
+        context.async {
+            self.state?.serverHarness.waitForNewFlow { eventContext in
+                guard let serverStream = self.state?.serverHarness.upperHarnesses.last else {
+                    XCTFail("Server flow missing")
+                    return
+                }
+                serverReadHandler = { eventContext, _ in
+                    while true {
+                        let bytesRead = serverStream.readAndDrop(in: &eventContext)
+                        if bytesRead == 0 {
+                            break
+                        }
+                        bytesReceived += bytesRead
+                    }
+                    serverStream.waitForInboundDataAvailable(in: &eventContext) { eventContext, available in
+                        serverReadHandler?(&eventContext, available)
+                    }
+                }
+                serverReadHandler?(&eventContext, true)
+            }
+        }
+
+        var bytesWritten = 0
+        var pacingTimers: [TimerReference] = []
+        var writeNextChunk: (() -> Void)?
+        defer { writeNextChunk = nil }
+        writeNextChunk = {
+            let length = min(chunkSize, totalBytes - bytesWritten)
+            XCTAssertTrue(
+                clientStream.write(
+                    [UInt8](repeating: 0x5a, count: length),
+                    sendFIN: bytesWritten + length == totalBytes
+                )
+            )
+            bytesWritten += length
+            if bytesWritten < totalBytes {
+                pacingTimers.append(self.context.scheduleTimer(duration: interval) { writeNextChunk?() })
+            }
+        }
+        context.async {
+            writeNextChunk?()
+        }
+
+        wait(until: { bytesReceived == totalBytes }, timeout: timeout, "the server to receive every byte")
+
+        var finalMaximumSegmentSize = 0
+        onContext {
+            finalMaximumSegmentSize = clientConnection.currentPath?.mss ?? 0
+        }
+        stop()
+        return (initialMaximumSegmentSize, finalMaximumSegmentSize)
+    }
+
     /// A clean close of a send side that never wrote any data must be encoded as a
     /// zero-length `STREAM` frame with the FIN bit set (RFC 9000 §3.1 / §19.8), not
     /// a `RESET_STREAM`.
