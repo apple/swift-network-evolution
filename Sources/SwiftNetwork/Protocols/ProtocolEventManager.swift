@@ -341,60 +341,19 @@ struct ProtocolEventManagerState: ~Copyable {
     }
 
     mutating func discardPendingEventsForUpperProtocol() {
-        // Nothing to discard unless something was ever queued; don't create the queues to find out.
-        queues?.unassignedToDeliverToUpperProtocol.removeAll()
+        unassignedPendingEventsToDeliverToUpperProtocol.removeAll()
     }
 
     var eventState: EventState = .idle
     var connectedState: ConnectedState = .initial
     var connectCallState: ConnectCallState = .initial
-    /// The queues, created when the first event is queued: most instances never queue one (a
-    /// standalone protocol's events go to its owner inline), so their state stays small, and
-    /// registering and retiring it moves little.
-    final class Queues {
-        var fromLowerProtocol = NetworkUniqueDeque<PendingEvent>()
-        var toDeliverToUpperProtocol = NetworkUniqueDeque<PendingEvent>()
-        var unassignedToDeliverToUpperProtocol = NetworkUniqueDeque<PendingEvent>()
-    }
-
-    private var queues: Queues?
-
-    private mutating func ensureQueues() -> Queues {
-        if let queues { return queues }
-        let queues = Queues()
-        self.queues = queues
-        return queues
-    }
-
-    var pendingEventsFromLowerProtocol: NetworkUniqueDeque<PendingEvent> {
-        _read {
-            if let queues { yield queues.fromLowerProtocol } else { yield NetworkUniqueDeque<PendingEvent>() }
-        }
-        _modify { yield &ensureQueues().fromLowerProtocol }
-    }
-
-    var pendingEventsToDeliverToUpperProtocol: NetworkUniqueDeque<PendingEvent> {
-        _read {
-            if let queues { yield queues.toDeliverToUpperProtocol } else { yield NetworkUniqueDeque<PendingEvent>() }
-        }
-        _modify { yield &ensureQueues().toDeliverToUpperProtocol }
-    }
-
-    var unassignedPendingEventsToDeliverToUpperProtocol: NetworkUniqueDeque<PendingEvent> {
-        _read {
-            if let queues {
-                yield queues.unassignedToDeliverToUpperProtocol
-            } else {
-                yield NetworkUniqueDeque<PendingEvent>()
-            }
-        }
-        _modify { yield &ensureQueues().unassignedToDeliverToUpperProtocol }
-    }
+    var pendingEventsFromLowerProtocol = NetworkUniqueDeque<PendingEvent>()
+    var pendingEventsToDeliverToUpperProtocol = NetworkUniqueDeque<PendingEvent>()
+    var unassignedPendingEventsToDeliverToUpperProtocol = NetworkUniqueDeque<PendingEvent>()
 
     /// Whether any event is waiting for an upper protocol that has not been attached.
     var hasUnassignedPendingEvents: Bool {
-        guard let queues else { return false }
-        return !queues.unassignedToDeliverToUpperProtocol.isEmpty
+        !unassignedPendingEventsToDeliverToUpperProtocol.isEmpty
     }
 
     // Number of things that still hold this index: queued async blocks, at most one scheduled
@@ -452,8 +411,7 @@ struct ProtocolEventManagerState: ~Copyable {
     /// Whether any event is queued, to either side.
     @inline(always)
     var hasPendingEvents: Bool {
-        guard let queues else { return false }
-        return !queues.fromLowerProtocol.isEmpty || !queues.toDeliverToUpperProtocol.isEmpty
+        !pendingEventsFromLowerProtocol.isEmpty || !pendingEventsToDeliverToUpperProtocol.isEmpty
     }
 
     init() {}
