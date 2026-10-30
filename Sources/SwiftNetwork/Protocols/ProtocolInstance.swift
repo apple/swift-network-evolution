@@ -341,6 +341,13 @@ public struct NetworkLoggerState: ~Copyable {
 internal struct ProtocolInstanceBox<Instance: AnyObject>: Hashable {
     let instance: Instance
 
+    /// The instance, for calling the protocol's `mutating` requirements on it. The instance is a class, so there
+    /// is nothing to write back.
+    var mutableInstance: Instance {
+        get { instance }
+        nonmutating set {}
+    }
+
     init(_ instance: Instance) {
         self.instance = instance
     }
