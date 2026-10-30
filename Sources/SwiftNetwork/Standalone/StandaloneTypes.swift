@@ -162,7 +162,7 @@ struct StandaloneEventQueue {
         self.entries.append(Entry(kind: .newInboundFlow, id: -1))
     }
 
-    @inline(__always)
+    @inline(always)
     mutating func popEntry() -> Entry? {
         self.entries.popFirst()
     }

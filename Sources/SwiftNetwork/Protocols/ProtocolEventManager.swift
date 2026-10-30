@@ -450,7 +450,7 @@ struct ProtocolEventManagerState: ~Copyable {
     }
 
     /// Whether any event is queued, to either side.
-    @inline(__always)
+    @inline(always)
     var hasPendingEvents: Bool {
         guard let queues else { return false }
         return !queues.fromLowerProtocol.isEmpty || !queues.toDeliverToUpperProtocol.isEmpty

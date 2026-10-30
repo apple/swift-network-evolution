@@ -2743,7 +2743,7 @@ struct PendingItems: ~Copyable {
 
     /// Records that a stream the list of streams to service declined has data it is waiting on window
     /// to send, which is the only reason a stream with data is declined.
-    @inline(__always)
+    @inline(always)
     private mutating func noteIfBlocked(_ stream: borrowing QUICStreamInstance) {
         if !stream.send.state.dataHasAlreadyBeenSent && stream.hasMoreSendDataToService {
             streamsMayBeBlocked = true

@@ -28,7 +28,7 @@ struct QUICStreamIDIndex<Value> {
         var head = 0
         var items = ContiguousArray<Value?>()
 
-        @inline(__always)
+        @inline(always)
         func get(_ sequence: UInt64) -> Value? {
             guard sequence >= base else { return nil }
             let index = Int(truncatingIfNeeded: sequence &- base)

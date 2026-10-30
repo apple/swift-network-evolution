@@ -125,27 +125,27 @@ struct StandaloneLinkState: ~Copyable {
     /// A flow link: the protocol below it.
     private var lower: Lower
 
-    @inline(__always) var closed: Bool {
+    @inline(always) var closed: Bool {
         get { flags.contains(.closed) }
         set { flags.set(.closed, to: newValue) }
     }
 
-    @inline(__always) var reportsConnectionEvents: Bool {
+    @inline(always) var reportsConnectionEvents: Bool {
         get { flags.contains(.reportsConnectionEvents) }
         set { flags.set(.reportsConnectionEvents, to: newValue) }
     }
 
-    @inline(__always) var releasesFlowsOnDisconnect: Bool {
+    @inline(always) var releasesFlowsOnDisconnect: Bool {
         get { flags.contains(.releasesFlowsOnDisconnect) }
         set { flags.set(.releasesFlowsOnDisconnect, to: newValue) }
     }
 
-    @inline(__always) var announcedWithFlow: Bool {
+    @inline(always) var announcedWithFlow: Bool {
         get { flags.contains(.announcedWithFlow) }
         set { flags.set(.announcedWithFlow, to: newValue) }
     }
 
-    @inline(__always) var newFlowPending: Bool {
+    @inline(always) var newFlowPending: Bool {
         get { flags.contains(.newFlowPending) }
         set { flags.set(.newFlowPending, to: newValue) }
     }
@@ -288,7 +288,7 @@ struct StandaloneLinkState: ~Copyable {
 
 extension OptionSet {
     /// Inserts or removes `member`.
-    @inline(__always)
+    @inline(always)
     mutating func set(_ member: Element, to isOn: Bool) {
         if isOn { insert(member) } else { remove(member) }
     }
