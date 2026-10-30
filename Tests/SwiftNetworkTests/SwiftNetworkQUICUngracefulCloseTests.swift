@@ -299,6 +299,52 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
             }
         )
     }
+
+    func testQUICStatelessResetWithUnknownTokenIsIgnored() throws {
+        // This test seeds the stateless reset token on the server, then sends the client a
+        // stateless reset ending in a different token. The client can't decrypt it and must not
+        // match it to any connection ID, so it drops the datagram and the connection carries on:
+        // the echo that runQUICTest does afterwards has to complete.
+        let serverOptions = QUICProtocol.options()
+        let token: [UInt8] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        ]
+        let unknownToken: [UInt8] = [
+            0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
+            0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
+        ]
+        serverOptions.modifyConnectionOptions { $0.initialStatelessResetToken = QUICStatelessResetToken(token) }
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello World!".utf8),
+            serverOptions: serverOptions,
+            afterHandshake: { harness in
+                var reportedError: NetworkError?
+                harness.onContext {
+                    harness.state?.clientHarness.waitForError { error in
+                        reportedError = error
+                    }
+
+                    let statelessResetPacket = try! QUICConnectionUtilities.createStatelessResetPacket(
+                        token: QUICStatelessResetToken(unknownToken)!,
+                        triggeringPacketLength: 35
+                    )
+                    XCTAssertTrue(statelessResetPacket.count < 35, "The stateless reset is too large")
+                    BridgeDatagramProtocol.BridgeInstance.injectDatagram(
+                        .init(copyBuffer: statelessResetPacket),
+                        to: harness.clientPort
+                    )
+                }
+                // Give a wrongly accepted reset time to surface as an error.
+                harness.allow(.milliseconds(100))
+                harness.onContext {
+                    XCTAssertEqual(harness.state?.clientInstance.state, .connected)
+                    XCTAssertNil(harness.state?.clientInstance.closeError)
+                }
+                XCTAssertNil(reportedError, "A reset with an unknown token must not close the connection")
+            }
+        )
+    }
 }
 #endif
 #endif
