@@ -47,6 +47,12 @@ struct NetworkStateIndex: Hashable {
     // The position this index refers to, for use as a `NetworkGappyArray` offset.
     fileprivate var slot: Int { Int(index) }
 
+    // An index for a position, for a caller that has the position only (a `NetworkGappyArray`
+    // subscript reads the position and ignores the generation). Check `isPresent(slot:)` first.
+    static func atSlot(_ slot: Int) -> NetworkStateIndex {
+        NetworkStateIndex(index: UInt32(truncatingIfNeeded: slot), generation: 0)
+    }
+
     // The absence of an index. Never equal to an index issued by a `NetworkGappyArray`.
     static let none = NetworkStateIndex()
 
@@ -105,6 +111,12 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
         mutating _read {
             yield elements[position.slot]!
         }
+    }
+
+    // Whether an element is at `slot`. Does not trap for a position that was never issued or was
+    // removed, which is what a caller holding an identity from earlier needs.
+    func isPresent(slot: Int) -> Bool {
+        slot >= 0 && slot < elements.count && elements[slot] != nil
     }
 
     var count: Int { elements.count - freeSlots.count }

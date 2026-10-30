@@ -54,48 +54,243 @@ enum StandaloneDataKind {
     case datagram
 }
 
-/// What a link remembers. Lives in `EventContext.standaloneLinks`, keyed by the link's slot.
+/// What the lower and connection links remember beyond what every link does.
+///
+/// Flow links are made and freed for every stream, and the rest of a link's state is only used by
+/// the few lower and connection links of a connection, so it lives behind a reference: a flow's
+/// link state is a fraction of the size, and creating or freeing one moves less.
 @available(Network 0.1.0, *)
-struct StandaloneLinkState: ~Copyable {
-    let kind: StandaloneDataKind
-    /// `nil` for a one-to-one protocol's only flow, and for links that are not flows.
-    var flowID: StandaloneFlowID?
-    /// `nil` for a one-to-one protocol's only lower, and for links that are not lowers.
-    var pathID: StandalonePathID?
-    /// Whether a connection-wide event (a network event, or connected and disconnected for a
-    /// connection link) is reported through this link. A many-to-many protocol reports those
-    /// through its connection link only, so a flow does not repeat them.
-    var reportsConnectionEvents: Bool
-    /// Set when the protocol tore the link down. A closed link ignores everything.
-    var closed = false
-
-    // A flow link: the protocol below it.
-    var streamLower = BaseOutboundStreamLinkage()
-    var datagramLower = BaseOutboundDatagramLinkage()
-    var flowMetadata: AbstractProtocolMetadata?
-
+final class StandaloneLinkExtra {
     // A lower link: the protocol above it, and the frames in flight.
     var streamUpper = BaseInboundStreamLinkage()
     var datagramUpper = BaseInboundDatagramLinkage()
     var pendingInbound = FrameArray()
     var pendingOutbound = FrameArray()
-    var maximumOutputSize = 1500
 
-    // A connection link: the listeners new flows attach to, and the flows that came through it.
-    var flowIDs: [StandaloneFlowID] = []
+    // A connection link: the listeners new flows attach to.
     var streamListener = BaseStreamListenerLinkage()
     var datagramListener = BaseDatagramListenerLinkage()
 
+    // A flow link: what the protocol said about the flow.
+    var flowMetadata: AbstractProtocolMetadata?
+}
+
+/// What a link remembers. Lives in `EventContext.standaloneLinks`, keyed by the link's slot.
+@available(Network 0.1.0, *)
+struct StandaloneLinkState: ~Copyable {
+    /// The one protocol below a flow link: a flow carries a stream or datagrams, not both.
+    private enum Lower {
+        case stream(BaseOutboundStreamLinkage)
+        case datagram(BaseOutboundDatagramLinkage)
+    }
+
+    /// The link's yes-or-no facts, in one byte.
+    struct Flags: OptionSet {
+        var rawValue: UInt8
+
+        /// Set when the protocol tore the link down. A closed link ignores everything.
+        static let closed = Flags(rawValue: 1 << 0)
+        /// Whether a connection-wide event (a network event, or connected and disconnected for a
+        /// connection link) is reported through this link. A many-to-many protocol reports those
+        /// through its connection link only, so a flow does not repeat them.
+        static let reportsConnectionEvents = Flags(rawValue: 1 << 1)
+        /// A connection link: whether the flows made through it are released when their disconnect is
+        /// reported (see `StandaloneQUICConnection.init(releasesFlowsOnDisconnect:)`). A flow link:
+        /// whether this flow is.
+        static let releasesFlowsOnDisconnect = Flags(rawValue: 1 << 2)
+        /// A flow link for a flow the peer opened through an inline linkage: the new-flow event
+        /// announces the flow as connected, so no connected event of its own is queued.
+        static let announcedWithFlow = Flags(rawValue: 1 << 3)
+        /// A flow link whose new-flow event the owner has not taken yet: that event stands for the
+        /// data the flow already holds, so data-available events wait out until it is taken.
+        static let newFlowPending = Flags(rawValue: 1 << 4)
+        /// The link is a flow of a many-to-many protocol, named by an ID made from its slot. A
+        /// one-to-one protocol's only flow, and links that are not flows, have none.
+        static let hasFlowID = Flags(rawValue: 1 << 5)
+    }
+
+    // The fields come in the order they are read: the flags and the identity first, which is all
+    // an event needs, and the protocol below last.
+    private var flags: Flags
+    let kind: StandaloneDataKind
+    /// The event state the link was registered with, and the slot it is at, so the link can be found
+    /// from its flow ID.
+    private var eventStateIndex = NetworkStateIndex.none
+    private(set) var selfIndex = NetworkStateIndex.none
+    /// `0` for a one-to-one protocol's only lower, and for links that are not lowers. Path IDs count
+    /// up from one.
+    private var pathRaw: Int
+    // Lower and connection links, and the metadata of a flow that has some. See `StandaloneLinkExtra`.
+    private var extra: StandaloneLinkExtra?
+    /// A flow link: the protocol below it.
+    private var lower: Lower
+
+    @inline(__always) var closed: Bool {
+        get { flags.contains(.closed) }
+        set { flags.set(.closed, to: newValue) }
+    }
+
+    @inline(__always) var reportsConnectionEvents: Bool {
+        get { flags.contains(.reportsConnectionEvents) }
+        set { flags.set(.reportsConnectionEvents, to: newValue) }
+    }
+
+    @inline(__always) var releasesFlowsOnDisconnect: Bool {
+        get { flags.contains(.releasesFlowsOnDisconnect) }
+        set { flags.set(.releasesFlowsOnDisconnect, to: newValue) }
+    }
+
+    @inline(__always) var announcedWithFlow: Bool {
+        get { flags.contains(.announcedWithFlow) }
+        set { flags.set(.announcedWithFlow, to: newValue) }
+    }
+
+    @inline(__always) var newFlowPending: Bool {
+        get { flags.contains(.newFlowPending) }
+        set { flags.set(.newFlowPending, to: newValue) }
+    }
+
+    /// The identifier the link's linkages use.
+    var identifier: InstanceIdentifier {
+        InstanceIdentifier(eventStateIndex: eventStateIndex)
+    }
+
+    /// `nil` for a one-to-one protocol's only flow, and for links that are not flows.
+    var flowID: StandaloneFlowID? {
+        flags.contains(.hasFlowID) ? StandaloneFlowID(slot: selfIndex) : nil
+    }
+
+    /// `nil` for a one-to-one protocol's only lower, and for links that are not lowers.
+    var pathID: StandalonePathID? {
+        pathRaw == 0 ? nil : StandalonePathID(rawValue: pathRaw)
+    }
+
+    /// Records where the link is registered.
+    mutating func registered(identifier: InstanceIdentifier, slot: NetworkStateIndex, isFlow: Bool) {
+        eventStateIndex = identifier.eventStateIndex
+        selfIndex = slot
+        if isFlow { flags.insert(.hasFlowID) }
+    }
+
+    /// A flow link: what the protocol said about the flow, if it said anything.
+    var flowMetadata: AbstractProtocolMetadata? {
+        get { extra?.flowMetadata }
+        set {
+            if newValue == nil && extra == nil { return }
+            ensureExtra().flowMetadata = newValue
+        }
+    }
+
+    var streamLower: BaseOutboundStreamLinkage {
+        get {
+            if case .stream(let lower) = self.lower { return lower }
+            return BaseOutboundStreamLinkage()
+        }
+        set { self.lower = .stream(newValue) }
+    }
+
+    var datagramLower: BaseOutboundDatagramLinkage {
+        get {
+            if case .datagram(let lower) = self.lower { return lower }
+            return BaseOutboundDatagramLinkage()
+        }
+        set { self.lower = .datagram(newValue) }
+    }
+
+    /// What the link announces for its flow.
+    var flowAnnouncement: (flowID: StandaloneFlowID?, metadata: AbstractProtocolMetadata?) {
+        (self.flowID, self.flowMetadata)
+    }
+
+    /// The protocol below a stream flow, or `nil` if the link is closed or carries datagrams.
+    mutating func openStreamLower() -> BaseOutboundStreamLinkage? {
+        if !self.closed, case .stream(let lower) = self.lower { return lower }
+        return nil
+    }
+
+    /// The protocol below a datagram flow, or `nil` if the link is closed or carries a stream.
+    mutating func openDatagramLower() -> BaseOutboundDatagramLinkage? {
+        if !self.closed, case .datagram(let lower) = self.lower { return lower }
+        return nil
+    }
+
+    private mutating func ensureExtra() -> StandaloneLinkExtra {
+        if let extra = self.extra { return extra }
+        let extra = StandaloneLinkExtra()
+        self.extra = extra
+        return extra
+    }
+
+    var streamUpper: BaseInboundStreamLinkage {
+        get { self.extra?.streamUpper ?? BaseInboundStreamLinkage() }
+        set { self.ensureExtra().streamUpper = newValue }
+    }
+
+    var datagramUpper: BaseInboundDatagramLinkage {
+        get { self.extra?.datagramUpper ?? BaseInboundDatagramLinkage() }
+        set { self.ensureExtra().datagramUpper = newValue }
+    }
+
+    var streamListener: BaseStreamListenerLinkage {
+        get { self.extra?.streamListener ?? BaseStreamListenerLinkage() }
+        set { self.ensureExtra().streamListener = newValue }
+    }
+
+    var datagramListener: BaseDatagramListenerLinkage {
+        get { self.extra?.datagramListener ?? BaseDatagramListenerLinkage() }
+        set { self.ensureExtra().datagramListener = newValue }
+    }
+
+    /// Finalizes the frames the link holds, without making the storage for them when there are none:
+    /// most flows never hold any.
+    mutating func finalizePendingFrames() {
+        guard let extra = self.extra else { return }
+        extra.pendingInbound.finalizeAllFramesAsFailed()
+        extra.pendingOutbound.finalizeAllFramesAsFailed()
+    }
+
+    var pendingInbound: FrameArray {
+        _read {
+            if let extra = self.extra {
+                yield extra.pendingInbound
+            } else {
+                yield FrameArray()
+            }
+        }
+        _modify { yield &self.ensureExtra().pendingInbound }
+    }
+
+    var pendingOutbound: FrameArray {
+        _read {
+            if let extra = self.extra {
+                yield extra.pendingOutbound
+            } else {
+                yield FrameArray()
+            }
+        }
+        _modify { yield &self.ensureExtra().pendingOutbound }
+    }
+
     init(
         kind: StandaloneDataKind,
-        flowID: StandaloneFlowID? = nil,
         pathID: StandalonePathID? = nil,
         reportsConnectionEvents: Bool = false
     ) {
         self.kind = kind
-        self.flowID = flowID
-        self.pathID = pathID
-        self.reportsConnectionEvents = reportsConnectionEvents
+        self.pathRaw = pathID?.rawValue ?? 0
+        self.flags = reportsConnectionEvents ? [.reportsConnectionEvents] : []
+        switch kind {
+        case .stream: self.lower = .stream(BaseOutboundStreamLinkage())
+        case .datagram: self.lower = .datagram(BaseOutboundDatagramLinkage())
+        }
+    }
+}
+
+extension OptionSet {
+    /// Inserts or removes `member`.
+    @inline(__always)
+    mutating func set(_ member: Element, to isOn: Bool) {
+        if isOn { insert(member) } else { remove(member) }
     }
 }
 
@@ -124,30 +319,47 @@ extension InstanceIdentifier {
 extension NetworkContext.EventContext {
     /// Creates the state for a link and the identifier its linkages use.
     mutating func standaloneRegisterLink(
-        _ state: consuming StandaloneLinkState
+        _ state: consuming StandaloneLinkState,
+        assignsFlowID: Bool = false
     ) -> (identifier: InstanceIdentifier, slot: NetworkStateIndex) {
         let identifier = InstanceIdentifier.registerWithoutOwner(in: &self)
         let slot = standaloneLinks.insert(state)
         protocolEventStates[identifier.eventStateIndex].standaloneSlot = slot
+        // A flow's ID is made from its slot, so finding the flow from its ID is one lookup.
+        standaloneLinks[slot].registered(identifier: identifier, slot: slot, isFlow: assignsFlowID)
         return (identifier, slot)
+    }
+
+    /// The link of the flow named by `id`, or `nil` if there is none (the flow was released).
+    mutating func standaloneFlowLink(_ id: StandaloneFlowID) -> StandaloneFlowLink? {
+        let position = id.slotIndex
+        guard standaloneLinks.isPresent(slot: position) else { return nil }
+        let index = NetworkStateIndex.atSlot(position)
+        guard standaloneLinks[index].flowID == id else { return nil }
+        return StandaloneFlowLink(identifier: standaloneLinks[index].identifier, slot: standaloneLinks[index].selfIndex)
+    }
+
+    /// Every flow link, in slot order.
+    mutating func standaloneAllFlowLinks() -> [StandaloneFlowLink] {
+        var links: [StandaloneFlowLink] = []
+        standaloneLinks.forEachElement { state in
+            if state.flowID != nil {
+                links.append(StandaloneFlowLink(identifier: state.identifier, slot: state.selfIndex))
+            }
+        }
+        return links
     }
 
     /// Frees a link's state. The link must not be used afterwards.
     mutating func standaloneUnregisterLink(identifier: InstanceIdentifier, slot: NetworkStateIndex) {
         identifier.retireWithoutOwner(in: &self)
-        standaloneLinks[slot].pendingInbound.finalizeAllFramesAsFailed()
-        standaloneLinks[slot].pendingOutbound.finalizeAllFramesAsFailed()
+        standaloneLinks[slot].finalizePendingFrames()
         standaloneLinks.remove(index: slot)
     }
 
     /// Where the state of the standalone link named by `identifier` is.
     mutating func standaloneSlot(of identifier: InstanceIdentifier) -> NetworkStateIndex {
         protocolEventStates[identifier.eventStateIndex].standaloneSlot
-    }
-
-    mutating func standaloneMakeFlowID() -> StandaloneFlowID {
-        defer { standaloneNextID += 1 }
-        return StandaloneFlowID(rawValue: standaloneNextID)
     }
 
     mutating func standaloneMakePathID() -> StandalonePathID {
@@ -193,14 +405,33 @@ struct StandaloneFlowLink: Hashable {
     }
 
     /// Creates a flow link from inside a call that holds the event context, or from outside one.
+    /// Makes a stream flow link whose lower and metadata are known, with one registration.
     static func make(
         kind: StandaloneDataKind,
-        flowID: StandaloneFlowID?,
+        hasFlowID: Bool,
+        reportsConnectionEvents: Bool,
+        lower: BaseOutboundStreamLinkage,
+        metadata: AbstractProtocolMetadata?,
+        releasesFlowsOnDisconnect: Bool,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> StandaloneFlowLink {
+        var state = StandaloneLinkState(kind: kind, reportsConnectionEvents: reportsConnectionEvents)
+        state.streamLower = lower
+        state.flowMetadata = metadata
+        state.releasesFlowsOnDisconnect = releasesFlowsOnDisconnect
+        let (identifier, slot) = eventContext.standaloneRegisterLink(state, assignsFlowID: hasFlowID)
+        return StandaloneFlowLink(identifier: identifier, slot: slot)
+    }
+
+    static func make(
+        kind: StandaloneDataKind,
+        hasFlowID: Bool,
         reportsConnectionEvents: Bool,
         in eventContext: inout NetworkContext.EventContext
     ) -> StandaloneFlowLink {
         let (identifier, slot) = eventContext.standaloneRegisterLink(
-            StandaloneLinkState(kind: kind, flowID: flowID, reportsConnectionEvents: reportsConnectionEvents)
+            StandaloneLinkState(kind: kind, reportsConnectionEvents: reportsConnectionEvents),
+            assignsFlowID: hasFlowID
         )
         return StandaloneFlowLink(identifier: identifier, slot: slot)
     }
@@ -252,7 +483,9 @@ struct StandaloneFlowLink: Hashable {
     // MARK: Events from the protocol
 
     func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
-        guard !eventContext.standaloneLinks[slot].closed else { return }
+        guard !eventContext.standaloneLinks[slot].closed, !eventContext.standaloneLinks[slot].announcedWithFlow else {
+            return
+        }
         eventContext.standaloneEvents.append(.connected(eventContext.standaloneLinks[slot].flowID))
     }
 
@@ -280,7 +513,9 @@ struct StandaloneFlowLink: Hashable {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard !eventContext.standaloneLinks[slot].closed else { return }
+        guard !eventContext.standaloneLinks[slot].closed, !eventContext.standaloneLinks[slot].newFlowPending else {
+            return
+        }
         eventContext.standaloneEvents.append(.inboundDataAvailable(eventContext.standaloneLinks[slot].flowID))
     }
 
@@ -312,48 +547,32 @@ struct StandaloneFlowLink: Hashable {
 
     // MARK: Calls from the owner
 
-    // Each of these enters the protocol the way an application would, through the flow's own event
-    // state, and calls down through the lower linkage the attach recorded.
+    // The owner is outside the protocol, so a call needs no event state of the flow's own: the
+    // protocol's events for the flow go to the link inline (see `StandaloneInline.swift`), and the
+    // state the protocol keeps for its side of the flow is entered by the lower linkage. Each call
+    // reads the link once, for whether it is open and the protocol below, and calls that.
 
     func connect(context: NetworkContext) {
-        identifier.fromExternal(in: &context.eventContext) { eventContext in
-            guard !eventContext.standaloneLinks[slot].closed else { return }
-            switch eventContext.standaloneLinks[slot].kind {
-            case .stream:
-                let lower = eventContext.standaloneLinks[slot].streamLower
-                lower.invokeConnect(for: identifier, in: &eventContext)
-            case .datagram:
-                let lower = eventContext.standaloneLinks[slot].datagramLower
-                lower.invokeConnect(for: identifier, in: &eventContext)
-            }
+        if let lower = context.eventContext.standaloneLinks[slot].openStreamLower() {
+            lower.invokeConnect(for: identifier, in: &context.eventContext)
+        } else if let lower = context.eventContext.standaloneLinks[slot].openDatagramLower() {
+            lower.invokeConnect(for: identifier, in: &context.eventContext)
         }
     }
 
     func disconnect(error: NetworkError?, context: NetworkContext) {
-        identifier.fromExternal(in: &context.eventContext) { eventContext in
-            guard !eventContext.standaloneLinks[slot].closed else { return }
-            switch eventContext.standaloneLinks[slot].kind {
-            case .stream:
-                let lower = eventContext.standaloneLinks[slot].streamLower
-                lower.invokeDisconnect(error: error, for: identifier, in: &eventContext)
-            case .datagram:
-                let lower = eventContext.standaloneLinks[slot].datagramLower
-                lower.invokeDisconnect(error: error, for: identifier, in: &eventContext)
-            }
+        if let lower = context.eventContext.standaloneLinks[slot].openStreamLower() {
+            lower.invokeDisconnect(error: error, for: identifier, in: &context.eventContext)
+        } else if let lower = context.eventContext.standaloneLinks[slot].openDatagramLower() {
+            lower.invokeDisconnect(error: error, for: identifier, in: &context.eventContext)
         }
     }
 
     func applicationEvent(_ event: ApplicationEvent, context: NetworkContext) {
-        identifier.fromExternal(in: &context.eventContext) { eventContext in
-            guard !eventContext.standaloneLinks[slot].closed else { return }
-            switch eventContext.standaloneLinks[slot].kind {
-            case .stream:
-                let lower = eventContext.standaloneLinks[slot].streamLower
-                lower.invokeApplicationEvent(event: event, for: identifier, in: &eventContext)
-            case .datagram:
-                let lower = eventContext.standaloneLinks[slot].datagramLower
-                lower.invokeApplicationEvent(event: event, for: identifier, in: &eventContext)
-            }
+        if let lower = context.eventContext.standaloneLinks[slot].openStreamLower() {
+            lower.invokeApplicationEvent(event: event, for: identifier, in: &context.eventContext)
+        } else if let lower = context.eventContext.standaloneLinks[slot].openDatagramLower() {
+            lower.invokeApplicationEvent(event: event, for: identifier, in: &context.eventContext)
         }
     }
 
@@ -362,18 +581,15 @@ struct StandaloneFlowLink: Hashable {
         early: Bool,
         context: NetworkContext
     ) throws(NetworkError) {
-        try identifier.fromExternal(frames, in: &context.eventContext) { eventContext, frames throws(NetworkError) in
-            guard !eventContext.standaloneLinks[slot].closed else {
-                var failed = consume frames
-                failed.finalizeAllFramesAsFailed()
-                throw NetworkError.posix(ENOTCONN)
-            }
-            let lower = eventContext.standaloneLinks[slot].streamLower
-            if early {
-                try lower.invokeSendEarlyStreamData(frames, from: identifier, in: &eventContext)
-            } else {
-                try lower.invokeSendStreamData(frames, from: identifier, in: &eventContext)
-            }
+        guard let lower = context.eventContext.standaloneLinks[slot].openStreamLower() else {
+            var failed = consume frames
+            failed.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(ENOTCONN)
+        }
+        if early {
+            try lower.invokeSendEarlyStreamData(frames, from: identifier, in: &context.eventContext)
+        } else {
+            try lower.invokeSendStreamData(frames, from: identifier, in: &context.eventContext)
         }
     }
 
@@ -382,40 +598,36 @@ struct StandaloneFlowLink: Hashable {
         maximumBytes: Int,
         context: NetworkContext
     ) throws(NetworkError) -> FrameArray? {
-        try identifier.fromExternal(in: &context.eventContext) { eventContext throws(NetworkError) in
-            guard !eventContext.standaloneLinks[slot].closed else { throw NetworkError.posix(ENOTCONN) }
-            let lower = eventContext.standaloneLinks[slot].streamLower
-            return try lower.invokeReceiveStreamData(
-                minimumBytes: minimumBytes,
-                maximumBytes: maximumBytes,
-                for: identifier,
-                in: &eventContext
-            )
+        guard let lower = context.eventContext.standaloneLinks[slot].openStreamLower() else {
+            throw NetworkError.posix(ENOTCONN)
         }
+        return try lower.invokeReceiveStreamData(
+            minimumBytes: minimumBytes,
+            maximumBytes: maximumBytes,
+            for: identifier,
+            in: &context.eventContext
+        )
     }
 
     func outboundRoomAvailable(context: NetworkContext) throws(NetworkError) -> Int {
-        try identifier.fromExternal(in: &context.eventContext) { eventContext throws(NetworkError) in
-            guard !eventContext.standaloneLinks[slot].closed else { throw NetworkError.posix(ENOTCONN) }
-            let lower = eventContext.standaloneLinks[slot].streamLower
-            return try lower.invokeGetOutboundStreamDataRoomAvailable(for: identifier, in: &eventContext)
+        guard let lower = context.eventContext.standaloneLinks[slot].openStreamLower() else {
+            throw NetworkError.posix(ENOTCONN)
         }
+        return try lower.invokeGetOutboundStreamDataRoomAvailable(for: identifier, in: &context.eventContext)
     }
 
     func abortInbound(error: NetworkError?, context: NetworkContext) throws(NetworkError) {
-        try identifier.fromExternal(in: &context.eventContext) { eventContext throws(NetworkError) in
-            guard !eventContext.standaloneLinks[slot].closed else { throw NetworkError.posix(ENOTCONN) }
-            let lower = eventContext.standaloneLinks[slot].streamLower
-            try lower.invokeAbortInbound(error: error, for: identifier, in: &eventContext)
+        guard let lower = context.eventContext.standaloneLinks[slot].openStreamLower() else {
+            throw NetworkError.posix(ENOTCONN)
         }
+        try lower.invokeAbortInbound(error: error, for: identifier, in: &context.eventContext)
     }
 
     func abortOutbound(error: NetworkError?, context: NetworkContext) throws(NetworkError) {
-        try identifier.fromExternal(in: &context.eventContext) { eventContext throws(NetworkError) in
-            guard !eventContext.standaloneLinks[slot].closed else { throw NetworkError.posix(ENOTCONN) }
-            let lower = eventContext.standaloneLinks[slot].streamLower
-            try lower.invokeAbortOutbound(error: error, for: identifier, in: &eventContext)
+        guard let lower = context.eventContext.standaloneLinks[slot].openStreamLower() else {
+            throw NetworkError.posix(ENOTCONN)
         }
+        try lower.invokeAbortOutbound(error: error, for: identifier, in: &context.eventContext)
     }
 
     func getDatagramsToSend(
@@ -423,71 +635,57 @@ struct StandaloneFlowLink: Hashable {
         minimumDatagramSize: Int,
         context: NetworkContext
     ) throws(NetworkError) -> FrameArray? {
-        try identifier.fromExternal(in: &context.eventContext) { eventContext throws(NetworkError) in
-            guard !eventContext.standaloneLinks[slot].closed else { throw NetworkError.posix(ENOTCONN) }
-            let lower = eventContext.standaloneLinks[slot].datagramLower
-            return try lower.invokeGetDatagramsToSend(
-                maximumDatagramCount: maximumDatagramCount,
-                minimumDatagramSize: minimumDatagramSize,
-                for: identifier,
-                in: &eventContext
-            )
+        guard let lower = context.eventContext.standaloneLinks[slot].openDatagramLower() else {
+            throw NetworkError.posix(ENOTCONN)
         }
+        return try lower.invokeGetDatagramsToSend(
+            maximumDatagramCount: maximumDatagramCount,
+            minimumDatagramSize: minimumDatagramSize,
+            for: identifier,
+            in: &context.eventContext
+        )
     }
 
     func sendDatagrams(_ frames: consuming FrameArray, context: NetworkContext) throws(NetworkError) {
-        try identifier.fromExternal(frames, in: &context.eventContext) { eventContext, frames throws(NetworkError) in
-            guard !eventContext.standaloneLinks[slot].closed else {
-                var failed = consume frames
-                failed.finalizeAllFramesAsFailed()
-                throw NetworkError.posix(ENOTCONN)
-            }
-            let lower = eventContext.standaloneLinks[slot].datagramLower
-            try lower.invokeSendDatagrams(frames, from: identifier, in: &eventContext)
+        guard let lower = context.eventContext.standaloneLinks[slot].openDatagramLower() else {
+            var failed = consume frames
+            failed.finalizeAllFramesAsFailed()
+            throw NetworkError.posix(ENOTCONN)
         }
+        try lower.invokeSendDatagrams(frames, from: identifier, in: &context.eventContext)
     }
 
     func receiveDatagrams(maximumDatagramCount: Int, context: NetworkContext) throws(NetworkError) -> FrameArray? {
-        try identifier.fromExternal(in: &context.eventContext) { eventContext throws(NetworkError) in
-            guard !eventContext.standaloneLinks[slot].closed else { throw NetworkError.posix(ENOTCONN) }
-            let lower = eventContext.standaloneLinks[slot].datagramLower
-            return try lower.invokeReceiveDatagrams(
-                maximumDatagramCount: maximumDatagramCount,
-                for: identifier,
-                in: &eventContext
-            )
+        guard let lower = context.eventContext.standaloneLinks[slot].openDatagramLower() else {
+            throw NetworkError.posix(ENOTCONN)
         }
+        return try lower.invokeReceiveDatagrams(
+            maximumDatagramCount: maximumDatagramCount,
+            for: identifier,
+            in: &context.eventContext
+        )
     }
 
     func getMetadata<P: NetworkProtocol>(context: NetworkContext) -> ProtocolMetadata<P>? {
-        identifier.fromExternal(in: &context.eventContext) { eventContext -> ProtocolMetadata<P>? in
-            guard !eventContext.standaloneLinks[slot].closed else { return nil }
-            if let metadata = eventContext.standaloneLinks[slot].flowMetadata as? ProtocolMetadata<P> {
-                return metadata
-            }
-            switch eventContext.standaloneLinks[slot].kind {
-            case .stream:
-                let lower = eventContext.standaloneLinks[slot].streamLower
-                return lower.invokeGetMetadata(for: identifier, in: &eventContext)
-            case .datagram:
-                let lower = eventContext.standaloneLinks[slot].datagramLower
-                return lower.invokeGetMetadata(for: identifier, in: &eventContext)
-            }
+        guard !context.eventContext.standaloneLinks[slot].closed else { return nil }
+        if let metadata = context.eventContext.standaloneLinks[slot].flowMetadata as? ProtocolMetadata<P> {
+            return metadata
         }
+        if let lower = context.eventContext.standaloneLinks[slot].openStreamLower() {
+            return lower.invokeGetMetadata(for: identifier, in: &context.eventContext)
+        } else if let lower = context.eventContext.standaloneLinks[slot].openDatagramLower() {
+            return lower.invokeGetMetadata(for: identifier, in: &context.eventContext)
+        }
+        return nil
     }
 
     func getMetrics(_ requested: RequestedNetworkMetrics, context: NetworkContext) -> NetworkMetrics? {
-        identifier.fromExternal(in: &context.eventContext) { eventContext -> NetworkMetrics? in
-            guard !eventContext.standaloneLinks[slot].closed else { return nil }
-            switch eventContext.standaloneLinks[slot].kind {
-            case .stream:
-                let lower = eventContext.standaloneLinks[slot].streamLower
-                return lower.invokeGetMetrics(requestedNetworkMetric: requested, for: identifier, in: &eventContext)
-            case .datagram:
-                let lower = eventContext.standaloneLinks[slot].datagramLower
-                return lower.invokeGetMetrics(requestedNetworkMetric: requested, for: identifier, in: &eventContext)
-            }
+        if let lower = context.eventContext.standaloneLinks[slot].openStreamLower() {
+            return lower.invokeGetMetrics(requestedNetworkMetric: requested, for: identifier, in: &context.eventContext)
+        } else if let lower = context.eventContext.standaloneLinks[slot].openDatagramLower() {
+            return lower.invokeGetMetrics(requestedNetworkMetric: requested, for: identifier, in: &context.eventContext)
         }
+        return nil
     }
 
     /// Detaches from the protocol below and frees the link. Safe to call twice.
@@ -513,7 +711,7 @@ struct StandaloneFlowLink: Hashable {
 
     /// Frees the link's state once nothing will use it again.
     func free(in eventContext: inout NetworkContext.EventContext) {
-        eventContext.standaloneLinks[slot].pendingInbound.finalizeAllFramesAsFailed()
+        eventContext.standaloneLinks[slot].finalizePendingFrames()
         eventContext.standaloneLinks.remove(index: slot)
     }
 }
@@ -653,15 +851,13 @@ struct StandaloneLowerLink: Hashable {
     ) throws(NetworkError) {
         eventContext.standaloneLinks[slot].datagramUpper = .init()
         eventContext.standaloneLinks[slot].streamUpper = .init()
-        eventContext.standaloneLinks[slot].pendingInbound.finalizeAllFramesAsFailed()
-        eventContext.standaloneLinks[slot].pendingOutbound.finalizeAllFramesAsFailed()
+        eventContext.standaloneLinks[slot].finalizePendingFrames()
     }
 
     func teardown(in eventContext: inout NetworkContext.EventContext) {
         guard !eventContext.standaloneLinks[slot].closed else { return }
         eventContext.standaloneLinks[slot].closed = true
-        eventContext.standaloneLinks[slot].pendingInbound.finalizeAllFramesAsFailed()
-        eventContext.standaloneLinks[slot].pendingOutbound.finalizeAllFramesAsFailed()
+        eventContext.standaloneLinks[slot].finalizePendingFrames()
         identifier.retireWithoutOwner(in: &eventContext)
     }
 
@@ -696,10 +892,16 @@ struct StandaloneLowerLink: Hashable {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
-        let frameSize = min(minimumDatagramSize, eventContext.standaloneLinks[slot].maximumOutputSize)
+        let frameSize = min(minimumDatagramSize, eventContext.standaloneMaximumOutputSize)
         var frames = FrameArray(capacity: maximumDatagramCount)
-        for _ in 0..<maximumDatagramCount {
-            frames.add(frame: Frame(count: frameSize))
+        if let provider = eventContext.standaloneOutputFrame {
+            for _ in 0..<maximumDatagramCount {
+                frames.add(frame: provider(frameSize))
+            }
+        } else {
+            for _ in 0..<maximumDatagramCount {
+                frames.add(frame: Frame(count: frameSize))
+            }
         }
         return frames
     }
@@ -829,8 +1031,7 @@ struct StandaloneLowerLink: Hashable {
             eventContext.standaloneLinks[slot].closed = true
             identifier.retireWithoutOwner(in: &eventContext)
         }
-        eventContext.standaloneLinks[slot].pendingInbound.finalizeAllFramesAsFailed()
-        eventContext.standaloneLinks[slot].pendingOutbound.finalizeAllFramesAsFailed()
+        eventContext.standaloneLinks[slot].finalizePendingFrames()
         eventContext.standaloneLinks.remove(index: slot)
     }
 }
@@ -961,15 +1162,30 @@ struct StandaloneConnectionLink: Hashable {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard !eventContext.standaloneLinks[slot].closed else { return }
+        if let event = completeNewInboundFlow(flowInstance: flowInstance, flowMetadata: flowMetadata, in: &eventContext)
+        {
+            eventContext.standaloneEvents.append(event)
+        }
+    }
+
+    /// Attaches to the flow the protocol made, connects it, and returns the event that announces it.
+    ///
+    /// What connecting makes the protocol raise is queued behind it: the caller reports the returned
+    /// event first.
+    func completeNewInboundFlow(
+        flowInstance: InstanceIdentifier,
+        flowMetadata: AbstractProtocolMetadata?,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> StandaloneEvent? {
+        guard !eventContext.standaloneLinks[slot].closed else { return nil }
         let kind = eventContext.standaloneLinks[slot].kind
-        let flowID = eventContext.standaloneMakeFlowID()
         let flow = StandaloneFlowLink.make(
             kind: kind,
-            flowID: flowID,
+            hasFlowID: true,
             reportsConnectionEvents: false,
             in: &eventContext
         )
+        let flowID = StandaloneFlowID(slot: flow.slot)
         do throws(NetworkError) {
             switch kind {
             case .stream:
@@ -990,12 +1206,11 @@ struct StandaloneConnectionLink: Hashable {
         } catch {
             flow.teardown(in: &eventContext)
             flow.free(in: &eventContext)
-            return
+            return nil
         }
         eventContext.standaloneLinks[flow.slot].flowMetadata = flowMetadata
-        eventContext.standaloneFlows[flowID] = flow
-        eventContext.standaloneLinks[slot].flowIDs.append(flowID)
-        eventContext.standaloneEvents.append(.newInboundFlow(flowID, flowMetadata))
+        eventContext.standaloneLinks[flow.slot].releasesFlowsOnDisconnect =
+            eventContext.standaloneLinks[slot].releasesFlowsOnDisconnect
         // Connecting hands over anything the flow buffered before it had an upper.
         switch kind {
         case .stream:
@@ -1005,6 +1220,7 @@ struct StandaloneConnectionLink: Hashable {
             let lower = eventContext.standaloneLinks[flow.slot].datagramLower
             lower.invokeConnect(for: flow.identifier, in: &eventContext)
         }
+        return .newInboundFlow(flowID, tag: 0)
     }
 
     /// Detaches from the listeners and frees the link.

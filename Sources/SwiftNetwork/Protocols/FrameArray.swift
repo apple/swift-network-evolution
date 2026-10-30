@@ -287,6 +287,8 @@ public struct FrameArray: ~Copyable {
     }
 
     public mutating func finalizeAllFramesAsFailed() {
+        // An empty array has nothing to finalize, and whatever storage it kept goes with its owner.
+        guard !frames.isEmpty else { return }
         let count = frames.count
         for index in 0..<count {
             frames[index].finalize(success: false)

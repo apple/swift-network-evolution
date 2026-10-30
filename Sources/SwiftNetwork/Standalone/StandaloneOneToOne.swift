@@ -50,7 +50,7 @@ public struct StandaloneUDP: StandaloneOneToOneDatagramProtocol, ~Copyable {
 
         let upper = StandaloneFlowLink.make(
             kind: .datagram,
-            flowID: nil,
+            hasFlowID: false,
             reportsConnectionEvents: true,
             in: &context.eventContext
         )
@@ -185,7 +185,7 @@ public struct StandaloneTLSRecord: StandaloneOneToOneStreamProtocol, ~Copyable {
 
         let upper = StandaloneFlowLink.make(
             kind: .stream,
-            flowID: nil,
+            hasFlowID: false,
             reportsConnectionEvents: true,
             in: &context.eventContext
         )

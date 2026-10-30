@@ -341,15 +341,61 @@ struct ProtocolEventManagerState: ~Copyable {
     }
 
     mutating func discardPendingEventsForUpperProtocol() {
-        unassignedPendingEventsToDeliverToUpperProtocol.removeAll()
+        // Nothing to discard unless something was ever queued; don't create the queues to find out.
+        queues?.unassignedToDeliverToUpperProtocol.removeAll()
     }
 
     var eventState: EventState = .idle
     var connectedState: ConnectedState = .initial
     var connectCallState: ConnectCallState = .initial
-    var pendingEventsFromLowerProtocol = NetworkUniqueDeque<PendingEvent>()
-    var pendingEventsToDeliverToUpperProtocol = NetworkUniqueDeque<PendingEvent>()
-    var unassignedPendingEventsToDeliverToUpperProtocol = NetworkUniqueDeque<PendingEvent>()
+    /// The queues, created when the first event is queued: most instances never queue one (a
+    /// standalone protocol's events go to its owner inline), so their state stays small, and
+    /// registering and retiring it moves little.
+    final class Queues {
+        var fromLowerProtocol = NetworkUniqueDeque<PendingEvent>()
+        var toDeliverToUpperProtocol = NetworkUniqueDeque<PendingEvent>()
+        var unassignedToDeliverToUpperProtocol = NetworkUniqueDeque<PendingEvent>()
+    }
+
+    private var queues: Queues?
+
+    private mutating func ensureQueues() -> Queues {
+        if let queues { return queues }
+        let queues = Queues()
+        self.queues = queues
+        return queues
+    }
+
+    var pendingEventsFromLowerProtocol: NetworkUniqueDeque<PendingEvent> {
+        _read {
+            if let queues { yield queues.fromLowerProtocol } else { yield NetworkUniqueDeque<PendingEvent>() }
+        }
+        _modify { yield &ensureQueues().fromLowerProtocol }
+    }
+
+    var pendingEventsToDeliverToUpperProtocol: NetworkUniqueDeque<PendingEvent> {
+        _read {
+            if let queues { yield queues.toDeliverToUpperProtocol } else { yield NetworkUniqueDeque<PendingEvent>() }
+        }
+        _modify { yield &ensureQueues().toDeliverToUpperProtocol }
+    }
+
+    var unassignedPendingEventsToDeliverToUpperProtocol: NetworkUniqueDeque<PendingEvent> {
+        _read {
+            if let queues {
+                yield queues.unassignedToDeliverToUpperProtocol
+            } else {
+                yield NetworkUniqueDeque<PendingEvent>()
+            }
+        }
+        _modify { yield &ensureQueues().unassignedToDeliverToUpperProtocol }
+    }
+
+    /// Whether any event is waiting for an upper protocol that has not been attached.
+    var hasUnassignedPendingEvents: Bool {
+        guard let queues else { return false }
+        return !queues.unassignedToDeliverToUpperProtocol.isEmpty
+    }
 
     // Number of things that still hold this index: queued async blocks, at most one scheduled
     // timer wakeup, any such block currently running, any event delivered to this state but
@@ -401,6 +447,13 @@ struct ProtocolEventManagerState: ~Copyable {
 
     var isIdle: Bool {
         eventState == .idle
+    }
+
+    /// Whether any event is queued, to either side.
+    @inline(__always)
+    var hasPendingEvents: Bool {
+        guard let queues else { return false }
+        return !queues.fromLowerProtocol.isEmpty || !queues.toDeliverToUpperProtocol.isEmpty
     }
 
     init() {}
@@ -457,9 +510,8 @@ extension NetworkContext.EventContext {
 
     // Removes an event state that is retiring once nothing still holds it.
     fileprivate mutating func removeProtocolEventStateIfRetired(_ index: NetworkStateIndex) {
-        guard protocolEventStates[index].retiring, protocolEventStates[index].canRemove else {
-            return
-        }
+        guard protocolEventStates[index].retiring else { return }
+        guard protocolEventStates[index].canRemove else { return }
         unregisterProtocolEventState(index)
     }
 
@@ -537,6 +589,14 @@ extension NetworkContext.EventContext {
     }
 
     fileprivate mutating func drainPendingEvents(index: NetworkStateIndex) {
+        // Most calls queue nothing (a standalone protocol hands its events to its owner on the
+        // spot): all there is to do then is to remove a retired state that this call left idle.
+        if !protocolEventStates[index].hasPendingEvents {
+            if protocolEventStates[index].retiring {
+                removeProtocolEventStateIfRetired(index)
+            }
+            return
+        }
         if protocolEventStates[index].isIdle && !protocolEventStates[index].drainingEvents {
             protocolEventStates[index].drainingEvents = true
             let lowerEvents = protocolEventStates[index].startDrainingPendingEventsFromLower()
@@ -616,6 +676,47 @@ extension NetworkContext.EventContext {
             protocolEventStates[index].addPendingEventToDeliverToUpperProtocol(event)
         }
     }
+
+    #if !NETWORK_EMBEDDED
+    /// `admitInlineEvent` for an event that carries no connected state (data, room, aborts), without
+    /// the event value.
+    mutating func admitInlineData(from instance: InstanceIdentifier) -> Bool {
+        !instance.eventStateIndex.isNone
+    }
+
+    /// `admitInlineEvent` for a disconnect, without the event value.
+    mutating func admitInlineDisconnected(from instance: InstanceIdentifier) -> Bool {
+        let index = instance.eventStateIndex
+        guard !index.isNone else { return false }
+        switch protocolEventStates[index].connectedState {
+        case .disconnected: return false
+        default: protocolEventStates[index].connectedState = .disconnected
+        }
+        return true
+    }
+
+    /// Whether an event for an inline upper (see `UpperProtocolLinkage.deliversInline`) should be
+    /// delivered: the same redundancy rules as `deliverEventToUpperProtocol`, without queueing.
+    mutating func admitInlineEvent(_ event: InlineUpperEvent, from instance: InstanceIdentifier) -> Bool {
+        let index = instance.eventStateIndex
+        guard !index.isNone else { return false }
+        switch event {
+        case .connected:
+            switch protocolEventStates[index].connectedState {
+            case .initial: protocolEventStates[index].connectedState = .connected
+            case .connected, .disconnected: return false
+            }
+        case .disconnected:
+            switch protocolEventStates[index].connectedState {
+            case .disconnected: return false
+            default: protocolEventStates[index].connectedState = .disconnected
+            }
+        default:
+            break
+        }
+        return true
+    }
+    #endif
 
     fileprivate mutating func reassignQueuedPendingEventsForUpperProtocol(
         index: NetworkStateIndex,
@@ -1038,8 +1139,7 @@ extension InstanceIdentifier {
     @inline(always)
     func hasQueuedEventsForUpperProtocol(in eventContext: inout NetworkContext.EventContext) -> Bool {
         guard !eventStateIndex.isNone else { return false }
-        return !eventContext.protocolEventStates[eventStateIndex].unassignedPendingEventsToDeliverToUpperProtocol
-            .isEmpty
+        return eventContext.protocolEventStates[eventStateIndex].hasUnassignedPendingEvents
     }
 
     @inline(always)

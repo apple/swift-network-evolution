@@ -40,6 +40,11 @@ public struct InstanceIdentifier: Hashable {
         eventStateIndex = .none
     }
 
+    /// The identifier of an event state registered without a parent.
+    init(eventStateIndex: NetworkStateIndex) {
+        self.eventStateIndex = eventStateIndex
+    }
+
     public init(context: NetworkContext, eventManager: inout ProtocolEventManager) {
         self.eventStateIndex = eventManager.register(in: &context.eventContext)
     }

@@ -458,7 +458,34 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
     }
     private var flags = Flags()
 
-    var streamMetadata = QUICStreamProtocol.QUICStreamMetadata()
+    // The metadata object is made when something asks for it: most streams are never asked, and it is
+    // a class, so making one for every stream costs an allocation and a free.
+    private var streamMetadataStorage: QUICStreamProtocol.QUICStreamMetadata?
+
+    var streamMetadata: QUICStreamProtocol.QUICStreamMetadata {
+        mutating get {
+            if let made = self.streamMetadataStorage { return made }
+            let made = QUICStreamProtocol.QUICStreamMetadata()
+            if let streamID = self.streamID {
+                made.streamID = streamID.value
+                made.streamType = streamID.quicStreamType
+            }
+            made.quicConnectionMetadata = self.parentProtocol.connectionMetadata
+            self.streamMetadataStorage = made
+            return made
+        }
+    }
+
+    /// Brings the metadata, if one was made, up to date with the stream's ID.
+    mutating func updateStreamMetadataID() {
+        guard let made = self.streamMetadataStorage else { return }
+        if let streamID = self.streamID {
+            made.streamID = streamID.value
+            made.streamType = streamID.quicStreamType
+        } else {
+            made.streamID = 0
+        }
+    }
 
     var flowControlState = FlowControlState(isStream: true)
     var flowControlStreamState = FlowControlStreamState()
@@ -678,10 +705,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         let streamIDString = if let streamID { streamID.description } else { "?" }
         self.log.logPrefix = "[S\(streamIDString)]"
         #endif
-        if let _streamID = self.streamID {
-            self.streamMetadata.streamID = _streamID.value
-            self.streamMetadata.streamType = _streamID.quicStreamType
-        }
+        self.updateStreamMetadataID()
         self.receive.reassemblyQueue.log = NetworkLoggerState(logPrefixer.logIDString)
     }
 
@@ -694,8 +718,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
             self.unidirectional = true
         }
 
-        self.streamMetadata.streamID = streamID.value
-        self.streamMetadata.streamType = streamID.quicStreamType
+        self.updateStreamMetadataID()
     }
 
     deinit {

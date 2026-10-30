@@ -272,24 +272,34 @@ final class SwiftNetworkStandaloneTests: NetTestCase {
         return options
     }
 
-    func makeClient(_ loopback: StandaloneLoopback, datagram: Bool = false) throws -> StandaloneQUICConnection {
+    func makeClient(
+        _ loopback: StandaloneLoopback,
+        datagram: Bool = false,
+        releasesFlowsOnDisconnect: Bool = false
+    ) throws -> StandaloneQUICConnection {
         try StandaloneQUICConnection(
             options: quicOptions(server: false, datagram: datagram),
             isServer: false,
             local: localEndpoint,
             remote: remoteEndpoint,
-            environment: loopback.clientEnvironment
+            environment: loopback.clientEnvironment,
+            releasesFlowsOnDisconnect: releasesFlowsOnDisconnect
         )
     }
 
-    func makeServer(_ loopback: StandaloneLoopback, datagram: Bool = false) throws -> StandaloneQUICConnection {
+    func makeServer(
+        _ loopback: StandaloneLoopback,
+        datagram: Bool = false,
+        releasesFlowsOnDisconnect: Bool = false
+    ) throws -> StandaloneQUICConnection {
         try StandaloneQUICConnection(
             options: quicOptions(server: true, datagram: datagram),
             isServer: true,
             local: remoteEndpoint,
             remote: localEndpoint,
             environment: loopback.serverEnvironment,
-            acceptsInboundDatagramFlows: datagram
+            acceptsInboundDatagramFlows: datagram,
+            releasesFlowsOnDisconnect: releasesFlowsOnDisconnect
         )
     }
 
@@ -343,6 +353,11 @@ final class SwiftNetworkStandaloneTests: NetTestCase {
         XCTAssertEqual(received.bytes, Array("hello quic".utf8))
         XCTAssertTrue(received.isFinal)
 
+        // The new-flow event stands for the flow's connect and for the data it arrived with, so
+        // neither is reported again.
+        XCTAssertFalse(loopback.serverEvents.contains(connected: serverStream))
+        XCTAssertFalse(loopback.serverEvents.contains(inboundDataAvailable: serverStream))
+
         // Echo it back.
         XCTAssertTrue(server.writeStream(flow: serverStream, received.bytes, sendFIN: true))
         XCTAssertTrue(drive(loopback, client, server) { loopback.clientEvents.contains(inboundDataAvailable: stream) })
@@ -352,6 +367,116 @@ final class SwiftNetworkStandaloneTests: NetTestCase {
 
         client.teardown(flow: stream)
         server.teardown(flow: serverStream)
+        client.close()
+        server.close()
+    }
+
+    /// With `releasesFlowsOnDisconnect`, a flow is gone once its disconnect has been taken from the
+    /// queue, and the owner's `teardown(flow:)` for it does nothing.
+    func testStandaloneQUICReleasesFlowsOnDisconnect() throws {
+        let loopback = StandaloneLoopback()
+        let client = try makeClient(loopback, releasesFlowsOnDisconnect: true)
+        let server = try makeServer(loopback, releasesFlowsOnDisconnect: true)
+        server.connect()
+        client.connect()
+        let stream = try client.openStream()
+        client.connect(flow: stream)
+        XCTAssertTrue(drive(loopback, client, server) { loopback.clientEvents.contains(connected: stream) })
+
+        // A request and its response, each with a FIN.
+        XCTAssertTrue(client.writeStream(flow: stream, Array("ping".utf8), sendFIN: true))
+        XCTAssertTrue(drive(loopback, client, server) { !loopback.serverEvents.newInboundFlows.isEmpty })
+        let serverStream = try XCTUnwrap(loopback.serverEvents.newInboundFlows.first)
+        let request = try XCTUnwrap(server.readStream(flow: serverStream))
+        XCTAssertEqual(request.bytes, Array("ping".utf8))
+        XCTAssertTrue(server.writeStream(flow: serverStream, Array("pong".utf8), sendFIN: true))
+        XCTAssertTrue(drive(loopback, client, server) { loopback.clientEvents.contains(inboundDataAvailable: stream) })
+        let response = try XCTUnwrap(client.readStream(flow: stream))
+        XCTAssertEqual(response.bytes, Array("pong".utf8))
+        XCTAssertTrue(response.isFinal)
+
+        // Both directions are done: each side reports the stream disconnected, and releases it.
+        XCTAssertTrue(
+            drive(loopback, client, server) {
+                loopback.clientEvents.contains(disconnected: stream)
+                    && loopback.serverEvents.contains(disconnected: serverStream)
+            },
+            "both sides should report the stream disconnected"
+        )
+        XCTAssertNil(client.readStream(flow: stream), "a released flow takes no more calls")
+        XCTAssertNil(server.readStream(flow: serverStream))
+        client.teardown(flow: stream)
+        server.teardown(flow: serverStream)
+
+        // A flow ID names the flow's link slot, which the next flow reuses. The released flow's ID
+        // must not reach the flow that took its place.
+        let next = try client.openStream()
+        XCTAssertNotEqual(next, stream)
+        client.connect(flow: next)
+        client.teardown(flow: stream)
+        XCTAssertNil(client.readStream(flow: stream))
+        XCTAssertTrue(client.writeStream(flow: next, Array("again".utf8), sendFIN: true), "the new flow is untouched")
+        client.teardown(flow: next)
+
+        client.close()
+        server.close()
+    }
+
+    /// Streams that hold more than the flow-control windows allow wait for credit, and come back to the
+    /// send list as the peer's ACKs and window updates arrive. Every byte of every stream must arrive.
+    func testStandaloneQUICStreamsLargerThanTheWindowsComplete() throws {
+        let loopback = StandaloneLoopback()
+        let client = try makeClient(loopback)
+        let server = try makeServer(loopback)
+        server.connect()
+        client.connect()
+
+        let streamCount = 8
+        let size = 3 << 20
+        func pattern(_ stream: Int, _ index: Int) -> UInt8 { UInt8(truncatingIfNeeded: index &* 31 &+ stream) }
+        var streams: [StandaloneFlowID] = []
+        for _ in 0..<streamCount {
+            let flow = try client.openStream()
+            client.connect(flow: flow)
+            streams.append(flow)
+        }
+        XCTAssertTrue(
+            drive(loopback, client, server) {
+                streams.allSatisfy { loopback.clientEvents.contains(connected: $0) }
+            },
+            "the streams should connect"
+        )
+        for (stream, flow) in streams.enumerated() {
+            let bytes = (0..<size).map { pattern(stream, $0) }
+            XCTAssertTrue(client.writeStream(flow: flow, bytes, sendFIN: true))
+        }
+
+        var received: [StandaloneFlowID: [UInt8]] = [:]
+        var finished: Set<StandaloneFlowID> = []
+        let done = drive(loopback, client, server) {
+            for flow in loopback.serverEvents.newInboundFlows where !finished.contains(flow) {
+                while let read = server.readStream(flow: flow) {
+                    received[flow, default: []].append(contentsOf: read.bytes)
+                    if read.isFinal {
+                        finished.insert(flow)
+                        break
+                    }
+                    if read.bytes.isEmpty { break }
+                }
+            }
+            return finished.count == streamCount
+        }
+        XCTAssertTrue(done, "every stream should arrive complete")
+        XCTAssertEqual(received.count, streamCount)
+        // The server sees the streams in the order the client opened them.
+        for (stream, flow) in loopback.serverEvents.newInboundFlows.enumerated() {
+            let bytes = received[flow] ?? []
+            XCTAssertEqual(bytes.count, size)
+            XCTAssertTrue(bytes.enumerated().allSatisfy { $0.element == pattern(stream, $0.offset) }, "stream \(stream)")
+        }
+
+        for flow in streams { client.teardown(flow: flow) }
+        for flow in loopback.serverEvents.newInboundFlows { server.teardown(flow: flow) }
         client.close()
         server.close()
     }
@@ -506,7 +631,7 @@ final class SwiftNetworkStandaloneTests: NetTestCase {
         let context = environment.context
         let flow = StandaloneFlowLink.make(
             kind: .stream,
-            flowID: nil,
+            hasFlowID: false,
             reportsConnectionEvents: true,
             in: &context.eventContext
         )

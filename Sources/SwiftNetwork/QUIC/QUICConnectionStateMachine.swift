@@ -73,6 +73,8 @@ struct QUICConnectionStateMachine {
         // These only ever run in DEBUG mode to catch errors
         static let streamTableBorrowed = Status(rawValue: 1 << 9)
         static let secondaryTableBorrowed = Status(rawValue: 1 << 10)
+        // Only in the work handed back by `endFlowBorrow`: sends that waited are ready to replay.
+        static let replaysSends = Status(rawValue: 1 << 11)
 
         static let sendBlockers: Status = [.flowBorrowed, .sendActive]
         static let pendingSends: Status = [.sendFrames, .pathSends]
@@ -104,9 +106,31 @@ struct QUICConnectionStateMachine {
 
     /// A send on one path that had to wait.
     struct PathSend {
+        struct Flags: OptionSet {
+            var rawValue: UInt8
+            static let ignoreCongestionWindow = Flags(rawValue: 1 << 0)
+            static let retransmission = Flags(rawValue: 1 << 1)
+        }
+
         let path: QUICPath
-        var ignoreCongestionWindow: Bool
-        var retransmission: Bool
+        var flags: Flags
+
+        init(path: QUICPath, ignoreCongestionWindow: Bool, retransmission: Bool) {
+            self.path = path
+            self.flags = []
+            self.ignoreCongestionWindow = ignoreCongestionWindow
+            self.retransmission = retransmission
+        }
+
+        var ignoreCongestionWindow: Bool {
+            get { flags.contains(.ignoreCongestionWindow) }
+            set { flags.set(.ignoreCongestionWindow, to: newValue) }
+        }
+
+        var retransmission: Bool {
+            get { flags.contains(.retransmission) }
+            set { flags.set(.retransmission, to: newValue) }
+        }
     }
 
     /// What the connection should do now that a flow borrow has ended. Never empty: when there is
@@ -114,7 +138,7 @@ struct QUICConnectionStateMachine {
     struct DeferredWork {
         fileprivate var requests: Status
         /// Sends that waited are ready, because nothing else is holding them back.
-        var replaysSends: Bool
+        var replaysSends: Bool { requests.contains(.replaysSends) }
 
         /// A close was requested; holds whether a CONNECTION_CLOSE frame should be sent.
         var close: Bool? {
@@ -167,11 +191,13 @@ struct QUICConnectionStateMachine {
     mutating func endFlowBorrow(of table: Table, wasFlowBorrowed: Bool) -> DeferredWork? {
         endTableBorrow(table)
         guard !wasFlowBorrowed else { return nil }
-        let requests = status.intersection(.afterBorrow)
-        let replaysSends = !status.contains(.sendActive) && !status.isDisjoint(with: .pendingSends)
+        var requests = status.intersection(.afterBorrow)
+        if !status.contains(.sendActive) && !status.isDisjoint(with: .pendingSends) {
+            requests.insert(.replaysSends)
+        }
         status.subtract([.afterBorrow, .flowBorrowed])
-        guard !requests.isEmpty || replaysSends else { return nil }
-        return DeferredWork(requests: requests, replaysSends: replaysSends)
+        guard !requests.isEmpty else { return nil }
+        return DeferredWork(requests: requests)
     }
 
     // MARK: Which table is borrowed

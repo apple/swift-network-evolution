@@ -110,7 +110,79 @@ public protocol UpperProtocolLinkage: ProtocolLinkage {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     )
+
+    #if !NETWORK_EMBEDDED
+    /// Whether events for this linkage are handed to it on the spot, in the order they are raised,
+    /// instead of through the event queues.
+    ///
+    /// A linkage that answers `true` must have a handler that never calls back into a protocol: it
+    /// may be called while the protocol that raised the event is still running.
+    var deliversInline: Bool { get }
+
+    /// Hands the event to the linkage's handler right away. Only called when `deliversInline`.
+    func deliverInline(
+        _ event: InlineUpperEvent,
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
+
+    /// `deliverInline(.disconnected(error))` without the event value, for the disconnect every flow
+    /// ends with. Only called when `deliversInline`.
+    func deliverInlineDisconnected(
+        error: NetworkError?,
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
+
+    /// `deliverInline(.inboundDataAvailable)` without the event value, for the event every flow with
+    /// data raises. Only called when `deliversInline`.
+    func deliverInlineInboundDataAvailable(
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
+    #endif
 }
+
+#if !NETWORK_EMBEDDED
+/// The events a linkage can take inline. See `UpperProtocolLinkage.deliversInline`.
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+public enum InlineUpperEvent {
+    case connected
+    case disconnected(NetworkError?)
+    case network(NetworkProtocolEvent)
+    case inboundDataAvailable
+    case outboundRoomAvailable
+    case inboundAborted(NetworkError?)
+    case outboundAborted(NetworkError?)
+}
+
+@available(Network 0.1.0, *)
+extension UpperProtocolLinkage {
+    public var deliversInline: Bool { false }
+
+    public func deliverInline(
+        _ event: InlineUpperEvent,
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {}
+
+    public func deliverInlineDisconnected(
+        error: NetworkError?,
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        deliverInline(.disconnected(error), from: instance, in: &eventContext)
+    }
+
+    public func deliverInlineInboundDataAvailable(
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        deliverInline(.inboundDataAvailable, from: instance, in: &eventContext)
+    }
+}
+#endif
 
 @available(Network 0.1.0, *)
 extension UpperProtocolLinkage {
@@ -118,6 +190,14 @@ extension UpperProtocolLinkage {
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        #if !NETWORK_EMBEDDED
+        if self.deliversInline {
+            if eventContext.admitInlineEvent(.connected, from: instance) {
+                self.deliverInline(.connected, from: instance, in: &eventContext)
+            }
+            return
+        }
+        #endif
         instance.deliverEventToUpperProtocol(
             event: .connected(
                 instance,
@@ -134,6 +214,14 @@ extension UpperProtocolLinkage {
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        #if !NETWORK_EMBEDDED
+        if self.deliversInline {
+            if eventContext.admitInlineDisconnected(from: instance) {
+                self.deliverInlineDisconnected(error: error, from: instance, in: &eventContext)
+            }
+            return
+        }
+        #endif
         instance.deliverEventToUpperProtocol(
             event: .disconnected(
                 instance,
@@ -152,6 +240,14 @@ extension UpperProtocolLinkage {
         event: NetworkProtocolEvent,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        #if !NETWORK_EMBEDDED
+        if self.deliversInline {
+            if eventContext.admitInlineEvent(.network(event), from: originalInstance) {
+                self.deliverInline(.network(event), from: originalInstance, in: &eventContext)
+            }
+            return
+        }
+        #endif
         selfInstance.deliverEventToUpperProtocol(
             event: .networkProtocolEvent(
                 originalInstance,
@@ -185,6 +281,14 @@ extension InboundDataLinkage {
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        #if !NETWORK_EMBEDDED
+        if self.deliversInline {
+            if eventContext.admitInlineData(from: instance) {
+                self.deliverInlineInboundDataAvailable(from: instance, in: &eventContext)
+            }
+            return
+        }
+        #endif
         instance.deliverEventToUpperProtocol(
             event: .inboundDataAvailable(
                 instance,
@@ -200,6 +304,14 @@ extension InboundDataLinkage {
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        #if !NETWORK_EMBEDDED
+        if self.deliversInline {
+            if eventContext.admitInlineEvent(.outboundRoomAvailable, from: instance) {
+                self.deliverInline(.outboundRoomAvailable, from: instance, in: &eventContext)
+            }
+            return
+        }
+        #endif
         instance.deliverEventToUpperProtocol(
             event: .outboundRoomAvailable(
                 instance,
@@ -223,7 +335,56 @@ public protocol InboundFlowLinkage: UpperProtocolLinkage where PairedLowerLinkag
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     )
+
+    #if !NETWORK_EMBEDDED
+    /// Records a new inbound flow for an inline linkage (see `UpperProtocolLinkage.deliversInline`).
+    /// Attaching to the flow calls into the protocol, so it is not done on the spot: the linkage
+    /// keeps the flow until its owner is outside the protocol.
+    func deliverInlineNewInboundFlow(
+        flowInstance: InstanceIdentifier,
+        flowMetadata: AbstractProtocolMetadata?,
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
+
+    /// For an inline linkage, makes the application's side of a flow the protocol is creating, reports
+    /// the flow, and returns the upper linkage the flow should use, or `nil` if the linkage is not
+    /// inline. `lower` is the linkage the application reaches the flow through, and `flowTag` is the
+    /// protocol's own number for the flow (for QUIC, the stream ID), which the application is told
+    /// with the flow. The flow carries no metadata object: the application asks the protocol for
+    /// that if it wants it.
+    ///
+    /// The protocol calls this while it creates the flow, so the flow has its upper before it can
+    /// raise an event, and the application learns of the flow without the attach round trip (a
+    /// queued marker, an attach call from the owner, and the events parked in between). Nothing in
+    /// the inline linkage calls back into the protocol, which is what makes that safe.
+    func makeInlineFlow(
+        flowInstance: InstanceIdentifier,
+        flowTag: UInt64,
+        lower: DataLinkage,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> DataLinkage.PairedUpperLinkage?
+    #endif
 }
+
+#if !NETWORK_EMBEDDED
+@available(Network 0.1.0, *)
+extension InboundFlowLinkage {
+    public func deliverInlineNewInboundFlow(
+        flowInstance: InstanceIdentifier,
+        flowMetadata: AbstractProtocolMetadata?,
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {}
+
+    public func makeInlineFlow(
+        flowInstance: InstanceIdentifier,
+        flowTag: UInt64,
+        lower: DataLinkage,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> DataLinkage.PairedUpperLinkage? { nil }
+}
+#endif
 
 @available(Network 0.1.0, *)
 extension InboundFlowLinkage {
@@ -233,6 +394,19 @@ extension InboundFlowLinkage {
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        #if !NETWORK_EMBEDDED
+        if self.deliversInline {
+            if !instance.isNone {
+                self.deliverInlineNewInboundFlow(
+                    flowInstance: flowInstance,
+                    flowMetadata: flowMetadata,
+                    from: instance,
+                    in: &eventContext
+                )
+            }
+            return
+        }
+        #endif
         instance.deliverEventToUpperProtocol(
             event: .newInboundFlow(
                 instance,
@@ -487,6 +661,14 @@ extension InboundStreamLinkage {
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        #if !NETWORK_EMBEDDED
+        if self.deliversInline {
+            if eventContext.admitInlineEvent(.inboundAborted(error), from: instance) {
+                self.deliverInline(.inboundAborted(error), from: instance, in: &eventContext)
+            }
+            return
+        }
+        #endif
         instance.deliverEventToUpperProtocol(
             event: .inboundAborted(
                 instance,
@@ -504,6 +686,14 @@ extension InboundStreamLinkage {
         from instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        #if !NETWORK_EMBEDDED
+        if self.deliversInline {
+            if eventContext.admitInlineEvent(.outboundAborted(error), from: instance) {
+                self.deliverInline(.outboundAborted(error), from: instance, in: &eventContext)
+            }
+            return
+        }
+        #endif
         instance.deliverEventToUpperProtocol(
             event: .outboundAborted(
                 instance,

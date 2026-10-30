@@ -155,8 +155,11 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         // State for the links of a standalone protocol, keyed by the slot a link holds, and the
         // events those links have queued for their owner. See `StandaloneLinks.swift`.
         internal var standaloneLinks = NetworkGappyArray<StandaloneLinkState>()
-        internal var standaloneEvents: [StandaloneEvent] = []
-        internal var standaloneFlows: [StandaloneFlowID: StandaloneFlowLink] = [:]
+        internal var standaloneEvents = StandaloneEventQueue()
+        // Where a standalone protocol's datagram frames come from, when the owner supplies them, and
+        // the largest datagram the protocol may build.
+        internal var standaloneOutputFrame: ((Int) -> Frame)?
+        internal var standaloneMaximumOutputSize = 1500
         internal var standaloneNextID = 1
         #endif
         internal mutating func registerProtocolEventState() -> NetworkStateIndex {

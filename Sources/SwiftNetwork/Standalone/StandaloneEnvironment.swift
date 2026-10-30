@@ -81,6 +81,23 @@ public final class StandaloneEnvironment {
         }
     }
 
+    // MARK: - Output frames
+
+    /// Supplies the frames the protocol builds its outbound datagrams in.
+    ///
+    /// The protocol asks for a frame of at most `maximumOutputSize` bytes per datagram it builds. With
+    /// a provider, the owner decides where the bytes live (a buffer it will send as it is), and the
+    /// frame only wraps them; without one the protocol allocates its own.
+    public func setOutputFrameProvider(_ provider: ((_ size: Int) -> Frame)?) {
+        context.eventContext.standaloneOutputFrame = provider
+    }
+
+    /// The largest datagram the protocol builds. The default is 1500.
+    public var maximumOutputSize: Int {
+        get { context.eventContext.standaloneMaximumOutputSize }
+        set { context.eventContext.standaloneMaximumOutputSize = newValue }
+    }
+
     // MARK: - Events
 
     /// Whether any event is waiting.
@@ -88,7 +105,7 @@ public final class StandaloneEnvironment {
 
     /// Removes and returns the oldest event.
     public func nextEvent() -> StandaloneEvent? {
-        context.eventContext.standaloneEvents.isEmpty ? nil : context.eventContext.standaloneEvents.removeFirst()
+        context.eventContext.standaloneNextEvent()
     }
 
     /// Hands every queued event to `handler`, oldest first.

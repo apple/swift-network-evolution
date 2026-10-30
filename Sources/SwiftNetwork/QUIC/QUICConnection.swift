@@ -358,7 +358,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Keeps track of flow table and sendFrame work on the connection
     var stateMachine = QUICConnectionStateMachine()
 
-    private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
+    private(set) var knownFlows = QUICStreamFlowIndex()
+
+    /// The message identifier of every inbound stream's metadata.
+    static let inboundStreamMessageIdentifier = SystemUUID(insecure: true)
 
     var localCIDLength: Int = 0  // would be private(set)
     private var initialSourceConnectionID: QUICConnectionID?
@@ -2668,10 +2671,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         // Try to send more data on all streams due to a received MAX_DATA or ACK
         if applicationPendingItems.triggerAllStreamsUnblocked {
+            // The scan puts back every stream that can send now; one that still cannot is noted again.
+            applicationPendingItems.streamsMayBeBlocked = false
             applyToAllFlows { stream in
                 applicationPendingItems.prependStreamToService(&stream)
             }
-            sendFrames(in: &eventContext)
+            // The streams are queued to be serviced; under a batch the send waits for the batch's end.
+            if !pendOutboundData {
+                sendFrames(in: &eventContext)
+            }
             // We've already processed all the unblocked streams
             let unblockedMembership = applicationPendingItems.unblockedSendStreams.membership
             for flowID in applicationPendingItems.unblockedSendStreams.removeAllIdentifiers() {
@@ -2689,7 +2697,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     applicationPendingItems.prependStreamToService(&stream)
                 }
                 guard prepended != nil else { continue }
-                sendFrames(in: &eventContext)
+                if !pendOutboundData {
+                    sendFrames(in: &eventContext)
+                }
 
                 performOnStream(flowID, in: &eventContext) {
                     (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
@@ -2727,7 +2737,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
         synchronizeStats()
-        sendFrames(in: &eventContext)
+        // While the application batches its sends, whatever is pending (an ACK for the datagrams just
+        // received, say) goes out with the batch, when the application ends it: sending it now would
+        // put an ACK-only datagram on the wire just ahead of the data the application is about to
+        // write.
+        if !pendOutboundData {
+            sendFrames(in: &eventContext)
+        }
     }
 
     // Handle an outbound write to stream, queue the data for sending in the
@@ -2984,7 +3000,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             streamID = nil
         }
 
-        stream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
         stream.setup(streamID: streamID, logPrefixer: logPrefixer)
 
         if let remoteTransportParameters {
@@ -5912,8 +5927,7 @@ extension QUICConnection {
                     return false
                 }
                 // To inform QUICStreamMetadata
-                stream.streamMetadata.streamID = stream.streamID?.value ?? 0  // Default for QUICStreamMetadata is 0
-                stream.streamMetadata.streamType = streamType
+                stream.updateStreamMetadataID()
                 return true
             }
             guard readied == true else {
@@ -6695,6 +6709,7 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
         // First the stream itself: it checks the caller and closes its own side.
+        var wasClosed = false
         let tornDown = performOnStream(flowID, in: &eventContext) {
             (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) -> Bool in
             do throws(ProtocolInstanceError) {
@@ -6702,14 +6717,19 @@ extension QUICConnection {
             } catch {
                 return false
             }
+            wasClosed = stream.closed
             stream.teardown(in: &ctx)
             return true
         }
         guard tornDown == true else { throw NetworkError.posix(EINVAL) }
 
         // Then the connection's view of the flow, which looks at the stream and so cannot happen
-        // while it is borrowed.
-        teardown(flow: flowID, in: &eventContext)
+        // while it is borrowed. A stream that was already closed (both directions done, the upper
+        // told) has nothing left to stop: stopping it again would only run the stop handlers and
+        // `sendFrames` twice for nothing.
+        if !wasClosed {
+            teardown(flow: flowID, in: &eventContext)
+        }
 
         // Finally release the stream. Once it is out of the table nothing else can reach it.
         if var stream = removeFlow(flowID) {
@@ -6858,7 +6878,6 @@ extension QUICConnection {
                 inbound: true,
                 in: &eventContext
             )
-            newStream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
 
             let newFlowIdentifier = newStream.flowIdentifier
             knownFlows[newStreamID] = newFlowIdentifier
@@ -6879,19 +6898,60 @@ extension QUICConnection {
             // The stream is fully set up before it joins the flow table, where it can only be
             // borrowed from then on.
             let newStreamInstance = newStream.identifier
-            let newStreamMetadata = newStream.streamMetadata
+
+            // An inline application (see `UpperProtocolLinkage.deliversInline`) gets its side of the
+            // stream now, so the stream has its upper before it can raise an event.
+            var inlineUpperLinkage: BaseInboundStreamLinkage?
+            #if !NETWORK_EMBEDDED
+            // A new inline stream is reported, then connected as the application's connect would,
+            // while it is still ours to borrow: the stream is not pending, nothing is queued for its
+            // upper, and the events only reach the application's queue, so none of the lookups
+            // `connectStream` makes to find the stream again are needed. Before the connection is
+            // established the connect waits with the connection, as `connectStream` does. The
+            // application is told the stream ID, so no metadata object is made for it.
+            var connectedInline = false
+            if inboundFlowLinkage.deliversInline,
+                let inlineUpper = inboundFlowLinkage.makeInlineFlow(
+                    flowInstance: newStreamInstance,
+                    flowTag: newStreamID.value,
+                    lower: newStream.asLowerLinkage(),
+                    in: &eventContext
+                )
+            {
+                newStream.upper = inlineUpper
+                inlineUpperLinkage = inlineUpper
+                if isConnected(in: &eventContext) {
+                    if newStreamInstance.canCallConnect(requested: true, in: &eventContext) {
+                        newStream.deliverConnectedEvent(in: &eventContext)
+                    }
+                    connectedInline = true
+                }
+            }
+            #endif
+            // Without an inline application, the new-flow event carries the stream's metadata.
+            let newStreamMetadata = inlineUpperLinkage == nil ? newStream.streamMetadata : nil
             insertFlow(newStream, for: newFlowIdentifier)
 
-            let abstractMetadata: AbstractProtocolMetadata = ProtocolMetadata<QUICStreamProtocol>(
-                protocolIdentifier: QUICStreamProtocol.identifier,
-                perProtocolMetadata: newStreamMetadata,
-                messageIdentifier: SystemUUID(insecure: true)
-            )
-            deliverNewInboundFlowEvent(
-                newStreamInstance,
-                flowMetadata: abstractMetadata,
-                in: &eventContext
-            )
+            if let inlineUpperLinkage {
+                #if !NETWORK_EMBEDDED
+                if !connectedInline {
+                    connectStream(flow: newFlowIdentifier, for: inlineUpperLinkage.identifier, in: &eventContext)
+                }
+                #endif
+            } else {
+                // The message identifier names a message; a stream's metadata is not one, so inbound
+                // streams share one, which saves the locked counter a fresh insecure identifier takes.
+                let abstractMetadata: AbstractProtocolMetadata = ProtocolMetadata<QUICStreamProtocol>(
+                    protocolIdentifier: QUICStreamProtocol.identifier,
+                    perProtocolMetadata: newStreamMetadata ?? QUICStreamProtocol.QUICStreamMetadata(),
+                    messageIdentifier: QUICConnection.inboundStreamMessageIdentifier
+                )
+                deliverNewInboundFlowEvent(
+                    newStreamInstance,
+                    flowMetadata: abstractMetadata,
+                    in: &eventContext
+                )
+            }
 
             log.debug(
                 "Set stream \(newStreamID.description) for flow \(newFlowIdentifier.debugDescription)"

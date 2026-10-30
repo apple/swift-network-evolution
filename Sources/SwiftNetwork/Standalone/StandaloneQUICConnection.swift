@@ -56,6 +56,7 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
     private let pathProperties: PathProperties
     private let localEndpoint: Endpoint
     private let remoteEndpoint: Endpoint
+    private let releasesFlowsOnDisconnect: Bool
 
     /// The path created with the connection, from the endpoints it was given.
     public let primaryPath: StandalonePathID
@@ -73,13 +74,17 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
     ///   - environment: The clock, timers and events this connection runs on.
     ///   - acceptsInboundDatagramFlows: Whether datagram flows the peer opens are reported with
     ///     `newInboundFlow`.
+    ///   - releasesFlowsOnDisconnect: Whether a flow is detached and freed as its `disconnected` event
+    ///     is taken from the queue, so the owner does not call `teardown(flow:)` for it. The flow
+    ///     accepts no calls after that event.
     public init(
         options: ProtocolOptions<QUICProtocol>,
         isServer: Bool,
         local: Endpoint,
         remote: Endpoint,
         environment: StandaloneEnvironment,
-        acceptsInboundDatagramFlows: Bool = false
+        acceptsInboundDatagramFlows: Bool = false,
+        releasesFlowsOnDisconnect: Bool = false
     ) throws(NetworkError) {
         let context = environment.context
         let storage = BaseNetworkProtocolStorage(context: context)
@@ -103,6 +108,12 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
                 reportsConnectionEvents: false,
                 in: &context.eventContext
             ) : nil
+        context.eventContext.standaloneLinks[streamConnection.slot].releasesFlowsOnDisconnect =
+            releasesFlowsOnDisconnect
+        if let datagramConnection {
+            context.eventContext.standaloneLinks[datagramConnection.slot].releasesFlowsOnDisconnect =
+                releasesFlowsOnDisconnect
+        }
         let primaryPathID = context.eventContext.standaloneMakePathID()
         let pathLink = StandaloneLowerLink.make(kind: .datagram, pathID: primaryPathID, in: &context.eventContext)
 
@@ -161,6 +172,7 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
         self.pathProperties = pathProperties
         self.localEndpoint = local
         self.remoteEndpoint = remote
+        self.releasesFlowsOnDisconnect = releasesFlowsOnDisconnect
         self.primaryPath = primaryPathID
     }
 
@@ -202,12 +214,7 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
     /// crypto state.
     private func shutdown() {
         let context = environment.context
-        var flowIDs = context.eventContext.standaloneLinks[streamConnection.slot].flowIDs
-        if let datagramConnection {
-            flowIDs += context.eventContext.standaloneLinks[datagramConnection.slot].flowIDs
-        }
-        for flowID in flowIDs {
-            guard let flow = context.eventContext.standaloneFlows.removeValue(forKey: flowID) else { continue }
+        for flow in context.eventContext.standaloneAllFlowLinks() {
             flow.identifier.fromExternal(in: &context.eventContext) { eventContext in
                 flow.teardown(in: &eventContext)
             }
@@ -236,33 +243,29 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
     public func connect() {
         let listener = streamListener
         let link = streamConnection
-        link.identifier.fromExternal(in: &context.eventContext) { eventContext in
-            listener.invokeConnect(for: link.identifier, in: &eventContext)
-        }
+        listener.invokeConnect(for: link.identifier, in: &context.eventContext)
     }
 
     public func disconnect(error: NetworkError?) {
         let listener = streamListener
         let link = streamConnection
-        link.identifier.fromExternal(in: &context.eventContext) { eventContext in
-            listener.invokeDisconnect(error: error, for: link.identifier, in: &eventContext)
-        }
+        listener.invokeDisconnect(error: error, for: link.identifier, in: &context.eventContext)
     }
 
     public func applicationEvent(_ event: ApplicationEvent) {
         let listener = streamListener
         let link = streamConnection
-        link.identifier.fromExternal(in: &context.eventContext) { eventContext in
-            listener.invokeApplicationEvent(event: event, for: link.identifier, in: &eventContext)
-        }
+        listener.invokeApplicationEvent(event: event, for: link.identifier, in: &context.eventContext)
     }
 
     public func getMetrics(_ requested: RequestedNetworkMetrics) -> NetworkMetrics? {
         let listener = streamListener
         let link = streamConnection
-        return link.identifier.fromExternal(in: &context.eventContext) { eventContext -> NetworkMetrics? in
-            listener.invokeGetMetrics(requestedNetworkMetric: requested, for: link.identifier, in: &eventContext)
-        }
+        return listener.invokeGetMetrics(
+            requestedNetworkMetric: requested,
+            for: link.identifier,
+            in: &context.eventContext
+        )
     }
 
     public var isFullyDetached: Bool {
@@ -272,23 +275,19 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
     // MARK: - Flows
 
     private func flowLink(_ flow: StandaloneFlowID) throws(NetworkError) -> StandaloneFlowLink {
-        guard let link = context.eventContext.standaloneFlows[flow] else { throw NetworkError.posix(ENOENT) }
+        guard let link = context.eventContext.standaloneFlowLink(flow) else { throw NetworkError.posix(ENOENT) }
         return link
     }
 
-    private func addFlow(_ link: StandaloneFlowLink, id: StandaloneFlowID) {
-        context.eventContext.standaloneFlows[id] = link
-        context.eventContext.standaloneLinks[streamConnection.slot].flowIDs.append(id)
-    }
-
     public func openStream() throws(NetworkError) -> StandaloneFlowID {
-        let flowID = context.eventContext.standaloneMakeFlowID()
         let link = StandaloneFlowLink.make(
             kind: .stream,
-            flowID: flowID,
+            hasFlowID: true,
             reportsConnectionEvents: false,
             in: &context.eventContext
         )
+        let flowID = StandaloneFlowID(slot: link.slot)
+        context.eventContext.standaloneLinks[link.slot].releasesFlowsOnDisconnect = releasesFlowsOnDisconnect
         do throws(NetworkError) {
             try streamListener.invokeAttachUpperProtocolToNewFlow(
                 link.inboundStream,
@@ -301,18 +300,18 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
             context.eventContext.standaloneUnregisterLink(identifier: link.identifier, slot: link.slot)
             throw error
         }
-        addFlow(link, id: flowID)
         return flowID
     }
 
     public func openDatagramFlow() throws(NetworkError) -> StandaloneFlowID {
-        let flowID = context.eventContext.standaloneMakeFlowID()
         let link = StandaloneFlowLink.make(
             kind: .datagram,
-            flowID: flowID,
+            hasFlowID: true,
             reportsConnectionEvents: false,
             in: &context.eventContext
         )
+        let flowID = StandaloneFlowID(slot: link.slot)
+        context.eventContext.standaloneLinks[link.slot].releasesFlowsOnDisconnect = releasesFlowsOnDisconnect
         do throws(NetworkError) {
             try datagramListener.invokeAttachUpperProtocolToNewFlow(
                 link.inboundDatagram,
@@ -325,7 +324,6 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
             context.eventContext.standaloneUnregisterLink(identifier: link.identifier, slot: link.slot)
             throw error
         }
-        addFlow(link, id: flowID)
         return flowID
     }
 
@@ -338,10 +336,8 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
     }
 
     public func teardown(flow: StandaloneFlowID) {
-        guard let link = context.eventContext.standaloneFlows.removeValue(forKey: flow) else { return }
-        link.identifier.fromExternal(in: &context.eventContext) { eventContext in
-            link.teardown(in: &eventContext)
-        }
+        guard let link = context.eventContext.standaloneFlowLink(flow) else { return }
+        link.teardown(in: &context.eventContext)
         link.free(in: &context.eventContext)
     }
 

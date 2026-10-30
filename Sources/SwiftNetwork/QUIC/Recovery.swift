@@ -1816,9 +1816,12 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             resetTimer(now: timeNow, connection: connection, in: &eventContext)
         }
 
-        // Now that we have deal with all the ACK'ed packets,
-        // it's safe to ask PMTUD to send packets.
-        connection.applicationPendingItems.triggerAllStreamsUnblocked = true
+        // Now that we have dealt with all the ACK'ed packets, put back any stream that was left
+        // off the list of streams to service for lack of window. Looking at every stream is only
+        // worth it when there is such a stream.
+        if connection.applicationPendingItems.streamsMayBeBlocked {
+            connection.applicationPendingItems.triggerAllStreamsUnblocked = true
+        }
     }
 }
 #endif
