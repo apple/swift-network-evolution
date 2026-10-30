@@ -69,6 +69,15 @@ struct PMTUDState: ~Copyable {
 
     private var failedProbeCount = 0
 
+    // The bytes sent in full-size packets since the current round of probing began. A packet that
+    // is not full would be the same size at a larger MTU, so only full packets show what a larger
+    // MTU would save.
+    private var fullSizeBytesSentInRound: UInt64 = 0
+
+    // A packet within this many bytes of the maximum segment size had no room for another useful
+    // frame.
+    private static let fullPacketMargin = 32
+
     private var interval = PMTUDState.defaultInterval
 
     var timerID: Timer.TimerID? = nil
@@ -393,6 +402,7 @@ struct PMTUDState: ~Copyable {
         in eventContext: inout NetworkContext.EventContext
     ) {
         pendingTransmission = false
+        countFullSizePackets(in: sentPackets, on: path)
         guard canSendProbe(on: path, hasPendingItems: applicationPendingItems.hasPendingItems) else {
             return
         }
@@ -436,7 +446,7 @@ struct PMTUDState: ~Copyable {
         canProbe = false
         probedMTU = nextProbeMTU
         // Each probe has to be paid for by the full-size bytes sent after the previous one.
-        path.fullSizeBytesSentInRound = 0
+        fullSizeBytesSentInRound = 0
     }
 
     mutating func stop(on path: QUICPath) {
@@ -517,9 +527,31 @@ struct PMTUDState: ~Copyable {
         }
     }
 
+    /// Adds the bytes of the full-size application packets among `sentPackets` to the count for
+    /// the current round. Probes are padded to the size under test, so they say nothing about how
+    /// full an ordinary packet is.
+    private mutating func countFullSizePackets(
+        in sentPackets: borrowing NetworkUniqueDeque<SentPacketRecord>,
+        on path: QUICPath
+    ) {
+        let pathIdentifier = path.pathIdentifier
+        let maximumSegmentSize = path.mss
+        for index in 0..<sentPackets.count {
+            let length = sentPackets[index].totalLength
+            if sentPackets[index].sentPath == pathIdentifier
+                && sentPackets[index].numberSpace == .applicationData
+                && sentPackets[index].transmittedItems.pmtudProbeMSS == nil
+                && length + PMTUDState.fullPacketMargin >= maximumSegmentSize
+            {
+                // A count of bytes sent cannot reach the range of `UInt64`.
+                fullSizeBytesSentInRound &+= UInt64(length)
+            }
+        }
+    }
+
     private mutating func beginRound(on path: QUICPath) {
         searchCompleted = false
-        path.fullSizeBytesSentInRound = 0
+        fullSizeBytesSentInRound = 0
     }
 
     private mutating func searchComplete(
@@ -548,7 +580,7 @@ struct PMTUDState: ~Copyable {
         // `Int(clamping:)` keeps the conversion safe where `Int` is 32 bits. The sum of two byte
         // counts cannot overflow `UInt64`.
         let transferLength = Int(
-            clamping: path.fullSizeBytesSentInRound + connection.flowControlState.pendingOutboundBytesToSend
+            clamping: fullSizeBytesSentInRound + connection.flowControlState.pendingOutboundBytesToSend
         )
         let currentPacketsNeeded = transferLength / currentPathMTU
         let nextPacketsNeeded = transferLength / nextProbeMTU
