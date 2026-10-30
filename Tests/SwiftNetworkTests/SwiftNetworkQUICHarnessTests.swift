@@ -529,6 +529,59 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 4, shouldBatchSends: true)
     }
 
+    /// While the application batches its sends, the packets the connection receives are not answered
+    /// on the spot: whatever is pending to send (control frames, and the ACK that goes with them) waits
+    /// for the batch to end and goes out with what the application writes, instead of as a datagram of
+    /// its own ahead of it.
+    func testReceivedPacketsAreNotAnsweredDuringAnApplicationBatch() {
+        let manual = ManualTimeContext(#function)
+        QUICTestHarness(manual: manual).runQUICTest(
+            streamCount: 1,
+            blockSize: 1000,
+            blockCount: 1,
+            sendFIN: false,
+            afterData: { harness in
+                guard let state = harness.state else {
+                    XCTFail("State must be non-nil")
+                    return
+                }
+                let client = state.clientHarness.upperHarnesses[0]
+
+                // Let anything left over from the echo settle, then start a batch on the receiving side
+                // with a frame waiting to be sent, which is more than a lone ACK, so receiving
+                // packets would send at once.
+                harness.allow(.milliseconds(200))
+                harness.flush()
+                harness.onContext {
+                    XCTAssertFalse(state.serverInstance.applicationPendingItems.ping)
+                    state.serverHarness.invokeApplicationEvent(.outboundDataBatchStart)
+                    state.serverInstance.applicationPendingItems.ping = true
+                    XCTAssertTrue(client.write(Array(repeating: 0x2a, count: 2000)))
+                }
+                harness.allow(.milliseconds(2))
+                harness.flush()
+
+                // The packets arrived, and the frame is still waiting.
+                var receivedBytes = 0
+                var waitingDuringBatch = false
+                harness.onContext {
+                    receivedBytes = state.serverInstance.stats.connectionStatistics[.rxStreamBytes] ?? 0
+                    waitingDuringBatch = state.serverInstance.applicationPendingItems.ping
+                }
+                XCTAssertGreaterThanOrEqual(receivedBytes, 2000, "the server received the client's data")
+                XCTAssertTrue(waitingDuringBatch, "nothing is sent in answer to the packets during the batch")
+
+                // The batch ends, and what was waiting goes out.
+                harness.onContext { state.serverHarness.invokeApplicationEvent(.outboundDataBatchEnd) }
+                harness.allow(.milliseconds(2))
+                harness.flush()
+                var waitingAfterBatch = true
+                harness.onContext { waitingAfterBatch = state.serverInstance.applicationPendingItems.ping }
+                XCTAssertFalse(waitingAfterBatch, "what was waiting goes out when the batch ends")
+            }
+        )
+    }
+
     func testQUICEcho40KiBSmallReads() {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 4, clientReadChunkSize: 1000)
     }
