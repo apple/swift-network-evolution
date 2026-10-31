@@ -3311,7 +3311,7 @@ struct TransmittedItems: ~Copyable {
         connection: QUICConnection,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
-        sentPath: QUICPath,
+        sentPath: QUICPath?,
         in eventContext: inout NetworkContext.EventContext
     ) {
         if let ackFrame {
@@ -3346,7 +3346,7 @@ struct TransmittedItems: ~Copyable {
             }
         }
 
-        if let pmtudProbeMSS {
+        if let pmtudProbeMSS, let sentPath {
             connection.acknowledgedPMTUDProbe(
                 on: sentPath,
                 packetNumber: packetNumber,
