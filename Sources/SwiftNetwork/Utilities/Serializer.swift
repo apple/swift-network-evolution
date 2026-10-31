@@ -586,22 +586,17 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
     @inlinable
     @inline(always)
     public mutating func vle(_ value: UInt64) throws(SerializationError) {
-        var encodedValue = [1 of UInt64](repeating: 0)
-        var encodedValueSpan = encodedValue.mutableSpan
-        var encodedValueBytes = encodedValueSpan.mutableBytes
-        var length = 0
-        do throws(VariableLengthEncodingError) {
-            // variableLengthEncodeInto checks for room
-            length = try value.variableLengthEncodeInto(&encodedValueBytes)
-        } catch {
-            switch error {
-            case .bufferTooShort:
-                try invalidate(.bufferTooShort)
-            case .invalidValue:
-                try invalidate(.invalidParameter)
-            }
+        if _fastPath(value <= 63) {
+            try writeFixedSize(UInt8(truncatingIfNeeded: value))
+        } else if value <= 16383 {
+            try writeFixedSize(UInt16(truncatingIfNeeded: 1 << 14 | value).bigEndian)
+        } else if value <= 1_073_741_823 {
+            try writeFixedSize(UInt32(truncatingIfNeeded: 1 << 31 | value).bigEndian)
+        } else if _fastPath(value <= 4_611_686_018_427_387_903) {
+            try writeFixedSize(UInt64(3 << 62 | value).bigEndian)
+        } else {
+            try invalidate(.invalidParameter)
         }
-        try span(encodedValueBytes.bytes.extracting(first: length))
     }
 
     @inlinable
