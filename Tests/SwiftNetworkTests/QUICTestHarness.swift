@@ -2151,6 +2151,179 @@ class QUICTestHarness {
         stop()
     }
 
+    /// A stream created on a connection that is already up must report a bounded room before the
+    /// application writes anything; otherwise the room stays unbounded until a write queues data.
+    func runOutboundRoomIsBoundedBeforeDataQueued() {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1") else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        var roomWithNothingQueued: Int?
+        onContext {
+            do {
+                roomWithNothingQueued = try clientStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+        }
+
+        XCTAssertNotNil(roomWithNothingQueued)
+        if let room = roomWithNothingQueued {
+            XCTAssertGreaterThan(room, 0, "A stream with nothing queued must have room to write")
+            XCTAssertLessThan(
+                room,
+                Int.max,
+                "The room must be computed before any write queues data; Int.max means it was not"
+            )
+        }
+        stop()
+    }
+
+    /// Fills the connection's send queue from one stream, then checks the room of other streams.
+    ///
+    /// A stream with little or nothing queued of its own has nothing whose sending would reopen a
+    /// zero room. It must keep room to write, whether it already existed or is opened afterwards;
+    /// otherwise it can never send.
+    func runOutboundRoomOfStreamWithNothingQueuedIgnoresOtherStreams(
+        chunkCount: Int = 4,
+        chunkSize: Int = 16 * 1024
+    ) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let busyStream = createNewStream(identifier: "C1"),
+            let quietStream = createNewStream(identifier: "C2")
+        else {
+            XCTFail("Failed to create client streams")
+            return
+        }
+
+        var busyStreamRoom: Int?
+        var quietStreamRoomBeforeWriting: Int?
+        var quietStreamRoomAfterWriting: Int?
+        onContext {
+            for _ in 0..<chunkCount {
+                XCTAssertTrue(busyStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
+            }
+            do {
+                busyStreamRoom = try busyStream.invokeGetOutboundStreamDataRoomAvailable()
+                quietStreamRoomBeforeWriting = try quietStream.invokeGetOutboundStreamDataRoomAvailable()
+                XCTAssertTrue(quietStream.write([UInt8](repeating: 0x5a, count: 100)))
+                quietStreamRoomAfterWriting = try quietStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+        }
+
+        XCTAssertEqual(busyStreamRoom, 0, "The stream that filled the connection's queue must report no room")
+        XCTAssertGreaterThan(
+            quietStreamRoomBeforeWriting ?? 0,
+            0,
+            "A stream with nothing queued must have room even when other streams fill the connection's queue"
+        )
+        XCTAssertGreaterThan(
+            quietStreamRoomAfterWriting ?? 0,
+            0,
+            "A stream with only a little queued must have room even when other streams fill the connection's queue"
+        )
+
+        guard let laterStream = createNewStream(identifier: "C3") else {
+            XCTFail("Failed to create a stream while the connection's queue is full")
+            return
+        }
+        var busyStreamRoomWhenLaterStreamOpened: Int?
+        var laterStreamRoom: Int?
+        onContext {
+            do {
+                busyStreamRoomWhenLaterStreamOpened = try busyStream.invokeGetOutboundStreamDataRoomAvailable()
+                laterStreamRoom = try laterStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+        }
+        XCTAssertEqual(
+            busyStreamRoomWhenLaterStreamOpened,
+            0,
+            "The connection's queue must still be full when the later stream opens"
+        )
+        XCTAssertGreaterThan(
+            laterStreamRoom ?? 0,
+            0,
+            "A stream opened while other streams fill the connection's queue must have room to write"
+        )
+        stop()
+    }
+
+    /// Queues more data on a stream in one turn than the connection can send, then checks what the
+    /// stream tells the application about its room for more.
+    ///
+    /// No acknowledgment can arrive within the turn, so all but the first congestion window of
+    /// data is still waiting when the room is read. The stream must report no room then, and must
+    /// announce room again once acknowledgments let the waiting data go out.
+    func runOutboundRoomFollowsQueuedData(
+        chunkCount: Int = 4,
+        chunkSize: Int = 16 * 1024,
+        timeout: TimeInterval = 5.0
+    ) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1") else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        var dataQueued = false
+        var roomReopened = false
+        var roomWithDataWaiting: Int?
+
+        context.async {
+            for _ in 0..<chunkCount {
+                XCTAssertTrue(clientStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
+            }
+            do {
+                roomWithDataWaiting = try clientStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+            // Room announcements from the writes above are not the one this test waits for.
+            clientStream.discardPendingOutboundRoomAvailable()
+            clientStream.fromExternal { eventContext in
+                clientStream.waitForOutboundRoomAvailable(in: &eventContext) { _ in
+                    roomReopened = true
+                }
+            }
+            dataQueued = true
+        }
+
+        wait(until: { dataQueued }, timeout: timeout, "the data to be queued and the room read")
+        XCTAssertEqual(
+            roomWithDataWaiting,
+            0,
+            "A stream with more data waiting than the connection can send must report no room for more"
+        )
+        if roomWithDataWaiting == 0 {
+            wait(until: { roomReopened }, timeout: timeout, "the room to be announced again")
+        }
+        stop()
+    }
+
     #if canImport(SwiftNetwork)
     /// A send started by loss recovery builds packets without an event context to hand the
     /// application. When it reopens a stream's room for more data, the announcement has to reach

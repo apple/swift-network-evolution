@@ -2916,6 +2916,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     localMaxData: UInt64(localMaxData)
                 )
             }
+            if streamID != nil {
+                // A stream that already has its ID never goes through `startOutboundStream`, which
+                // is where the send limit is otherwise first computed.
+                stream.updateOutboundFlowControlCredit(connection: self)
+            }
         }
 
         stream.unidirectional = isUnidirectional
