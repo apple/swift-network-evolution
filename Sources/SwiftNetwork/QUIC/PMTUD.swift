@@ -69,6 +69,15 @@ struct PMTUDState: ~Copyable {
 
     private var failedProbeCount = 0
 
+    // The bytes sent in full-size packets since the current round of probing began. A packet that
+    // is not full would be the same size at a larger MTU, so only full packets show what a larger
+    // MTU would save.
+    private var fullSizeBytesSentInRound: UInt64 = 0
+
+    // A packet within this many bytes of the maximum segment size had no room for another useful
+    // frame.
+    private static let fullPacketMargin = 32
+
     private var interval = PMTUDState.defaultInterval
 
     var timerID: Timer.TimerID? = nil
@@ -183,7 +192,7 @@ struct PMTUDState: ~Copyable {
 
         self.startPacketNumber = connection.protector.getPacketNumber(for: .applicationData)
 
-        searchCompleted = false
+        beginRound(on: path)
 
         let maximumPathMTU = self.maximumPathMTU
         let ipUDPHeaderSize = self.ipUDPHeaderSize
@@ -393,6 +402,7 @@ struct PMTUDState: ~Copyable {
         in eventContext: inout NetworkContext.EventContext
     ) {
         pendingTransmission = false
+        countFullSizePackets(in: sentPackets, on: path)
         guard canSendProbe(on: path, hasPendingItems: applicationPendingItems.hasPendingItems) else {
             return
         }
@@ -435,6 +445,8 @@ struct PMTUDState: ~Copyable {
         path.log.info("Probe for MTU \(nextProbeMTU) sent")
         canProbe = false
         probedMTU = nextProbeMTU
+        // Each probe has to be paid for by the full-size bytes sent after the previous one.
+        fullSizeBytesSentInRound = 0
     }
 
     mutating func stop(on path: QUICPath) {
@@ -460,7 +472,7 @@ struct PMTUDState: ~Copyable {
         in eventContext: inout NetworkContext.EventContext
     ) {
         path.log.debug("PMTUD timer fired")
-        self.searchCompleted = false
+        self.beginRound(on: path)
         self.updateProbeSize(on: path, in: &eventContext)
         path.parentProtocol.recordSentPackets(in: &eventContext) { sentPackets, blockState in
             sendProbe(on: path, sentPackets: &sentPackets, in: &blockState)
@@ -475,7 +487,7 @@ struct PMTUDState: ~Copyable {
         guard enabled else { return }
         path.log.info("Entering blackhole detection, setting path MTU to \(PMTUDState.minimumMTU)")
         currentPathMTU = PMTUDState.minimumMTU
-        searchCompleted = false
+        beginRound(on: path)
         failedProbeCount = 0
 
         let connection = path.parentProtocol
@@ -515,6 +527,33 @@ struct PMTUDState: ~Copyable {
         }
     }
 
+    /// Adds the bytes of the full-size application packets among `sentPackets` to the count for
+    /// the current round. Probes are padded to the size under test, so they say nothing about how
+    /// full an ordinary packet is.
+    private mutating func countFullSizePackets(
+        in sentPackets: borrowing NetworkUniqueDeque<SentPacketRecord>,
+        on path: QUICPath
+    ) {
+        let pathIdentifier = path.pathIdentifier
+        let maximumSegmentSize = path.mss
+        for index in 0..<sentPackets.count {
+            let length = sentPackets[index].totalLength
+            if sentPackets[index].sentPath == pathIdentifier
+                && sentPackets[index].numberSpace == .applicationData
+                && sentPackets[index].transmittedItems.pmtudProbeMSS == nil
+                && length + PMTUDState.fullPacketMargin >= maximumSegmentSize
+            {
+                // A count of bytes sent cannot reach the range of `UInt64`.
+                fullSizeBytesSentInRound &+= UInt64(length)
+            }
+        }
+    }
+
+    private mutating func beginRound(on path: QUICPath) {
+        searchCompleted = false
+        fullSizeBytesSentInRound = 0
+    }
+
     private mutating func searchComplete(
         on path: QUICPath,
         in eventContext: inout NetworkContext.EventContext
@@ -533,9 +572,18 @@ struct PMTUDState: ~Copyable {
         let checkLength = PMTUDState.maxProbeCount * (nextProbeMTU - ipUDPHeaderSize)
         guard path.congestionControlCanSend(packetLength: checkLength) else { return false }
 
-        let sendQueueLength = Int(connection.flowControlState.pendingOutboundBytesToSend)
-        let currentPacketsNeeded = sendQueueLength / currentPathMTU
-        let nextPacketsNeeded = sendQueueLength / nextProbeMTU
+        // Bytes sent in full packets since the round began, plus bytes queued, is a lower bound on
+        // the transfer that a larger MTU would carry. It grows for as long as the connection
+        // sends full packets, so a bulk transfer written in small increments reaches the
+        // amortization threshold below, while an idle connection, or one that sends little or only
+        // small messages, never does.
+        // `Int(clamping:)` keeps the conversion safe where `Int` is 32 bits. The sum of two byte
+        // counts cannot overflow `UInt64`.
+        let transferLength = Int(
+            clamping: fullSizeBytesSentInRound + connection.flowControlState.pendingOutboundBytesToSend
+        )
+        let currentPacketsNeeded = transferLength / currentPathMTU
+        let nextPacketsNeeded = transferLength / nextProbeMTU
 
         let tagSize = connection.protector.getTagSize(for: connection.keyState)
         let shortHeaderSize = Packet.shortHeaderBaseSize

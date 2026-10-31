@@ -464,6 +464,106 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     }
     #endif
 
+    #if canImport(SwiftNetwork)
+    func testQUICPacedTransferRaisesMaximumSegmentSize() {
+        guard
+            let segmentSizes = QUICTestHarness().runPacedTransfer(
+                totalBytes: 600_000,
+                chunkSize: 6000,
+                interval: .milliseconds(15)
+            )
+        else {
+            XCTFail("The transfer did not complete")
+            return
+        }
+
+        XCTAssertGreaterThan(
+            segmentSizes.final,
+            segmentSizes.initial,
+            "Path MTU discovery must not depend on the length of the send queue"
+        )
+    }
+
+    func testQUICIdleConnectionDoesNotProbePathMTUWhenTimerFires() {
+        guard
+            let segmentSizes = QUICTestHarness().runPacedTransfer(
+                totalBytes: 2_000_000,
+                chunkSize: 6000,
+                interval: .milliseconds(15),
+                startingSizeIsPathMaximum: true,
+                pmtudUpdateInterval: .seconds(8),
+                idleTime: .seconds(5)
+            )
+        else {
+            XCTFail("The transfer did not complete")
+            return
+        }
+
+        XCTAssertEqual(
+            segmentSizes.final,
+            segmentSizes.initial,
+            "A connection that has gone idle must not probe when the path MTU timer fires"
+        )
+    }
+
+    func testQUICEachPathMTUProbeIsPaidForBySubsequentBytes() {
+        guard
+            let segmentSizes = QUICTestHarness().runPacedTransfer(
+                totalBytes: 2_500_000,
+                chunkSize: 6000,
+                interval: .milliseconds(15)
+            )
+        else {
+            XCTFail("The transfer did not complete")
+            return
+        }
+
+        XCTAssertEqual(
+            segmentSizes.final,
+            1272,
+            "Each probe must wait for enough new bytes to pay for it; 1272 is the second probe size"
+        )
+    }
+
+    func testQUICSmallMessagesDoNotProbePathMTU() {
+        guard
+            let segmentSizes = QUICTestHarness().runPacedTransfer(
+                totalBytes: 700_000,
+                chunkSize: 100,
+                interval: .milliseconds(1)
+            )
+        else {
+            XCTFail("The transfer did not complete")
+            return
+        }
+
+        XCTAssertEqual(
+            segmentSizes.final,
+            segmentSizes.initial,
+            "A connection that only sends small messages gains nothing from a larger MTU"
+        )
+    }
+
+    func testQUICSmallPacedTransferDoesNotProbePathMTU() {
+        guard
+            let segmentSizes = QUICTestHarness().runPacedTransfer(
+                totalBytes: 30_000,
+                chunkSize: 6000,
+                interval: .milliseconds(15)
+            )
+        else {
+            XCTFail("The transfer did not complete")
+            return
+        }
+
+        XCTAssertEqual(
+            segmentSizes.final,
+            segmentSizes.initial,
+            "A connection that sends little must not probe the path"
+        )
+    }
+    #endif
+
     func testQUICEmptyFinCleanCloseSendsFinNotReset() {
         QUICTestHarness().runEmptyFinCleanCloseSendsFinNotReset()
     }
