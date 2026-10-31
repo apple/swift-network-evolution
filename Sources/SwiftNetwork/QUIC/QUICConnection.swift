@@ -141,6 +141,7 @@ public enum QUICConnectionState: CustomStringConvertible {
         self = newState
     }
 
+    @inline(always)
     var isTerminal: Bool {
         switch self {
         case .closing, .draining:
@@ -1717,19 +1718,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
 
             accessReceivedDatagrams(path: pathID) { (datagrams, path) in
-                let connectionState = state
                 let isServerConnection: Bool = isServer
-                if connectionState.isTerminal {
-                    log.debug(
-                        "Ignoring incoming packets for connection in terminal state"
-                    )
-                    datagrams.finalizeAllFramesAsFailed()
-                    return
-                }
-                let inConnectedState = connectionState == .connected
+                let inConnectedState = state == .connected
                 var receivedBytes: Int = 0
-                let receivedPackets: Int = datagrams.count
+                var receivedPackets: Int = 0
                 datagrams.iterateMutableFrames { frame in
+                    if state.isTerminal {
+                        log.debug(
+                            "Ignoring incoming packets for connection in terminal state"
+                        )
+                        frame.finalize(success: false)
+                        return .removeFrameAndContinue
+                    }
+                    receivedPackets &+= 1
                     receivedBytes &+= frame.unclaimedLength
                     // Count the bytes on the path before handling the packet: replies sent while
                     // handling it are limited by what has been received on an unvalidated path.
@@ -2057,7 +2058,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 // once that happens, rather than continuing to hand already
                 // torn-down state to later frames (e.g. a coalesced CRYPTO
                 // frame after a CONNECTION_CLOSE).
-                break
+                return false
             }
         }
 
