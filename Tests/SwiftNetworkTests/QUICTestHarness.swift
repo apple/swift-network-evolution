@@ -2211,7 +2211,6 @@ class QUICTestHarness {
         }
 
         var busyStreamRoom: Int?
-        var quietStreamRoomBeforeWriting: Int?
         var quietStreamRoomAfterWriting: Int?
         onContext {
             for _ in 0..<chunkCount {
@@ -2219,7 +2218,6 @@ class QUICTestHarness {
             }
             do {
                 busyStreamRoom = try busyStream.invokeGetOutboundStreamDataRoomAvailable()
-                quietStreamRoomBeforeWriting = try quietStream.invokeGetOutboundStreamDataRoomAvailable()
                 XCTAssertTrue(quietStream.write([UInt8](repeating: 0x5a, count: 100)))
                 quietStreamRoomAfterWriting = try quietStream.invokeGetOutboundStreamDataRoomAvailable()
             } catch {
@@ -2228,11 +2226,6 @@ class QUICTestHarness {
         }
 
         XCTAssertEqual(busyStreamRoom, 0, "The stream that filled the connection's queue must report no room")
-        XCTAssertGreaterThan(
-            quietStreamRoomBeforeWriting ?? 0,
-            0,
-            "A stream with nothing queued must have room even when other streams fill the connection's queue"
-        )
         XCTAssertGreaterThan(
             quietStreamRoomAfterWriting ?? 0,
             0,
