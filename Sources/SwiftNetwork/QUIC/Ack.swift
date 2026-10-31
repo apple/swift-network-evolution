@@ -542,10 +542,10 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     @discardableResult
-    mutating func withAckSpace(
-        packetNumberSpace: PacketNumberSpace,
-        closure: (_: inout AckSpace) -> Bool
-    ) -> Bool {
+    mutating func withAckSpace<Result: ~Copyable>(
+        for packetNumberSpace: PacketNumberSpace,
+        closure: (_: inout AckSpace) -> Result
+    ) -> Result {
         switch packetNumberSpace {
         case .applicationData:
             return closure(&applicationAckSpace)
@@ -561,9 +561,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         packetNumber: PacketNumber,
         now: NetworkClock.Instant
     ) {
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.append(packetNumber, packetNumberSpace: packetNumberSpace, now: now)
-            return true
         }
     }
 
@@ -572,7 +571,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         packetNumberLow: PacketNumber,
         packetNumberHigh: PacketNumber
     ) -> Bool {
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.packetsMissingBetween(
                 packetNumberLow: packetNumberLow,
                 packetNumberHigh: packetNumberHigh
@@ -607,7 +606,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             shouldSend = true
         } else {
             let delayExponent = localDelayExponent
-            withAckSpace(packetNumberSpace: packetNumberSpace) {
+            withAckSpace(for: packetNumberSpace) {
                 ackSpace in
                 // We may be bundling an ACK, so set this to false to avoid sending
                 // another ACK when the delayed ACK timer fires.
@@ -620,7 +619,6 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 )
                 shouldSend = ackSize > 0
                 ackSpace.needsTransmission = false
-                return true
             }
         }
         return shouldSend
@@ -641,7 +639,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 log.datapath("ACK frame already in the builder")
                 shouldSend = true
             } else {
-                withAckSpace(packetNumberSpace: packetNumberSpace) {
+                withAckSpace(for: packetNumberSpace) {
                     ackSpace in
                     if ackSpace.needsTransmission {
                         var ecnCounter: ECNCounter? = nil
@@ -664,7 +662,6 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                         shouldSend = shouldSend || ackSize > 0
                         ackSpace.needsTransmission = false
                     }
-                    return true
                 }
             }
         }
@@ -855,9 +852,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         between startPN: PacketNumber,
         and endPN: PacketNumber
     ) {
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.acknowledged(between: startPN, and: endPN)
-            return true
         }
     }
 
@@ -872,18 +868,16 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     mutating func shouldTransmit(packetNumberSpace: PacketNumberSpace) {
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.needsTransmission = true
-            return true
         }
     }
 
     mutating func flush(for packetNumberSpace: PacketNumberSpace) {
         log.debug("Flushing all PN for \(packetNumberSpace)")
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.blocks = []
             ackSpace.needsTransmission = false
-            return true
         }
     }
 
@@ -899,7 +893,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             return 0
         }
         var generationCount = 0
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             // The generation counter needs to be updated at
             // least every 5 ms.
             let updateInterval: NetworkDuration = .milliseconds(5)
@@ -913,7 +907,6 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 ackSpace.lastGenerationCountUpdate = now
             }
             generationCount = ackSpace.generationCount
-            return true
         }
         return generationCount
     }
@@ -935,10 +928,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
     ) {
-        withAckSpace(packetNumberSpace: packetNumberSpace) {
-            ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.updateLargestAckElicitingPacketNumber(packetNumber)
-            return true
         }
     }
 
@@ -946,44 +937,33 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace
     ) {
-        withAckSpace(packetNumberSpace: packetNumberSpace) {
-            ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.updateLargestPacketNumber(packetNumber)
-            return true
         }
     }
 
     mutating func getLargestReceivedPacketNumber(
         packetNumberSpace: PacketNumberSpace
     ) -> PacketNumber? {
-        var largestReceivedPacketNumber: PacketNumber? = nil
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
-            largestReceivedPacketNumber = ackSpace.largestPNReceived
-            return true
+        withAckSpace(for: packetNumberSpace) { ackSpace in
+            ackSpace.largestPNReceived
         }
-        return largestReceivedPacketNumber
     }
 
     mutating func getLargestAckElicitingPacketNumber(
         packetNumberSpace: PacketNumberSpace
     ) -> PacketNumber {
-        var largestAckElicitingPacketNumber: PacketNumber = .none
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
-            largestAckElicitingPacketNumber = ackSpace.largestAckElicitingPNReceived
-            return true
+        withAckSpace(for: packetNumberSpace) { ackSpace in
+            ackSpace.largestAckElicitingPNReceived
         }
-        return largestAckElicitingPacketNumber
     }
 
     mutating func blocksForPacketNumberSpace(
         packetNumberSpace: PacketNumberSpace
     ) -> Int {
-        var blocks = 0
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
-            blocks = ackSpace.blocks.count
-            return true
+        withAckSpace(for: packetNumberSpace) { ackSpace in
+            ackSpace.blocks.count
         }
-        return blocks
     }
 }
 
@@ -1309,7 +1289,7 @@ extension Ack {
         var size = 0
         let delayExponent = localDelayExponent
         let delaySize = self.delaySize
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             size = ackSpace.build(
                 packetNumberSpace: packetNumberSpace,
                 delayExponent: delayExponent,
@@ -1318,7 +1298,6 @@ extension Ack {
                 ecnCounter: ecnCounter,
                 now: now
             )
-            return true
         }
         return size
     }

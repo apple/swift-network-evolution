@@ -232,7 +232,8 @@ struct EventPacket {
 
 @available(Network 0.1.0, *)
 struct PacketHeader {
-    let packetNumber: PacketNumber
+    // Not present in Version Negotiation and Retry packets.
+    let packetNumber: PacketNumber?
     let packetSize: UInt64
     let payloadLength: UInt64
     var version: QUICVersion = .v1
@@ -261,9 +262,51 @@ struct PacketHeader {
         }
     }
 
+    // Returns nil for packets that failed decryption, as their header is not known.
+    init?(parsedPacket: borrowing PacketParser.ParsedPacket) {
+        switch parsedPacket {
+        case .versionNegotiation(let vn):
+            self.init(
+                version: .negotiation,
+                packetSize: vn.length,
+                destinationConnectionID: vn.destinationConnectionID,
+                sourceConnectionID: vn.sourceConnectionID
+            )
+        case .retry(let retry):
+            self.init(
+                version: retry.version,
+                packetSize: retry.length,
+                destinationConnectionID: retry.destinationConnectionID,
+                sourceConnectionID: retry.sourceConnectionID
+            )
+        case .failedDecryption:
+            return nil
+        case .protected(let packet):
+            self.init(packet: packet)
+        }
+    }
+
+    private init(
+        version: QUICVersion,
+        packetSize: Int,
+        destinationConnectionID: QUICConnectionID,
+        sourceConnectionID: QUICConnectionID
+    ) {
+        self.packetNumber = nil
+        self.packetSize = UInt64(packetSize)
+        self.payloadLength = UInt64.max
+        self.version = version
+        self.scil = sourceConnectionID.length
+        self.scid = sourceConnectionID.description
+        self.dcil = destinationConnectionID.length
+        self.dcid = destinationConnectionID.description
+    }
+
     func dumpData() -> [String: Any] {
         var data: [String: Any] = [:]
-        data["packet_number"] = String(packetNumber.value)
+        if let packetNumber {
+            data["packet_number"] = String(packetNumber.value)
+        }
         data["packet_size"] = QLog.wrapUInt64IfNotMax(packetSize)
         data["length"] = QLog.wrapUInt64IfNotMax(payloadLength)
         data["version"] = version.rawValue
@@ -499,6 +542,18 @@ struct EventFrames {
             }
         }
     }
+    init(parsedPacket: borrowing PacketParser.ParsedPacket, ackDelayExponent: Int) {
+        switch parsedPacket {
+        case .protected(let packet):
+            self.init(packet: packet, ackDelayExponent: ackDelayExponent)
+        case .versionNegotiation:
+            self.init()
+        case .retry:
+            self.init()
+        case .failedDecryption:
+            self.init()
+        }
+    }
     func dumpData() -> [Any] {
         var data: [Any] = []
         for frame in frames {
@@ -531,20 +586,30 @@ enum PacketType: String {
 
     @available(Network 0.1.0, *)
     init(packet: borrowing Packet) {
-        if packet.versionNegotiation {
-            self = .versionNegotiation
-        } else if packet.keyState == .initial {
+        switch packet.keyState {
+        case .initial:
             self = .initial
-        } else if packet.keyState == .handshake {
+        case .handshake:
             self = .handshake
-        } else if packet.keyState == .earlyData {
+        case .earlyData:
             self = .zeroRTT
-        } else if packet.keyState == .phase0 || packet.keyState == .phase1 {
+        case .phase0, .phase1:
             self = .oneRTT
-        } else if packet.retry {
+        }
+    }
+
+    // Returns nil for packets that failed decryption, as their type is not known.
+    @available(Network 0.1.0, *)
+    init?(parsedPacket: borrowing PacketParser.ParsedPacket) {
+        switch parsedPacket {
+        case .versionNegotiation:
+            self = .versionNegotiation
+        case .retry:
             self = .retry
-        } else {
-            self = .unknown
+        case .failedDecryption:
+            return nil
+        case .protected(let packet):
+            self.init(packet: packet)
         }
     }
 }
@@ -661,15 +726,21 @@ final class QLog {
     }
 
     func packetReceived(
-        _ packet: borrowing Packet,
+        _ parsedPacket: borrowing PacketParser.ParsedPacket,
         coalesced isCoalesced: Bool,
         ackDelayExponent: Int,
         timestamp: NetworkClock.Instant
     ) {
+        // Packets that failed decryption are not logged as received.
+        guard let packetType = PacketType(parsedPacket: parsedPacket),
+            let packetHeader = PacketHeader(parsedPacket: parsedPacket)
+        else {
+            return
+        }
         let packetEvent = EventPacket(
-            packetType: PacketType(packet: packet),
-            packetHeader: PacketHeader(packet: packet),
-            frameList: EventFrames(packet: packet, ackDelayExponent: ackDelayExponent),
+            packetType: packetType,
+            packetHeader: packetHeader,
+            frameList: EventFrames(parsedPacket: parsedPacket, ackDelayExponent: ackDelayExponent),
             isCoalesced: isCoalesced,
             trigger: .sentReceivedTrigger(.unknown)
         )
