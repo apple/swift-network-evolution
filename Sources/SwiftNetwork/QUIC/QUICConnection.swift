@@ -4131,6 +4131,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 packetNumberSpace: PacketNumberSpace.fromKeyState(keyState: keyState)
             )
             path.addPendingItems(&pendingItems, now: startSendingTimestamp, in: &eventContext)
+            // A path that just gave up probing can't send anything. Queue its RETIRE_CONNECTION_ID on
+            // the connection instead, so it goes out on the current path.
+            if path.state == .unreachable {
+                for retireConnectionID in pendingItems.retireConnectionIDs {
+                    applicationPendingItems.addRetireConnectionID(retireConnectionID)
+                }
+                return false
+            }
             var datagramBatch = FrameArray()
             let success = buildSinglePacketForKeyState(
                 self.keyState,
