@@ -514,7 +514,13 @@ extension EndpointFlow {
         case .inboundStream(let flow):
             flow.wakeFlow = wakeFlow
             flow.start()
+        case .passthroughStream(let flow):
+            flow.wakeFlow = wakeFlow
+            flow.start()
         case .inboundDatagram(let flow):
+            flow.wakeFlow = wakeFlow
+            flow.start()
+        case .passthroughDatagram(let flow):
             flow.wakeFlow = wakeFlow
             flow.start()
         case .none:
