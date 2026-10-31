@@ -2018,7 +2018,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var isAckEliciting = false
         var isNonProbing = false
 
-        while let quicFrame = packetParser.framesReceived.popFirst() {
+        while !packetParser.framesReceived.isEmpty {
+            let quicFrame = packetParser.framesReceived.removeFirst()
             if let packetKeystate = packet.keyState {
                 if packetKeystate == .initial || packetKeystate == .handshake, !quicFrame.isAllowedInHandshake {
                     log.error("Invalid frame type during the handshake: \(quicFrame.frameType)")

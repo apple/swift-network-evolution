@@ -95,15 +95,20 @@ struct SentPacketRecord: ~Copyable {
     var transmittedItems: TransmittedItems = TransmittedItems()
 
     var number: PacketNumber {
-        identifier.number
+        @inline(always)
+        get { identifier.number }
     }
     var numberSpace: PacketNumberSpace {
-        identifier.space
+        @inline(always)
+        get { identifier.space }
     }
 
     var ecn: IPProtocol.ECN = .nonECT
     var ectMarked: Bool {
-        (ecn == .ect0 || ecn == .ect1)
+        @inline(always)
+        get {
+            (ecn == .ect0 || ecn == .ect1)
+        }
     }
     var totalLength = 0
     var sentPath: MultiplexingPathIdentifier = .none
@@ -121,6 +126,7 @@ struct SentPacketRecord: ~Copyable {
     }
     private var flags = Flags()
     var isAckEliciting: Bool {
+        @inline(always)
         get { flags.contains(.isAckEliciting) }
         set {
             if newValue {
@@ -131,6 +137,7 @@ struct SentPacketRecord: ~Copyable {
         }
     }
     var isInFlightEligible: Bool {
+        @inline(always)
         get { flags.contains(.isInFlightEligible) }
         set {
             if newValue {
@@ -141,6 +148,7 @@ struct SentPacketRecord: ~Copyable {
         }
     }
     var largerPacket: Bool {
+        @inline(always)
         get { flags.contains(.largerPacket) }
         set {
             if newValue {
@@ -151,6 +159,7 @@ struct SentPacketRecord: ~Copyable {
         }
     }
     var isECNValidationPacket: Bool {
+        @inline(always)
         get { flags.contains(.isECNValidationPacket) }
         set {
             if newValue {
@@ -206,12 +215,15 @@ struct Packet: ~Copyable {
         guard headerLength > 0 else { return nil }
         return Int(headerLength)
     }
+    @inline(always)
     var headerRange: Range<Int> {
         0..<Int(headerLength) + Int(packetNumberLength)
     }
+    @inline(always)
     var payloadRange: Range<Int> {
         (Int(headerLength) + Int(packetNumberLength))..<(Int(headerLength) + Int(payloadLength) - Int(tagLength))
     }
+    @inline(always)
     var tagRange: Range<Int> {
         (Int(headerLength) + Int(payloadLength) - Int(tagLength))..<(Int(headerLength) + Int(payloadLength))
     }
@@ -231,13 +243,15 @@ struct Packet: ~Copyable {
 
     var identifier: PacketIdentifier
     var number: PacketNumber {
+        @inline(always)
         get { identifier.number }
         set(newValue) {
             identifier.number = newValue
         }
     }
     var numberSpace: PacketNumberSpace {
-        identifier.space
+        @inline(always)
+        get { identifier.space }
     }
 
     // Temporary storage used for logging, only set when datapath logs or QLog is enabled
@@ -268,6 +282,7 @@ struct Packet: ~Copyable {
     }
     private var flags = Flags()
     var longHeader: Bool {
+        @inline(always)
         get { flags.contains(.longHeader) }
         set {
             if newValue {
@@ -278,6 +293,7 @@ struct Packet: ~Copyable {
         }
     }
     var spinValue: Bool {
+        @inline(always)
         get { flags.contains(.spinValue) }
         set {
             if newValue {
@@ -288,6 +304,7 @@ struct Packet: ~Copyable {
         }
     }
     var versionNegotiation: Bool {
+        @inline(always)
         get { flags.contains(.versionNegotiation) }
         set {
             if newValue {
@@ -298,6 +315,7 @@ struct Packet: ~Copyable {
         }
     }
     var failedDecryption: Bool {
+        @inline(always)
         get { flags.contains(.failedDecryption) }
         set {
             if newValue {
@@ -310,7 +328,8 @@ struct Packet: ~Copyable {
 
     private(set) var retryFirstOctet: UInt8?
     var retry: Bool {
-        retryFirstOctet != nil
+        @inline(always)
+        get { retryFirstOctet != nil }
     }
 
     // Note well: For use ONLY with test vectors from RFC 9001
@@ -610,7 +629,7 @@ struct Packet: ~Copyable {
         let numberLength = truncatedPacketNumber.headerFieldSize
         let result = Serializer.serialize(&frame, claim: true) { write throws(SerializationError) in
             try write.uint8(preamble | spinBit | keyPhase | numberLength)
-            try write.span(dcid.connectionIDStorage.span.bytes.extracting(unchecked: 0..<dcid.length))
+            try write.connectionIDBytes(dcid)
             try write.encodedPacketNumber(truncatedPacketNumber)
         }
 
@@ -692,17 +711,34 @@ extension InPlaceSerializer where Factory: ~Escapable, Factory: ~Copyable {
     }
 
     @_optimize(speed)
-    mutating func encodedPacketNumber(_ value: EncodedPacketNumber) throws(SerializationError) {
-        let encodedSize = value.size.rawValue
-        let offset = MemoryLayout<UInt64>.size - encodedSize
-
-        try withUnsafeBytes(of: value.number.bigEndian) { bytes throws(SerializationError) in
-            let sourcePtr = bytes.baseAddress!.advanced(by: offset)
-            let bufferPtr = UnsafeBufferPointer(
-                start: sourcePtr.assumingMemoryBound(to: UInt8.self),
-                count: encodedSize
+    mutating func connectionIDBytes(_ value: QUICConnectionID) throws(SerializationError) {
+        if hasRoom(MemoryLayout<QUICConnectionIDStorage>.size) {
+            currentSpan.storeBytes(
+                of: value.connectionIDStorage,
+                toByteOffset: cursor,
+                as: QUICConnectionIDStorage.self
             )
-            try self.span(bufferPtr.span.bytes)
+            moveCursorUnchecked(value.length)
+        } else {
+            try self.span(value.connectionIDStorage.span.bytes.extracting(unchecked: 0..<value.length))
+        }
+    }
+
+    @_optimize(speed)
+    mutating func encodedPacketNumber(_ value: EncodedPacketNumber) throws(SerializationError) {
+        // The packet number is written big endian using only its low `size` bytes. Fixed-size
+        // writes avoid a variable-length memmove for these 1 to 4 bytes.
+        let number = value.number
+        switch value.size {
+        case .oneByte:
+            try self.uint8(UInt8(truncatingIfNeeded: number))
+        case .twoBytes:
+            try self.uint16NetworkByteOrder(UInt16(truncatingIfNeeded: number))
+        case .threeBytes:
+            try self.uint16NetworkByteOrder(UInt16(truncatingIfNeeded: number >> 8))
+            try self.uint8(UInt8(truncatingIfNeeded: number))
+        case .fourBytes:
+            try self.uint32NetworkByteOrder(UInt32(truncatingIfNeeded: number))
         }
     }
 }
