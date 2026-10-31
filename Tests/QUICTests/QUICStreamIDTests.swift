@@ -389,19 +389,19 @@ final class QUICStreamIDTests: XCTestCase {
         connection.context.onQueue {
 
             // Create 3 inbound pending streams
-            let stream1 = QUICStreamInstance(parent: connection, inbound: true)
+            var stream1 = QUICStreamInstance(parent: connection, inbound: true)
             defer { stream1.destroyFromExternalTest() }
             stream1.setup(streamID: nil, logPrefixer: logPrefixer)
-            let stream2 = QUICStreamInstance(parent: connection, inbound: true)
+            var stream2 = QUICStreamInstance(parent: connection, inbound: true)
             defer { stream2.destroyFromExternalTest() }
             stream2.setup(streamID: nil, logPrefixer: logPrefixer)
-            let stream3 = QUICStreamInstance(parent: connection, inbound: true)
+            var stream3 = QUICStreamInstance(parent: connection, inbound: true)
             defer { stream3.destroyFromExternalTest() }
             stream3.setup(streamID: nil, logPrefixer: logPrefixer)
 
-            streamsState.addPending(stream1)
-            streamsState.addPending(stream2)
-            streamsState.addPending(stream3)
+            streamsState.addPending(&stream1)
+            streamsState.addPending(&stream2)
+            streamsState.addPending(&stream3)
             XCTAssertEqual(streamsState.pendingStartStreams.count, 3)
 
             XCTAssertTrue(stream1.flowIdentifier != MultiplexedFlowIdentifier.allFlows)
@@ -409,21 +409,21 @@ final class QUICStreamIDTests: XCTestCase {
             XCTAssertTrue(stream3.flowIdentifier != MultiplexedFlowIdentifier.allFlows)
 
             // Remove the last added pending stream
-            streamsState.removePending(stream3)
+            streamsState.removePending(&stream3)
 
             // stream3 should not be in the pending list
             XCTAssertFalse(
-                streamsState.pendingStartStreams.contains(where: { $0 === stream3 }),
+                streamsState.pendingStartStreams.contains(stream3.flowIdentifier),
                 "stream3 should not be in the pending list after removal"
             )
             // stream1 still should be in the pending list
             XCTAssertTrue(
-                streamsState.pendingStartStreams.contains(where: { $0 === stream1 }),
+                streamsState.pendingStartStreams.contains(stream1.flowIdentifier),
                 "stream1 should still be in the pending list"
             )
             // stream2 still should be in the pending list
             XCTAssertTrue(stream2.pendingStart, "stream2 should still be pending")
-            streamsState.removeAllPending()
+            _ = streamsState.removeAllPending()
         }
     }
 }

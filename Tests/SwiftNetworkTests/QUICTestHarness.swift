@@ -2136,11 +2136,12 @@ class QUICTestHarness {
         // The server's send side must have finished via FIN, i.e. the state should be
         // in .dataSent, or .dataReceived.
         if let serverConnection = state?.serverInstance,
-            let serverFlow = serverConnection.multiplexedFlows.values.first
+            let serverFlowID = serverConnection.someFlowIdentifier,
+            let serverSendState = serverConnection.withFlow(serverFlowID, { $0.send.state })
         {
             XCTAssertTrue(
-                serverFlow.send.state == .dataSent || serverFlow.send.state == .dataReceived,
-                "Server send side must reach a clean FIN terminal state, got \(serverFlow.send.state)"
+                serverSendState == .dataSent || serverSendState == .dataReceived,
+                "Server send side must reach a clean FIN terminal state, got \(serverSendState)"
             )
         } else {
             XCTFail("Server stream flow missing; cannot verify send state")
@@ -2175,7 +2176,7 @@ class QUICTestHarness {
         context.async {
             clientConnection.fromExternal { eventContext in
                 defer { attempted = true }
-                guard let flow = clientConnection.multiplexedFlows.values.first,
+                guard let flowID = clientConnection.someFlowIdentifier,
                     let path = clientConnection.currentPath
                 else {
                     return
@@ -2190,7 +2191,9 @@ class QUICTestHarness {
 
                 // Queue the announcement the way packet building does when space reopens, so the
                 // recovery send has an event to deliver.
-                clientConnection.queueOutboundRoomAvailableEvent(for: flow)
+                _ = clientConnection.withFlow(flowID) { (flow: inout QUICStreamInstance) in
+                    clientConnection.queueOutboundRoomAvailableEvent(for: flow)
+                }
 
                 var discardInitialRecoveryState = false
                 clientConnection.sendFramesFromRecovery(

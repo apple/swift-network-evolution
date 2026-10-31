@@ -37,7 +37,7 @@ final class FlowControlTests: XCTestCase {
         }
         defer { clock.onQueue { connection.destroyFromExternalTest() } }
         clock.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(
                 streamID: QUICStreamID(0),
@@ -78,7 +78,7 @@ final class FlowControlTests: XCTestCase {
         }
         defer { clock.onQueue { connection.destroyFromExternalTest() } }
         clock.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(
                 streamID: QUICStreamID(0),
@@ -124,7 +124,7 @@ final class FlowControlTests: XCTestCase {
         let done = XCTestExpectation(description: "permit reopen check complete")
         context.async {
             let connection = QUICConnection(context: context)
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             stream.setup(
                 streamID: QUICStreamID(0),
                 logPrefixer: logPrefixer
@@ -176,7 +176,7 @@ final class FlowControlTests: XCTestCase {
         }
         defer { clock.onQueue { connection.destroyFromExternalTest() } }
         clock.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(
                 streamID: QUICStreamID(0),
@@ -269,7 +269,8 @@ final class FlowControlTests: XCTestCase {
         let done = XCTestExpectation(description: "read-all accounting complete")
         context.async {
             let connection = QUICConnection(context: context)
-            let stream = connection.fromExternal { eventContext in
+            var stream = connection.fromExternal {
+                (eventContext: inout NetworkContext.EventContext) -> QUICStreamInstance in
                 self.makeStreamWithUnreadInboundBytes(
                     byteCount: byteCount,
                     window: window,
@@ -315,7 +316,8 @@ final class FlowControlTests: XCTestCase {
         let done = XCTestExpectation(description: "drop accounting complete")
         context.async {
             let connection = QUICConnection(context: context)
-            let stream = connection.fromExternal { eventContext in
+            var stream = connection.fromExternal {
+                (eventContext: inout NetworkContext.EventContext) -> QUICStreamInstance in
                 self.makeStreamWithUnreadInboundBytes(
                     byteCount: byteCount,
                     window: window,
@@ -332,7 +334,7 @@ final class FlowControlTests: XCTestCase {
 
             // The application closes the read side without reading anything.
             connection.fromExternal { _ in
-                connection.handleStopRead(for: stream)
+                connection.handleStopRead(for: &stream)
             }
             stream.readClosed = true
 

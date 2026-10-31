@@ -87,8 +87,9 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
     // Array of elements, which may have gaps
     fileprivate var elements = NetworkUniqueArray<Element?>()
 
-    // Free indices in elements array
-    fileprivate var gaps = NetworkPriorityQueue<GapRecord>()
+    // Free slots in the elements array, reused last in, first out. A slot appears here exactly
+    // when its element is `nil` and it is not the last slot.
+    fileprivate var freeSlots: [UInt32] = []
 
     // Increments once for every element that is added, wrapping around on overflow and skipping
     // zero: generation zero is reserved for `NetworkStateIndex.none`. Wrapping means a generation
@@ -106,23 +107,9 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
         }
     }
 
-    var count: Int { elements.count - gaps.count }
+    var count: Int { elements.count - freeSlots.count }
 
     var isEmpty: Bool { count == 0 }
-
-    internal struct GapRecord: ~Copyable, NetworkComparable {
-        let index: NetworkStateIndex
-        init(_ index: NetworkStateIndex) {
-            self.index = index
-        }
-
-        static func < (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
-            lhs.index.slot < rhs.index.slot
-        }
-        static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
-            (lhs.index.slot == rhs.index.slot)
-        }
-    }
 
     // Advances to the next generation, skipping zero so that no issued index can equal
     // `NetworkStateIndex.none`.
@@ -142,16 +129,23 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
 
     mutating func insert(_ element: consuming Element) -> NetworkStateIndex {
         let generation = nextGeneration()
-        if let gap = gaps.pop() {
-            let gapIndex = gap.index.indexWithGeneration(generation)
-            elements[gapIndex.slot] = consume element
-            return gapIndex
+        if let slot = freeSlots.popLast() {
+            elements[Int(slot)] = consume element
+            return NetworkStateIndex(index: slot, generation: generation)
         }
         guard let newIndex = UInt32(exactly: elements.count), newIndex < Self.maximumCount else {
             preconditionFailure("NetworkGappyArray exceeded its maximum count")
         }
         elements.append(element)
         return NetworkStateIndex(index: newIndex, generation: generation)
+    }
+
+    // Lends out every live element in turn, in slot order.
+    @inline(always)
+    mutating func forEachElement(_ body: (inout Element) -> Void) {
+        for slot in 0..<elements.count where elements[slot] != nil {
+            body(&elements[slot]!)
+        }
     }
 
     internal mutating func cleanupGapsIfNecessary() {
@@ -161,33 +155,40 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
             return
         }
 
-        guard gaps.count * 10 > elements.count else {
+        guard freeSlots.count * 10 > elements.count else {
             // Only cleanup gaps if they represent more than 10% of the total elements
             return
         }
 
-        // Walk elements from end, removing any that are nil, and remove
-        // the corresponding gap record
+        // Walk elements from end, removing any that are nil
         while true {
             let count = elements.count
             guard count > 0 else { break }  // Array must be non-empty
             guard elements[count - 1] == nil else { break }  // Value must be nil
-            gaps.removeFirst { $0.index.slot == count - 1 }
             elements.removeLast()
         }
+        // Forget the slots that no longer exist, in one pass rather than once per slot removed
+        let remaining = elements.count
+        freeSlots.removeAll { Int($0) >= remaining }
     }
 
     mutating func remove(index: NetworkStateIndex) {
-        guard !index.isNone else { return }
+        _ = take(index: index)
+    }
+
+    // Removes the element at `index` and hands it back to the caller instead of destroying it.
+    // Returns `nil`, and changes nothing, if there is no element to take.
+    mutating func take(index: NetworkStateIndex) -> Element? {
+        guard !index.isNone, index.slot < elements.count, elements[index.slot] != nil else { return nil }
         defer { cleanupGapsIfNecessary() }
         if index.slot == elements.count - 1 {
             // Removing last element
-            elements.removeLast()
-            return
+            return elements.removeLast()
         }
 
         // Clear element and record the gap
-        elements[index.slot] = nil
-        gaps.push(GapRecord(index))
+        let taken = elements[index.slot].take()
+        freeSlots.append(UInt32(truncatingIfNeeded: index.slot))
+        return taken
     }
 }

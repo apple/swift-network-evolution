@@ -47,7 +47,7 @@ struct QUICStreamIDState: ~Copyable {
     var remoteMaxStreamID: QUICStreamID?
     var localMaxStreamID: QUICStreamID?
     private(set) var activeStreams: Int = 0
-    private(set) var pendingStartStreams: [QUICStreamInstance] = []
+    private(set) var pendingStartStreams: [MultiplexedFlowIdentifier] = []
 
     init(_ type: QUICStreamType) {
         self.streamType = type
@@ -66,28 +66,29 @@ struct QUICStreamIDState: ~Copyable {
         activeStreams
     }
 
-    mutating func addPending(_ stream: QUICStreamInstance) {
+    mutating func addPending(_ stream: inout QUICStreamInstance) {
         guard !stream.pendingStart else {
             stream.log.error("Stream is already marked pendingStart \(logContext)")
             return
         }
         // streamID's will be nil if pending so check by identifier
-        guard !pendingStartStreams.contains(where: { $0.identifier == stream.identifier }) else {
+        let flowID = stream.flowIdentifier
+        guard !pendingStartStreams.contains(flowID) else {
             stream.log.error("Stream is already on pending list \(logContext)")
             return
         }
-        pendingStartStreams.append(stream)
+        pendingStartStreams.append(flowID)
         stream.pendingStart = true
         let logContext = self.logContext
         stream.log.debug("Is pending \(logContext)")
     }
 
-    mutating func removePending(_ stream: QUICStreamInstance) {
+    mutating func removePending(_ stream: inout QUICStreamInstance) {
         guard stream.pendingStart else {
             stream.log.error("Stream is not marked pendingStart \(logContext)")
             return
         }
-        guard let index = pendingStartStreams.firstIndex(where: { $0.identifier == stream.identifier })
+        guard let index = pendingStartStreams.firstIndex(of: stream.flowIdentifier)
         else {
             stream.log.error("Stream is not on pending list \(logContext)")
             return
@@ -98,17 +99,12 @@ struct QUICStreamIDState: ~Copyable {
         stream.log.debug("Is no longer pending \(logContext)")
     }
 
-    mutating func removeAllPending() {
-        while !pendingStartStreams.isEmpty {
-            let stream = pendingStartStreams.popLast()!
-            guard stream.pendingStart else {
-                stream.log.error(
-                    "Stream is not marked pendingStart \(logContext)"
-                )
-                return
-            }
-            stream.pendingStart = false
-        }
+    // Empties the pending list, handing back the streams that were on it. The caller clears each
+    // stream's `pendingStart` flag, since streams are only reachable through the connection.
+    mutating func removeAllPending() -> [MultiplexedFlowIdentifier] {
+        let removed = pendingStartStreams
+        pendingStartStreams.removeAll()
+        return removed
     }
 
     mutating func allocateNewOutboundStreamID(
@@ -369,7 +365,7 @@ struct QUICStreamList: ~Copyable {
         list.count
     }
 
-    mutating func append(_ stream: QUICStreamInstance) {
+    mutating func append(_ stream: inout QUICStreamInstance) {
         guard !stream.listMembership.contains(listType) else {
             return
         }
@@ -377,21 +373,20 @@ struct QUICStreamList: ~Copyable {
         stream.listMembership.insert(listType)
     }
 
-    mutating func removeFirst(
-        connection: QUICConnection
-    ) -> QUICStreamInstance? {
+    // The kind of list this is, so a caller that resolves an identifier popped from the list can
+    // clear the matching membership on the stream.
+    var membership: StreamListMembership { listType }
+
+    // Pops the next stream identifier. The stream is only reachable through the connection, so the
+    // caller removes `membership` from it.
+    mutating func removeFirstIdentifier() -> MultiplexedFlowIdentifier? {
         guard !list.isEmpty else {
             return nil
         }
-        let streamIdentifier = list.removeFirst()
-        guard let stream = connection.flow(for: streamIdentifier) else {
-            return nil
-        }
-        stream.listMembership.remove(listType)
-        return stream
+        return list.removeFirst()
     }
 
-    mutating func remove(_ stream: QUICStreamInstance) {
+    mutating func remove(_ stream: inout QUICStreamInstance) {
         let name = self.name
         guard stream.listMembership.contains(listType) else {
             stream.log.error(
@@ -410,28 +405,31 @@ struct QUICStreamList: ~Copyable {
         stream.log.debug("Removed from \(name)")
     }
 
-    mutating func removeAll(connection: QUICConnection) {
-        while !list.isEmpty {
-            guard let identifier = list.popLast() else {
-                break
-            }
-            if let stream = connection.flow(for: identifier) {
-                guard stream.listMembership.contains(listType) else {
-                    let name = self.name
-                    connection.log.error("Stream is not marked in \(name)")
-                    return
-                }
-                stream.listMembership.remove(listType)
-            }
+    // Empties the list, handing back the identifiers that were on it. The caller removes
+    // `membership` from each of the streams.
+    mutating func removeAllIdentifiers() -> [MultiplexedFlowIdentifier] {
+        var removed: [MultiplexedFlowIdentifier] = []
+        removed.reserveCapacity(list.count)
+        while let identifier = list.popLast() {
+            removed.append(identifier)
         }
+        return removed
     }
 }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, BaseInboundStreamLinkage>,
-    UnidirectionalAbortingStreamFlow, EarlyDataStreamFlow
+public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, UnidirectionalAbortingStreamFlow,
+    EarlyDataStreamFlow
 {
+    public typealias ParentProtocol = QUICConnection
+    public typealias UpperProtocol = BaseInboundStreamLinkage
+
+    // The generic stream flow: identity, upper linkage and the queues shared with the application.
+    // A QUIC stream lives inline in its connection's flow table, so nothing here is reference counted.
+    @usableFromInline
+    var base: MultiplexedStreamFlow<QUICConnection, BaseInboundStreamLinkage>
+
     // Field ordering for QUICStreamInstance is important because it makes sure we are not taking
     // extra hits for padding.
     var listMembership: StreamListMembership = .none
@@ -503,8 +501,70 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
 
     var send = QUICSendState()
 
-    override public func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {
-        BaseOutboundStreamLinkage(quicStream: self)
+    public init(parent: QUICConnection, inbound: Bool) {
+        base = MultiplexedStreamFlow(parent: parent, inbound: inbound)
+    }
+
+    public init(parent: QUICConnection, inbound: Bool, in eventContext: inout NetworkContext.EventContext) {
+        base = MultiplexedStreamFlow(parent: parent, inbound: inbound, in: &eventContext)
+    }
+
+    // MARK: Forwarded flow state
+
+    public var parentProtocol: QUICConnection {
+        @inline(always) get { base.parentProtocol }
+        @inline(always) set { base.parentProtocol = newValue }
+    }
+    public var upper: BaseInboundStreamLinkage {
+        @inline(always) get { base.upper }
+        @inline(always) set { base.upper = newValue }
+    }
+    public var eventManager: ProtocolEventManager {
+        @inline(always) _read { yield base.eventManager }
+        @inline(always) _modify { yield &base.eventManager }
+    }
+    public var log: NetworkLoggerState {
+        @inline(always) _read { yield base.log }
+        @inline(always) _modify { yield &base.log }
+    }
+    public var upperSendQueue: FrameArray {
+        @inline(always) _read { yield base.upperSendQueue }
+        @inline(always) _modify { yield &base.upperSendQueue }
+    }
+    public var upperReceiveQueue: FrameArray {
+        @inline(always) _read { yield base.upperReceiveQueue }
+        @inline(always) _modify { yield &base.upperReceiveQueue }
+    }
+    public var maximumStreamDataSize: Int {
+        @inline(always) get { base.maximumStreamDataSize }
+        @inline(always) set { base.maximumStreamDataSize = newValue }
+    }
+    public var blockUpperSendQueue: Bool {
+        @inline(always) get { base.blockUpperSendQueue }
+        @inline(always) set { base.blockUpperSendQueue = newValue }
+    }
+    public var flowIdentifier: MultiplexedFlowIdentifier {
+        @inline(always) get { base.flowIdentifier }
+    }
+    public var identifier: InstanceIdentifier {
+        @inline(always) get { base.identifier }
+        @inline(always) set { base.identifier = newValue }
+    }
+
+    public func drainQueuedEventsForUpperProtocol(in eventContext: inout NetworkContext.EventContext) {
+        base.drainQueuedEventsForUpperProtocol(in: &eventContext)
+    }
+
+    public mutating func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext) {
+        parentProtocol.serviceStreamDataToSend(stream: &self, in: &eventContext)
+    }
+
+    public func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {
+        BaseOutboundStreamLinkage(
+            quicConnection: parentProtocol,
+            flow: flowIdentifier,
+            identifier: identifier
+        )
     }
 
     // Have sent DATA_BLOCKED for the stream without an increase
@@ -609,7 +669,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
         set { if newValue { flags.insert(.applicationMarkedIdle) } else { flags.remove(.applicationMarkedIdle) } }
     }
 
-    func setup(
+    mutating func setup(
         streamID: QUICStreamID?,
         logPrefixer: LogPrefixer
     ) {
@@ -625,7 +685,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
         self.receive.reassemblyQueue.log = NetworkLoggerState(logPrefixer.logIDString)
     }
 
-    func resetStreamID(streamID: QUICStreamID) {
+    mutating func resetStreamID(streamID: QUICStreamID) {
         self.streamID = streamID
         #if !DisableDebugLogging
         self.log.logPrefix = "[S\(streamID.description)]"
@@ -644,50 +704,57 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
         } else {
             log.debug("Deallocating unassigned stream")
         }
-        receive.reassemblyQueue.dequeueAll()
-        self.send.buffer.empty()
     }
 
-    func teardown(in eventContext: inout NetworkContext.EventContext) {
+    // A struct's `deinit` cannot change its own state, so whatever must be given back before the
+    // stream goes away is done here. Whoever removes a stream from the flow table calls this first.
+    mutating func releaseResources() {
+        receive.reassemblyQueue.dequeueAll()
+        send.buffer.empty()
+    }
+
+    public mutating func teardown(in eventContext: inout NetworkContext.EventContext) {
         receive.reassemblyQueue.dequeueAll()
         guard !self.closed else { return }
         self.send.buffer.empty()
-        parentProtocol.handleStreamClose(stream: self, error: nil, in: &eventContext)
+        parentProtocol.handleStreamClose(stream: &self, error: nil, in: &eventContext)
     }
 
-    func close(errorCode: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
+    mutating func close(errorCode: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
         self.send.buffer.empty()
-        parentProtocol.handleStreamClose(stream: self, error: errorCode, in: &eventContext)
+        parentProtocol.handleStreamClose(stream: &self, error: errorCode, in: &eventContext)
     }
 
     /// Releases this stream's event state from outside the protocol stack, for tests only.
-    func destroyFromExternalTest() {
-        fromExternal { eventContext in
+    mutating func destroyFromExternalTest() {
+        let streamIdentifier = identifier
+        let context = parentProtocol.context
+        streamIdentifier.fromExternal(in: &context.eventContext) { eventContext in
             unregisterEventManager(in: &eventContext)
         }
     }
 
-    public func abortOutbound(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
+    public mutating func abortOutbound(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
         self.outboundApplicationError = UInt64(error?.quicApplicationError ?? 0)
         let parent = parentProtocol
-        _ = parent.handleStopWrite(for: self)
+        _ = parent.handleStopWrite(for: &self)
         parent.sendFrames(in: &eventContext)
     }
 
-    public func abortInbound(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
+    public mutating func abortInbound(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
         self.inboundApplicationError = UInt64(error?.quicApplicationError ?? 0)
         let parent = parentProtocol
-        parent.handleStopRead(for: self)
+        parent.handleStopRead(for: &self)
         parent.sendFrames(in: &eventContext)
     }
 
-    func emptyPendingData(connection: QUICConnection) {
+    mutating func emptyPendingData(connection: QUICConnection) {
         removePendingOutboundBytesFromFlowControl(connection: connection)
         send.buffer.empty()
     }
 
     // This processes an incoming STREAM frame belonging to a QUICStream
-    func processIncomingStream(
+    mutating func processIncomingStream(
         connection: QUICConnection,
         frame: consuming FrameStreamReceived,
         in eventContext: inout NetworkContext.EventContext
@@ -712,7 +779,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
         return result
     }
 
-    private func processIncomingStreamData(
+    private mutating func processIncomingStreamData(
         connection: QUICConnection,
         frame: consuming FrameStreamReceived,
         in eventContext: inout NetworkContext.EventContext
@@ -802,7 +869,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
                 }
 
                 if !self.listMembership.contains(.pendingReassemblyDequeue) {
-                    connection.pendingReassemblyDequeue.append(self)
+                    connection.pendingReassemblyDequeue.append(&self)
                 }
             }
         } while false
@@ -847,7 +914,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     // Otherwise, the function will return the amount by which
     // the `lastOffset` was incremented.
     @_optimize(speed)
-    func updateLastOffset(
+    mutating func updateLastOffset(
         connection: QUICConnection,
         newLastOffset: UInt64,
         newFinalSize: UInt64?,
@@ -912,7 +979,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     }
 
     // Called when read data has left stream and being delivered to application
-    func deliveredInboundBytes(consumedLength: Int, connection: QUICConnection) {
+    mutating func deliveredInboundBytes(consumedLength: Int, connection: QUICConnection) {
         updateFlowControlWithInboundBytesDelivered(UInt64(consumedLength), connection: connection)
 
         // If a RESET_STREAM has been received, the flow control state
@@ -937,7 +1004,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     // upper receive queue awaiting a read. Those bytes counted against the
     // connection's receive window when they arrived; without this the credit is
     // never given back and the usable window shrinks permanently.
-    func discardUnreadInboundBytes(connection: QUICConnection) {
+    mutating func discardUnreadInboundBytes(connection: QUICConnection) {
         // Bytes handed to the upper layer but not yet read by the application.
         // Dequeuing already advanced the reassembly queue's `currentOffset` past
         // these, but flow control only counts them once the application reads,
@@ -977,16 +1044,16 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     }
 
     @_optimize(speed)
-    func dequeueReassembledData(connection: QUICConnection) -> FrameArray? {
+    mutating func dequeueReassembledData(connection: QUICConnection) -> FrameArray? {
         var markedFIN = markedInboundFINOnFrame
-        let result = receive.dequeueReassembled(markedFIN: &markedFIN, log: log)
+        let result = receive.dequeueReassembled(markedFIN: &markedFIN, log: base.log)
         if markedFIN {
             markedInboundFINOnFrame = true
         }
         return result
     }
 
-    override public func upperReceiveQueueDrainedBytes(_ bytes: Int, in eventContext: inout NetworkContext.EventContext)
+    public mutating func upperReceiveQueueDrainedBytes(_ bytes: Int, in eventContext: inout NetworkContext.EventContext)
     {
 
         let parent = parentProtocol
@@ -1051,7 +1118,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
         return newValue
     }
 
-    func inboundStreamReady() {
+    mutating func inboundStreamReady() {
         let logPrefix = log.logPrefix
         receive.state.change(logIDString: logPrefix, to: .receive)
         if !unidirectional {
@@ -1059,7 +1126,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
         }
     }
 
-    func outboundStreamReady() {
+    mutating func outboundStreamReady() {
         let logPrefix = log.logPrefix
         if !self.unidirectional {
             self.receive.state.change(logIDString: logPrefix, to: .receive)
@@ -1111,7 +1178,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
         // Don't send this frame during 0-RTT as we'll revisit once connected.
     }
 
-    func addStreamData(frame: consuming Frame, isLast: Bool, connection: QUICConnection) {
+    mutating func addStreamData(frame: consuming Frame, isLast: Bool, connection: QUICConnection) {
         let dataLength = UInt64(frame.unclaimedLength)
         updateFlowControlWithEnqueuedBytesToSend(dataLength, connection: connection)
         if send.enqueue(frame, isLast: isLast) {
@@ -1122,12 +1189,12 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
     // Only the first write on a stream gets here. It is kept out of line so reading the log prefix
     // does not become part of every addStreamData call.
     @inline(never)
-    private func startSending() {
+    private mutating func startSending() {
         send.startSending(logIDString: log.logPrefix)
     }
 
     // To be called when 0-RTT sending is rejected
-    func resetSendStreamData() {
+    mutating func resetSendStreamData() {
         send.reset()
         flowControlState.resetSentBytes()
     }
@@ -1145,7 +1212,7 @@ public final class QUICStreamInstance: MultiplexedStreamFlow<QUICConnection, Bas
 
     // NOTE: hasMoreDataToService is a signal that the send buffer contains the `hasLast` already
     // so no need to determine if data is blocked.
-    func recordStreamDataSending(
+    mutating func recordStreamDataSending(
         writtenLength: UInt64,
         isFinal: Bool,
         hasMoreDataToService: Bool,
@@ -1184,7 +1251,7 @@ extension QUICStreamInstance {
 @available(Network 0.1.0, *)
 extension QUICStreamInstance {
 
-    func setupMaxStreamData(
+    mutating func setupMaxStreamData(
         isServer: Bool,
         remoteTransportParameters: TransportParameters?,
         localTransportParameters: TransportParameters
@@ -1209,7 +1276,7 @@ extension QUICStreamInstance {
         updateOutboundFlowControlCredit(connection: parentProtocol)
     }
 
-    func processIncomingMaxStreamData(
+    mutating func processIncomingMaxStreamData(
         remoteMaxStreamData: UInt64,
         in eventContext: inout NetworkContext.EventContext
     ) {
