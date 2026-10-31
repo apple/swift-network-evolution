@@ -891,7 +891,7 @@ struct FrameAckRange {
 @available(Network 0.1.0, *)
 struct FrameAck: ~Copyable, QUICFrameProtocol {
 
-    var ranges: [FrameAckRange]
+    var ranges: SmallArray<FrameAckRange>
     var largest = PacketNumber.none
     var pendingGap: PacketNumber = .none
     private var _ecnCounter: ECNCounter = ECNCounter(ect0: 0, ect1: 0, ce: 0)
@@ -947,7 +947,7 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
         ranges: [FrameAckRange]
     ) {
         self.init(packetNumberSpace: packetNumberSpace, largest: largest, delay: delay)
-        self.ranges = ranges
+        self.ranges = SmallArray(ranges)
     }
 
     private mutating func validateAckType(_ rawType: UInt64) throws(QUICError) {
@@ -977,18 +977,18 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
             )
         }
 
-        ranges = [FrameAckRange](
-            repeating: FrameAckRange(gap: 0, range: 0),
-            count: Int(rangeCount + 1)
-        )
+        ranges = SmallArray()
 
         let rangeResult = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
-            try read.vle(&ranges[0].range.value)
-            if ranges.count > 1 {
-                for i in 1..<ranges.count {
-                    try read.vle(&ranges[i].gap.value)
-                    try read.vle(&ranges[i].range.value)
-                }
+            var firstRange = FrameAckRange(gap: 0, range: 0)
+            try read.vle(&firstRange.range.value)
+            ranges.append(firstRange)
+
+            for _ in 0..<rangeCount {
+                var range = FrameAckRange(gap: 0, range: 0)
+                try read.vle(&range.gap.value)
+                try read.vle(&range.range.value)
+                ranges.append(range)
             }
         }
         try validateDeserializationResult(rangeResult)
