@@ -199,6 +199,43 @@ final class MigrationTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 5.0)
     }
+
+    // A path that gave up probing is never used again, so the next path event destroys it. Otherwise
+    // each one keeps its lower stack, and a client that probes many paths that cannot work runs out of
+    // them.
+    func testUnreachablePathIsDestroyedOnNextPathEvent() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            let probePath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
+            self.connection.currentPath = currentPath
+            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
+            self.connection.multiplexingPaths[probePath.pathIdentifier] = probePath
+            probePath.changeState(to: .probing)
+            probePath.changeState(to: .unreachable)
+
+            self.connection.fromExternal { eventContext in
+                self.connection.handlePathChanged(
+                    path: currentPath.pathIdentifier,
+                    event: .established,
+                    isPrimary: true,
+                    in: &eventContext
+                )
+            }
+
+            XCTAssertNil(
+                self.connection.multiplexingPaths[probePath.pathIdentifier],
+                "Unreachable path not destroyed"
+            )
+            XCTAssertNotNil(
+                self.connection.multiplexingPaths[currentPath.pathIdentifier],
+                "Current path destroyed"
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
 }
 
 #endif

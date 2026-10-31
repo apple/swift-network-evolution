@@ -246,14 +246,14 @@ extension QUICConnection {
             break
         }
 
-        if isServer {
-            allPathIdentifiers { id in
-                guard var path = multiplexingPaths[id], path.state == .routeUnavailable, path !== currentPath else {
-                    return
-                }
-                path.destroy(in: &eventContext)
-                multiplexingPaths.removeValue(forKey: id)
+        allPathIdentifiers { id in
+            guard var path = multiplexingPaths[id], path !== currentPath,
+                path.state == .unreachable || (isServer && path.state == .routeUnavailable)
+            else {
+                return
             }
+            path.destroy(in: &eventContext)
+            multiplexingPaths.removeValue(forKey: id)
         }
 
         log.debug("Existing paths:")
