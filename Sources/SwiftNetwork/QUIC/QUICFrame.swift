@@ -607,6 +607,18 @@ enum FrameParseError: Error {
     case parsingError
     case invalidType(UInt64)
     case invalidValue(String)
+    // The frame is well formed, but more than this implementation is willing to process.
+    case exceedsImplementationLimit(String)
+
+    // Whether the peer sent something RFC 9000 doesn't allow, as opposed to something merely unsupported.
+    var isBadlyFormattedFrame: Bool {
+        switch self {
+        case .parsingError, .invalidType, .invalidValue:
+            return true
+        case .exceedsImplementationLimit:
+            return false
+        }
+    }
 
     func description() -> String {
         switch self {
@@ -616,6 +628,8 @@ enum FrameParseError: Error {
             return "Frame Parse: invalid type: \(type)"
         case .invalidValue(let value):
             return "Frame Parse: invalid value: \(value)"
+        case .exceedsImplementationLimit(let value):
+            return "Frame Parse: exceeds implementation limit: \(value)"
         }
     }
 }
@@ -972,8 +986,13 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
         try validateAckType(rawType)
 
         guard rangeCount <= 1024 else {
+            // Each additional range takes at least two bytes. If they can't fit, the frame is badly
+            // formatted (RFC 9000, Section 20.1); if they can, it is only more than we will process.
+            guard rangeCount <= frame.unclaimedLength / 2 else {
+                throw QUICError.frameParse(FrameParseError.parsingError)
+            }
             throw QUICError.frameParse(
-                FrameParseError.invalidValue("excessive ACK range: \(rangeCount)")
+                FrameParseError.exceedsImplementationLimit("excessive ACK range: \(rangeCount)")
             )
         }
 
@@ -2792,6 +2811,12 @@ private func updateConnectionCloseStats(
     }
 }
 
+// RFC 9000, Section 19.19: a reason phrase only "SHOULD be a UTF-8 encoded string", so one that isn't must
+// not stop a close from being honored. It ends at the first null byte, as `fixedLengthUTF8` would have it.
+private func decodeReasonPhrase(_ bytes: [UInt8]) -> String {
+    String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+}
+
 @available(Network 0.1.0, *)
 struct FrameConnectionClose: ~Copyable, QUICFrameProtocol {
 
@@ -2825,6 +2850,7 @@ struct FrameConnectionClose: ~Copyable, QUICFrameProtocol {
         var rawFrameType: UInt64 = 0
         var rawCode: UInt64 = 0
         var reasonLength: UInt64 = 0
+        var reasonBytes: [UInt8] = []
 
         frameType = .connectionClose
         let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
@@ -2832,20 +2858,18 @@ struct FrameConnectionClose: ~Copyable, QUICFrameProtocol {
             try read.vle(&rawCode)
             try read.vle(&rawFrameType)
             try read.vle(&reasonLength)
-            try read.fixedLengthUTF8(&reason, byteCount: Int(reasonLength))
+            try read.buffer(&reasonBytes, length: Int(reasonLength))
         }
 
         try validateDeserializationResult(result)
         try validateType(rawType)
 
         self.errorCode = rawCode
+        self.reason = decodeReasonPhrase(reasonBytes)
 
-        guard let frameType = FrameType(rawValue: rawFrameType) else {
-            throw QUICError.frameParse(
-                FrameParseError.invalidValue("Invalid frame type: \(rawFrameType)")
-            )
-        }
-        self.frameType = frameType
+        // The peer may be reporting a frame we don't know, such as the one we sent that it objected to.
+        // RFC 9000, Section 19.19 has 0, or PADDING, stand for a frame type that is unknown.
+        self.frameType = FrameType(rawValue: rawFrameType) ?? .padding
 
         updateConnectionCloseStats(errorCode: self.errorCode, isRx: true, stats: &stats)
     }
@@ -2907,16 +2931,18 @@ struct FrameApplicationClose: ~Copyable, QUICFrameProtocol {
         var rawType: UInt64 = 0
         var rawCode: UInt64 = 0
         var reasonLength: UInt64 = 0
+        var reasonBytes: [UInt8] = []
 
         let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
             try read.vle(&rawType)
             try read.vle(&rawCode)
             try read.vle(&reasonLength)
-            try read.fixedLengthUTF8(&reason, byteCount: Int(reasonLength))
+            try read.buffer(&reasonBytes, length: Int(reasonLength))
         }
 
         try validateDeserializationResult(result)
         try validateType(rawType)
+        self.reason = decodeReasonPhrase(reasonBytes)
         self.errorCode = rawCode
         stats.increment(.rxApplicationCloseError)
     }
