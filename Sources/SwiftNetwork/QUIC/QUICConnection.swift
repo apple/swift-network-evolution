@@ -5606,8 +5606,11 @@ extension QUICConnection {
             close(with: .protocolViolation, "Client sent NEW_TOKEN frame", in: &eventContext)
             return false
         }
+        // A client MUST treat receipt of a NEW_TOKEN frame with an empty Token
+        // field as a connection error of type FRAME_ENCODING_ERROR.
         guard frame.token.count > 0 else {
             log.error("NEW_TOKEN frame received with invalid token size \(frame.token.count)")
+            close(with: .frameEncodingError, "NEW_TOKEN frame with an empty token", in: &eventContext)
             return false
         }
         // In the future we need to deliver NEW_TOKEN to client application layer for usage in later connections
