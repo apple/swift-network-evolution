@@ -603,18 +603,20 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage {
 final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
     enum Target {
         case harness(DatagramLowerHarness<TestDatagramLinkageFamily>)
-        case flow(TestDatagramFlow)
+        case flow(TestMultiplexingProtocol, MultiplexedFlowIdentifier, InstanceIdentifier)
     }
 
     let target: Target
 
     init(harness: DatagramLowerHarness<TestDatagramLinkageFamily>) { self.target = .harness(harness) }
-    init(flow: TestDatagramFlow) { self.target = .flow(flow) }
+    init(multiplexing: TestMultiplexingProtocol, flow: MultiplexedFlowIdentifier, identifier: InstanceIdentifier) {
+        self.target = .flow(multiplexing, flow, identifier)
+    }
 
     var identifier: InstanceIdentifier {
         switch target {
         case .harness(let harness): return harness.identifier
-        case .flow(let flow): return flow.identifier
+        case .flow(_, _, let identifier): return identifier
         }
     }
 
@@ -652,9 +654,9 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
         switch target {
-        case .flow(let flow):
-            var mutableFlow = flow
-            return try mutableFlow.receiveDatagrams(
+        case .flow(let multiplexing, let flowID, _):
+            return try multiplexing.receiveDatagrams(
+                flow: flowID,
                 maximumDatagramCount: maximumDatagramCount,
                 for: instance,
                 in: &eventContext
@@ -676,8 +678,9 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
         switch target {
-        case .flow(let flow):
-            return try flow.getDatagramsToSend(
+        case .flow(let multiplexing, let flowID, _):
+            return try multiplexing.getDatagramsToSend(
+                flow: flowID,
                 maximumDatagramCount: maximumDatagramCount,
                 minimumDatagramSize: minimumDatagramSize,
                 for: instance,
@@ -700,9 +703,8 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
         switch target {
-        case .flow(let flow):
-            var mutableFlow = flow
-            try mutableFlow.sendDatagrams(datagrams, from: instance, in: &eventContext)
+        case .flow(let multiplexing, let flowID, _):
+            try multiplexing.sendDatagrams(flow: flowID, datagrams, from: instance, in: &eventContext)
         case .harness(let harness):
             var mutableHarness = harness
             try mutableHarness.sendDatagrams(datagrams, from: instance, in: &eventContext)
@@ -711,7 +713,8 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
 
     func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
         switch target {
-        case .flow(let flow): flow.connect(for: instance, in: &eventContext)
+        case .flow(let multiplexing, let flowID, _):
+            multiplexing.connectFlow(flowID, for: instance, in: &eventContext)
         case .harness(let harness): harness.connect(for: instance, in: &eventContext)
         }
     }
@@ -722,7 +725,8 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch target {
-        case .flow(let flow): flow.disconnect(error: error, for: instance, in: &eventContext)
+        case .flow(let multiplexing, let flowID, _):
+            multiplexing.disconnectFlow(flowID, error: error, for: instance, in: &eventContext)
         case .harness(let harness): harness.disconnect(error: error, for: instance, in: &eventContext)
         }
     }
@@ -732,9 +736,8 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
         switch target {
-        case .flow(let flow):
-            var mutableFlow = flow
-            try mutableFlow.detach(for: instance, in: &eventContext)
+        case .flow(let multiplexing, let flowID, _):
+            try multiplexing.detachFlow(flowID, for: instance, in: &eventContext)
         case .harness(let harness):
             var mutableHarness = harness
             try mutableHarness.detach(for: instance, in: &eventContext)
@@ -743,7 +746,9 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
 
     func teardown(in eventContext: inout NetworkContext.EventContext) {
         switch target {
-        case .flow(let flow): flow.unregisterEventManager(in: &eventContext)
+        case .flow:
+            // The multiplexing protocol releases the flow, and its event state, as part of detaching it.
+            break
         case .harness(let harness): harness.unregisterEventManager(in: &eventContext)
         }
     }
@@ -754,7 +759,8 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch target {
-        case .flow(let flow): flow.handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        case .flow(let multiplexing, let flowID, _):
+            multiplexing.handleApplicationEventForFlow(flowID, event: event, for: instance, in: &eventContext)
         case .harness(let harness): harness.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         }
     }
@@ -764,7 +770,7 @@ final class TestExternalOutboundDatagram: ExternalOutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) -> ProtocolMetadata<P>? {
         switch target {
-        case .flow(let flow): return flow.getMetadata(for: instance, in: &eventContext)
+        case .flow(let multiplexing, let flowID, _): return multiplexing.getMetadata(flow: flowID)
         case .harness(let harness): return harness.getMetadata(for: instance, in: &eventContext)
         }
     }
@@ -789,7 +795,7 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
         case datagramLowerHarness(DatagramLowerHarness<TestDatagramLinkageFamily>)
         // A flow on the multiplexing protocol: this is what the flow hands back from
         // `asLowerLinkage()` so its upper protocol can talk to it.
-        case multiplexedFlow(TestDatagramFlow)
+        case multiplexedFlow(TestMultiplexingProtocol, MultiplexedFlowIdentifier)
     }
 
     public let base: BaseOutboundDatagramLinkage
@@ -810,9 +816,12 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
         self.protocolType = .datagramLowerHarness(harness)
     }
 
-    public init(flow: TestDatagramFlow) {
-        self.base = .init(external: TestExternalOutboundDatagram(flow: flow))
-        self.protocolType = .multiplexedFlow(flow)
+    public init(multiplexing: TestMultiplexingProtocol, flow: MultiplexedFlowIdentifier, identifier: InstanceIdentifier)
+    {
+        self.base = .init(
+            external: TestExternalOutboundDatagram(multiplexing: multiplexing, flow: flow, identifier: identifier)
+        )
+        self.protocolType = .multiplexedFlow(multiplexing, flow)
     }
 
     public var identifier: InstanceIdentifier { base.identifier }
@@ -863,9 +872,9 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
         switch protocolType {
-        case .multiplexedFlow(let flow):
-            var flow = flow
-            return try flow.receiveDatagrams(
+        case .multiplexedFlow(let multiplexing, let flowID):
+            return try multiplexing.receiveDatagrams(
+                flow: flowID,
                 maximumDatagramCount: maximumDatagramCount,
                 for: instance,
                 in: &eventContext
@@ -893,8 +902,9 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
         switch protocolType {
-        case .multiplexedFlow(let flow):
-            return try flow.getDatagramsToSend(
+        case .multiplexedFlow(let multiplexing, let flowID):
+            return try multiplexing.getDatagramsToSend(
+                flow: flowID,
                 maximumDatagramCount: maximumDatagramCount,
                 minimumDatagramSize: minimumDatagramSize,
                 for: instance,
@@ -924,9 +934,8 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
         switch protocolType {
-        case .multiplexedFlow(let flow):
-            var flow = flow
-            try flow.sendDatagrams(datagrams, from: instance, in: &eventContext)
+        case .multiplexedFlow(let multiplexing, let flowID):
+            try multiplexing.sendDatagrams(flow: flowID, datagrams, from: instance, in: &eventContext)
         case .datagramLowerHarness(let harness):
             var harness = harness
             try harness.sendDatagrams(datagrams, from: instance, in: &eventContext)
@@ -936,7 +945,8 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
 
     public func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
         switch protocolType {
-        case .multiplexedFlow(let flow): flow.connect(for: instance, in: &eventContext)
+        case .multiplexedFlow(let multiplexing, let flowID):
+            multiplexing.connectFlow(flowID, for: instance, in: &eventContext)
         case .datagramLowerHarness(let harness): harness.connect(for: instance, in: &eventContext)
         case .base: base.connect(for: instance, in: &eventContext)
         }
@@ -948,7 +958,8 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
-        case .multiplexedFlow(let flow): flow.disconnect(error: error, for: instance, in: &eventContext)
+        case .multiplexedFlow(let multiplexing, let flowID):
+            multiplexing.disconnectFlow(flowID, error: error, for: instance, in: &eventContext)
         case .datagramLowerHarness(let harness):
             harness.disconnect(error: error, for: instance, in: &eventContext)
         case .base: base.disconnect(error: error, for: instance, in: &eventContext)
@@ -960,9 +971,8 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
         switch protocolType {
-        case .multiplexedFlow(let flow):
-            var flow = flow
-            try flow.detach(for: instance, in: &eventContext)
+        case .multiplexedFlow(let multiplexing, let flowID):
+            try multiplexing.detachFlow(flowID, for: instance, in: &eventContext)
         case .datagramLowerHarness(let harness):
             var harness = harness
             try harness.detach(for: instance, in: &eventContext)
@@ -973,7 +983,9 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
     public func teardown(in eventContext: inout NetworkContext.EventContext) {
         switch protocolType {
         case .datagramLowerHarness(let harness): harness.unregisterEventManager(in: &eventContext)
-        case .multiplexedFlow(let flow): flow.unregisterEventManager(in: &eventContext)
+        case .multiplexedFlow:
+            // The multiplexing protocol releases the flow, and its event state, as part of detaching it.
+            break
         case .base: base.teardown(in: &eventContext)
         }
     }
@@ -984,8 +996,8 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
-        case .multiplexedFlow(let flow):
-            flow.handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        case .multiplexedFlow(let multiplexing, let flowID):
+            multiplexing.handleApplicationEventForFlow(flowID, event: event, for: instance, in: &eventContext)
         case .datagramLowerHarness(let harness):
             harness.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         case .base: base.handleApplicationEvent(event: event, for: instance, in: &eventContext)
@@ -997,7 +1009,7 @@ public struct TestOutboundDatagramLinkage: OutboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) -> ProtocolMetadata<P>? {
         switch protocolType {
-        case .multiplexedFlow(let flow): return flow.getMetadata(for: instance, in: &eventContext)
+        case .multiplexedFlow(let multiplexing, let flowID): return multiplexing.getMetadata(flow: flowID)
         case .datagramLowerHarness(let harness): return harness.getMetadata(for: instance, in: &eventContext)
         case .base: return base.getMetadata(for: instance, in: &eventContext)
         }
