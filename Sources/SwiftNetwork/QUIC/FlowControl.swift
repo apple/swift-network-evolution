@@ -436,12 +436,15 @@ extension QUICStreamInstance {
         flowControlState.largestInboundByteOffsetReceived
     }
 
-    func updateFlowControlWithEnqueuedBytesToSend(_ bytes: UInt64, connection: QUICConnection) {
+    mutating func updateFlowControlWithEnqueuedBytesToSend(_ bytes: UInt64, connection: QUICConnection) {
         flowControlState.pendingOutboundBytesToSend += bytes
         connection.flowControlState.pendingOutboundBytesToSend += bytes
+        // The room reported to the application is derived from the pending bytes, so recompute it
+        // when they change; otherwise it stays at its value from stream setup.
+        updateOutboundFlowControlCredit(connection: connection)
     }
 
-    func updateFlowControlWithSentBytes(_ bytes: UInt64, connection: QUICConnection) {
+    mutating func updateFlowControlWithSentBytes(_ bytes: UInt64, connection: QUICConnection) {
         precondition(bytes <= flowControlState.pendingOutboundBytesToSend)
         precondition(bytes <= connection.flowControlState.pendingOutboundBytesToSend)
 
@@ -459,7 +462,7 @@ extension QUICStreamInstance {
         }
     }
 
-    func removePendingOutboundBytesFromFlowControl(connection: QUICConnection) {
+    mutating func removePendingOutboundBytesFromFlowControl(connection: QUICConnection) {
         let pendingBytes = flowControlState.pendingOutboundBytesToSend
         flowControlState.pendingOutboundBytesToSend = 0
 
@@ -467,7 +470,7 @@ extension QUICStreamInstance {
         connection.flowControlState.pendingOutboundBytesToSend -= pendingBytes
     }
 
-    func reportDataBlockedIfNecessary(on pendingItems: inout PendingItems) {
+    mutating func reportDataBlockedIfNecessary(on pendingItems: inout PendingItems) {
         if flowControlState.totalOutboundBytesSent >= flowControlState.outboundMaxData {
             if !self.hasSentDataBlocked {
                 self.hasSentDataBlocked = true
@@ -476,7 +479,7 @@ extension QUICStreamInstance {
         }
     }
 
-    func updateFlowControlWithInboundBytesDelivered(_ bytes: UInt64, connection: QUICConnection) {
+    mutating func updateFlowControlWithInboundBytesDelivered(_ bytes: UInt64, connection: QUICConnection) {
         flowControlState.totalInboundBytesDelivered += bytes
         flowControlState.inboundBytesDeliveredSinceLastUpdate += bytes
         connection.flowControlState.totalInboundBytesDelivered += bytes
@@ -487,7 +490,7 @@ extension QUICStreamInstance {
         )
     }
 
-    func updateFlowControlWithTotalInOrderInboundBytesRead(
+    mutating func updateFlowControlWithTotalInOrderInboundBytesRead(
         _ newTotalInbound: UInt64,
         connection: QUICConnection,
         updateStream: Bool = true,
@@ -527,7 +530,7 @@ extension QUICStreamInstance {
         )
     }
 
-    func sendInboundFlowControlCreditIfNeeded(connection: QUICConnection) {
+    mutating func sendInboundFlowControlCreditIfNeeded(connection: QUICConnection) {
         if shouldSendInboundFlowControlCredit {
             // If we should send stream credit, send both stream and connection credit
             sendInboundFlowControlCredit(
@@ -544,7 +547,7 @@ extension QUICStreamInstance {
         }
     }
 
-    func sendInboundFlowControlCreditForStreamDataBlocked(connection: QUICConnection) {
+    mutating func sendInboundFlowControlCreditForStreamDataBlocked(connection: QUICConnection) {
         // Ignore STREAM_DATA_BLOCKED once we have received a FIN
         // or a RESET_STREAM.
         guard !receive.state.isSizeKnown else {
@@ -559,7 +562,7 @@ extension QUICStreamInstance {
     }
 
     @inline(always)
-    fileprivate func sendInboundFlowControlCredit(
+    fileprivate mutating func sendInboundFlowControlCredit(
         connection: QUICConnection,
         sendStreamCredit: Bool,
         sendConnectionCredit: Bool
@@ -586,7 +589,7 @@ extension QUICStreamInstance {
         return min(connectionFlowControl, streamFlowControl)
     }
 
-    func updateOutboundMaxData(to newValue: UInt64) -> Bool {
+    mutating func updateOutboundMaxData(to newValue: UInt64) -> Bool {
         guard newValue >= flowControlState.outboundMaxData else {
             log.debug(
                 "Remote max data \(newValue) is not greater than \(self.flowControlState.outboundMaxData), ignoring"
@@ -597,7 +600,7 @@ extension QUICStreamInstance {
         return true
     }
 
-    func updateOutboundFlowControlCredit(connection: QUICConnection) {
+    mutating func updateOutboundFlowControlCredit(connection: QUICConnection) {
         let credit: Int
         if receivedStopSending {
             credit = 0
@@ -637,14 +640,16 @@ extension QUICStreamInstance {
         }
 
         let maxPendingBytes = FlowControlGlobals.sendQueueFactor * minMSS
-        guard connection.flowControlState.pendingOutboundBytesToSend < maxPendingBytes,
-            flowControlState.pendingOutboundBytesToSend < maxPendingBytes
-        else {
+        // Only this stream's own queue can report no room: the room reopens when its bytes are
+        // sent, so a stream with nothing queued would stay at zero while other streams fill the
+        // connection.
+        guard flowControlState.pendingOutboundBytesToSend < maxPendingBytes else {
             return 0
         }
 
         // Avoid trickling of data by using these values
-        let connectionMin = maxPendingBytes - connection.flowControlState.pendingOutboundBytesToSend
+        let connectionPendingBytes = connection.flowControlState.pendingOutboundBytesToSend
+        let connectionMin = connectionPendingBytes < maxPendingBytes ? maxPendingBytes - connectionPendingBytes : 0
         let streamMin = maxPendingBytes - flowControlState.pendingOutboundBytesToSend
 
         let connectionMax = min(
@@ -652,7 +657,8 @@ extension QUICStreamInstance {
                 - connection.flowControlState.totalOutboundBytesSent,
             allowedCCWindow
         )
-        let connectionCredit = max(connectionMax, connectionMin)
+        // A full connection limits the room but leaves one packet's worth.
+        let connectionCredit = max(connectionMax, connectionMin, minMSS)
 
         let streamCredit = max(
             flowControlState.outboundMaxData - flowControlState.totalOutboundBytesSent,
@@ -663,7 +669,7 @@ extension QUICStreamInstance {
     }
 
     @inline(always)
-    func updateLastReceivedOffset(
+    mutating func updateLastReceivedOffset(
         to newLastReceivedOffset: UInt64,
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
@@ -715,7 +721,7 @@ extension QUICStreamInstance {
     }
 
     @inline(always)
-    func startTrackingInboundFlowControlInterval(connection: QUICConnection) {
+    mutating func startTrackingInboundFlowControlInterval(connection: QUICConnection) {
         // Start of a new measurement interval
         if flowControlStreamState.receiveHighWaterMarkTime == .zero {
             flowControlStreamState.receiveHighWaterMarkTime = connection.now
@@ -724,7 +730,7 @@ extension QUICStreamInstance {
 
     // Updates inbound flow control credit, and recalculates
     // `maximumUnreadInboundBytesAllowed` values.
-    func updateInboundFlowControlCredit(
+    mutating func updateInboundFlowControlCredit(
         dataLengthAdded: UInt64,
         connection: QUICConnection,
         connectionOnly: Bool
@@ -764,7 +770,7 @@ extension QUICStreamInstance {
     // that sender can send at full rate.
     // Returns true if maximum was updated.
     @inline(always)
-    fileprivate func updateMaximumUnreadInboundBytesAllowed(
+    fileprivate mutating func updateMaximumUnreadInboundBytesAllowed(
         dataLengthAdded: UInt64,
         connection: QUICConnection
     ) -> Bool {
@@ -805,7 +811,7 @@ extension QUICStreamInstance {
     }
 
     @inline(always)
-    fileprivate func updateMaximumUnreadInboundBytesAllowed(increment: UInt64) {
+    fileprivate mutating func updateMaximumUnreadInboundBytesAllowed(increment: UInt64) {
         let oldValue = flowControlState.maximumUnreadInboundBytesAllowed
         flowControlState.maximumUnreadInboundBytesAllowed = min(
             oldValue + increment,
@@ -814,7 +820,7 @@ extension QUICStreamInstance {
     }
 
     @inline(always)
-    fileprivate func computeReceiveHighWaterMarkIncrease(
+    fileprivate mutating func computeReceiveHighWaterMarkIncrease(
         dataLength: UInt64,
         connection: QUICConnection,
         now: NetworkClock.Instant

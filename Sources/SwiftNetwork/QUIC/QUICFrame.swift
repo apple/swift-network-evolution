@@ -1153,18 +1153,18 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
             return false
         }
 
-        let stream: QUICStreamInstance
+        let resetFlowID: MultiplexedFlowIdentifier
         if let flowID = connection.knownFlows[streamID] {
             // The stream id is known. The flow object may still be missing
             // if the stream was torn down without clearing `knownFlows`; in
             // that case there is no one to deliver the reset to, so drop it.
-            guard let existing = connection.flow(for: flowID) else {
+            guard connection.hasFlow(flowID) else {
                 Logger.proto.error(
                     "Stream \(streamID.value) has known flow but no QUICStreamInstance; dropping RESET_STREAM"
                 )
                 return true
             }
-            stream = existing
+            resetFlowID = flowID
 
         } else {
             // RESET_STREAM may be the first frame the peer sends on a stream
@@ -1185,20 +1185,33 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
                 return true
             }
             guard let flowID = connection.knownFlows[streamID],
-                let created = connection.flow(for: flowID)
+                connection.hasFlow(flowID)
             else {
                 Logger.proto.error(
                     "Stream \(streamID.value) is not a QUICStreamInstance after createInboundStreams"
                 )
                 return true
             }
-            stream = created
+            resetFlowID = flowID
         }
+        return connection.performOnStream(resetFlowID, in: &eventContext) {
+            (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) -> Bool in
+            self.process(stream: &stream, streamID: streamID, connection: connection, in: &ctx)
+        } ?? true
+    }
+
+    // The RESET_STREAM work that belongs to the stream, which is borrowed from the connection
+    private func process(
+        stream: inout QUICStreamInstance,
+        streamID: QUICStreamID,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> Bool {
         // Set the application error code
         stream.streamMetadata.applicationError = self.code
         stream.inboundApplicationError = self.code
         connection.deliverInboundAbortedEvent(
-            stream: stream,
+            stream: &stream,
             error: NetworkError(quicApplicationError: self.code),
             in: &eventContext
         )
@@ -1346,7 +1359,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         guard let flowID = connection.knownFlows[streamID] else {
             return true
         }
-        guard let stream = connection.flow(for: flowID) else {
+        guard connection.hasFlow(flowID) else {
             if connection.streamClosedAlready(streamID: streamID) {
                 return true
             }
@@ -1370,6 +1383,19 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
             }
             return false
         }
+        return connection.performOnStream(flowID, in: &eventContext) {
+            (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) -> Bool in
+            self.process(stream: &stream, streamID: streamID, connection: connection, in: &ctx)
+        } ?? true
+    }
+
+    // The STOP_SENDING work that belongs to the stream, which is borrowed from the connection
+    private func process(
+        stream: inout QUICStreamInstance,
+        streamID: QUICStreamID,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> Bool {
         Logger.proto.info("[S\(streamID.value)] received STOP_SENDING")
         stream.receivedStopSending = true
         stream.updateOutboundFlowControlCredit(connection: connection)
@@ -1388,7 +1414,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         // An endpoint that receives a STOP_SENDING frame MUST send a
         // RESET_STREAM frame if the stream is in the "Ready" or "Send" state.
         if stream.send.state == .ready || stream.send.state == .send {
-            let _ = connection.disconnect(flow: stream.flowIdentifier, direction: .outbound, in: &eventContext)
+            connection.disconnect(stream: &stream, direction: .outbound, in: &eventContext)
         }
         //
         // Immediately close the stream if we have received
@@ -1760,7 +1786,7 @@ struct FrameStreamSendMetadata: ~Copyable, QUICFrameProtocol {
     static func write(
         into frame: inout Frame,
         stats: inout Statistics,
-        stream: QUICStreamInstance,
+        stream: inout QUICStreamInstance,
         offset: UInt64,
         length: UInt64,
         isFinal: Bool
@@ -1870,7 +1896,7 @@ struct FrameStreamSendMetadata: ~Copyable, QUICFrameProtocol {
                 offset: offset,
                 length: lengthToWrite,
                 into: &frame,
-                log: stream.log
+                log: stream.base.log
             )
             // It is caller's responsibility to check that the sendBuffer has
             // the requested offset+length. This throw therefore is indistinguishable

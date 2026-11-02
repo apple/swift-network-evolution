@@ -767,7 +767,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -779,7 +779,7 @@ class QUICFrameTests: XCTestCase {
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: lengthToWrite,
                 isFinal: false
@@ -800,13 +800,13 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: 0,
                 isFinal: false
@@ -830,7 +830,7 @@ class QUICFrameTests: XCTestCase {
 
             XCTAssertEqual(frame.unclaimedLength, 7)
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             defer {
@@ -842,7 +842,7 @@ class QUICFrameTests: XCTestCase {
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 0,
                     length: lengthToWrite,
                     isFinal: false
@@ -862,7 +862,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let lengthToWrite = UInt64(0)
@@ -870,7 +870,7 @@ class QUICFrameTests: XCTestCase {
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 0,
                     length: lengthToWrite,
                     isFinal: false
@@ -944,7 +944,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -956,7 +956,7 @@ class QUICFrameTests: XCTestCase {
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: lengthToWrite,
                 isFinal: true
@@ -977,13 +977,13 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: 0,
                 isFinal: true
@@ -1004,13 +1004,13 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: 0,
                 isFinal: true
@@ -1031,14 +1031,14 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             XCTAssertThrowsError(
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 0,
                     length: 0,
                     isFinal: true
@@ -1057,13 +1057,13 @@ class QUICFrameTests: XCTestCase {
             defer {
                 frame.finalize(success: true)
             }
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: 0,
                 isFinal: true
@@ -1248,7 +1248,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendDataBeforeOffset10 = Frame(copyBuffer: Array(repeating: UInt8(0), count: 10))
@@ -1262,7 +1262,7 @@ class QUICFrameTests: XCTestCase {
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1278,7 +1278,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1292,7 +1292,7 @@ class QUICFrameTests: XCTestCase {
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 10,
                     length: lengthToWrite,
                     isFinal: false
@@ -1314,7 +1314,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
 
@@ -1328,7 +1328,7 @@ class QUICFrameTests: XCTestCase {
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 1,
                 length: 0,
                 isFinal: false
@@ -1344,7 +1344,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1361,7 +1361,7 @@ class QUICFrameTests: XCTestCase {
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 10,
                     length: lengthToWrite,
                     isFinal: false
@@ -1384,7 +1384,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1400,7 +1400,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1425,7 +1425,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(
@@ -1443,7 +1443,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1471,7 +1471,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: streamData)
@@ -1487,7 +1487,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1517,7 +1517,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: streamData)
@@ -1533,7 +1533,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1561,7 +1561,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: streamData)
@@ -1577,7 +1577,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1606,7 +1606,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: streamData)
@@ -1622,7 +1622,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: requestedLengthToWrite,
                 isFinal: false
@@ -1703,7 +1703,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1717,7 +1717,7 @@ class QUICFrameTests: XCTestCase {
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: true
@@ -1739,13 +1739,13 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 1,
                 length: 0,
                 isFinal: true
@@ -1767,7 +1767,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1781,7 +1781,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: true
@@ -1805,7 +1805,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1819,7 +1819,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: true
@@ -1842,7 +1842,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             // Putting data in stream's send buffer, even though it should not be used,
@@ -1857,7 +1857,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: 0,
                 isFinal: true
@@ -1875,7 +1875,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1890,7 +1890,7 @@ class QUICFrameTests: XCTestCase {
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 10,
                     length: lengthToWrite,
                     isFinal: true
@@ -1902,7 +1902,7 @@ class QUICFrameTests: XCTestCase {
     #if NETWORK_PERF_TESTS
     func testStreamHeaderSizePerformance() {
         try self.connection.context.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(1), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [UInt8](repeating: 0xab, count: 1400))
@@ -1934,7 +1934,7 @@ class QUICFrameTests: XCTestCase {
             }
             var streams: [QUICStreamInstance] = []
             for idx in 0..<1_000 {
-                let stream = QUICStreamInstance(parent: connection, inbound: false)
+                var stream = QUICStreamInstance(parent: connection, inbound: false)
                 defer { stream.destroyFromExternalTest() }
                 stream.setup(
                     streamID: QUICStreamID(UInt64(idx))!,
@@ -1949,7 +1949,7 @@ class QUICFrameTests: XCTestCase {
                         _ = try! FrameStreamSendMetadata.write(
                             into: &frame,
                             stats: &stats,
-                            stream: stream,
+                            stream: &stream,
                             offset: UInt64(idx),
                             length: 0,
                             isFinal: false
