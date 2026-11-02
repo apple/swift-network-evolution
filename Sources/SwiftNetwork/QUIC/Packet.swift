@@ -712,16 +712,46 @@ extension InPlaceSerializer where Factory: ~Escapable, Factory: ~Copyable {
 
     @_optimize(speed)
     mutating func connectionIDBytes(_ value: QUICConnectionID) throws(SerializationError) {
-        if hasRoom(MemoryLayout<QUICConnectionIDStorage>.size) {
-            currentSpan.storeBytes(
-                of: value.connectionIDStorage,
-                toByteOffset: cursor,
-                as: QUICConnectionIDStorage.self
-            )
-            moveCursorUnchecked(value.length)
-        } else {
-            try self.span(value.connectionIDStorage.span.bytes.extracting(unchecked: 0..<value.length))
+        let length = value.length
+        guard hasRoom(length) else {
+            try self.span(value.connectionIDStorage.span.bytes.extracting(unchecked: 0..<length))
+            return
         }
+        // Write exactly the length of the bytes to the storage
+        let source = value.connectionIDStorage.span.bytes
+        var offset = 0
+        while length &- offset >= 8 {
+            currentSpan.storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt64.self),
+                toByteOffset: cursor &+ offset,
+                as: UInt64.self
+            )
+            offset &+= 8
+        }
+        if length & 4 != 0 {
+            currentSpan.storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt32.self),
+                toByteOffset: cursor &+ offset,
+                as: UInt32.self
+            )
+            offset &+= 4
+        }
+        if length & 2 != 0 {
+            currentSpan.storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt16.self),
+                toByteOffset: cursor &+ offset,
+                as: UInt16.self
+            )
+            offset &+= 2
+        }
+        if length & 1 != 0 {
+            currentSpan.storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt8.self),
+                toByteOffset: cursor &+ offset,
+                as: UInt8.self
+            )
+        }
+        moveCursorUnchecked(length)
     }
 
     @_optimize(speed)
