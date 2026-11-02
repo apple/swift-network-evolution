@@ -82,6 +82,7 @@ final class SwiftNetworkQUICClosedConnectionInboundTests: NetTestCase {
 
     // When a datagram in a batch closes the connection, future datagrams should not be processed
     func testDatagramBehindClosingDatagramIsNotProcessed() {
+        // Add link delay to make sure the client HANDSHAKE_DONE and PING packet arrive in the same batch
         QUICTestHarness().runQUICTest(
             serverLinkDelay: .milliseconds(50),
             afterHandshake: { harness in
