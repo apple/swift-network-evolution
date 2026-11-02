@@ -277,7 +277,7 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
     }
 
     public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
+    let storage: BaseNetworkProtocolStorage?
     let protocolType: ProtocolType
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
@@ -841,7 +841,7 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
     }
 
     public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
+    let storage: BaseNetworkProtocolStorage?
     let protocolType: ProtocolType
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
@@ -944,7 +944,7 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
                 local: local,
                 parameters: parameters,
                 path: path
-            ).completingQUICFlow(storage: storage!, index: index)
+            ).setupOutboundLinkage(storage: storage!, index: index)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -982,7 +982,7 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
             return try connection.attachUpperProtocolToExistingFlow(
                 upperProtocol,
                 existingFlowInstance: existingFlowInstance
-            ).completingQUICFlow(storage: storage!, index: index)
+            ).setupOutboundLinkage(storage: storage!, index: index)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -1127,7 +1127,7 @@ public struct BaseDatagramListenerLinkage: DatagramListenerLinkage {
     }
 
     public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
+    let storage: BaseNetworkProtocolStorage?
     let protocolType: ProtocolType
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
@@ -1285,7 +1285,7 @@ public struct BaseInboundDatagramFlowLinkage: InboundDatagramFlowLinkage {
     }
 
     public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
+    let storage: BaseNetworkProtocolStorage?
     let protocolType: ProtocolType
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
@@ -1334,7 +1334,7 @@ public struct BaseDatagramMultipathLinkage: DatagramMultipathLinkage {
     }
 
     public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
+    let storage: BaseNetworkProtocolStorage?
     let protocolType: ProtocolType
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
@@ -1612,7 +1612,7 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
     }
 
     public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
+    let storage: BaseNetworkProtocolStorage?
     let protocolType: ProtocolType
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
@@ -2254,7 +2254,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
     }
 
     public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
+    let storage: BaseNetworkProtocolStorage?
     let protocolType: ProtocolType
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
@@ -2357,7 +2357,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
                 local: local,
                 parameters: parameters,
                 path: path
-            ).completingQUICFlow(storage: storage!, index: index)
+            ).setupOutboundLinkage(storage: storage!, index: index)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -2394,7 +2394,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
             return try connection.attachUpperProtocolToExistingFlow(
                 upperProtocol,
                 existingFlowInstance: existingFlowInstance
-            ).completingQUICFlow(storage: storage!, index: index)
+            ).setupOutboundLinkage(storage: storage!, index: index)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -2539,7 +2539,7 @@ public struct BaseStreamListenerLinkage: StreamListenerLinkage {
     }
 
     public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
+    let storage: BaseNetworkProtocolStorage?
     let protocolType: ProtocolType
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
@@ -2697,7 +2697,7 @@ public struct BaseInboundStreamFlowLinkage: InboundStreamFlowLinkage {
     }
 
     public let identifier: InstanceIdentifier
-    public let storage: BaseNetworkProtocolStorage?
+    let storage: BaseNetworkProtocolStorage?
     let protocolType: ProtocolType
 
     public static func == (lhs: borrowing Self, rhs: borrowing Self) -> Bool {
@@ -3105,9 +3105,8 @@ extension BaseOutboundStreamLinkage {
 extension BaseOutboundStreamLinkage {
     /// This linkage with the storage and the connection's place in it filled in.
     ///
-    /// A QUIC connection builds the linkage to one of its flows, but cannot say where it is stored.
-    /// The listener linkage that created the flow can, and names the connection the way `.quic` does.
-    internal func completingQUICFlow(storage: BaseNetworkProtocolStorage, index: NetworkStateIndex) -> Self {
+    /// A QUIC connection sets up one the linkages to one of its flows.
+    internal func setupOutboundLinkage(storage: BaseNetworkProtocolStorage, index: NetworkStateIndex) -> Self {
         guard case .quicStream(_, let flow) = protocolType else { return self }
         return Self(identifier: identifier, storage: storage, protocolType: .quicStream(index, flow))
     }
@@ -3115,9 +3114,8 @@ extension BaseOutboundStreamLinkage {
 
 @available(Network 0.1.0, *)
 extension BaseOutboundDatagramLinkage {
-    /// This linkage with the storage and the connection's place in it filled in; see
-    /// `BaseOutboundStreamLinkage.completingQUICFlow(storage:index:)`.
-    internal func completingQUICFlow(storage: BaseNetworkProtocolStorage, index: NetworkStateIndex) -> Self {
+    /// This linkage with the storage and the connection's place filled in.
+    internal func setupOutboundLinkage(storage: BaseNetworkProtocolStorage, index: NetworkStateIndex) -> Self {
         guard case .quicDatagramFlow(_, let flow) = protocolType else { return self }
         return Self(identifier: identifier, storage: storage, protocolType: .quicDatagramFlow(index, flow))
     }
