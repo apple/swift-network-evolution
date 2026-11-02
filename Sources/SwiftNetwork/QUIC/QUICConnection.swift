@@ -2916,6 +2916,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     localMaxData: UInt64(localMaxData)
                 )
             }
+            if streamID != nil {
+                // A stream that already has its ID never goes through `startOutboundStream`, which
+                // is where the send limit is otherwise first computed.
+                stream.updateOutboundFlowControlCredit(connection: self)
+            }
         }
 
         stream.unidirectional = isUnidirectional
@@ -5116,7 +5121,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 applicationPendingItems.retransmitStreams.removeAll()
                 flowControlState.resetSentBytes()
                 applyToAllFlows { stream in
+                    let hadNoRoom = stream.maximumStreamDataSize == 0
                     stream.resetSendStreamData()
+                    // The reset drops the bytes that held the room at zero. A writer waiting for
+                    // room would otherwise not hear that it has some again.
+                    stream.updateOutboundFlowControlCredit(connection: self)
+                    if hadNoRoom && stream.maximumStreamDataSize > 0 {
+                        queueOutboundRoomAvailableEvent(for: stream)
+                    }
                 }
                 deliverNetworkProtocolEvent(
                     flow: .allFlows,

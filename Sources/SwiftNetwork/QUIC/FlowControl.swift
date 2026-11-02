@@ -439,6 +439,9 @@ extension QUICStreamInstance {
     func updateFlowControlWithEnqueuedBytesToSend(_ bytes: UInt64, connection: QUICConnection) {
         flowControlState.pendingOutboundBytesToSend += bytes
         connection.flowControlState.pendingOutboundBytesToSend += bytes
+        // The room reported to the application is derived from the pending bytes, so recompute it
+        // when they change; otherwise it stays at its value from stream setup.
+        updateOutboundFlowControlCredit(connection: connection)
     }
 
     func updateFlowControlWithSentBytes(_ bytes: UInt64, connection: QUICConnection) {
@@ -637,14 +640,16 @@ extension QUICStreamInstance {
         }
 
         let maxPendingBytes = FlowControlGlobals.sendQueueFactor * minMSS
-        guard connection.flowControlState.pendingOutboundBytesToSend < maxPendingBytes,
-            flowControlState.pendingOutboundBytesToSend < maxPendingBytes
-        else {
+        // Only this stream's own queue can report no room: the room reopens when its bytes are
+        // sent, so a stream with nothing queued would stay at zero while other streams fill the
+        // connection.
+        guard flowControlState.pendingOutboundBytesToSend < maxPendingBytes else {
             return 0
         }
 
         // Avoid trickling of data by using these values
-        let connectionMin = maxPendingBytes - connection.flowControlState.pendingOutboundBytesToSend
+        let connectionPendingBytes = connection.flowControlState.pendingOutboundBytesToSend
+        let connectionMin = connectionPendingBytes < maxPendingBytes ? maxPendingBytes - connectionPendingBytes : 0
         let streamMin = maxPendingBytes - flowControlState.pendingOutboundBytesToSend
 
         let connectionMax = min(
@@ -652,7 +657,8 @@ extension QUICStreamInstance {
                 - connection.flowControlState.totalOutboundBytesSent,
             allowedCCWindow
         )
-        let connectionCredit = max(connectionMax, connectionMin)
+        // A full connection limits the room but leaves one packet's worth.
+        let connectionCredit = max(connectionMax, connectionMin, minMSS)
 
         let streamCredit = max(
             flowControlState.outboundMaxData - flowControlState.totalOutboundBytesSent,
