@@ -534,6 +534,10 @@ struct PMTUDState: ~Copyable {
         in sentPackets: borrowing NetworkUniqueDeque<SentPacketRecord>,
         on path: QUICPath
     ) {
+        // Nothing reads the count outside a round of probing, and the next round restarts it.
+        if !enabled || searchCompleted {
+            return
+        }
         let pathIdentifier = path.pathIdentifier
         let maximumSegmentSize = path.mss
         for index in 0..<sentPackets.count {
