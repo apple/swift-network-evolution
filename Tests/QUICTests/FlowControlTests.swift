@@ -37,7 +37,7 @@ final class FlowControlTests: XCTestCase {
         }
         defer { clock.onQueue { connection.destroyFromExternalTest() } }
         clock.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(
                 streamID: QUICStreamID(0),
@@ -78,7 +78,7 @@ final class FlowControlTests: XCTestCase {
         }
         defer { clock.onQueue { connection.destroyFromExternalTest() } }
         clock.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(
                 streamID: QUICStreamID(0),
@@ -117,7 +117,7 @@ final class FlowControlTests: XCTestCase {
     /// maximum segment size is `maximumSegmentSize`.
     private func withOutboundStream(
         maximumSegmentSize: Int = 1200,
-        _ body: (_ connection: QUICConnection, _ stream: QUICStreamInstance, _ path: QUICPath) -> Void
+        _ body: (_ connection: QUICConnection, _ stream: inout QUICStreamInstance, _ path: QUICPath) -> Void
     ) {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let clock = TestClockContext("test context")
@@ -127,7 +127,7 @@ final class FlowControlTests: XCTestCase {
         defer { clock.onQueue { connection.destroyFromExternalTest() } }
 
         clock.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
 
             stream.setup(
@@ -145,7 +145,7 @@ final class FlowControlTests: XCTestCase {
             path.resetCongestionControl()
             connection.currentPath = path
 
-            body(connection, stream, path)
+            body(connection, &stream, path)
         }
     }
 
@@ -195,7 +195,7 @@ final class FlowControlTests: XCTestCase {
             // A stream limited to 3000 more bytes gets that limit plus the minimum target once the
             // connection's limit is the looser one.
             XCTAssertTrue(connection.updateOutboundMaxData(to: 8_000_000))
-            let limitedStream = QUICStreamInstance(parent: connection, inbound: false)
+            var limitedStream = QUICStreamInstance(parent: connection, inbound: false)
             defer { limitedStream.destroyFromExternalTest() }
 
             limitedStream.setup(
@@ -282,7 +282,7 @@ final class FlowControlTests: XCTestCase {
     func testStreamThatCanNeverSendAgainDoesNotAwaitOutboundRoom() {
         withOutboundStream { connection, stream, _ in
             stream.writeClosed = true
-            connection.awaitOutboundRoom(of: stream)
+            connection.awaitOutboundRoom(of: &stream)
             XCTAssertTrue(
                 connection.streamsAwaitingOutboundRoom.isEmpty,
                 "A write-closed stream has no room to wait for"
@@ -290,11 +290,11 @@ final class FlowControlTests: XCTestCase {
 
             stream.writeClosed = false
             stream.closed = true
-            connection.awaitOutboundRoom(of: stream)
+            connection.awaitOutboundRoom(of: &stream)
             XCTAssertTrue(connection.streamsAwaitingOutboundRoom.isEmpty, "A closed stream has no room to wait for")
             stream.closed = false
 
-            connection.awaitOutboundRoom(of: stream)
+            connection.awaitOutboundRoom(of: &stream)
             XCTAssertFalse(
                 connection.streamsAwaitingOutboundRoom.isEmpty,
                 "A stream that can send must be remembered"
@@ -313,7 +313,7 @@ final class FlowControlTests: XCTestCase {
         let done = XCTestExpectation(description: "permit reopen check complete")
         context.async {
             let connection = QUICConnection(context: context)
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             stream.setup(
                 streamID: QUICStreamID(0),
                 logPrefixer: logPrefixer
@@ -367,7 +367,7 @@ final class FlowControlTests: XCTestCase {
         }
         defer { clock.onQueue { connection.destroyFromExternalTest() } }
         clock.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(
                 streamID: QUICStreamID(0),
@@ -460,7 +460,8 @@ final class FlowControlTests: XCTestCase {
         let done = XCTestExpectation(description: "read-all accounting complete")
         context.async {
             let connection = QUICConnection(context: context)
-            let stream = connection.fromExternal { eventContext in
+            var stream = connection.fromExternal {
+                (eventContext: inout NetworkContext.EventContext) -> QUICStreamInstance in
                 self.makeStreamWithUnreadInboundBytes(
                     byteCount: byteCount,
                     window: window,
@@ -506,7 +507,8 @@ final class FlowControlTests: XCTestCase {
         let done = XCTestExpectation(description: "drop accounting complete")
         context.async {
             let connection = QUICConnection(context: context)
-            let stream = connection.fromExternal { eventContext in
+            var stream = connection.fromExternal {
+                (eventContext: inout NetworkContext.EventContext) -> QUICStreamInstance in
                 self.makeStreamWithUnreadInboundBytes(
                     byteCount: byteCount,
                     window: window,
@@ -523,7 +525,7 @@ final class FlowControlTests: XCTestCase {
 
             // The application closes the read side without reading anything.
             connection.fromExternal { _ in
-                connection.handleStopRead(for: stream)
+                connection.handleStopRead(for: &stream)
             }
             stream.readClosed = true
 
