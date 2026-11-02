@@ -23,6 +23,13 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(CollectionsInternal)
+import CollectionsInternal
+#elseif canImport(BasicContainers)
+import BasicContainers
+internal import DequeModule
+#endif
+
 @available(Network 0.1.0, *)
 final class PMTUDTests: XCTestCase {
     private let maximumSegmentSize = 1200
