@@ -31,14 +31,14 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
     // literal constant-folds at each use site. Deriving them from
     // `System.Time.NSEC_PER_USEC` and friends would not fold either, because those
     // are themselves `static let`s.
-    @usableFromInline static var nanosecondsPerMicrosecond: Int64 { 1_000 }
-    @usableFromInline static var nanosecondsPerMillisecond: Int64 { 1_000_000 }
-    @usableFromInline static var nanosecondsPerSecond: Int64 { 1_000_000_000 }
-    @usableFromInline static var nanosecondsPerMinute: Int64 { 60 * nanosecondsPerSecond }
-    @usableFromInline static var nanosecondsPerHour: Int64 { 60 * nanosecondsPerMinute }
-    @usableFromInline static var nanosecondsPerDay: Int64 { 24 * nanosecondsPerHour }
+    @inlinable static var nanosecondsPerMicrosecond: Int64 { 1_000 }
+    @inlinable static var nanosecondsPerMillisecond: Int64 { 1_000_000 }
+    @inlinable static var nanosecondsPerSecond: Int64 { 1_000_000_000 }
+    @inlinable static var nanosecondsPerMinute: Int64 { 60 * nanosecondsPerSecond }
+    @inlinable static var nanosecondsPerHour: Int64 { 60 * nanosecondsPerMinute }
+    @inlinable static var nanosecondsPerDay: Int64 { 24 * nanosecondsPerHour }
 
-    @usableFromInline
+    @inlinable
     init(nanoseconds: Int64) {
         self.nanoseconds = nanoseconds
     }
