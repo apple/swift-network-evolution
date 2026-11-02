@@ -26,7 +26,7 @@ public protocol InboundFlowHandler: ~Copyable, UpperProtocolHandler {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol ListenerHandler: ~Copyable, LowerProtocolHandler where UpperProtocol: InboundFlowLinkage {
-    associatedtype Flow: LowerProtocolHandler
+    associatedtype Flow: ~Copyable, LowerProtocolHandler
 
     // Create a new flow
     mutating func attachUpperProtocolToNewFlow(
@@ -59,7 +59,7 @@ where UpperProtocol: InboundStreamFlowLinkage {}
 public protocol HeterogeneousListenerHandler: ~Copyable, ListenerHandler {
     associatedtype SecondaryUpperProtocol: InboundFlowLinkage
 
-    associatedtype SecondaryFlow: LowerProtocolHandler
+    associatedtype SecondaryFlow: ~Copyable, LowerProtocolHandler
 
     // Create a new flow
     mutating func attachUpperProtocolToNewFlow(
