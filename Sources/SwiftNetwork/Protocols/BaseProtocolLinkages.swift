@@ -56,6 +56,7 @@ public struct BaseStreamLinkageFamily: StreamLinkageFamily {
 public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
     enum ProtocolType {
         case unknown
+        case endpointFlowPassthrough(ProtocolInstanceBox<PassthroughDatagramEndpointFlowProtocol>)
         case udp(NetworkStateIndex)
         case ip(NetworkStateIndex)
         case tcp(NetworkStateIndex)
@@ -83,6 +84,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case .demux(let index):
             overrideUpperLinkage = try storage!.demuxInstances[index].attachLowerProtocol(lowerProtocol)
         case .ip(let index): overrideUpperLinkage = try storage!.ipInstances[index].attachLowerProtocol(lowerProtocol)
+        case .endpointFlowPassthrough(let box):
+            overrideUpperLinkage = try box.mutableInstance.attachLowerProtocol(lowerProtocol)
         case .tcp(let index): overrideUpperLinkage = try storage!.tcpInstances[index].attachLowerProtocol(lowerProtocol)
         case .datagramEndpointFlow(let box):
             var flow = box.instance
@@ -125,6 +128,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case .udp(let index): storage!.udpInstances[index].handleConnectedEvent(for: instance, in: &eventContext)
         case .demux(let index): storage!.demuxInstances[index].handleConnectedEvent(for: instance, in: &eventContext)
         case .ip(let index): storage!.ipInstances[index].handleConnectedEvent(for: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box):
+            box.mutableInstance.handleConnectedEvent(for: instance, in: &eventContext)
         case .tcp(let index): storage!.tcpInstances[index].handleConnectedEvent(for: instance, in: &eventContext)
         case .datagramEndpointFlow(let box):
             box.instance.handleConnectedEvent(for: instance, in: &eventContext)
@@ -151,6 +156,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             storage!.demuxInstances[index].handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         case .ip(let index):
             storage!.ipInstances[index].handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box):
+            box.mutableInstance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         case .tcp(let index):
             storage!.tcpInstances[index].handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         case .datagramEndpointFlow(let box):
@@ -179,6 +186,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             storage!.demuxInstances[index].handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         case .ip(let index):
             storage!.ipInstances[index].handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box):
+            box.mutableInstance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         case .tcp(let index):
             storage!.tcpInstances[index].handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         case .datagramEndpointFlow(let box):
@@ -207,6 +216,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             storage!.demuxInstances[index].handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         case .ip(let index):
             storage!.ipInstances[index].handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box):
+            box.mutableInstance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         case .tcp(let index):
             storage!.tcpInstances[index].handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         case .datagramEndpointFlow(let box):
@@ -235,6 +246,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             storage!.demuxInstances[index].handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         case .ip(let index):
             storage!.ipInstances[index].handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box):
+            box.mutableInstance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         case .tcp(let index):
             storage!.tcpInstances[index].handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         case .datagramEndpointFlow(let box):
@@ -294,6 +307,7 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
 public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
     enum ProtocolType {
         case unknown
+        case endpointFlowPassthrough(ProtocolInstanceBox<PassthroughDatagramEndpointFlowProtocol>)
         case udp(NetworkStateIndex)
         case ip(NetworkStateIndex)
         case demux(NetworkStateIndex)
@@ -329,6 +343,12 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         case .ip(let index):
             return try storage!.ipInstances[index].receiveDatagrams(
+                maximumDatagramCount: maximumDatagramCount,
+                for: instance,
+                in: &eventContext
+            )
+        case .endpointFlowPassthrough(let box):
+            return try box.mutableInstance.receiveDatagrams(
                 maximumDatagramCount: maximumDatagramCount,
                 for: instance,
                 in: &eventContext
@@ -404,6 +424,13 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
                 for: instance,
                 in: &eventContext
             )
+        case .endpointFlowPassthrough(let box):
+            return try box.mutableInstance.getDatagramsToSend(
+                maximumDatagramCount: maximumDatagramCount,
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
         case .bridgeDatagram(let index):
             return try storage!.bridgeDatagramInstances[index].getDatagramsToSend(
                 maximumDatagramCount: maximumDatagramCount,
@@ -463,6 +490,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             try storage!.demuxInstances[index].sendDatagrams(datagrams, from: instance, in: &eventContext)
         case .ip(let index):
             try storage!.ipInstances[index].sendDatagrams(datagrams, from: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box):
+            try box.mutableInstance.sendDatagrams(datagrams, from: instance, in: &eventContext)
         case .bridgeDatagram(let index):
             try storage!.bridgeDatagramInstances[index].sendDatagrams(datagrams, from: instance, in: &eventContext)
         #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
@@ -510,6 +539,7 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         case .udp(let index): storage!.udpInstances[index].connect(for: instance, in: &eventContext)
         case .demux(let index): storage!.demuxInstances[index].connect(for: instance, in: &eventContext)
         case .ip(let index): storage!.ipInstances[index].connect(for: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box): box.mutableInstance.connect(for: instance, in: &eventContext)
         case .bridgeDatagram(let index):
             storage!.bridgeDatagramInstances[index].connect(for: instance, in: &eventContext)
         #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
@@ -538,6 +568,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         case .demux(let index):
             storage!.demuxInstances[index].disconnect(error: error, for: instance, in: &eventContext)
         case .ip(let index): storage!.ipInstances[index].disconnect(error: error, for: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box):
+            box.mutableInstance.disconnect(error: error, for: instance, in: &eventContext)
         case .bridgeDatagram(let index):
             storage!.bridgeDatagramInstances[index].disconnect(error: error, for: instance, in: &eventContext)
         #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
@@ -567,6 +599,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             try storage!.demuxInstances[index].detach(for: instance, in: &eventContext)
         case .ip(let index):
             try storage!.ipInstances[index].detach(for: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box):
+            try box.mutableInstance.detach(for: instance, in: &eventContext)
         case .bridgeDatagram(let index):
             try storage!.bridgeDatagramInstances[index].detach(for: instance, in: &eventContext)
         #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
@@ -600,6 +634,9 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         case .ip(let index):
             storage!.ipInstances[index].unregisterEventManager(in: &eventContext)
             storage!.ipInstances.remove(index: index)
+        case .endpointFlowPassthrough:
+            // The flow keeps its event state until its owner tears it down; the parent's stack leaving does not end it
+            break
         case .bridgeDatagram(let index):
             storage!.bridgeDatagramInstances[index].unregisterEventManager(in: &eventContext)
             storage!.bridgeDatagramInstances.remove(index: index)
@@ -633,6 +670,8 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             storage!.demuxInstances[index].handleApplicationEvent(event: event, for: instance, in: &eventContext)
         case .ip(let index):
             storage!.ipInstances[index].handleApplicationEvent(event: event, for: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box):
+            box.mutableInstance.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         case .bridgeDatagram(let index):
             storage!.bridgeDatagramInstances[index].handleApplicationEvent(
                 event: event,
@@ -672,6 +711,7 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
         case .udp(let index): return storage!.udpInstances[index].getMetadata(for: instance, in: &eventContext)
         case .demux(let index): return storage!.demuxInstances[index].getMetadata(for: instance, in: &eventContext)
         case .ip(let index): return storage!.ipInstances[index].getMetadata(for: instance, in: &eventContext)
+        case .endpointFlowPassthrough(let box): return box.mutableInstance.getMetadata(for: instance, in: &eventContext)
         case .bridgeDatagram(let index):
             return storage!.bridgeDatagramInstances[index].getMetadata(for: instance, in: &eventContext)
         #if !NETWORK_PRIVATE && !NETWORK_STANDALONE
@@ -710,6 +750,12 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         case .ip(let index):
             return storage!.ipInstances[index].getMetrics(
+                requestedNetworkMetric: requestedNetworkMetric,
+                for: instance,
+                in: &eventContext
+            )
+        case .endpointFlowPassthrough(let box):
+            return box.mutableInstance.getMetrics(
                 requestedNetworkMetric: requestedNetworkMetric,
                 for: instance,
                 in: &eventContext
@@ -767,6 +813,14 @@ public struct BaseOutboundDatagramLinkage: OutboundDatagramLinkage {
             )
         case .ip(let index):
             try storage!.ipInstances[index].attachUpperProtocol(
+                upperProtocol,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
+        case .endpointFlowPassthrough(let box):
+            try box.mutableInstance.attachUpperProtocol(
                 upperProtocol,
                 remote: remote,
                 local: local,
@@ -1396,6 +1450,7 @@ public struct BaseDatagramMultipathLinkage: DatagramMultipathLinkage {
 public struct BaseInboundStreamLinkage: InboundStreamLinkage {
     enum ProtocolType {
         case unknown
+        case endpointFlowPassthrough(ProtocolInstanceBox<PassthroughStreamEndpointFlowProtocol>)
         case streamEndpointFlow(ProtocolInstanceBox<StreamEndpointFlowProtocol>)
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case swiftTLSRecord(
@@ -1426,6 +1481,9 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             var protocolInstance = box.instance
             overrideUpperLinkage = try protocolInstance.attachLowerProtocol(lowerProtocol)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            overrideUpperLinkage = try protocolInstance.attachLowerProtocol(lowerProtocol)
         #if !NETWORK_EMBEDDED
         case .external(let external):
             try external.invokeAttachLowerProtocol(
@@ -1461,6 +1519,9 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             var protocolInstance = box.instance
             protocolInstance.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            protocolInstance.handleConnectedEvent(for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
         #endif
@@ -1481,6 +1542,9 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             var protocolInstance = box.instance
             protocolInstance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            protocolInstance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #endif
@@ -1501,6 +1565,9 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             var protocolInstance = box.instance
             protocolInstance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            protocolInstance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external):
             external.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
@@ -1521,6 +1588,9 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             var protocolInstance = box.instance
             protocolInstance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            protocolInstance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #endif
@@ -1540,6 +1610,9 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             var protocolInstance = box.instance
             protocolInstance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            protocolInstance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         #endif
@@ -1560,6 +1633,9 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             var protocolInstance = box.instance
             protocolInstance.handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            protocolInstance.handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleInboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #endif
@@ -1580,6 +1656,9 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
             var protocolInstance = box.instance
             protocolInstance.handleOutboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            protocolInstance.handleOutboundAbortedEvent(error: error, for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external):
             external.handleOutboundAbortedEvent(error: error, for: instance, in: &eventContext)
@@ -1629,6 +1708,7 @@ public struct BaseInboundStreamLinkage: InboundStreamLinkage {
 public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
     enum ProtocolType {
         case unknown
+        case endpointFlowPassthrough(ProtocolInstanceBox<PassthroughStreamEndpointFlowProtocol>)
         case tcp(NetworkStateIndex)
         case bridgeStream(NetworkStateIndex)
         case customLink(NetworkStateIndex)
@@ -1714,6 +1794,14 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
                 in: &eventContext
             )
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            return try protocolInstance.receiveStreamData(
+                minimumBytes: minimumBytes,
+                maximumBytes: maximumBytes,
+                for: instance,
+                in: &eventContext
+            )
         #if !NETWORK_EMBEDDED
         case .external(let external):
             return try external.receiveStreamData(
@@ -1768,6 +1856,12 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
                 in: &eventContext
             )
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            return try protocolInstance.getOutboundStreamDataRoomAvailable(
+                for: instance,
+                in: &eventContext
+            )
         #if !NETWORK_EMBEDDED
         case .external(let external):
             return try external.getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
@@ -1811,6 +1905,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             var protocolInstance = box.instance
             try protocolInstance.sendStreamData(streamData, from: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            try protocolInstance.sendStreamData(streamData, from: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external):
             try external.sendStreamData(streamData, from: instance, in: &eventContext)
@@ -1930,6 +2027,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             var protocolInstance = box.instance
             protocolInstance.connect(for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            let protocolInstance = box.instance
+            protocolInstance.connect(for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external): external.connect(for: instance, in: &eventContext)
         #endif
@@ -1962,6 +2062,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             var protocolInstance = box.instance
             protocolInstance.disconnect(error: error, for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            protocolInstance.disconnect(error: error, for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external): external.disconnect(error: error, for: instance, in: &eventContext)
         #endif
@@ -1994,6 +2097,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             var protocolInstance = box.instance
             try protocolInstance.detach(for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            try protocolInstance.detach(for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external):
             try external.detach(for: instance, in: &eventContext)
@@ -2027,6 +2133,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
         case .swiftTLSRecord(let box):
             box.instance.unregisterEventManager(in: &eventContext)
         #endif
+        case .endpointFlowPassthrough:
+            // The flow keeps its event state until its owner tears it down; the parent's stack leaving does not end it
+            break
         #if !NETWORK_EMBEDDED
         case .external(let external):
             external.teardown(in: &eventContext)
@@ -2061,6 +2170,9 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             var protocolInstance = box.instance
             protocolInstance.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            protocolInstance.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleApplicationEvent(event: event, for: instance, in: &eventContext)
         #endif
@@ -2091,6 +2203,8 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
         case .swiftTLSRecord(let box):
             return box.instance.getMetadata(for: instance, in: &eventContext)
         #endif
+        case .endpointFlowPassthrough(let box):
+            return box.instance.getMetadata(for: instance, in: &eventContext)
         #if !NETWORK_EMBEDDED
         case .external(let external): return external.getMetadata(for: instance, in: &eventContext)
         #endif
@@ -2143,6 +2257,12 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
                 in: &eventContext
             )
         #endif
+        case .endpointFlowPassthrough(let box):
+            return box.instance.getMetrics(
+                requestedNetworkMetric: requestedNetworkMetric,
+                for: instance,
+                in: &eventContext
+            )
         #if !NETWORK_EMBEDDED
         case .external(let external):
             return external.getMetrics(requestedNetworkMetric: requestedNetworkMetric, for: instance, in: &eventContext)
@@ -2216,6 +2336,15 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
                 path: path
             )
         #endif
+        case .endpointFlowPassthrough(let box):
+            var protocolInstance = box.instance
+            try protocolInstance.attachUpperProtocol(
+                upperProtocol,
+                remote: remote,
+                local: local,
+                parameters: parameters,
+                path: path
+            )
         #if !NETWORK_EMBEDDED
         case .external(let external):
             try external.invokeAttachUpperProtocol(
