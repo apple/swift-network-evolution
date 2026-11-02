@@ -77,6 +77,13 @@ final class PMTUDTests: XCTestCase {
         )
     }
 
+    func testFullSizePacketWithoutStreamDataIsNotCounted() {
+        // A full-size packet of acknowledgments or control frames says nothing about whether the
+        // application would send more at a larger MTU; counting it would make a connection that
+        // sends little probe.
+        XCTAssertEqual(bytesCounted(totalLength: maximumSegmentSize, carriesStreamData: false), 0)
+    }
+
     func testPacketWithRoomForAnotherStreamFrameIsNotCounted() {
         // The largest STREAM frame header is 25 bytes, so 26 unused bytes could still carry data.
         XCTAssertEqual(bytesCounted(totalLength: maximumSegmentSize - 26, carriesStreamData: true), 0)

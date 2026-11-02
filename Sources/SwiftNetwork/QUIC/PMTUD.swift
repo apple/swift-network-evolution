@@ -528,9 +528,10 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    /// Adds the bytes of the full-size application packets among `sentPackets` to the count for
-    /// the current round. Probes are padded to the size under test, so they say nothing about how
-    /// full an ordinary packet is.
+    /// Adds the bytes of the full-size packets that carry STREAM data among `sentPackets` to the
+    /// count for the current round. Probes are padded to the size under test, so they say nothing
+    /// about how full an ordinary packet is, and a packet without STREAM data says nothing about
+    /// what the application would send at a larger MTU.
     mutating func countFullSizePackets(
         in sentPackets: borrowing NetworkUniqueDeque<SentPacketRecord>,
         on path: QUICPath
@@ -546,6 +547,7 @@ struct PMTUDState: ~Copyable {
             if sentPackets[index].sentPath == pathIdentifier
                 && sentPackets[index].numberSpace == .applicationData
                 && sentPackets[index].transmittedItems.pmtudProbeMSS == nil
+                && !sentPackets[index].transmittedItems.sentStreams.isEmpty
                 && length + PMTUDState.fullPacketMargin >= maximumSegmentSize
             {
                 // A count of bytes sent cannot reach the range of `UInt64`.
