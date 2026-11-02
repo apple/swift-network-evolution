@@ -2630,8 +2630,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     func inboundStopping(path: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext) {
 
         // Send pending acks
+        var sendAckImmediately = false
         if !state.isTerminal {
-            _ = ack.processPending(
+            sendAckImmediately = ack.processPending(
                 connectionWindow: Int(self.flowControlState.remainingOutboundBytesAllowed),
                 isAckSet: isAckSet,
                 setAckFrame: scheduleAckFrame,
@@ -2709,9 +2710,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // While the application batches its sends, whatever is pending (an ACK for the datagrams just
         // received, say) goes out with the batch, when the application ends it: sending it now would
         // put a datagram of its own on the wire just ahead of the data the application is about to
-        // write.
+        // write. If processPending() decided to ACK immediately, the ACK frame is already queued:
+        // bypass the ACK-only early return in sendFrames() so it is not held back until the delayed
+        // ACK timer fires.
         if !pendOutboundData {
-            sendFrames(in: &eventContext)
+            sendFrames(delayedACK: sendAckImmediately, in: &eventContext)
         }
     }
 
@@ -4401,7 +4404,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        if !pendingItems.isAckSet && ack.ackRequiresAssembly(packetNumberSpace: packetNumberSpace) {
+        // Rebuild a queued ACK frame if ack-eliciting packets arrived since it
+        // was built, so that it covers them and carries an up to date ACK delay.
+        if ack.ackRequiresAssembly(packetNumberSpace: packetNumberSpace) {
             func scheduleAckFrame(
                 packetNumberSpace: PacketNumberSpace,
                 ackFrame: consuming QUICFrame,
@@ -4414,7 +4419,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             let receivedIPECNCounter = ecn.counters[packetNumberSpace].rxECNPackets
             let _ = ack.assemble(
                 for: packetNumberSpace,
-                isAckSet: false,  // it was just checked
+                isAckSet: false,  // replace any queued ACK frame
                 setAckFrame: scheduleAckFrame,
                 ecnCounter: receivedIPECNCounter,
                 now: self.now
@@ -4605,7 +4610,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             sentPacketRecord.sentPath = path.pathIdentifier
             log(packet: packet)
 
+            let carriesAck = sentPacketRecord.transmittedItems.ackFrame != nil
             sentPackets.append(sentPacketRecord)
+            // Account for the ACK here, where it is known to be sent, rather
+            // than when it is built: an ACK can be built and then held back,
+            // or built here and bundled with other frames.
+            if carriesAck {
+                ack.sent(self.now)
+            }
 
             if isInFlightEligible {
                 totalSendBytes += UInt64(totalPacketLength)

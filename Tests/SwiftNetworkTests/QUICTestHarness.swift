@@ -608,10 +608,13 @@ class QUICTestHarness {
         }
     }
 
+    /// `beforeOpening` runs on the context in the same turn that opens the stream, before it is
+    /// attached, so nothing the peer sends can arrive between the two.
     func createNewStream(
         identifier: String,
         quicOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
-        serverInitiated: Bool = false
+        serverInitiated: Bool = false,
+        beforeOpening: (() -> Void)? = nil
     ) -> StreamUpperHarness<TestStreamLinkageFamily>? {
         var handlerInstance: QUICConnection?
         var handlerListener: TestStreamListenerLinkage?
@@ -633,6 +636,7 @@ class QUICTestHarness {
         var newStreamFinished = false
         let options = quicOptions.deepCopy()
         context.async {
+            beforeOpening?()
             options.setLogID(
                 prefix: identifier,
                 parent: "",
@@ -2343,10 +2347,12 @@ class QUICTestHarness {
 
         var busyStreamRoom: Int?
         var quietStreamRoomAfterWriting: Int?
+        var filledPendingBytes: UInt64?
         onContext {
             for _ in 0..<chunkCount {
                 XCTAssertTrue(busyStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
             }
+            filledPendingBytes = self.state?.clientInstance.flowControlState.pendingOutboundBytesToSend
             do {
                 busyStreamRoom = try busyStream.invokeGetOutboundStreamDataRoomAvailable()
                 XCTAssertTrue(quietStream.write([UInt8](repeating: 0x5a, count: 100)))
@@ -2363,25 +2369,41 @@ class QUICTestHarness {
             "A stream with only a little queued must have room even when other streams fill the connection's queue"
         )
 
-        guard let laterStream = createNewStream(identifier: "C3") else {
+        // The peer ACKs immediately, so between turns the queued data goes out and the
+        // congestion window grows. Fill the queue again in the turn that opens the later stream,
+        // so that its room is set while the queue is as full as it was.
+        var pendingBytesWhenLaterStreamOpened: UInt64?
+        let refillQueue = {
+            guard let connection = self.state?.clientInstance, let filledPendingBytes else {
+                XCTFail("Client instance needs to be present to proceed")
+                return
+            }
+            var refills = 0
+            while connection.flowControlState.pendingOutboundBytesToSend < filledPendingBytes
+                && refills < 16 * chunkCount
+            {
+                XCTAssertTrue(busyStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
+                refills += 1
+            }
+            pendingBytesWhenLaterStreamOpened = connection.flowControlState.pendingOutboundBytesToSend
+        }
+        guard let laterStream = createNewStream(identifier: "C3", beforeOpening: refillQueue) else {
             XCTFail("Failed to create a stream while the connection's queue is full")
             return
         }
-        var busyStreamRoomWhenLaterStreamOpened: Int?
+        XCTAssertGreaterThanOrEqual(
+            pendingBytesWhenLaterStreamOpened ?? 0,
+            filledPendingBytes ?? UInt64.max,
+            "The connection's queue must be full when the later stream opens"
+        )
         var laterStreamRoom: Int?
         onContext {
             do {
-                busyStreamRoomWhenLaterStreamOpened = try busyStream.invokeGetOutboundStreamDataRoomAvailable()
                 laterStreamRoom = try laterStream.invokeGetOutboundStreamDataRoomAvailable()
             } catch {
                 XCTFail("Reading the room failed: \(error)")
             }
         }
-        XCTAssertEqual(
-            busyStreamRoomWhenLaterStreamOpened,
-            0,
-            "The connection's queue must still be full when the later stream opens"
-        )
         XCTAssertGreaterThan(
             laterStreamRoom ?? 0,
             0,

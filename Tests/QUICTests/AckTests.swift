@@ -542,6 +542,44 @@ final class AckTests: XCTestCase {
         XCTAssertEqual(ack.blocksForPacketNumberSpace(packetNumberSpace: .initial), 0)
     }
 
+    func testAckDelayMeasuredForEachFrame() {
+        // A fixed delay size skips building the frame, and the frame carries the delay.
+        ack.delaySize = 0
+        var delay: UInt64?
+        let captureDelay: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void = { _, frame, _ in
+            guard case .ack(let ackFrame) = frame else {
+                XCTFail("Expected an ACK frame")
+                return
+            }
+            delay = ackFrame.delay
+        }
+        let base = NetworkClock.Instant.testBase
+        let exponent = ack.localDelayExponent
+
+        ack.append(packetNumberSpace: .applicationData, packetNumber: 0, now: base)
+        _ = ack.buildForTesting(
+            for: .applicationData,
+            setAckFrame: captureDelay,
+            now: base.advanced(by: .milliseconds(10))
+        )
+        XCTAssertEqual(delay, UInt64(10_000) >> exponent)
+
+        // The next frame must measure its delay from the receipt of the new largest
+        // packet number, not reuse the delay of the previous frame.
+        delay = nil
+        ack.append(
+            packetNumberSpace: .applicationData,
+            packetNumber: 1,
+            now: base.advanced(by: .milliseconds(20))
+        )
+        _ = ack.buildForTesting(
+            for: .applicationData,
+            setAckFrame: captureDelay,
+            now: base.advanced(by: .milliseconds(21))
+        )
+        XCTAssertEqual(delay, UInt64(1_000) >> exponent)
+    }
+
     func testAckBitstringBasic() {
         let frame1 = FrameAck(
             packetNumberSpace: .initial,
