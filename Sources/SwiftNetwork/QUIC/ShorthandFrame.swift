@@ -100,7 +100,7 @@ struct ShorthandFrameResetStream: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description()
+        type.description
             + "[id=\(id), code=\(code), fs=\(finalSize)]"
     }
 }
@@ -144,7 +144,7 @@ struct ShorthandFrameStopSending: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[\(id), code=\(code)]"
+        type.description + "[\(id), code=\(code)]"
     }
 }
 
@@ -269,7 +269,7 @@ struct ShorthandFrameAck: ShorthandLogEntry {
     }
 
     var description: String {
-        var ackString = "\(type.description())["
+        var ackString = "\(type.description)["
         let ackRange = buildAckRanges()
         for range in ackRange {
             if range.count == 1 {
@@ -310,7 +310,7 @@ struct ShorthandFrameMaxData: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[\(max)]"
+        type.description + "[\(max)]"
     }
 }
 
@@ -354,7 +354,7 @@ struct ShorthandFrameMaxStreamData: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[id=\(id), \(max)]"
+        type.description + "[id=\(id), \(max)]"
     }
 }
 
@@ -390,7 +390,7 @@ struct ShorthandFrameMaxStreamsBidirectional: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[\(max)]"
+        type.description + "[\(max)]"
     }
 }
 
@@ -426,7 +426,7 @@ struct ShorthandFrameMaxStreamsUnidirectional: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[\(max)]"
+        type.description + "[\(max)]"
     }
 }
 
@@ -462,7 +462,7 @@ struct ShorthandFrameDataBlocked: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[\(limit)]"
+        type.description + "[\(limit)]"
     }
 }
 
@@ -505,7 +505,7 @@ struct ShorthandFrameStreamDataBlocked: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[id=\(id), \(limit)]"
+        type.description + "[id=\(id), \(limit)]"
     }
 }
 
@@ -541,7 +541,7 @@ struct ShorthandFrameStreamsBlockedBidirectional: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[\(limit)]"
+        type.description + "[\(limit)]"
     }
 }
 
@@ -577,7 +577,7 @@ struct ShorthandFrameStreamsBlockedUnidirectional: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[\(limit)]"
+        type.description + "[\(limit)]"
     }
 }
 
@@ -633,7 +633,7 @@ struct ShorthandFrameNewConnectionID: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[seq=\(sequence), retire=\(retirePriorToSequence)]"
+        type.description + "[seq=\(sequence), retire=\(retirePriorToSequence)]"
     }
 }
 
@@ -669,7 +669,7 @@ struct ShorthandFrameRetireConnectionID: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[\(sequence)]"
+        type.description + "[\(sequence)]"
     }
 }
 
@@ -725,7 +725,7 @@ struct ShorthandFrameConnectionClose: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[code=\(errorCode), type=\(frameType)]"
+        type.description + "[code=\(errorCode), type=\(frameType)]"
     }
 }
 
@@ -768,7 +768,7 @@ struct ShorthandFrameApplicationClose: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[code=\(errorCode)]"
+        type.description + "[code=\(errorCode)]"
     }
 }
 
@@ -951,7 +951,7 @@ struct ShorthandFrameNewToken: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description() + "[\(length)]"
+        type.description + "[\(length)]"
     }
 }
 
@@ -1000,7 +1000,7 @@ struct ShorthandFrameGeneric: ShorthandLogEntry {
     }
 
     var description: String {
-        type.description()
+        type.description
     }
 }
 #endif
