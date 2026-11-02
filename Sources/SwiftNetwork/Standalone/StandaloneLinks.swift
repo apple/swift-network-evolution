@@ -208,6 +208,33 @@ struct StandaloneLinkState: ~Copyable {
         return nil
     }
 
+    /// Moves the protocol below a stream flow out of the link, or `nil` if the link is closed or
+    /// carries datagrams. Moving it costs no reference counting, which a copy does at every call;
+    /// the caller returns it with `returnStreamLower` once its call is done.
+    @inline(always)
+    mutating func takeStreamLower() -> BaseOutboundStreamLinkage? {
+        if self.closed { return nil }
+        var taken = Lower.stream(BaseOutboundStreamLinkage())
+        swap(&self.lower, &taken)
+        if case .stream(let lower) = consume taken { return lower }
+        return nil
+    }
+
+    /// Like `takeStreamLower`, for a link that has been marked closed (its teardown).
+    @inline(always)
+    mutating func takeStreamLowerEvenIfClosed() -> BaseOutboundStreamLinkage? {
+        var taken = Lower.stream(BaseOutboundStreamLinkage())
+        swap(&self.lower, &taken)
+        if case .stream(let lower) = consume taken { return lower.isDetached ? nil : lower }
+        return nil
+    }
+
+    /// Puts back what `takeStreamLower` took.
+    @inline(always)
+    mutating func returnStreamLower(_ lower: consuming BaseOutboundStreamLinkage) {
+        self.lower = .stream(lower)
+    }
+
     /// The protocol below a datagram flow, or `nil` if the link is closed or carries a stream.
     mutating func openDatagramLower() -> BaseOutboundDatagramLinkage? {
         if !self.closed, case .datagram(let lower) = self.lower { return lower }
@@ -581,15 +608,32 @@ struct StandaloneFlowLink: Hashable {
         early: Bool,
         context: NetworkContext
     ) throws(NetworkError) {
-        guard let lower = context.eventContext.standaloneLinks[slot].openStreamLower() else {
+        guard let lower = context.eventContext.standaloneLinks[slot].takeStreamLower() else {
             var failed = consume frames
             failed.finalizeAllFramesAsFailed()
             throw NetworkError.posix(ENOTCONN)
         }
-        if early {
-            try lower.invokeSendEarlyStreamData(frames, from: identifier, in: &context.eventContext)
+        do throws(NetworkError) {
+            if early {
+                try lower.invokeSendEarlyStreamData(frames, from: identifier, in: &context.eventContext)
+            } else {
+                try lower.invokeSendStreamData(frames, from: identifier, in: &context.eventContext)
+            }
+        } catch {
+            giveBack(consume lower, in: &context.eventContext)
+            throw error
+        }
+        giveBack(consume lower, in: &context.eventContext)
+    }
+
+    /// Returns the lower a call took. If the link was torn down during the call, the teardown found
+    /// nothing to detach, so the detach happens here.
+    @inline(always)
+    private func giveBack(_ lower: consuming BaseOutboundStreamLinkage, in eventContext: inout NetworkContext.EventContext) {
+        if eventContext.standaloneLinks[slot].closed {
+            try? lower.invokeDetach(for: identifier, in: &eventContext)
         } else {
-            try lower.invokeSendStreamData(frames, from: identifier, in: &context.eventContext)
+            eventContext.standaloneLinks[slot].returnStreamLower(lower)
         }
     }
 
@@ -598,22 +642,38 @@ struct StandaloneFlowLink: Hashable {
         maximumBytes: Int,
         context: NetworkContext
     ) throws(NetworkError) -> FrameArray? {
-        guard let lower = context.eventContext.standaloneLinks[slot].openStreamLower() else {
+        guard let lower = context.eventContext.standaloneLinks[slot].takeStreamLower() else {
             throw NetworkError.posix(ENOTCONN)
         }
-        return try lower.invokeReceiveStreamData(
-            minimumBytes: minimumBytes,
-            maximumBytes: maximumBytes,
-            for: identifier,
-            in: &context.eventContext
-        )
+        let result: FrameArray?
+        do throws(NetworkError) {
+            result = try lower.invokeReceiveStreamData(
+                minimumBytes: minimumBytes,
+                maximumBytes: maximumBytes,
+                for: identifier,
+                in: &context.eventContext
+            )
+        } catch {
+            giveBack(consume lower, in: &context.eventContext)
+            throw error
+        }
+        giveBack(consume lower, in: &context.eventContext)
+        return result
     }
 
     func outboundRoomAvailable(context: NetworkContext) throws(NetworkError) -> Int {
-        guard let lower = context.eventContext.standaloneLinks[slot].openStreamLower() else {
+        guard let lower = context.eventContext.standaloneLinks[slot].takeStreamLower() else {
             throw NetworkError.posix(ENOTCONN)
         }
-        return try lower.invokeGetOutboundStreamDataRoomAvailable(for: identifier, in: &context.eventContext)
+        let room: Int
+        do throws(NetworkError) {
+            room = try lower.invokeGetOutboundStreamDataRoomAvailable(for: identifier, in: &context.eventContext)
+        } catch {
+            giveBack(consume lower, in: &context.eventContext)
+            throw error
+        }
+        giveBack(consume lower, in: &context.eventContext)
+        return room
     }
 
     func abortInbound(error: NetworkError?, context: NetworkContext) throws(NetworkError) {
@@ -695,9 +755,9 @@ struct StandaloneFlowLink: Hashable {
         do throws(NetworkError) {
             switch eventContext.standaloneLinks[slot].kind {
             case .stream:
-                let lower = eventContext.standaloneLinks[slot].streamLower
-                eventContext.standaloneLinks[slot].streamLower = .init()
-                try lower.invokeDetach(for: identifier, in: &eventContext)
+                if let lower = eventContext.standaloneLinks[slot].takeStreamLowerEvenIfClosed() {
+                    try lower.invokeDetach(for: identifier, in: &eventContext)
+                }
             case .datagram:
                 let lower = eventContext.standaloneLinks[slot].datagramLower
                 eventContext.standaloneLinks[slot].datagramLower = .init()
