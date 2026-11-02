@@ -279,6 +279,29 @@ final class FlowControlTests: XCTestCase {
         )
     }
 
+    func testStreamThatCanNeverSendAgainDoesNotAwaitOutboundRoom() {
+        withOutboundStream { connection, stream, _ in
+            stream.writeClosed = true
+            connection.awaitOutboundRoom(of: stream)
+            XCTAssertTrue(
+                connection.streamsAwaitingOutboundRoom.isEmpty,
+                "A write-closed stream has no room to wait for"
+            )
+
+            stream.writeClosed = false
+            stream.closed = true
+            connection.awaitOutboundRoom(of: stream)
+            XCTAssertTrue(connection.streamsAwaitingOutboundRoom.isEmpty, "A closed stream has no room to wait for")
+            stream.closed = false
+
+            connection.awaitOutboundRoom(of: stream)
+            XCTAssertFalse(
+                connection.streamsAwaitingOutboundRoom.isEmpty,
+                "A stream that can send must be remembered"
+            )
+        }
+    }
+
     func testSendPermitReopensAfterDrainWithoutMaxStreamData() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let selected = TestClockContext("test context")
@@ -312,7 +335,9 @@ final class FlowControlTests: XCTestCase {
             // Send the bytes to drain the backlog, with no MAX_STREAM_DATA arriving.
             stream.updateFlowControlWithSentBytes(16_384, connection: connection)
 
-            // Draining reopens the permit without an inbound MAX_STREAM_DATA
+            // Draining reopens the permit without an inbound MAX_STREAM_DATA. The room is
+            // computed when the application asks for it.
+            stream.updateOutboundFlowControlCredit(connection: connection)
             XCTAssertGreaterThan(stream.maximumStreamDataSize, 0)
             connection.fromExternal { eventContext in
                 XCTAssertGreaterThan(

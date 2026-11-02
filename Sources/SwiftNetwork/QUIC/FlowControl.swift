@@ -483,9 +483,6 @@ extension QUICStreamInstance {
     func updateFlowControlWithEnqueuedBytesToSend(_ bytes: UInt64, connection: QUICConnection) {
         flowControlState.pendingOutboundBytesToSend += bytes
         connection.flowControlState.pendingOutboundBytesToSend += bytes
-        // The room reported to the application is derived from the pending bytes, so recompute it
-        // when they change; otherwise it stays at its value from stream setup.
-        updateOutboundFlowControlCredit(connection: connection)
     }
 
     func updateFlowControlWithSentBytes(_ bytes: UInt64, connection: QUICConnection) {
@@ -494,16 +491,6 @@ extension QUICStreamInstance {
 
         flowControlState.recordSent(bytes)
         connection.flowControlState.recordSent(bytes)
-
-        // Draining can reopen a permit that transient backpressure latched to 0
-        if self.maximumStreamDataSize == 0 {
-            updateOutboundFlowControlCredit(connection: connection)
-            if self.maximumStreamDataSize > 0 {
-                // The packet-building path does not carry the event context, so the notification
-                // is queued and delivered once the send that reopened the permit completes.
-                connection.queueOutboundRoomAvailableEvent(for: self)
-            }
-        }
     }
 
     func removePendingOutboundBytesFromFlowControl(connection: QUICConnection) {
@@ -655,6 +642,22 @@ extension QUICStreamInstance {
         let calculatedCredit = self.maximumUnreadOutboundBytesAllowed(connection: connection)
         self.log.datapath("Updating the send limit to \(calculatedCredit)")
         self.maximumStreamDataSize = Int(calculatedCredit)
+    }
+
+    /// The room the application has for more stream data, computed now because it depends on
+    /// state that changes without this stream being involved. A stream reporting no room is
+    /// remembered by the connection until room returns.
+    func recomputedOutboundRoomAvailable(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Int {
+        let connection = self.parentProtocol
+        self.updateOutboundFlowControlCredit(connection: connection)
+        let room = try self.getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
+        if room == 0 {
+            connection.awaitOutboundRoom(of: self)
+        }
+        return room
     }
 
     /// The bytes the stream and its connection can still accept from the application: the

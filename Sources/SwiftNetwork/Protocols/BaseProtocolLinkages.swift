@@ -1787,7 +1787,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
         #endif
         #if !NETWORK_NO_SWIFT_QUIC
         case .quicStream(let box):
-            return try box.instance.getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
+            return try box.instance.recomputedOutboundRoomAvailable(for: instance, in: &eventContext)
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
         case .swiftTLSRecord(let box):

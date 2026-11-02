@@ -332,6 +332,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // List of streams that have app input data in their reassembly queue.
     var pendingReassemblyDequeue = QUICStreamList.pendingReassemblyDequeueList()
 
+    // Streams whose writers were told there is no room for more outbound data. A stream leaves
+    // this list when its room returns.
+    var streamsAwaitingOutboundRoom = QUICStreamList.awaitingOutboundRoomList()
+
     private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
 
     var localCIDLength: Int = 0  // would be private(set)
@@ -2643,6 +2647,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
+        // An acknowledgment or flow-control update may have opened room even when there was
+        // nothing to send.
+        deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
+
         // Service streams that are pending application reads
         while var stream = pendingReassemblyDequeue.removeFirst(connection: self) {
             guard let frameArray = stream.dequeueReassembledData(connection: self) else {
@@ -3071,6 +3079,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         knownFlows.removeAll()
         // A stream still queued for a room-available notification is not going to get one, and the
         // queue holds the stream, which names this connection as its parent.
+        for stream in streamsWithReopenedOutboundRoom {
+            stream.listMembership.remove(.reopenedOutboundRoom)
+        }
         streamsWithReopenedOutboundRoom.removeAll()
         localTransportParameters.removeAll()
         remoteTransportParameters?.removeAll()
@@ -3807,16 +3818,54 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private var streamsWithReopenedOutboundRoom = [QUICStreamInstance]()
 
     func queueOutboundRoomAvailableEvent(for stream: QUICStreamInstance) {
-        streamsWithReopenedOutboundRoom.append(stream)
+        if stream.listMembership.contains(.reopenedOutboundRoom) {
+            return
+        }
+        stream.listMembership.insert(.reopenedOutboundRoom)
+        self.streamsWithReopenedOutboundRoom.append(stream)
+    }
+
+    /// Remembers a stream whose writer was told there is no room, so the writer is woken when
+    /// room returns. A stream that can never send again has no room to wait for.
+    func awaitOutboundRoom(of stream: QUICStreamInstance) {
+        if stream.receivedStopSending || stream.closed || stream.writeClosed {
+            return
+        }
+        self.streamsAwaitingOutboundRoom.append(stream)
+    }
+
+    /// Moves each stream that has room again from the awaiting list to the reopened list.
+    ///
+    /// The room of a stream depends on the pending bytes of the whole connection, the congestion
+    /// window, and the peer's limits, so any send or acknowledgment can reopen a stream that did
+    /// not send anything itself.
+    private func reopenStreamsAwaitingOutboundRoom() {
+        var remainingStreamCount = self.streamsAwaitingOutboundRoom.count
+        while remainingStreamCount > 0 {
+            remainingStreamCount &-= 1
+            guard let stream = self.streamsAwaitingOutboundRoom.removeFirst(connection: self) else {
+                continue
+            }
+            stream.updateOutboundFlowControlCredit(connection: self)
+            if stream.maximumStreamDataSize > 0 {
+                self.queueOutboundRoomAvailableEvent(for: stream)
+            } else {
+                self.awaitOutboundRoom(of: stream)
+            }
+        }
     }
 
     private func deliverQueuedOutboundRoomAvailableEvents(
         in eventContext: inout NetworkContext.EventContext
     ) {
+        if !streamsAwaitingOutboundRoom.isEmpty {
+            reopenStreamsAwaitingOutboundRoom()
+        }
         guard !streamsWithReopenedOutboundRoom.isEmpty else { return }
         let streams = streamsWithReopenedOutboundRoom
         streamsWithReopenedOutboundRoom.removeAll(keepingCapacity: true)
         for stream in streams {
+            stream.listMembership.remove(.reopenedOutboundRoom)
             stream.upper.deliverOutboundRoomAvailableEvent(from: stream.identifier, in: &eventContext)
         }
     }
@@ -5121,14 +5170,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 applicationPendingItems.retransmitStreams.removeAll()
                 flowControlState.resetSentBytes()
                 applyToAllFlows { stream in
-                    let hadNoRoom = stream.maximumStreamDataSize == 0
                     stream.resetSendStreamData()
-                    // The reset drops the bytes that held the room at zero. A writer waiting for
-                    // room would otherwise not hear that it has some again.
-                    stream.updateOutboundFlowControlCredit(connection: self)
-                    if hadNoRoom && stream.maximumStreamDataSize > 0 {
-                        queueOutboundRoomAvailableEvent(for: stream)
-                    }
                 }
                 deliverNetworkProtocolEvent(
                     flow: .allFlows,

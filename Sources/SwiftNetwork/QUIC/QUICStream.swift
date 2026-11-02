@@ -314,6 +314,8 @@ struct StreamListMembership: OptionSet {
     static let pendingReassemblyDequeue = StreamListMembership(rawValue: 1 << 1)
     static let sendable = StreamListMembership(rawValue: 1 << 2)
     static let unblockedSend = StreamListMembership(rawValue: 1 << 3)
+    static let awaitingOutboundRoom = StreamListMembership(rawValue: 1 << 4)
+    static let reopenedOutboundRoom = StreamListMembership(rawValue: 1 << 5)
 
     var description: String {
         switch self {
@@ -321,6 +323,8 @@ struct StreamListMembership: OptionSet {
         case .pendingReassemblyDequeue: return "pendingReassemblyDequeue"
         case .sendable: return "sendable"
         case .unblockedSend: return "unblockedSend"
+        case .awaitingOutboundRoom: return "awaitingOutboundRoom"
+        case .reopenedOutboundRoom: return "reopenedOutboundRoom"
         default: return "none"
         }
     }
@@ -352,6 +356,13 @@ struct QUICStreamList: ~Copyable {
     static func unblockedSendStreamList() -> QUICStreamList {
         QUICStreamList(
             listType: .unblockedSend,
+            name: #function
+        )
+    }
+
+    static func awaitingOutboundRoomList() -> QUICStreamList {
+        QUICStreamList(
+            listType: .awaitingOutboundRoom,
             name: #function
         )
     }
