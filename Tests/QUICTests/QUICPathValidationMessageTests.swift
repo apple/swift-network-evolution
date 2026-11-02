@@ -143,6 +143,105 @@ class QUICPathValidationMessageTests: XCTestCase {
             XCTAssertEqual(path.pendingOutboundChallenges.count, 0)
         }
     }
+
+    // MARK: The packet builder's stream borrow relies on the send path being claimed
+
+    // Runs `body` with one stream in the connection's stream table, and removes it afterwards.
+    private func withStream(_ body: (MultiplexedFlowIdentifier) -> Void) {
+        connection.context.onQueue {
+            let stream = QUICStreamInstance(parent: connection, inbound: true)
+            let streamID = stream.flowIdentifier
+            connection.insertFlow(stream, for: streamID)
+            defer {
+                connection.fromExternal { eventContext in
+                    if var stream = connection.removeFlow(streamID) {
+                        stream.releaseResources()
+                        stream.unregisterEventManager(in: &eventContext)
+                    }
+                }
+            }
+            body(streamID)
+        }
+    }
+
+    // The packet builder borrows a stream while it holds the send path. That borrow does not mark a flow
+    // as borrowed, because nothing it does can defer work, so only the send path keeps sends out.
+    func testBuilderBorrowRunsUnderTheClaimedSendPathWithoutMarkingAFlowBorrowed() {
+        withStream { streamID in
+            let wasActive = connection.stateMachine.claimSendPath()
+            var ran = false
+            let borrowed: Void? = connection.withStreamBorrowed(streamID) { (_: inout QUICStreamInstance) in
+                ran = true
+                XCTAssertTrue(connection.stateMachine.isSendActive)
+                XCTAssertFalse(connection.stateMachine.isFlowBorrowed)
+                #if DEBUG
+                XCTAssertTrue(connection.stateMachine.isBorrowed(.streams))
+                #endif
+            }
+            XCTAssertNotNil(borrowed)
+            XCTAssertTrue(ran)
+            #if DEBUG
+            XCTAssertFalse(connection.stateMachine.isBorrowed(.streams))
+            #endif
+            // Nothing waited, so releasing the send path has nothing to replay
+            XCTAssertFalse(connection.stateMachine.releaseSendPath(wasActive: wasActive))
+            XCTAssertFalse(connection.stateMachine.isSendActive)
+        }
+    }
+
+    // A send asked for from inside the builder's borrow is held back by the claimed send path, even though
+    // no flow is marked borrowed, and nothing reaches the stream table. It is ready when the path is released.
+    func testSendRequestedInsideBuilderBorrowIsHeldBackBySendPath() {
+        withStream { streamID in
+            let wasActive = connection.stateMachine.claimSendPath()
+            var sent = true
+            _ = connection.withStreamBorrowed(streamID) { (_: inout QUICStreamInstance) in
+                sent = connection.fromExternal { eventContext in
+                    connection.sendFrames(ignoreCongestionWindow: true, delayedACK: false, in: &eventContext)
+                }
+            }
+            XCTAssertFalse(sent)
+            XCTAssertTrue(connection.stateMachine.hasDeferredSends)
+            XCTAssertTrue(connection.stateMachine.releaseSendPath(wasActive: wasActive))
+            XCTAssertEqual(connection.stateMachine.takePlainSend()?.ignoreCongestionWindow, true)
+        }
+    }
+
+    // A caller that claims the send path without checking for a flow borrow, as the timers do, is safe when
+    // a flow is borrowed: sends stay held back, releasing does not replay them (the flow borrow still
+    // holds them), and the outermost flow borrow reports them when it ends.
+    func testClaimingTheSendPathInsideAFlowBorrowLeavesTheReplayToTheBorrow() {
+        withStream { streamID in
+            var released = true
+            _ = connection.performOnStream(streamID) { (_: inout QUICStreamInstance) in
+                let wasActive = connection.stateMachine.claimSendPath()
+                XCTAssertTrue(connection.stateMachine.isSendBlocked)
+                connection.stateMachine.deferSend(ignoreCongestionWindow: false, delayedACK: false)
+                released = connection.stateMachine.releaseSendPath(wasActive: wasActive)
+                XCTAssertTrue(connection.stateMachine.isFlowBorrowed)
+            }
+            XCTAssertFalse(released)
+            // The borrow's own end replayed the send, so nothing is left waiting
+            XCTAssertFalse(connection.stateMachine.hasDeferredSends)
+            XCTAssertFalse(connection.stateMachine.isFlowBorrowed)
+            XCTAssertFalse(connection.stateMachine.isSendActive)
+        }
+    }
+
+    // A send path claimed inside a flow borrow that ends first is still held by the claim, so the borrow
+    // leaves the replay to the release.
+    func testFlowBorrowEndingInsideAClaimedSendPathLeavesTheReplayToTheRelease() {
+        withStream { streamID in
+            let wasActive = connection.stateMachine.claimSendPath()
+            let wasFlowBorrowed = connection.stateMachine.beginFlowBorrow(of: .streams)
+            connection.stateMachine.deferSend(ignoreCongestionWindow: false, delayedACK: true)
+            let work = connection.stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
+            XCTAssertNil(work)
+            XCTAssertTrue(connection.stateMachine.releaseSendPath(wasActive: wasActive))
+            XCTAssertEqual(connection.stateMachine.takePlainSend()?.delayedACK, true)
+            _ = streamID
+        }
+    }
 }
 
 #endif

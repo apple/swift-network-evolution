@@ -533,6 +533,16 @@ extension NetworkContext.EventContext {
     }
 
     fileprivate mutating func drainPendingEvents(index: NetworkStateIndex) {
+        // A call that queued nothing has nothing to drain: all there is to do is to remove a retired
+        // state that this call left idle.
+        if protocolEventStates[index].pendingEventsFromLowerProtocol.isEmpty
+            && protocolEventStates[index].pendingEventsToDeliverToUpperProtocol.isEmpty
+        {
+            if protocolEventStates[index].retiring {
+                removeProtocolEventStateIfRetired(index)
+            }
+            return
+        }
         if protocolEventStates[index].isIdle && !protocolEventStates[index].drainingEvents {
             protocolEventStates[index].drainingEvents = true
             let lowerEvents = protocolEventStates[index].startDrainingPendingEventsFromLower()
