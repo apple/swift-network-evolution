@@ -72,11 +72,12 @@ struct PMTUDState: ~Copyable {
     // The bytes sent in full-size packets since the current round of probing began. A packet that
     // is not full would be the same size at a larger MTU, so only full packets show what a larger
     // MTU would save.
-    private var fullSizeBytesSentInRound: UInt64 = 0
+    private(set) var fullSizeBytesSentInRound: UInt64 = 0
 
-    // A packet within this many bytes of the maximum segment size had no room for another useful
-    // frame.
-    private static let fullPacketMargin = 32
+    // A packet with at most this many bytes unused had no room for another STREAM frame: the
+    // largest STREAM frame header is a type byte and three 8-byte variable-length integers (stream
+    // ID, offset and length), and a frame needs at least one byte of data after its header.
+    private static let fullPacketMargin = 1 + 3 * 8
 
     private var interval = PMTUDState.defaultInterval
 
@@ -530,7 +531,7 @@ struct PMTUDState: ~Copyable {
     /// Adds the bytes of the full-size application packets among `sentPackets` to the count for
     /// the current round. Probes are padded to the size under test, so they say nothing about how
     /// full an ordinary packet is.
-    private mutating func countFullSizePackets(
+    mutating func countFullSizePackets(
         in sentPackets: borrowing NetworkUniqueDeque<SentPacketRecord>,
         on path: QUICPath
     ) {
