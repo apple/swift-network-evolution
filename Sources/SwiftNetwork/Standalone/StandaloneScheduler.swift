@@ -56,7 +56,14 @@ public final class StandaloneScheduler: NetworkContext.Scheduler, @unchecked Sen
     }
 
     private let state: NetworkMutex<State>
-    private let wakeHandler: NetworkMutex<(@Sendable () -> Void)?> = NetworkMutex(nil)
+    /// The wake handler. It sits in a struct because a function stored directly in a generic `Mutex`
+    /// is reabstracted every time it is read, adding two thunk frames to it per `runImmediate`
+    /// until calling or releasing it overflows the stack.
+    private struct WakeHandler: Sendable {
+        let call: @Sendable () -> Void
+    }
+
+    private let wakeHandler: NetworkMutex<WakeHandler?> = NetworkMutex(nil)
 
     /// How many times `runPendingAsync` drains before concluding nothing is making progress.
     private static var maximumBatches: Int { 10_000 }
@@ -83,7 +90,7 @@ public final class StandaloneScheduler: NetworkContext.Scheduler, @unchecked Sen
     public func runImmediate(_ task: @escaping () -> Void) {
         state.withLock { $0.pending.append(Task(run: task)) }
         let handler = wakeHandler.withLock { $0 }
-        handler?()
+        handler?.call()
     }
 
     public func schedule(_ task: @escaping () -> Void, after delay: NetworkDuration, reference: TimerReference) {
@@ -108,8 +115,8 @@ public final class StandaloneScheduler: NetworkContext.Scheduler, @unchecked Sen
     ///
     /// Use it to wake the owner's loop. It is not called for timers.
     public var onWorkAvailable: (@Sendable () -> Void)? {
-        get { wakeHandler.withLock { $0 } }
-        set { wakeHandler.withLock { $0 = newValue } }
+        get { wakeHandler.withLock { $0?.call } }
+        set { wakeHandler.withLock { $0 = newValue.map { WakeHandler(call: $0) } } }
     }
 
     /// Whether the protocol has asked to be called back.

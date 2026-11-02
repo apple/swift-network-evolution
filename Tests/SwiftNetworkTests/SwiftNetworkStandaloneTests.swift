@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Foundation
 import XCTest
 
 #if !NETWORK_NO_SWIFT_QUIC && !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux) || os(Android))
@@ -669,6 +670,22 @@ final class SwiftNetworkStandaloneTests: NetTestCase {
 
         client.close()
         server.close()
+    }
+
+    /// Calling the wake handler must not make it deeper to call: it once gained two reabstraction thunks
+    /// per `runImmediate`, until a long-lived connection overflowed the stack calling or releasing it.
+    func testStandaloneSchedulerWakeHandlerDoesNotDeepenWithUse() throws {
+        let scheduler = StandaloneScheduler(now: StandaloneLoopback.start)
+        nonisolated(unsafe) var depths: [Int] = []
+        scheduler.onWorkAvailable = { depths.append(Thread.callStackSymbols.count) }
+        for _ in 0..<1000 {
+            scheduler.runImmediate {}
+        }
+        XCTAssertEqual(depths.count, 1000)
+        XCTAssertEqual(depths.last, depths.first, "the handler got deeper as it was used")
+        scheduler.onWorkAvailable = nil
+        scheduler.runImmediate {}
+        XCTAssertEqual(depths.count, 1000, "a cleared handler is not called")
     }
 
     /// A standalone linkage is its identifier and nothing else: no storage, no object behind it.
