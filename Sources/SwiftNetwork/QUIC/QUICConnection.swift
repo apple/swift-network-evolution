@@ -2092,6 +2092,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 isNonProbing = true
             }
             if !processFrame(quicFrame, packetNumberSpace: packet.numberSpace, path: path, in: &eventContext) {
+                if state.isTerminal { return false }
                 break
             }
             if state.isTerminal {
@@ -2101,7 +2102,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 // itself. Stop processing any further frames from this packet
                 // once that happens, rather than continuing to hand already
                 // torn-down state to later frames (e.g. a coalesced CRYPTO
-                // frame after a CONNECTION_CLOSE).
+                // frame after a CONNECTION_CLOSE). Return rather than break:
+                // close() may have cleared currentPath, so the path validation
+                // and migration below would start probing on a closed connection.
                 return false
             }
         }
