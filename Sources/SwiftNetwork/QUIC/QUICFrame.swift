@@ -3034,7 +3034,7 @@ struct FrameHandshakeDone: ~Copyable, QUICFrameProtocol {
             return false
         }
 
-        connection.confirmHandshake()
+        connection.confirmHandshake(in: &eventContext)
         return true
     }
 }
