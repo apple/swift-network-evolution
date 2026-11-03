@@ -716,18 +716,6 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         return shouldSend
     }
 
-    // Called from tests only, so it's okay to use `toArray()` here
-    static func blockSequence(
-        frame: borrowing FrameAck,
-        oldestPacketNumber: PacketNumber = .initial
-    ) -> AckBlockSequence {
-        AckBlockSequence(
-            largest: frame.largest,
-            ranges: frame.ranges.toArray(),
-            oldestPacketNumber: oldestPacketNumber
-        )
-    }
-
     @inline(always)
     fileprivate static func decodeStep(
         largest: inout PacketNumber,

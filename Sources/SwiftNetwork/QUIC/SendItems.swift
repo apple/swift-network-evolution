@@ -3356,7 +3356,7 @@ struct TransmittedItems: ~Copyable {
             pendingGap = ackFrame.pendingGap == .none ? nil : ackFrame.pendingGap
         }
     }
-
+    // Fields are ordered in this manner to save padding
     var maxStreamDataFlows: Deque<MultiplexedFlowIdentifier>?
     var streamDataBlockedFlows: Deque<MultiplexedFlowIdentifier>?
     var streamResets: Deque<PendingItems.StreamReset>?

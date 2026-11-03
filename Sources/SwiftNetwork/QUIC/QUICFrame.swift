@@ -977,7 +977,7 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
             )
         }
 
-        ranges = SmallArray()
+        ranges = .init()
 
         let rangeResult = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
             var firstRange = FrameAckRange(gap: 0, range: 0)
@@ -992,6 +992,14 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
             }
         }
         try validateDeserializationResult(rangeResult)
+
+        guard ranges.count == Int(rangeCount) + 1 else {
+            throw QUICError.frameParse(
+                FrameParseError.invalidValue(
+                    "ACK range count mismatch: \(ranges.count) vs \(rangeCount + 1)"
+                )
+            )
+        }
 
         if rawType == FrameType.ackECNCode {
             // Parse ECN-specific fields

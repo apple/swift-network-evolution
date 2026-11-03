@@ -14,6 +14,9 @@
 
 /// An array that stores up to two elements inline, falling back to a
 /// heap-allocated array only when it holds more than that.
+///
+/// Two inline slots fit ACK frames, which have one or two ranges under normal network
+/// conditions. Each inline slot adds the size of `Element` to every value that holds one.
 @available(Network 0.1.0, *)
 struct SmallArray<Element>: ~Copyable {
     private enum Storage: ~Copyable {
