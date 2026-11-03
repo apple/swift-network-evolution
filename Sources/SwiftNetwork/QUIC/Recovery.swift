@@ -1356,6 +1356,10 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     )
                 }
 
+            } else if connection.probesWithPing {
+                // Nothing new to send: a PING draws the acknowledgement without resending data the
+                // peer may be about to acknowledge (RFC 9002 Section 6.2.4). The fallback below sends it.
+                connection.log.datapath("Probing with a PING instead of retransmitting")
             } else {
                 connection.log.datapath("Retransmitting two tail-packets as PTO")
 

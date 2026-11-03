@@ -90,6 +90,7 @@ public struct StandaloneQUICConnection: StandaloneManyToManyProtocol, ~Copyable 
         let storage = BaseNetworkProtocolStorage(context: context)
         let (streamListener, datagramListener, multipath) = storage.createQUICInstance()
         options.setProtocolInstance(streamListener.identifier)
+        options.connectionOptions.probesWithPing = true
 
         var parameters = Parameters(context: context)
         parameters.isServer = isServer

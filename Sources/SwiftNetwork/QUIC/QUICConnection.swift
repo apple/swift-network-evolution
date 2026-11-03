@@ -434,6 +434,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var isHandshakeConfirmed = false
 
     public var pacingEnabled: Bool = false
+    /// Whether a probe timeout with nothing new to send probes with a PING, not a retransmission.
+    var probesWithPing: Bool = false
 
     private(set) var datagramUseQuarterStreamID = false
     var datagramUseContextID = false
@@ -633,6 +635,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
 
             pacingEnabled = quicConnectionOptions.enablePacing
+            probesWithPing = quicConnectionOptions.probesWithPing
 
             testSendingShortPackets =
                 quicConnectionOptions.testSendingShortPackets

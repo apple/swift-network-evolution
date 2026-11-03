@@ -418,6 +418,10 @@ public struct QUICConnectionProtocol: NetworkProtocol {
                 }
             }
         }
+        var probesWithPing: Bool {
+            get { flags.contains(.probesWithPing) }
+            set { if newValue { flags.insert(.probesWithPing) } else { flags.remove(.probesWithPing) } }
+        }
         public var enablePacing: Bool {
             get { flags.contains(.enablePacing) }
             set { if newValue { flags.insert(.enablePacing) } else { flags.remove(.enablePacing) } }
@@ -477,6 +481,10 @@ public struct QUICConnectionProtocol: NetworkProtocol {
             static public let resendRejectedEarlyDataAutomatically = QUICConnectionOptions.Flags(rawValue: 1 << 26)
             static public let enablePacing = QUICConnectionOptions.Flags(rawValue: 1 << 27)
             static public let forceUnsupportedClientVersion = QUICConnectionOptions.Flags(rawValue: 1 << 28)
+            /// A probe timeout sends a PING instead of retransmitting the last packets. Set by a
+            /// standalone connection, whose owner is a server that would rather not resend data the
+            /// peer is about to acknowledge.
+            static let probesWithPing = QUICConnectionOptions.Flags(rawValue: 1 << 29)
         }
         var flags: Flags = Flags()
 
