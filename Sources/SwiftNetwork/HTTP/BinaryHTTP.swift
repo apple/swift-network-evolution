@@ -334,4 +334,184 @@ struct BinaryHTTPProtocol: ~Copyable {
         }
         return state
     }
+
+    // MARK: - Serialize
+
+    enum WriteError: Error {
+        /// An informational response was not 100-199, or the final response was not 200-599.
+        case invalidStatus
+    }
+
+    private static let writeFrameCapacity = 1024
+
+    private static func variableLengthSize(_ value: Int) -> Int {
+        UInt64(value).safeVariableLengthSize ?? 8
+    }
+
+    /// The encoded size of one field line.
+    private static func encodedSize(of field: HTTPField) -> Int {
+        let nameLength = field.name.canonicalName.utf8.count
+        let valueLength = field.value.utf8.count
+        return variableLengthSize(nameLength) + nameLength + variableLengthSize(valueLength) + valueLength
+    }
+
+    private static func encodedSize(of fields: HTTPFields) -> Int {
+        fields.reduce(0) { $0 + encodedSize(of: $1) }
+    }
+
+    private static func writeFieldLines(_ fields: HTTPFields, into write: inout FrameSerializer) {
+        for field in fields {
+            // Names are lowercase in binary HTTP
+            let name = field.name.canonicalName
+            write.vle(name.utf8.count)
+            write.fixedLengthUTF8(name, byteCount: name.utf8.count)
+            write.vle(field.value.utf8.count)
+            write.fixedLengthUTF8(field.value, byteCount: field.value.utf8.count)
+        }
+    }
+
+    /// A known-length field section: the length of the field lines, then the lines.
+    private static func writeKnownLengthFields(_ fields: HTTPFields, into write: inout FrameSerializer) {
+        write.vle(encodedSize(of: fields))
+        writeFieldLines(fields, into: &write)
+    }
+
+    /// An indeterminate-length field section: the field lines, then a zero terminator.
+    private static func writeIndeterminateLengthFields(_ fields: HTTPFields, into write: inout FrameSerializer) {
+        writeFieldLines(fields, into: &write)
+        write.vle(0)
+    }
+
+    private static func writeFields(_ fields: HTTPFields, knownLength: Bool, into write: inout FrameSerializer) {
+        if knownLength {
+            writeKnownLengthFields(fields, into: &write)
+        } else {
+            writeIndeterminateLengthFields(fields, into: &write)
+        }
+    }
+
+    private static func writeRequestControlData(_ request: HTTPRequest, into write: inout FrameSerializer) {
+        let method = request.method.rawValue
+        let scheme = request.scheme ?? ""
+        let authority = request.authority ?? ""
+        let path = request.path ?? ""
+        for component in [method, scheme, authority, path] {
+            write.vle(component.utf8.count)
+            write.fixedLengthUTF8(component, byteCount: component.utf8.count)
+        }
+    }
+
+    /// Informational responses, then the final response's status code. Header sections follow each status.
+    private static func validate(informational: [HTTPResponse], final: HTTPResponse) throws(WriteError) {
+        guard (200...599).contains(final.status.code) else { throw .invalidStatus }
+        for response in informational {
+            guard (100...199).contains(response.status.code) else { throw .invalidStatus }
+        }
+    }
+
+    private static func writeResponsePrefix(
+        _ response: HTTPResponse,
+        informational: [HTTPResponse],
+        knownLength: Bool,
+        into write: inout FrameSerializer
+    ) {
+        for interim in informational {
+            write.vle(interim.status.code)
+            writeFields(interim.headerFields, knownLength: knownLength, into: &write)
+        }
+        write.vle(response.status.code)
+        writeFields(response.headerFields, knownLength: knownLength, into: &write)
+    }
+
+    // MARK: Known length
+
+    /// A complete known-length request: the request, its content, and its trailers.
+    static func writeKnownLengthRequest(
+        _ request: HTTPRequest,
+        body: consuming FrameArray = FrameArray(),
+        trailers: HTTPFields = HTTPFields()
+    ) -> FrameArray {
+        var body = body
+        let bodyLength = body.unclaimedLength
+        return Serializer.serialize(frameCapacity: writeFrameCapacity) { write in
+            write.vle(BinaryHTTPMessageType.knownLengthRequest.rawValue)
+            writeRequestControlData(request, into: &write)
+            writeKnownLengthFields(request.headerFields, into: &write)
+            write.vle(bodyLength)
+            write.frameArray(&body)
+            writeKnownLengthFields(trailers, into: &write)
+        }
+    }
+
+    /// A complete known-length response: any informational responses, the final response, its content,
+    /// and its trailers.
+    static func writeKnownLengthResponse(
+        _ response: HTTPResponse,
+        informational: [HTTPResponse] = [],
+        body: consuming FrameArray = FrameArray(),
+        trailers: HTTPFields = HTTPFields()
+    ) throws(WriteError) -> FrameArray {
+        try validate(informational: informational, final: response)
+        var body = body
+        let bodyLength = body.unclaimedLength
+        return Serializer.serialize(frameCapacity: writeFrameCapacity) { write in
+            write.vle(BinaryHTTPMessageType.knownLengthResponse.rawValue)
+            writeResponsePrefix(response, informational: informational, knownLength: true, into: &write)
+            write.vle(bodyLength)
+            write.frameArray(&body)
+            writeKnownLengthFields(trailers, into: &write)
+        }
+    }
+
+    // MARK: Indeterminate length
+
+    // An indeterminate-length message is written in order as:
+    //   1. writeIndeterminateLengthRequestStart or writeIndeterminateLengthResponseStart, once
+    //   2. writeContentChunk, any number of times
+    //   3. writeIndeterminateLengthEnd, once
+    // Each returns the bytes to send next.
+
+    /// The start of an indeterminate-length request: its control data and headers.
+    static func writeIndeterminateLengthRequestStart(_ request: HTTPRequest) -> FrameArray {
+        Serializer.serialize(frameCapacity: writeFrameCapacity) { write in
+            write.vle(BinaryHTTPMessageType.indeterminateLengthRequest.rawValue)
+            writeRequestControlData(request, into: &write)
+            writeIndeterminateLengthFields(request.headerFields, into: &write)
+        }
+    }
+
+    /// The start of an indeterminate-length response: any informational responses, and the final
+    /// response's status and headers.
+    static func writeIndeterminateLengthResponseStart(
+        _ response: HTTPResponse,
+        informational: [HTTPResponse] = []
+    ) throws(WriteError) -> FrameArray {
+        try validate(informational: informational, final: response)
+        return Serializer.serialize(frameCapacity: writeFrameCapacity) { write in
+            write.vle(BinaryHTTPMessageType.indeterminateLengthResponse.rawValue)
+            writeResponsePrefix(response, informational: informational, knownLength: false, into: &write)
+        }
+    }
+
+    /// One chunk of content. An empty chunk produces no bytes, since a zero length ends the content.
+    static func writeContentChunk(_ chunk: consuming FrameArray) -> FrameArray {
+        var chunk = chunk
+        let chunkLength = chunk.unclaimedLength
+        guard chunkLength > 0 else {
+            chunk.finalizeAllFramesAsFailed()
+            return FrameArray()
+        }
+        return Serializer.serialize(frameCapacity: writeFrameCapacity) { write in
+            write.vle(chunkLength)
+            write.frameArray(&chunk)
+        }
+    }
+
+    /// The end of an indeterminate-length message: the content terminator, and the trailers.
+    static func writeIndeterminateLengthEnd(trailers: HTTPFields = HTTPFields()) -> FrameArray {
+        Serializer.serialize(frameCapacity: writeFrameCapacity) { write in
+            write.vle(0)
+            writeIndeterminateLengthFields(trailers, into: &write)
+        }
+    }
 }

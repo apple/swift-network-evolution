@@ -1041,4 +1041,249 @@ final class SwiftNetworkBinaryHTTPTests: NetTestCase {
         }
         frames.finalizeAllFramesAsFailed()
     }
+
+    // MARK: - Writing
+
+    static func fields(_ pairs: [(String, String)]) -> HTTPFields {
+        var fields = HTTPFields()
+        for (name, value) in pairs {
+            fields.append(HTTPField(name: HTTPField.Name(name)!, value: value))
+        }
+        return fields
+    }
+
+    /// A body in frames of at most `frameSize` bytes.
+    static func bodyFrames(_ bytes: [UInt8], frameSize: Int = 7) -> FrameArray {
+        var frames = FrameArray()
+        for piece in split(bytes, size: frameSize) {
+            frames.add(frames: FrameArray(frame: Frame(copyBuffer: piece)))
+        }
+        return frames
+    }
+
+    static func request(_ message: Message) -> HTTPRequest {
+        HTTPRequest(
+            method: HTTPRequest.Method(message.method)!,
+            scheme: message.scheme.isEmpty ? nil : message.scheme,
+            authority: message.authority.isEmpty ? nil : message.authority,
+            path: message.path.isEmpty ? nil : message.path,
+            headerFields: fields(message.headers)
+        )
+    }
+
+    static func response(status: Int, headers: [(String, String)]) -> HTTPResponse {
+        HTTPResponse(status: HTTPResponse.Status(code: status), headerFields: fields(headers))
+    }
+
+    func writeBytes(_ frames: consuming FrameArray) -> [UInt8] {
+        var frames = frames
+        let bytes = extractBytes(from: frames)
+        frames.finalizeAllFramesAsFailed()
+        return bytes
+    }
+
+    /// Writes `message` with the writer matching its shape.
+    func write(_ message: Message) throws -> [UInt8] {
+        let trailers = Self.fields(message.trailers)
+        if message.isKnownLength {
+            if message.isRequest {
+                return writeBytes(
+                    BinaryHTTPProtocol.writeKnownLengthRequest(
+                        Self.request(message),
+                        body: Self.bodyFrames(message.body),
+                        trailers: trailers
+                    )
+                )
+            }
+            return writeBytes(
+                try BinaryHTTPProtocol.writeKnownLengthResponse(
+                    Self.response(status: message.status, headers: message.headers),
+                    informational: message.informational.map { Self.response(status: $0.code, headers: $0.headers) },
+                    body: Self.bodyFrames(message.body),
+                    trailers: trailers
+                )
+            )
+        }
+
+        var bytes: [UInt8]
+        if message.isRequest {
+            bytes = writeBytes(BinaryHTTPProtocol.writeIndeterminateLengthRequestStart(Self.request(message)))
+        } else {
+            bytes = writeBytes(
+                try BinaryHTTPProtocol.writeIndeterminateLengthResponseStart(
+                    Self.response(status: message.status, headers: message.headers),
+                    informational: message.informational.map { Self.response(status: $0.code, headers: $0.headers) }
+                )
+            )
+        }
+        for chunk in Self.split(message.body, size: message.chunkSize) {
+            bytes += writeBytes(BinaryHTTPProtocol.writeContentChunk(Self.bodyFrames(chunk)))
+        }
+        bytes += writeBytes(BinaryHTTPProtocol.writeIndeterminateLengthEnd(trailers: trailers))
+        return bytes
+    }
+
+    /// Checks the written bytes match the reference encoder, and that they parse back.
+    func verifyWritten(_ message: Message, line: UInt = #line) {
+        do {
+            let written = try write(message)
+            XCTAssertEqual(written, Self.encode(message), "written bytes", line: line)
+            verify(message, feeds: [.allAtOnce, .chunks(3)], line: line)
+            if let parsed = parse(written, messageLength: written.count, feed: .allAtOnce, line: line) {
+                var parsed = parsed
+                check(&parsed, against: message, feed: .allAtOnce, line: line)
+            } else {
+                XCTFail("Written message did not parse", line: line)
+            }
+        } catch {
+            XCTFail("Write failed: \(error)", line: line)
+        }
+    }
+
+    func forEachShapeWritten(_ configure: (inout Message) -> Void, line: UInt = #line) {
+        for shape in Self.shapes {
+            var message = Message(isRequest: shape.isRequest, isKnownLength: shape.isKnownLength)
+            configure(&message)
+            verifyWritten(message, line: line)
+        }
+    }
+
+    func testWriteMinimal() {
+        forEachShapeWritten { _ in }
+    }
+
+    func testWriteHeaders() {
+        forEachShapeWritten { $0.headers = Self.manyFields(30, prefix: "x-header") }
+    }
+
+    func testWriteTrailers() {
+        forEachShapeWritten {
+            $0.body = Self.smallBody
+            $0.trailers = Self.manyFields(30, prefix: "x-trailer")
+        }
+    }
+
+    func testWriteSmallContent() {
+        forEachShapeWritten { $0.body = Self.smallBody }
+    }
+
+    func testWriteLargeContent() {
+        forEachShapeWritten {
+            $0.headers = [("x-header", "h")]
+            $0.body = Self.largeBody
+            $0.chunkSize = 3000
+            $0.trailers = [("x-trailer", "t")]
+        }
+    }
+
+    func testWriteLongHeaderValue() {
+        forEachShapeWritten { $0.headers = [("x-long", String(repeating: "v", count: 5000))] }
+    }
+
+    func testWriteNoControlDataComponents() {
+        for known in [true, false] {
+            verifyWritten(Message(isRequest: true, isKnownLength: known, scheme: "", authority: "", path: ""))
+        }
+    }
+
+    func testWriteInformationalResponses() {
+        for known in [true, false] {
+            var message = Message(isRequest: false, isKnownLength: known)
+            message.informational = [(102, [("running", "yes")]), (103, [("link", "a"), ("link", "b")])]
+            message.headers = [("x-final", "1")]
+            message.body = Self.smallBody
+            verifyWritten(message)
+        }
+    }
+
+    func testWriteStatusCodes() {
+        for status in [200, 204, 404, 599] {
+            for known in [true, false] {
+                var message = Message(isRequest: false, isKnownLength: known)
+                message.status = status
+                verifyWritten(message)
+            }
+        }
+    }
+
+    func testWriteLowercasesFieldNames() {
+        var request = HTTPRequest(method: .get, scheme: "https", authority: "example.com", path: "/")
+        request.headerFields.append(HTTPField(name: HTTPField.Name("Content-Type")!, value: "text/plain"))
+        let bytes = writeBytes(BinaryHTTPProtocol.writeKnownLengthRequest(request))
+        guard var parsed = parse(bytes, messageLength: bytes.count, feed: .allAtOnce) else {
+            XCTFail("Did not parse")
+            return
+        }
+        guard case .request(let parsedRequest) = parsed.innerMessage else {
+            XCTFail("Expected a request")
+            return
+        }
+        XCTAssertEqual(parsedRequest.headerFields.first?.name.rawName, "content-type")
+        parsed.body.finalizeAllFramesAsFailed()
+    }
+
+    func testWriteEmptyChunkIsOmitted() {
+        XCTAssertEqual(writeBytes(BinaryHTTPProtocol.writeContentChunk(FrameArray())), [])
+        XCTAssertEqual(writeBytes(BinaryHTTPProtocol.writeContentChunk(Self.bodyFrames([]))), [])
+        // Empty chunks between real ones do not end the content early
+        var message = Message(isRequest: true, isKnownLength: false)
+        message.body = Self.smallBody
+        var bytes = writeBytes(BinaryHTTPProtocol.writeIndeterminateLengthRequestStart(Self.request(message)))
+        for chunk in [Array(Self.smallBody[..<5]), [], Array(Self.smallBody[5...])] {
+            bytes += writeBytes(BinaryHTTPProtocol.writeContentChunk(Self.bodyFrames(chunk)))
+        }
+        bytes += writeBytes(BinaryHTTPProtocol.writeIndeterminateLengthEnd())
+        if var parsed = parse(bytes, messageLength: bytes.count, feed: .chunks(2)) {
+            XCTAssertEqual(extractBytes(from: parsed.body), Self.smallBody)
+            parsed.body.finalizeAllFramesAsFailed()
+        } else {
+            XCTFail("Did not parse")
+        }
+    }
+
+    func testWriteBodyInManyFramesStaysUnchanged() {
+        for frameSize in [1, 3, 1024, 100_000] {
+            var message = Message(isRequest: false, isKnownLength: true)
+            message.body = Self.body(5000)
+            let bytes = writeBytes(
+                try! BinaryHTTPProtocol.writeKnownLengthResponse(
+                    Self.response(status: 200, headers: []),
+                    body: Self.bodyFrames(message.body, frameSize: frameSize)
+                )
+            )
+            XCTAssertEqual(bytes, Self.encode(message), "frame size \(frameSize)")
+        }
+    }
+
+    func assertWriteFails(_ what: String, line: UInt = #line, _ build: () throws -> FrameArray) {
+        do {
+            var frames = try build()
+            frames.finalizeAllFramesAsFailed()
+            XCTFail("\(what): should fail", line: line)
+        } catch {}
+    }
+
+    func testWriteInvalidStatusThrows() {
+        assertWriteFails("100 as final") {
+            try BinaryHTTPProtocol.writeKnownLengthResponse(Self.response(status: 100, headers: []))
+        }
+        assertWriteFails("600 as final") {
+            try BinaryHTTPProtocol.writeKnownLengthResponse(Self.response(status: 600, headers: []))
+        }
+        assertWriteFails("199 as final") {
+            try BinaryHTTPProtocol.writeIndeterminateLengthResponseStart(Self.response(status: 199, headers: []))
+        }
+        assertWriteFails("200 as informational") {
+            try BinaryHTTPProtocol.writeKnownLengthResponse(
+                Self.response(status: 200, headers: []),
+                informational: [Self.response(status: 200, headers: [])]
+            )
+        }
+        assertWriteFails("99 as informational") {
+            try BinaryHTTPProtocol.writeIndeterminateLengthResponseStart(
+                Self.response(status: 200, headers: []),
+                informational: [Self.response(status: 99, headers: [])]
+            )
+        }
+    }
 }
