@@ -193,7 +193,7 @@ struct PMTUDState: ~Copyable {
 
         self.startPacketNumber = connection.protector.getPacketNumber(for: .applicationData)
 
-        beginRound(on: path)
+        restartSearch(on: path)
 
         let maximumPathMTU = self.maximumPathMTU
         let ipUDPHeaderSize = self.ipUDPHeaderSize
@@ -473,7 +473,7 @@ struct PMTUDState: ~Copyable {
         in eventContext: inout NetworkContext.EventContext
     ) {
         path.log.debug("PMTUD timer fired")
-        self.beginRound(on: path)
+        self.restartSearch(on: path)
         self.updateProbeSize(on: path, in: &eventContext)
         path.parentProtocol.recordSentPackets(in: &eventContext) { sentPackets, blockState in
             sendProbe(on: path, sentPackets: &sentPackets, in: &blockState)
@@ -488,7 +488,7 @@ struct PMTUDState: ~Copyable {
         guard enabled else { return }
         path.log.info("Entering blackhole detection, setting path MTU to \(PMTUDState.minimumMTU)")
         currentPathMTU = PMTUDState.minimumMTU
-        beginRound(on: path)
+        restartSearch(on: path)
         failedProbeCount = 0
 
         let connection = path.parentProtocol
@@ -556,7 +556,7 @@ struct PMTUDState: ~Copyable {
         }
     }
 
-    private mutating func beginRound(on path: QUICPath) {
+    private mutating func restartSearch(on path: QUICPath) {
         searchCompleted = false
         fullSizeBytesSentInRound = 0
     }
