@@ -202,7 +202,13 @@ struct StreamSendBuffer: ~Copyable {
         return totalLengthCopied
     }
 
-    var acknowledgedDataRanges = RangeSet<StreamOffset>()
+    /// Acknowledged ranges above the start of the buffer, allocated on demand. Most streams never need
+    /// such a range (their data is acknowledged in order), so can avoid creating a `RangeSet`.
+    private var acknowledgedDataRangesStorage: RangeSet<StreamOffset>?
+
+    var acknowledgedDataRanges: RangeSet<StreamOffset> {
+        acknowledgedDataRangesStorage ?? RangeSet<StreamOffset>()
+    }
 
     mutating private func acknowledgedSendDataInner(
         offset acknowledgedOffset: StreamOffset,
@@ -237,15 +243,17 @@ struct StreamSendBuffer: ~Copyable {
         if acknowledgedOffset == storageStartOffset {
             var newStartOffset = totalAcknowledgedOffset
             var consumed = 0
-            while consumed < acknowledgedDataRanges.ranges.count
-                && acknowledgedDataRanges.ranges[consumed].lowerBound <= newStartOffset
-            {
-                newStartOffset = max(newStartOffset, acknowledgedDataRanges.ranges[consumed].upperBound)
-                consumed += 1
-            }
-            // Remove the consumed in one shot
-            if consumed > 0 {
-                acknowledgedDataRanges.remove(contentsOf: 0..<UInt64(consumed))
+            if let rangeCount = acknowledgedDataRangesStorage?.ranges.count, rangeCount > 0 {
+                while consumed < rangeCount
+                    && acknowledgedDataRangesStorage!.ranges[consumed].lowerBound <= newStartOffset
+                {
+                    newStartOffset = max(newStartOffset, acknowledgedDataRangesStorage!.ranges[consumed].upperBound)
+                    consumed += 1
+                }
+                // Remove the consumed in one shot
+                if consumed > 0 {
+                    acknowledgedDataRangesStorage!.remove(contentsOf: 0..<UInt64(consumed))
+                }
             }
             let difference = newStartOffset - storageStartOffset
             storageStartOffset = newStartOffset
@@ -263,7 +271,10 @@ struct StreamSendBuffer: ~Copyable {
 
         // Out of order ACK. The gap will be consumed when the in-order
         // path above processes an ACK that fits this range.
-        acknowledgedDataRanges.insert(contentsOf: acknowledgedOffset..<totalAcknowledgedOffset)
+        if acknowledgedDataRangesStorage == nil {
+            acknowledgedDataRangesStorage = RangeSet<StreamOffset>()
+        }
+        acknowledgedDataRangesStorage!.insert(contentsOf: acknowledgedOffset..<totalAcknowledgedOffset)
     }
 
     // Returns true if it acknowledged to the end of the data now, i.e. end of stream.

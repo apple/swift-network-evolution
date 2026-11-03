@@ -261,7 +261,9 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
         acceptEarlyData: Bool = true,
         resumedTransportParameters: [UInt8]? = nil,
         expectFailure: Bool = false,
-        resendRejectedEarlyDataAutomatically: Bool = false
+        resendRejectedEarlyDataAutomatically: Bool = false,
+        expectRoomReopenedAfterRejection: Bool = false,
+        beforeFirstFlight: ((_ client: QUICConnection, _ server: QUICConnection) -> Void)? = nil
     ) -> [UInt8]? {
         let clientParameters = Parameters()
 
@@ -282,6 +284,7 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
         var remoteTransportParameters: [UInt8]? = nil
         let rejectedExpectation = XCTestExpectation()
         let errorExpectation = XCTestExpectation()
+        let roomReopenedExpectation = XCTestExpectation()
 
         context.async {
             defer { expectation.fulfill() }
@@ -424,7 +427,9 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
 
             serverUpperHarness.start { connected in
                 serverConnected = true
-                XCTAssertTrue(connected, "QUIC server failed to become connected")
+                if !expectFailure {
+                    XCTAssertTrue(connected, "QUIC server failed to become connected")
+                }
                 expectation.fulfill()
             }
 
@@ -437,6 +442,34 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
                 Logger.test.info("Writing data to send")
                 let wrote = clientUpperHarness.write(dataToSend, earlyData: true)
                 XCTAssertTrue(wrote, "QUIC client failed to write")
+
+                if expectRoomReopenedAfterRejection {
+                    // The early data fills the send queue, so the stream reports no room and a
+                    // writer waits to be told it has some again.
+                    var roomWithEarlyDataQueued: Int?
+                    do {
+                        roomWithEarlyDataQueued = try clientUpperHarness.invokeGetOutboundStreamDataRoomAvailable()
+                    } catch {
+                        XCTFail("Reading the room failed: \(error)")
+                    }
+                    XCTAssertEqual(roomWithEarlyDataQueued, 0, "The early data must leave the stream with no room")
+                    clientUpperHarness.discardPendingOutboundRoomAvailable()
+                    clientUpperHarness.fromExternal { eventContext in
+                        clientUpperHarness.waitForOutboundRoomAvailable(in: &eventContext) { _ in
+                            roomReopenedExpectation.fulfill()
+                        }
+                    }
+                }
+            }
+
+            if let beforeFirstFlight {
+                guard let clientConnection = storage.quicInstance(for: clientQUICStreamListener.base),
+                    let serverConnection = storage.quicInstance(for: serverQUICStreamListener.base)
+                else {
+                    XCTFail("Failed to find the QUIC connections")
+                    return
+                }
+                beforeFirstFlight(clientConnection, serverConnection)
             }
 
             while !serverConnected {
@@ -461,6 +494,10 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
                 if !acceptEarlyData, !resendRejectedEarlyDataAutomatically {
                     wait(for: [rejectedExpectation], timeout: 5.0)
                     XCTAssertTrue(earlyDataRejected, "Early data not rejected")
+                    if expectRoomReopenedAfterRejection {
+                        wait(for: [roomReopenedExpectation], timeout: 5.0)
+                        return nil
+                    }
                     context.async {
                         Logger.test.info("Re-writing data to send")
                         let wrote = clientUpperHarness?.write(dataToSend) ?? false
@@ -595,6 +632,20 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
         )
     }
 
+    func testQUICEarlyDataRejectionReopensTheRoomOfAStreamWithQueuedEarlyData() throws {
+        let ipv4Client = Endpoint(address: IPv4Address(SwiftNetworkQUICEarlyDataTests.localIPv4Address)!, port: 1234)
+        let ipv4Server = Endpoint(address: IPv4Address(SwiftNetworkQUICEarlyDataTests.localIPv4Address)!, port: 8080)
+        let serializedParameters = try? fakeTransportParameters.serialize(forEarlyData: true)
+        quicStackHandshake(
+            clientEndpoint: ipv4Client,
+            serverEndpoint: ipv4Server,
+            dataToSend: [UInt8](repeating: 0x5a, count: 64 * 1024),
+            acceptEarlyData: false,
+            resumedTransportParameters: serializedParameters,
+            expectRoomReopenedAfterRejection: true
+        )
+    }
+
     func testQUICExternalPSKWithEarlyDataNotAcceptedAutomaticResent() {
         let ipv4Client = Endpoint(address: IPv4Address(SwiftNetworkQUICEarlyDataTests.localIPv4Address)!, port: 1234)
         let ipv4Server = Endpoint(address: IPv4Address(SwiftNetworkQUICEarlyDataTests.localIPv4Address)!, port: 8080)
@@ -608,6 +659,41 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
             resumedTransportParameters: serializedParameters,
             resendRejectedEarlyDataAutomatically: true
         )
+    }
+
+    func testQUICServerClosesOnRetireConnectionIDInEarlyData() {
+        // RFC 9000 §12.5: RETIRE_CONNECTION_ID cannot be sent in 0-RTT packets (erratum 7365 fixes
+        // Table 3 to match), so the server treats one as a PROTOCOL_VIOLATION
+        let ipv4Client = Endpoint(address: IPv4Address(SwiftNetworkQUICEarlyDataTests.localIPv4Address)!, port: 1234)
+        let ipv4Server = Endpoint(address: IPv4Address(SwiftNetworkQUICEarlyDataTests.localIPv4Address)!, port: 8080)
+        let transportParameters = fakeTransportParameters
+        let serializedParameters = try? transportParameters.serialize(forEarlyData: true)
+        var serverConnection: QUICConnection?
+        quicStackHandshake(
+            clientEndpoint: ipv4Client,
+            serverEndpoint: ipv4Server,
+            dataToSend: Array("Hello World!".utf8),
+            resumedTransportParameters: serializedParameters,
+            expectFailure: true,
+            beforeFirstFlight: { client, server in
+                serverConnection = server
+                client.fromExternal { eventContext in
+                    // The client has no Handshake keys yet, so application data goes out in 0-RTT packets
+                    client.withPendingItems(for: .applicationData) {
+                        $0.addRetireConnectionID(FrameRetireConnectionID(sequence: 0))
+                    }
+                    client.sendFrames(in: &eventContext)
+                }
+            }
+        )
+        XCTAssertEqual(
+            serverConnection?.closeError?.code,
+            QUICTransportError.QUICTransportErrorCode.protocolViolation.rawValue,
+            "Server did not close on RETIRE_CONNECTION_ID in a 0-RTT packet"
+        )
+        // Processing the frame also fails with PROTOCOL_VIOLATION, so only the frame type shows that
+        // the 0-RTT check rejected it
+        XCTAssertEqual(serverConnection?.closeFrameType, .retireConnectionID)
     }
     #endif
 }

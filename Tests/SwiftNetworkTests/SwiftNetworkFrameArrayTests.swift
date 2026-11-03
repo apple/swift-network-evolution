@@ -26,6 +26,26 @@ final class SwiftNetworkFrameArrayTests: NetTestCase {
         XCTAssertEqual(array.count, 0)
     }
 
+    /// Finalizing an empty array is a no-op, and finalizing one with frames releases them all and
+    /// leaves it empty and usable.
+    func testFinalizeAllFramesAsFailed() {
+        var empty = FrameArray()
+        empty.finalizeAllFramesAsFailed()
+        XCTAssertTrue(empty.isEmpty)
+
+        var array = FrameArray(frame: Frame(count: 10))
+        array.add(frame: Frame(count: 20))
+        XCTAssertEqual(array.count, 2)
+        array.finalizeAllFramesAsFailed()
+        XCTAssertTrue(array.isEmpty)
+        XCTAssertEqual(array.count, 0)
+
+        array.add(frame: Frame(count: 5))
+        XCTAssertEqual(array.count, 1)
+        array.finalizeAllFramesAsFailed()
+        XCTAssertTrue(array.isEmpty)
+    }
+
     func testSingleFrameArray() {
         var array = FrameArray(frame: Frame(count: 10))
         XCTAssertFalse(array.isEmpty)
