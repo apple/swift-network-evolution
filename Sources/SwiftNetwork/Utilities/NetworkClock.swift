@@ -23,18 +23,7 @@
 @available(Network 0.1.0, *)
 #endif
 public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStringConvertible {
-    @inlinable
-    public private(set) var nanoseconds: Int64 {
-        set {
-            _nanoseconds = newValue
-        }
-        @inlinable get {
-            _nanoseconds
-        }
-    }
-
-    @usableFromInline
-    var _nanoseconds: Int64
+    public var nanoseconds: Int64
 
     // These are computed properties wrapping literals, and deliberately not
     // `static let`s. A `static let` becomes a lazily initialised global, so every
@@ -50,8 +39,8 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
     @inlinable static var nanosecondsPerDay: Int64 { 24 * nanosecondsPerHour }
 
     @inlinable
-    init(nanoseconds: Int64) {
-        self._nanoseconds = nanoseconds
+    public init(nanoseconds: Int64) {
+        self.nanoseconds = nanoseconds
     }
 
     public static var zero: NetworkDuration {
