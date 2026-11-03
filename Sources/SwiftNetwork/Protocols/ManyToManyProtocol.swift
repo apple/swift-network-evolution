@@ -344,6 +344,7 @@ public protocol MultiplexingPath: UpperProtocolHandler {
     init(parent: ParentProtocol, in eventContext: inout NetworkContext.EventContext)
     var pathIsPrimary: Bool { get set }
     var pathHasMigrationInfo: Bool { get set }
+    mutating func setEndpoints(local: Endpoint?, remote: Endpoint?)
     func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage
 }
 
@@ -483,6 +484,7 @@ extension ManyToManyProtocolHandler {
         let isFirstPath = multiplexingPaths.isEmpty
         if isFirstPath { newPath.pathIsPrimary = true }
         if path?.hasMigrationInfo == true { newPath.pathHasMigrationInfo = true }
+        newPath.setEndpoints(local: local, remote: remote)
         multiplexingPaths[newPath.pathIdentifier] = newPath
         let upperLinkage = newPath.asUpperLinkage()
         // Bind the lower protocol's upper side before announcing the path. Announcing it can take
@@ -2696,4 +2698,7 @@ open class MultiplexingDatagramPath<
     open func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage {
         .init()
     }
+
+    /// To be overridden by subclasses
+    open func setEndpoints(local: Endpoint?, remote: Endpoint?) {}
 }
