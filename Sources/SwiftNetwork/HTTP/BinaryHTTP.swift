@@ -219,6 +219,11 @@ struct BinaryHTTPProtocol: ~Copyable {
             }
         )
 
+        // RFC 9292 section 3.8: an encoder may omit the content, the trailers, and the zero-length
+        // terminators and padding that follow the headers of the final response. The control data and
+        // headers are required.
+        stream.allowTruncation()
+
         stream.jumpToState(.readingBodyChunks, if: { $0.type?.isIndeterminate ?? false })
 
         // Known length content
@@ -289,11 +294,20 @@ struct BinaryHTTPProtocol: ~Copyable {
     /// Parses one message out of `frames`, returning nil until the whole message has arrived.
     ///
     /// Zero padding that follows the message (RFC 9292 section 3.8) is consumed if it is already
-    /// buffered. Truncated messages are not supported, since the stream has no end-of-message signal.
+    /// buffered. A truncated message is only completed by `finish(frames:)`.
     deinit {
         // Release any content received for a message that never completed
         var partialState = (consume parser).takePartialValue()
         partialState.body.finalizeAllFramesAsFailed()
+    }
+
+    /// Completes the message when no more bytes will arrive, after `parse(from:)` returned nil.
+    ///
+    /// Succeeds if the message was truncated at a point RFC 9292 section 3.8 allows, treating the omitted
+    /// content, trailers and terminators as empty. Throws if the message was cut off anywhere else, and
+    /// returns nil if nothing of a message had arrived.
+    mutating func finish(frames: inout FrameArray) throws(DeserializationError) -> BinaryHTTPState? {
+        try parser.handleEndOfStream(&frames)
     }
 
     mutating func parse(from frames: inout FrameArray) throws(DeserializationError) -> BinaryHTTPState? {

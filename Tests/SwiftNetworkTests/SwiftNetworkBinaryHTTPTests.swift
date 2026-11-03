@@ -795,4 +795,250 @@ final class SwiftNetworkBinaryHTTPTests: NetTestCase {
             frames.finalizeAllFramesAsFailed()
         }
     }
+
+    // MARK: - Empty frames
+
+    func testEmptyFramesBetweenBytes() {
+        for shape in Self.shapes {
+            var message = Message(isRequest: shape.isRequest, isKnownLength: shape.isKnownLength)
+            message.headers = [("x-header", "h")]
+            message.body = Self.smallBody
+            message.trailers = [("x-trailer", "t")]
+            let bytes = Self.encode(message)
+
+            var parser = BinaryHTTPProtocol()
+            var frames = FrameArray()
+            var found = false
+            for (index, byte) in bytes.enumerated() where !found {
+                for _ in 0..<(index % 3) {
+                    frames.add(frames: FrameArray(frame: Frame(copyBuffer: [])))
+                }
+                frames.add(frames: FrameArray(frame: Frame(copyBuffer: [byte])))
+                switch attempt(&parser, &frames) {
+                case .message(var parsed):
+                    XCTAssertEqual(index, bytes.count - 1, "\(shape.name): parsed early")
+                    check(&parsed, against: message, feed: .chunks(1), line: #line)
+                    found = true
+                case .needMoreData: break
+                case .failed(let error): XCTFail("\(shape.name): \(error)")
+                }
+            }
+            XCTAssertTrue(found, "\(shape.name): no message")
+            frames.finalizeAllFramesAsFailed()
+        }
+    }
+
+    // MARK: - Truncation (RFC 9292 section 3.8)
+
+    func attemptFinish(_ parser: inout BinaryHTTPProtocol, _ frames: inout FrameArray) -> Outcome {
+        do {
+            if let parsed = try parser.finish(frames: &frames) {
+                return .message(parsed)
+            }
+            return .needMoreData
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    /// Feeds `bytes` in chunks, none of which may complete a message, then ends the stream.
+    func parseTruncated(_ bytes: [UInt8], chunkSize: Int, what: String, line: UInt = #line) -> Outcome {
+        var parser = BinaryHTTPProtocol()
+        var frames = FrameArray()
+        for chunk in Self.split(bytes, size: chunkSize) {
+            frames.add(frames: FrameArray(frame: Frame(copyBuffer: chunk)))
+            assertNeedsMoreData(&parser, &frames, what, line: line)
+        }
+        let outcome = attemptFinish(&parser, &frames)
+        frames.finalizeAllFramesAsFailed()
+        return outcome
+    }
+
+    /// The byte offsets where a message may be cut short, with what the decoder should produce for each.
+    func validTruncations(
+        of message: Message
+    ) -> [(offset: Int, body: [UInt8], trailers: [(String, String)])] {
+        var headersOnly = message
+        headersOnly.body = []
+        headersOnly.trailers = []
+        // Without the content and trailer sections (each a single zero byte)
+        let headersEnd = Self.encode(headersOnly).count - 2
+
+        var points: [(offset: Int, body: [UInt8], trailers: [(String, String)])] = [(headersEnd, [], [])]
+        var offset = headersEnd
+        if message.isKnownLength {
+            offset += Self.vi(message.body.count).count + message.body.count
+            points.append((offset, message.body, []))
+        } else {
+            var consumed = 0
+            while consumed < message.body.count {
+                let end = min(consumed + message.chunkSize, message.body.count)
+                offset += Self.vi(end - consumed).count + (end - consumed)
+                consumed = end
+                points.append((offset, Array(message.body[..<consumed]), []))
+            }
+            offset += 1  // Content terminator
+            points.append((offset, message.body, []))
+            for (index, trailer) in message.trailers.enumerated() {
+                offset += Self.lengthPrefixed(trailer.0).count + Self.lengthPrefixed(trailer.1).count
+                points.append((offset, message.body, Array(message.trailers[...index])))
+            }
+        }
+        // The same offset can be listed twice, such as when content is empty
+        var unique: [(offset: Int, body: [UInt8], trailers: [(String, String)])] = []
+        for point in points {
+            if let existing = unique.firstIndex(where: { $0.offset == point.offset }) {
+                unique[existing] = point
+            } else {
+                unique.append(point)
+            }
+        }
+        return unique
+    }
+
+    func testTruncationAtEveryOffset() {
+        for shape in Self.shapes {
+            var message = Message(isRequest: shape.isRequest, isKnownLength: shape.isKnownLength)
+            message.informational = shape.isRequest ? [] : [(103, [("link", "a")])]
+            message.headers = Self.manyFields(2, prefix: "x-header")
+            message.body = Self.body(25)
+            message.chunkSize = 10
+            message.trailers = Self.manyFields(3, prefix: "x-trailer")
+            let bytes = Self.encode(message)
+            let valid = validTruncations(of: message)
+
+            for chunkSize in [bytes.count, 1] {
+                for cut in 1..<bytes.count {
+                    let what = "\(shape.name) cut \(cut) of \(bytes.count), chunks \(chunkSize)"
+                    let outcome = parseTruncated(Array(bytes[..<cut]), chunkSize: chunkSize, what: what)
+                    let expectation = valid.first(where: { $0.offset == cut })
+                    switch outcome {
+                    case .message(var parsed):
+                        if let expectation {
+                            var expected = message
+                            expected.body = expectation.body
+                            expected.trailers = expectation.trailers
+                            check(&parsed, against: expected, feed: .chunks(chunkSize), line: #line)
+                        } else {
+                            XCTFail("\(what): should be invalid")
+                            parsed.body.finalizeAllFramesAsFailed()
+                        }
+                    case .needMoreData:
+                        XCTFail("\(what): neither completed nor failed")
+                    case .failed:
+                        // Cut short inside an element or before the headers ended
+                        XCTAssertNil(expectation, "\(what): should complete")
+                    }
+                }
+            }
+        }
+    }
+
+    func testTruncatedEmptyContentAndTrailers() {
+        for shape in Self.shapes {
+            for body in [[], Self.smallBody] {
+                var message = Message(isRequest: shape.isRequest, isKnownLength: shape.isKnownLength)
+                message.headers = [("x-header", "h")]
+                message.body = body
+                let bytes = Self.encode(message)
+                // An encoder may drop the trailer section, and the content section when it is also empty
+                let droppable = body.isEmpty ? 2 : 1
+                for dropped in 1...droppable {
+                    let what = "\(shape.name) body \(body.count) dropped \(dropped)"
+                    guard case .message(var parsed) = parseTruncated(
+                        Array(bytes.dropLast(dropped)),
+                        chunkSize: 3,
+                        what: what
+                    ) else {
+                        XCTFail("\(what): should complete")
+                        continue
+                    }
+                    check(&parsed, against: message, feed: .chunks(3), line: #line)
+                }
+            }
+        }
+    }
+
+    func testTruncationAfterIndeterminateTrailerFieldDropsTerminator() {
+        var message = Message(isRequest: false, isKnownLength: false)
+        message.trailers = [("x-trailer", "t")]
+        let bytes = Self.encode(message)
+        guard case .message(var parsed) = parseTruncated(Array(bytes.dropLast()), chunkSize: 4, what: "trailer") else {
+            XCTFail("Should complete")
+            return
+        }
+        check(&parsed, against: message, feed: .chunks(4), line: #line)
+    }
+
+    func testTruncationInsideKnownLengthTrailersFails() {
+        var message = Message(isRequest: true, isKnownLength: true)
+        message.trailers = [("x-trailer", "t")]
+        let bytes = Self.encode(message)
+        // Dropping the whole trailer section would be fine, but not part of it
+        for dropped in 1..<(Self.fieldLines(message.trailers).count + 1) {
+            guard case .failed = parseTruncated(Array(bytes.dropLast(dropped)), chunkSize: 5, what: "dropped \(dropped)")
+            else {
+                XCTFail("Dropping \(dropped) bytes should be invalid")
+                continue
+            }
+        }
+    }
+
+    func testTruncationBeforeFinalResponseFails() {
+        for known in [true, false] {
+            var message = Message(isRequest: false, isKnownLength: known)
+            message.informational = [(103, [("link", "a")])]
+            let bytes = Self.encode(message)
+            // Cut right after the informational response, before the final status
+            let cut = 1 + Self.vi(103).count + Self.fieldSection(message.informational[0].headers, knownLength: known).count
+            guard case .failed = parseTruncated(Array(bytes[..<cut]), chunkSize: 4, what: "informational only") else {
+                XCTFail("A response with only informational responses is incomplete, known: \(known)")
+                continue
+            }
+        }
+    }
+
+    func testTruncatedMessageThenPadding() {
+        // Zero padding after a truncation is indistinguishable from the omitted zero elements
+        var message = Message(isRequest: true, isKnownLength: true)
+        message.headers = [("x-header", "h")]
+        let bytes = Self.encode(message).dropLast(2) + [UInt8](repeating: 0, count: 5)
+        var parser = BinaryHTTPProtocol()
+        var frames = FrameArray(frame: Frame(copyBuffer: Array(bytes)))
+        switch attempt(&parser, &frames) {
+        case .message(var parsed): check(&parsed, against: message, feed: .allAtOnce, line: #line)
+        case .needMoreData: XCTFail("Zero padding should complete the message")
+        case .failed(let error): XCTFail("\(error)")
+        }
+        frames.finalizeAllFramesAsFailed()
+    }
+
+    func testEndOfStreamWithNothingReceived() {
+        var parser = BinaryHTTPProtocol()
+        var frames = FrameArray()
+        switch attemptFinish(&parser, &frames) {
+        case .message(var parsed):
+            XCTFail("There is no message")
+            parsed.body.finalizeAllFramesAsFailed()
+        case .needMoreData: break
+        case .failed(let error): XCTFail("An empty stream is not an error: \(error)")
+        }
+    }
+
+    func testEndOfStreamAfterCompleteMessageHasNothingToFinish() {
+        var parser = BinaryHTTPProtocol()
+        var frames = FrameArray(frame: Frame(copyBuffer: Self.encode(Message(isRequest: true, isKnownLength: true))))
+        switch attempt(&parser, &frames) {
+        case .message(var parsed): parsed.body.finalizeAllFramesAsFailed()
+        default: XCTFail("Should parse")
+        }
+        switch attemptFinish(&parser, &frames) {
+        case .message(var parsed):
+            XCTFail("There is no second message")
+            parsed.body.finalizeAllFramesAsFailed()
+        case .needMoreData: break
+        case .failed(let error): XCTFail("\(error)")
+        }
+        frames.finalizeAllFramesAsFailed()
+    }
 }

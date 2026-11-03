@@ -143,17 +143,15 @@ public struct FrameArraySpanFactory: ~Copyable, ~Escapable, DeserializerSpanFact
 
     @_lifetime(&self)
     public mutating func nextSpan() -> RawSpan? {
-        // Check if we're out of spans
-        guard spanIndex < spanCount else {
-            return nil
+        // Frames without bytes are skipped, rather than ending the walk early
+        while spanIndex < spanCount {
+            let currentIndex = spanIndex
+            spanIndex += 1
+            if let span = frameArray.bytes(at: currentIndex) {
+                return _overrideLifetime(span, borrowing: self)
+            }
         }
-
-        let currentIndex = spanIndex
-
-        // Advance to the next span
-        spanIndex += 1
-
-        return _overrideLifetime(frameArray.bytes(at: currentIndex), borrowing: self)
+        return nil
     }
 }
 
