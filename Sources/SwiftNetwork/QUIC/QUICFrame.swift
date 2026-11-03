@@ -1439,7 +1439,7 @@ struct FrameCrypto: ~Copyable, QUICFrameProtocol {
     private(set) var offset: UInt64 = 0
     private(set) var length = 0
 
-    var frame = Frame()
+    var frame = FramePayload()
 
     static func parse(
         frame: inout Frame,
@@ -1466,7 +1466,7 @@ struct FrameCrypto: ~Copyable, QUICFrameProtocol {
         self.offset = offset
         self.length = data.count
         if self.length > 0 {
-            self.frame = Frame(copyBuffer: data)
+            self.frame = FramePayload(frame: Frame(copyBuffer: data))
         }
     }
 
@@ -1509,24 +1509,12 @@ struct FrameCrypto: ~Copyable, QUICFrameProtocol {
 
         self.length = cryptoLength
 
-        if shouldCopyBytes {
-            self.frame = Frame(count: cryptoLength)
-            let bytesCopied = frame.copyInto(&self.frame, length: cryptoLength)
-
-            // Claim from the start of the original frame
-            guard frame.claim(fromStart: cryptoLength), bytesCopied == cryptoLength else {
-
-                // If this fails, discard our local copy
-                self.frame.finalize(success: false)
-
-                throw QUICError.frameParse(FrameParseError.parsingError)
-            }
-        } else {
-            // Consume the frame, and clear the passed-in frame
-            self.frame = frame
-            frame = .init()
+        // A view of the packet's bytes, or, when they cannot be shared, a copy (when more of the
+        // packet follows) or the packet's frame itself, which is left empty.
+        guard let payload = FramePayload.extract(from: &frame, length: cryptoLength, copy: shouldCopyBytes) else {
+            throw QUICError.frameParse(FrameParseError.parsingError)
         }
-        self.frame.takeOwnershipOfBytes()
+        self.frame = payload
 
         FrameCrypto.updateStats(
             isRx: true,
@@ -1971,7 +1959,7 @@ struct FrameStreamReceived: ~Copyable, QUICFrameProtocol {
     private(set) var offset: UInt64 = 0
     private(set) var length: Int = 0
 
-    var frame = Frame()
+    var frame = FramePayload()
 
     private(set) var isFinal: Bool = false
 
@@ -1993,7 +1981,7 @@ struct FrameStreamReceived: ~Copyable, QUICFrameProtocol {
         self.offset = offset
         self.length = data.count
         if self.length > 0 {
-            self.frame = Frame(copyBuffer: data)
+            self.frame = FramePayload(frame: Frame(copyBuffer: data))
         }
         self.isFinal = isFinal
 
@@ -2061,24 +2049,12 @@ struct FrameStreamReceived: ~Copyable, QUICFrameProtocol {
         self.id = streamID
         self.offset = offset
         self.length = streamLength
-        if shouldCopyBytes {
-            self.frame = Frame(count: streamLength)
-            let bytesCopied = frame.copyInto(&self.frame, length: streamLength)
-
-            // Claim from the start of the original frame
-            guard frame.claim(fromStart: streamLength), bytesCopied == streamLength else {
-
-                // If this fails, discard our local copy
-                self.frame.finalize(success: false)
-
-                throw QUICError.frameParse(FrameParseError.parsingError)
-            }
-        } else {
-            // Consume the frame, and clear the passed-in frame
-            self.frame = frame
-            frame = .init()
+        // A view of the packet's bytes, or, when they cannot be shared, a copy (when more of the
+        // packet follows) or the packet's frame itself, which is left empty.
+        guard let payload = FramePayload.extract(from: &frame, length: streamLength, copy: shouldCopyBytes) else {
+            throw QUICError.frameParse(FrameParseError.parsingError)
         }
-        self.frame.takeOwnershipOfBytes()
+        self.frame = payload
     }
 
     static private func hasOffset(_ rawType: UInt64) -> Bool {
@@ -3044,7 +3020,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
     private(set) var contextID: UInt64?
     private(set) var length: Int = 0
 
-    var frame = Frame()
+    var frame = FramePayload()
 
     static func length(dataLength: UInt64, flowID: UInt64?, contextID: UInt64?) -> UInt64 {
         var length = dataLength
@@ -3096,7 +3072,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         self.contextID = contextID
         self.length = data.count
         if self.length > 0 {
-            self.frame = Frame(copyBuffer: data)
+            self.frame = FramePayload(frame: Frame(copyBuffer: data))
         }
         if let flowID {
             self.flowID = flowID & ~Constants.streamIDDatagramMask
@@ -3195,24 +3171,19 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
 
         self.length = datagramLength
 
-        if shouldCopyBytes {
-            self.frame = Frame(count: datagramLength)
-            let bytesCopied = frame.copyInto(&self.frame, length: datagramLength)
-
-            // Claim from the start of the original frame
-            guard frame.claim(fromStart: datagramLength), bytesCopied == datagramLength else {
-
-                // If this fails, discard our local copy
-                self.frame.finalize(success: false)
-
-                throw QUICError.frameParse(FrameParseError.parsingError)
-            }
-        } else {
-            // Consume the frame, and clear the passed-in frame
-            self.frame = frame
-            frame = .init()
+        // A datagram that ends the packet is the packet's frame itself, with what it carries (its
+        // receive time and IP values): the application is told about those.
+        guard
+            let payload = FramePayload.extract(
+                from: &frame,
+                length: datagramLength,
+                copy: shouldCopyBytes,
+                preservingMetadata: true
+            )
+        else {
+            throw QUICError.frameParse(FrameParseError.parsingError)
         }
-        self.frame.takeOwnershipOfBytes()
+        self.frame = payload
 
         if hasLength {
             stats.increment(.rxDatagramFrameWithLength)

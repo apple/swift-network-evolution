@@ -237,6 +237,17 @@ public struct Frame: ~Copyable {
         }
     }
 
+    /// The object that owns the frame's storage, if it is shared (a custom owner): a view of the
+    /// storage that keeps this object keeps the storage alive.
+    var sharedOwner: AnyObject? {
+        switch buffer {
+        case .customOwner(_, let owner):
+            return owner
+        default:
+            return nil
+        }
+    }
+
     // Only unclaimed bytes in frame, for unsafe types
     @usableFromInline
     var unsafeUnclaimedBuffer: UnsafeMutableRawBufferPointer? {

@@ -606,7 +606,7 @@ extension QUICCrypto: TopStreamProtocol {
         }
 
         reassemblyQueue.append(
-            frame: cryptoFrame.frame,
+            frame: cryptoFrame.frame.takeFrame(),
             offset: Int(cryptoFrame.offset),
             fin: false
         )

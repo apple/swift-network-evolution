@@ -827,7 +827,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
             // so does not represent a problem in 64bit systems.
             guard
                 let appendResult = receive.tryAppend(
-                    frame: frame.frame,
+                    frame: frame.frame.takeFrame(),
                     offset: Int(frame.offset),
                     fin: frame.isFinal,
                     maximumUnreadInboundBytesAllowed: maximumUnreadInboundBytesAllowed

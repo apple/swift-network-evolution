@@ -7143,7 +7143,7 @@ extension QUICConnection {
             return false
         }
 
-        var frame = frame.frame
+        var frame = frame.frame.takeFrame()
         frame.metadataComplete = true
         try? deliverInboundDatagrams(
             flow: matchingFlowIdentifier,

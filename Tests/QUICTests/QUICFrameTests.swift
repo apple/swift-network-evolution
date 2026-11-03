@@ -39,24 +39,21 @@ extension Frame {
 @available(Network 0.1.0, *)
 extension FrameCrypto {
     fileprivate var data: [UInt8] {
-        guard let span = frame.span else { return [] }
-        return .init(copying: span, maxCount: span.count)
+        frame.copyBytes()
     }
 }
 
 @available(Network 0.1.0, *)
 extension FrameStreamReceived {
     fileprivate var data: [UInt8] {
-        guard let span = frame.span else { return [] }
-        return .init(copying: span, maxCount: span.count)
+        frame.copyBytes()
     }
 }
 
 @available(Network 0.1.0, *)
 extension FrameDatagram {
     fileprivate var data: [UInt8] {
-        guard let span = frame.span else { return [] }
-        return .init(copying: span, maxCount: span.count)
+        frame.copyBytes()
     }
 }
 
