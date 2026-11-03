@@ -1432,23 +1432,26 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             let packetNumberSpace =
                 !connection.receivedHandshakePacket
                 ? PacketNumberSpace.initial : PacketNumberSpace.applicationData
-            connection.withPendingItems(for: packetNumberSpace) { item in
-                item.ping = true
-            }
-
             sentPTO = true
 
-            withMutableInnerState(packetNumberSpace: packetNumberSpace) { innerState in
-                let packets = connection.sendFramesFromRecovery(
-                    on: path,
-                    ignoreCongestionWindow: true,
-                    discardInitialRecoveryState: &discardInitialRecoveryState,
-                    in: &eventContext
-                )
-                if !innerState.recordSentPackets(packets, connection: connection) {
-                    connection.log.datapath(
-                        "Unable to force send PTOs, likely flow-controlled or unavailable"
+            // Two probes, as the retransmission this replaces sent two packets.
+            let probeCount = connection.probesWithPing ? 2 : 1
+            for _ in 0..<probeCount {
+                connection.withPendingItems(for: packetNumberSpace) { item in
+                    item.ping = true
+                }
+                withMutableInnerState(packetNumberSpace: packetNumberSpace) { innerState in
+                    let packets = connection.sendFramesFromRecovery(
+                        on: path,
+                        ignoreCongestionWindow: true,
+                        discardInitialRecoveryState: &discardInitialRecoveryState,
+                        in: &eventContext
                     )
+                    if !innerState.recordSentPackets(packets, connection: connection) {
+                        connection.log.datapath(
+                            "Unable to force send PTOs, likely flow-controlled or unavailable"
+                        )
+                    }
                 }
             }
         }
