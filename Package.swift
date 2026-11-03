@@ -112,6 +112,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-collections.git", .upToNextMinor(from: "1.6.0")),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "5.0.0-beta.1"),
         .package(url: "https://github.com/apple/swift-tls.git", .upToNextMinor(from: "0.2.0")),
+        .package(url: "https://github.com/apple/swift-http-types.git", from: "1.8.0"),
     ],
     targets: [
         .target(
@@ -124,6 +125,8 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "CryptoExtras", package: "swift-crypto"),
                 .product(name: "SwiftTLS", package: "swift-tls"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+
             ],
             swiftSettings: availabilityMacros + settings + [
                 // Fuzzers need testable imports.
