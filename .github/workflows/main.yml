@@ -12,7 +12,7 @@ on:
 jobs:
   tests:
     name: Test
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.16
+    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.17
     with:
       swift_flags: "-Xswiftc -warnings-as-errors"
       swift_nightly_flags: "-Xswiftc -warnings-as-errors"
@@ -34,7 +34,7 @@ jobs:
       enable_linux_static_sdk_build: true
   tests-real-time:
     name: Test (real time)
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.15
+    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.17
     with:
       swift_flags: "-Xswiftc -warnings-as-errors -Xswiftc -DSWIFT_NETWORK_TEST_REAL_TIME"
       swift_nightly_flags: "-Xswiftc -warnings-as-errors -Xswiftc -DSWIFT_NETWORK_TEST_REAL_TIME"
@@ -53,7 +53,7 @@ jobs:
   tests-nightly-main:
     # Keep this separate so that it can be disabled if the nightly compiler shows any issue.
     name: Test (nightly-main)
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.16
+    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.17
     with:
       swift_nightly_flags: "-Xswiftc -warnings-as-errors"
       enable_linux_checks: true
