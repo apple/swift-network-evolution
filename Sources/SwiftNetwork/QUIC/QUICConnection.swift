@@ -7634,6 +7634,16 @@ extension QUICConnection {
     }
 }
 
+// MARK: Test support
+
+@available(Network 0.1.0, *)
+extension QUICConnection {
+    /// Disables active migration on a connection built outside a protocol stack, for tests only.
+    func disableActiveMigrationFromExternalTest() {
+        migration.disableActiveMigration()
+    }
+}
+
 #else
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
