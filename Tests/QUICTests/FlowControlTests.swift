@@ -225,15 +225,15 @@ final class FlowControlTests: XCTestCase {
         }
     }
 
-    func testOutboundTargetIsCappedAtHighWaterMarkMax() {
+    func testOutboundTargetIsCappedAtQueueLimit() {
         // A level nothing limits must not overflow when the headroom is added, and must stop at the
-        // maximum; otherwise a writer could queue without bound.
+        // limit; otherwise a writer could queue without bound.
         XCTAssertEqual(
             FlowControlState.outboundTarget(
                 allowedBytes: .max,
                 headroom: 12_000,
-                highWaterMarkMin: 12_000,
-                highWaterMarkMax: 50 * 1024
+                guaranteedQueueLength: 12_000,
+                queueLimit: 50 * 1024
             ),
             50 * 1024
         )
@@ -244,36 +244,38 @@ final class FlowControlTests: XCTestCase {
             FlowControlState.outboundTarget(
                 allowedBytes: 10_000,
                 headroom: 12_000,
-                highWaterMarkMin: 12_000,
-                highWaterMarkMax: 50 * 1024
+                guaranteedQueueLength: 12_000,
+                queueLimit: 50 * 1024
             ),
             22_000
         )
     }
 
-    func testOutboundTargetIsNeverBelowHighWaterMarkMin() {
-        // The headroom alone does not lift the target to the minimum; otherwise a writer could be
-        // held back for less than the minimum.
+    func testOutboundTargetIsNeverBelowGuaranteedQueueLength() {
+        // The headroom alone does not lift the target to the guarantee; otherwise a writer could
+        // be held back for less than the guarantee.
         XCTAssertEqual(
             FlowControlState.outboundTarget(
                 allowedBytes: 1000,
                 headroom: 2000,
-                highWaterMarkMin: 12_000,
-                highWaterMarkMax: 50 * 1024
+                guaranteedQueueLength: 12_000,
+                queueLimit: 50 * 1024
             ),
             12_000
         )
     }
 
-    func testOutboundTargetMinimumWinsOverMaximumBelowIt() {
-        // A maximum below the minimum must not shrink the target below it; otherwise a writer
-        // could be held back for less than the minimum.
+    func testGuaranteedQueueLengthWinsOverSmallerConfiguredQueueLimit() {
+        // A configured limit below the guarantee must not shrink the room below it; otherwise a
+        // writer could be held back for less than a few packets.
+        var state = FlowControlState(isStream: true)
+        state.initializeMaxDataValues(remoteMaxData: 8_000_000, localMaxData: 0)
         XCTAssertEqual(
-            FlowControlState.outboundTarget(
-                allowedBytes: 10_000,
+            state.outboundRoomAvailable(
+                congestionWindow: nil,
                 headroom: 12_000,
-                highWaterMarkMin: 12_000,
-                highWaterMarkMax: 1000
+                guaranteedQueueLength: 12_000,
+                configuredQueueLimit: 1000
             ),
             12_000
         )

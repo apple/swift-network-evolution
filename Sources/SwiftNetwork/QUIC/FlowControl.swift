@@ -277,40 +277,47 @@ struct FlowControlState: ~Copyable {
     /// The number of pending bytes at which no more should be queued.
     ///
     /// The target is the bytes the peer's limit and the congestion window let this level send, plus
-    /// `headroom` so that a writer is not held back for less than that. It is capped at
-    /// `highWaterMarkMax`, but never below `highWaterMarkMin`.
+    /// `headroom` so that a writer is not held back for less than that. It never exceeds
+    /// `queueLimit` and never falls below `guaranteedQueueLength`, which therefore must not exceed
+    /// `queueLimit`.
     static func outboundTarget(
         allowedBytes: UInt64,
         headroom: UInt64,
-        highWaterMarkMin: UInt64,
-        highWaterMarkMax: UInt64
+        guaranteedQueueLength: UInt64,
+        queueLimit: UInt64
     ) -> UInt64 {
-        let ceiling = max(highWaterMarkMax, highWaterMarkMin)
+        assert(queueLimit >= guaranteedQueueLength)
         // Capping the allowance first keeps the sum from overflowing when nothing limits it.
-        let target = min(allowedBytes, ceiling) + headroom
-        return min(max(target, highWaterMarkMin), ceiling)
+        let target = min(allowedBytes, queueLimit) + headroom
+        return min(max(target, guaranteedQueueLength), queueLimit)
     }
 
     /// How many more bytes can be queued before the pending bytes reach the target.
     ///
     /// `congestionWindow` is `nil` for a level the congestion window does not limit. There is no
     /// room while the peer's limit is below the bytes already sent.
+    ///
+    /// `guaranteedQueueLength` is how much a writer can always queue, and `configuredQueueLimit` is
+    /// the most that is allowed to be queued. The limit comes from configuration and the guarantee
+    /// from the path, so the limit can be the smaller; the guarantee then wins, as otherwise a
+    /// writer could be held back for less than a few packets.
     func outboundRoomAvailable(
         congestionWindow: UInt64?,
         headroom: UInt64,
-        highWaterMarkMin: UInt64,
-        highWaterMarkMax: UInt64
+        guaranteedQueueLength: UInt64,
+        configuredQueueLimit: UInt64
     ) -> UInt64 {
         if self.outboundMaxData < self.totalOutboundBytesSent {
             return 0
         }
 
+        let queueLimit = max(configuredQueueLimit, guaranteedQueueLength)
         let peerAllowance = self.outboundMaxData - self.totalOutboundBytesSent
         let target = Self.outboundTarget(
             allowedBytes: min(peerAllowance, congestionWindow ?? .max),
             headroom: headroom,
-            highWaterMarkMin: highWaterMarkMin,
-            highWaterMarkMax: highWaterMarkMax
+            guaranteedQueueLength: guaranteedQueueLength,
+            queueLimit: queueLimit
         )
         if self.pendingOutboundBytesToSend >= target {
             return 0
@@ -682,18 +689,18 @@ extension QUICStreamInstance {
             return
         }
 
-        let queuedPacketsAllowance = FlowControlGlobals.sendQueueFactor * minMSS
+        let guaranteedQueueLength = FlowControlGlobals.sendQueueFactor * minMSS
         let connectionRoom = connection.flowControlState.outboundRoomAvailable(
             congestionWindow: allowedCCWindow,
-            headroom: queuedPacketsAllowance,
-            highWaterMarkMin: queuedPacketsAllowance,
-            highWaterMarkMax: UInt64(clamping: FlowControlGlobals.shared.connectionSendHighWaterMarkMax)
+            headroom: guaranteedQueueLength,
+            guaranteedQueueLength: guaranteedQueueLength,
+            configuredQueueLimit: UInt64(clamping: FlowControlGlobals.shared.connectionSendHighWaterMarkMax)
         )
         let streamRoom = self.flowControlState.outboundRoomAvailable(
             congestionWindow: nil,
-            headroom: queuedPacketsAllowance,
-            highWaterMarkMin: queuedPacketsAllowance,
-            highWaterMarkMax: UInt64(clamping: FlowControlGlobals.shared.streamSendHighWaterMarkMax)
+            headroom: guaranteedQueueLength,
+            guaranteedQueueLength: guaranteedQueueLength,
+            configuredQueueLimit: UInt64(clamping: FlowControlGlobals.shared.streamSendHighWaterMarkMax)
         )
 
         // Sending its own bytes is what reopens a stream's room, so a stream with nothing queued
