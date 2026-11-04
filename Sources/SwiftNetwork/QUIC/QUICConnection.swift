@@ -3173,6 +3173,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         knownFlows.removeAll()
         // A stream still queued for a room-available notification is not going to get one, and the
         // queue holds the stream, which names this connection as its parent.
+        // Streams waiting for room are not going to get it either, and a stream must not keep a
+        // list membership for a list that has been emptied.
+        let awaitingMembership = streamsAwaitingOutboundRoom.membership
+        while let flowID = streamsAwaitingOutboundRoom.removeFirstIdentifier() {
+            withFlow(flowID) { (stream: inout Flow) in
+                stream.listMembership.remove(awaitingMembership)
+            }
+        }
+        for flowID in streamsWithReopenedOutboundRoom {
+            withFlow(flowID) { (stream: inout Flow) in
+                stream.listMembership.remove(.reopenedOutboundRoom)
+            }
+        }
         streamsWithReopenedOutboundRoom.removeAll()
         localTransportParameters.removeAll()
         remoteTransportParameters?.removeAll()

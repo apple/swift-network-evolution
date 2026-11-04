@@ -302,6 +302,21 @@ final class FlowControlTests: XCTestCase {
         }
     }
 
+    func testClosingTheConnectionForgetsStreamsAwaitingOutboundRoom() {
+        withOutboundStream { connection, stream, _ in
+            connection.awaitOutboundRoom(of: &stream)
+            XCTAssertFalse(connection.streamsAwaitingOutboundRoom.isEmpty)
+
+            connection.fromExternal { eventContext in
+                connection.close(sendCloseFrame: false, in: &eventContext)
+            }
+
+            // A stream woken after the connection has closed would be told about room it can
+            // never use.
+            XCTAssertTrue(connection.streamsAwaitingOutboundRoom.isEmpty)
+        }
+    }
+
     func testSendPermitReopensAfterDrainWithoutMaxStreamData() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let selected = TestClockContext("test context")
