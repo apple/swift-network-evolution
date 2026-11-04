@@ -29,13 +29,90 @@ internal import os
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public final class QUICDatagramFlow: MultiplexedDatagramFlow<QUICConnection, BaseInboundDatagramLinkage> {
+public struct QUICDatagramFlow: ~Copyable, AutomaticUpperDatagramProcessing, MultiplexedDatapathFlow {
+    public typealias ParentProtocol = QUICConnection
+    public typealias UpperProtocol = BaseInboundDatagramLinkage
+
+    // The generic datagram flow: identity, upper linkage and the queues shared with the application.
+    // A QUIC datagram flow lives inline in its connection's secondary flow table, so nothing here is
+    // reference counted.
+    @usableFromInline
+    var base: MultiplexedDatagramFlow<QUICConnection, BaseInboundDatagramLinkage>
+
     private(set) var flowID: UInt64?
     private(set) var contextID: UInt64?
     var applicationMarkedIdle: Bool = false
 
-    override public func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {
-        BaseOutboundDatagramLinkage(quicDatagramFlow: self)
+    public init(parent: QUICConnection, inbound: Bool) {
+        base = MultiplexedDatagramFlow(parent: parent, inbound: inbound)
+    }
+
+    public init(parent: QUICConnection, inbound: Bool, in eventContext: inout NetworkContext.EventContext) {
+        base = MultiplexedDatagramFlow(parent: parent, inbound: inbound, in: &eventContext)
+    }
+
+    // MARK: Forwarded flow state
+
+    public var parentProtocol: QUICConnection {
+        @inline(always) get { base.parentProtocol }
+        @inline(always) set { base.parentProtocol = newValue }
+    }
+    public var upper: BaseInboundDatagramLinkage {
+        @inline(always) get { base.upper }
+        @inline(always) set { base.upper = newValue }
+    }
+    public var eventManager: ProtocolEventManager {
+        @inline(always) _read { yield base.eventManager }
+        @inline(always) _modify { yield &base.eventManager }
+    }
+    public var log: NetworkLoggerState {
+        @inline(always) _read { yield base.log }
+        @inline(always) _modify { yield &base.log }
+    }
+    public var upperSendQueue: FrameArray {
+        @inline(always) _read { yield base.upperSendQueue }
+        @inline(always) _modify { yield &base.upperSendQueue }
+    }
+    public var upperReceiveQueue: FrameArray {
+        @inline(always) _read { yield base.upperReceiveQueue }
+        @inline(always) _modify { yield &base.upperReceiveQueue }
+    }
+    public var maximumUpperDatagramSize: Int {
+        @inline(always) get { base.maximumUpperDatagramSize }
+        @inline(always) set { base.maximumUpperDatagramSize = newValue }
+    }
+    public var blockUpperSendQueue: Bool {
+        @inline(always) get { base.blockUpperSendQueue }
+        @inline(always) set { base.blockUpperSendQueue = newValue }
+    }
+    public var flowIdentifier: MultiplexedFlowIdentifier {
+        @inline(always) get { base.flowIdentifier }
+    }
+    public var identifier: InstanceIdentifier {
+        @inline(always) get { base.identifier }
+        @inline(always) set { base.identifier = newValue }
+    }
+
+    public func drainQueuedEventsForUpperProtocol(in eventContext: inout NetworkContext.EventContext) {
+        base.drainQueuedEventsForUpperProtocol(in: &eventContext)
+    }
+
+    // The flow is borrowed from the connection's secondary flow table while this runs, so the
+    // connection cannot look the flow up again. Sending frames is held back until the borrow ends.
+    public mutating func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext) {
+        parentProtocol.serviceDatagramsToSend(
+            borrowedFlow: flowIdentifier,
+            sendQueue: &upperSendQueue,
+            in: &eventContext
+        )
+    }
+
+    public func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {
+        BaseOutboundDatagramLinkage(
+            quicConnection: parentProtocol,
+            datagramFlow: flowIdentifier,
+            identifier: identifier
+        )
     }
 
     var usableDatagramSize: Int {
@@ -43,7 +120,7 @@ public final class QUICDatagramFlow: MultiplexedDatagramFlow<QUICConnection, Bas
         set { maximumUpperDatagramSize = newValue }
     }
 
-    func setup(
+    mutating func setup(
         datagramFlowID: UInt64? = nil,
         contextID: UInt64? = nil,
         logPrefixer: LogPrefixer
@@ -62,7 +139,7 @@ public final class QUICDatagramFlow: MultiplexedDatagramFlow<QUICConnection, Bas
         return (associatedStreamID / 4)
     }
 
-    func updateUsableDatagramFrameSize(
+    mutating func updateUsableDatagramFrameSize(
         connection: QUICConnection,
         path: QUICPath
     ) {
