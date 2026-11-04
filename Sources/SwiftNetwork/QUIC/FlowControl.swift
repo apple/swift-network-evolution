@@ -647,13 +647,15 @@ extension QUICStreamInstance {
     /// The room the application has for more stream data, computed now because it depends on
     /// state that changes without this stream being involved. A stream reporting no room is
     /// remembered by the connection until room returns.
-    mutating func recomputedOutboundRoomAvailable(
+    public mutating func getOutboundStreamDataRoomAvailable(
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> Int {
+        do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
+        guard isConnected(in: &eventContext) else { throw NetworkError.posix(ENOTCONN) }
         let connection = self.parentProtocol
         self.updateOutboundFlowControlCredit(connection: connection)
-        let room = try self.getOutboundStreamDataRoomAvailable(for: instance, in: &eventContext)
+        let room = try self.getOutboundStreamDataRoomAvailable(in: &eventContext)
         if room == 0 {
             connection.awaitOutboundRoom(of: &self)
         }

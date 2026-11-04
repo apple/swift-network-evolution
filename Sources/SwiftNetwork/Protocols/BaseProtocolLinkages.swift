@@ -1845,7 +1845,7 @@ public struct BaseOutboundStreamLinkage: OutboundStreamLinkage {
             let connection = storage!.quicInstances[index]
             return try connection.performOnStream(flowID, in: &eventContext) {
                 (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) throws(NetworkError) in
-                try stream.recomputedOutboundRoomAvailable(for: instance, in: &ctx)
+                try stream.getOutboundStreamDataRoomAvailable(for: instance, in: &ctx)
             } ?? 0
         #endif
         #if HAS_SWIFTTLS_RECORD && IMPORT_SWIFTTLS && canImport(SwiftTLS)
