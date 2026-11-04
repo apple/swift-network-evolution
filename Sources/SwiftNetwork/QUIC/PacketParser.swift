@@ -73,7 +73,8 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
     // Drain any frames which haven't been processed, finalizing the ones holding
     // borrowed buffers so that they aren't leaked.
     mutating func cleanupReceivedFrames() {
-        while let receivedFrame = self.framesReceived.popFirst() {
+        while !self.framesReceived.isEmpty {
+            let receivedFrame = self.framesReceived.removeFirst()
             switch receivedFrame {
             case .crypto(var frame):
                 frame.frame.finalize(success: false)
@@ -816,6 +817,15 @@ extension Deserializer where Factory: ~Escapable {
             try invalidate(.parsingFailed)
         }
         var mutableBytes = value.mutableSpan
+        // The default connection ID length is 8 bytes, which fits a single unaligned load and store.
+        // Fast path to avoid a variable-length memmove for every packet received.
+        if length == MemoryLayout<UInt64>.size, hasRoom(length) {
+            let bytes = currentSpan.unsafeLoadUnaligned(fromByteOffset: cursor, as: UInt64.self)
+            var destination = mutableBytes.mutableBytes
+            destination.storeBytes(of: bytes, toByteOffset: 0, as: UInt64.self)
+            moveCursorUnchecked(length)
+            return
+        }
         try self.span(&mutableBytes, length: length)
     }
 }

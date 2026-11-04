@@ -1901,6 +1901,8 @@ enum PrioritizedSendableItems: CaseIterable {
         }
     }
 
+    // Inline for compilation with (-Osize)
+    @inline(always)
     func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         switch self {
         case .datagram:
