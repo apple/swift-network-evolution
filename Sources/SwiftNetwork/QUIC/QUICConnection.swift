@@ -4255,15 +4255,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 break
             }
 
+            // A client discards its Initial keys only when it sends a Handshake packet, so a spent probe
+            // budget must stop here, before the discard flushes Initial items that were never sent.
+            if ignoreCongestionWindow && probeDatagramsRemaining == 0 {
+                break
+            }
+
             // Discard keys first to make sure we have room in congestion control
             if !isServer && !initialKeysDiscarded {
                 discardInitialRecoveryState = true
                 discardKeys(keyState: .initial, pendingItems: &initialPendingItems, discardRecoveryState: false)
                 initialKeysDiscarded = true
-            }
-
-            if ignoreCongestionWindow && probeDatagramsRemaining == 0 {
-                break
             }
 
             guard
