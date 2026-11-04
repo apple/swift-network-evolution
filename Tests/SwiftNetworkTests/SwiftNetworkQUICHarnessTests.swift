@@ -474,6 +474,13 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     func testQUICRecoverySendAnnouncesReopenedRoom() {
         QUICTestHarness().runRecoverySendAnnouncesReopenedRoom()
     }
+
+    /// A PTO sends one or two probe datagrams (RFC 9002 Section 6.2.4). A burst of the ordinary 40 packets
+    /// puts bytes in flight that nothing acknowledges, since a probe goes out when the window is full.
+    func testQUICProbeSendBurstsAtMostTwoPackets() {
+        let probePacketCount = QUICTestHarness().runProbeSendWithQueuedData()
+        XCTAssertEqual(probePacketCount, 2, "A probe must send exactly two packets when more is queued")
+    }
     #endif
 
     #if canImport(SwiftNetwork)
@@ -869,10 +876,6 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     #if !os(Linux)
     func testQUICSevereDrops() throws {
-        // On a mock clock, a probe bursts past the two datagrams RFC 9002 Section 6.2.4
-        // allows, and the connection stalls. The system clock hides the stall behind timing.
-        try XCTSkipUnless(QUICTestHarness.usesRealTime, "Stalls on a mock clock")
-
         // Induce severe drops (100 in each direction) to heavily exercise recovery
         // The patterns of drops were generated randomly, but shown to hit pathological cases.
         // They are statically included here to ensure that behavior is hit consistently.
