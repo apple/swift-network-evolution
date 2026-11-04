@@ -2063,7 +2063,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var isAckEliciting = false
         var isNonProbing = false
 
-        while let quicFrame = packetParser.framesReceived.popFirst() {
+        while !packetParser.framesReceived.isEmpty {
+            let quicFrame = packetParser.framesReceived.removeFirst()
             if let packetKeystate = packet.keyState {
                 if packetKeystate == .initial || packetKeystate == .handshake, !quicFrame.isAllowedInHandshake {
                     log.error("Invalid frame type during the handshake: \(quicFrame.frameType)")
@@ -3911,10 +3912,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     // Shared by sendApplicationFrames and sendFramesInternal.
+    //
+    // `probeBurstLimit` is how many datagrams a send that ignores the congestion window may still send;
+    // the Initial and Handshake spaces spend from the same budget before this runs.
     private func runApplicationBurstLoop(
         keyState: PacketKeyState,
         path: QUICPath,
         ignoreCongestionWindow: Bool,
+        probeBurstLimit: Int,
         retransmission: Bool,
         startSendingTimestamp: NetworkClock.Instant,
         availableCongestionWindow: inout UInt64,
@@ -3932,6 +3937,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) {
         var packetBurst = 0
         var packetBurstTotal = 0
+        // A send that ignores the congestion window is a probe and goes out when the window is already
+        // full; a burst beyond `probeBurstLimit` only adds in-flight bytes that nothing will acknowledge.
+        let burstLimit = ignoreCongestionWindow ? probeBurstLimit : Constants.maxPacketBurstCount
+        if burstLimit == 0 {
+            // The Initial and Handshake packets used the whole probe budget; send the rest as usual.
+            if applicationPendingItems.hasPendingItems {
+                burstLimitReached(in: &eventContext)
+            }
+            return
+        }
         while applicationPendingItems.hasPendingItems {
             guard
                 buildSinglePacketForKeyState(
@@ -3964,7 +3979,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             packetBurst += 1
             packetBurstTotal += 1
 
-            if packetBurstTotal >= Constants.maxPacketBurstCount {
+            if packetBurstTotal >= burstLimit {
                 // The maximum total packet count has been reached
                 shouldEndBurst = true
             } else if packetBurst >= Constants.packetBurstCount {
@@ -4058,6 +4073,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             keyState: packetKeyState,
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
+            probeBurstLimit: Constants.maxProbeBurstCount,
             retransmission: retransmission,
             startSendingTimestamp: startSendingTimestamp,
             availableCongestionWindow: &availableCongestionWindow,
@@ -4193,6 +4209,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
+        // A probe sends `maxProbeBurstCount` datagrams in total, however many packet number spaces have
+        // something to send; the application burst loop gets what the Initial and Handshake spaces leave.
+        var probeDatagramsRemaining = Constants.maxProbeBurstCount
+
         if !initialKeysDiscarded {
             while initialPendingItems.hasPendingItems {
                 if initialKeysDiscarded {
@@ -4225,12 +4245,24 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 if !ignoreCongestionWindow && totalSendBytes >= availableCongestionWindow {
                     break
                 }
+                if ignoreCongestionWindow {
+                    probeDatagramsRemaining -= 1
+                    if probeDatagramsRemaining == 0 {
+                        break
+                    }
+                }
             }
         }
 
         while handshakePendingItems.hasPendingItems {
             if isHandshakeConfirmed {
                 handshakePendingItems.flush()
+                break
+            }
+
+            // A client discards its Initial keys only when it sends a Handshake packet, so a spent probe
+            // budget must stop here, before the discard flushes Initial items that were never sent.
+            if ignoreCongestionWindow && probeDatagramsRemaining == 0 {
                 break
             }
 
@@ -4266,6 +4298,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             if !ignoreCongestionWindow && totalSendBytes >= availableCongestionWindow {
                 break
             }
+            if ignoreCongestionWindow {
+                probeDatagramsRemaining -= 1
+            }
         }
 
         let applicationKeyState: PacketKeyState
@@ -4281,6 +4316,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             keyState: applicationKeyState,
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
+            probeBurstLimit: probeDatagramsRemaining,
             retransmission: retransmission,
             startSendingTimestamp: startSendingTimestamp,
             availableCongestionWindow: &availableCongestionWindow,

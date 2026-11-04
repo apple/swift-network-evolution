@@ -37,6 +37,9 @@ enum Constants {
     // Don't burst more than 40 packets at a time
     static let maxPacketBurstCount = 40
 
+    // A PTO sends one or two probe datagrams (RFC 9002 Section 6.2.4); each packet here is its own datagram.
+    static let maxProbeBurstCount = 2
+
     #if NETWORK_EMBEDDED
     static let maxPacketBurstDuration = NetworkDuration.milliseconds(5)
     #else
