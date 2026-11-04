@@ -108,7 +108,7 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
     }
     public var completions = Completions()
 
-    var inboundDataAvailableReceived = false
+    public internal(set) var inboundDataAvailableReceived = false
 
     var outboundRoomAvailableReceived = false
 
