@@ -976,21 +976,33 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
             )
         }
 
-        ranges = [FrameAckRange](
-            repeating: FrameAckRange(gap: 0, range: 0),
-            count: Int(rangeCount + 1)
-        )
+        if rangeCount == 0 {
+            // The usual acknowledgement has the one range: it is read into a local and the array
+            // made from it, not made to size and filled in place, which checks the array is unique
+            // for every value written.
+            var firstRange = FrameAckRange(gap: 0, range: 0)
+            let rangeResult = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
+                try read.vle(&firstRange.range.value)
+            }
+            try validateDeserializationResult(rangeResult)
+            ranges = [firstRange]
+        } else {
+            ranges = [FrameAckRange](
+                repeating: FrameAckRange(gap: 0, range: 0),
+                count: Int(rangeCount + 1)
+            )
 
-        let rangeResult = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
-            try read.vle(&ranges[0].range.value)
-            if ranges.count > 1 {
-                for i in 1..<ranges.count {
-                    try read.vle(&ranges[i].gap.value)
-                    try read.vle(&ranges[i].range.value)
+            let rangeResult = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
+                try read.vle(&ranges[0].range.value)
+                if ranges.count > 1 {
+                    for i in 1..<ranges.count {
+                        try read.vle(&ranges[i].gap.value)
+                        try read.vle(&ranges[i].range.value)
+                    }
                 }
             }
+            try validateDeserializationResult(rangeResult)
         }
-        try validateDeserializationResult(rangeResult)
 
         if rawType == FrameType.ackECNCode {
             // Parse ECN-specific fields
