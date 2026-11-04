@@ -2676,7 +2676,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             applyToAllFlows { stream in
                 applicationPendingItems.prependStreamToService(&stream)
             }
-            sendFrames(in: &eventContext)
+            // The streams are queued to be serviced; under a batch the send waits for the batch's end.
+            if !pendOutboundData {
+                sendFrames(in: &eventContext)
+            }
             // We've already processed all the unblocked streams
             let unblockedMembership = applicationPendingItems.unblockedSendStreams.membership
             for flowID in applicationPendingItems.unblockedSendStreams.removeAllIdentifiers() {
@@ -2694,7 +2697,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     applicationPendingItems.prependStreamToService(&stream)
                 }
                 guard prepended != nil else { continue }
-                sendFrames(in: &eventContext)
+                if !pendOutboundData {
+                    sendFrames(in: &eventContext)
+                }
 
                 performOnStream(flowID, in: &eventContext) {
                     (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
@@ -2732,7 +2737,13 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
         synchronizeStats()
-        sendFrames(in: &eventContext)
+        // While the application batches its sends, whatever is pending (an ACK for the datagrams just
+        // received, say) goes out with the batch, when the application ends it: sending it now would
+        // put a datagram of its own on the wire just ahead of the data the application is about to
+        // write.
+        if !pendOutboundData {
+            sendFrames(in: &eventContext)
+        }
     }
 
     // Handle an outbound write to stream, queue the data for sending in the
@@ -3607,7 +3618,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         // For ACK bundling purposes make sure to rely on the ACK-delay timer as much as possible,
         // unless an immediate ACK needs to be processed.
-        guard !applicationPendingItems.isAckOnly || delayedACK || ack.immediateAcks > 0 else {
+        // While the application batches, an ACK waits for the batch's end, whatever called to send it.
+        guard !applicationPendingItems.isAckOnly || delayedACK || (ack.immediateAcks > 0 && !pendOutboundData) else {
             // Make sure the ack-delay timer is armed if returning early
             ack.scheduleDelayedAck(in: &eventContext)
             return false
@@ -7216,6 +7228,8 @@ extension QUICConnection {
             // Stop pending processing, resume sending
             pendOutboundData = false
             sendFrames(in: &eventContext)
+            // The batch may have sent an ACK that was held for it, the last thing the connection owed
+            checkConnectionIdle(unackedPacketCount: self.ack.unackedPacketCount, in: &eventContext)
             return .consumed
         }
 
@@ -7631,6 +7645,16 @@ extension QUICConnection {
     ) -> Bool {
         path.handlePathChallengeResponse(frame.data, in: &eventContext)
         return true
+    }
+}
+
+// MARK: Test support
+
+@available(Network 0.1.0, *)
+extension QUICConnection {
+    /// Disables active migration on a connection built outside a protocol stack, for tests only.
+    func disableActiveMigrationFromExternalTest() {
+        migration.disableActiveMigration()
     }
 }
 
