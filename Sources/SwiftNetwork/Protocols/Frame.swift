@@ -56,21 +56,29 @@ public struct Frame: ~Copyable {
     private var _aggregateBufferLength: UInt32 = 0
 
     @usableFromInline var startOffset: Int {
+        @inline(always)
         get { Int(_startOffset) }
+        @inline(always)
         set { _startOffset = UInt32(newValue) }
     }
     @usableFromInline var endOffset: Int {
+        @inline(always)
         get { Int(_endOffset) }
+        @inline(always)
         set { _endOffset = UInt32(newValue) }
     }
     @usableFromInline
     var effectiveBufferLength: Int {
+        @inline(always)
         get { Int(_effectiveBufferLength) }
+        @inline(always)
         set { _effectiveBufferLength = UInt32(newValue) }
     }
     @usableFromInline
     var aggregateBufferLength: Int {
+        @inline(always)
         get { Int(_aggregateBufferLength) }
+        @inline(always)
         set { _aggregateBufferLength = UInt32(newValue) }
     }
 
@@ -273,6 +281,7 @@ public struct Frame: ~Copyable {
         }
     }
 
+    @inline(always)
     public var isValid: Bool {
         switch buffer {
         default: return true
