@@ -394,15 +394,24 @@ final class SwiftNetworkConnectionTests: NetTestCase {
 
     func testQUICStateUpdates() throws {
         let semaphore = DispatchSemaphore(value: 0)
+        let cancelled = DispatchSemaphore(value: 0)
         let tunnel = NetworkConnection(to: Endpoint(address: IPv4Address.loopback, port: 7777)) {
             QUIC(alpn: ["QUICTest"])
         }.onStateUpdate { _, state in
             print("New tunnel state \(state)")
             semaphore.signal()
+            if case .cancelled = state { cancelled.signal() }
         }.start()
         XCTAssertNotNil(tunnel)
         XCTAssertEqual(
             semaphore.wait(timeout: DispatchTime.now() + .seconds(3)),
+            DispatchTimeoutResult.success
+        )
+
+        // Nothing listens on the port, so the connection keeps retrying until it is cancelled.
+        tunnel.cancel()
+        XCTAssertEqual(
+            cancelled.wait(timeout: DispatchTime.now() + .seconds(5)),
             DispatchTimeoutResult.success
         )
     }
