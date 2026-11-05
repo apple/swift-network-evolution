@@ -185,6 +185,19 @@ class QUICFrameTests: XCTestCase {
         frame.finalize(success: true)
     }
 
+    func testAckInitMissingRanges() throws {
+        // Header declares a range count but no ACK range bytes follow
+        let bytes: [UInt8] = [0x02, 0x2c, 0x21, 0x00]
+        var frame = Frame(copyBuffer: bytes)
+        do {
+            _ = try FrameAck(frame: &frame, packetNumberSpace: .applicationData)
+            XCTFail("Expected FrameAck parsing to fail")
+        } catch {
+            // Expected: the frame is missing its ACK ranges
+        }
+        frame.finalize(success: false)
+    }
+
     func testAckInitMultiRange() throws {
         let bytes: [UInt8] = [0x02, 0x2c, 0x21, 0x02, 0x21, 0x0a, 0x0a, 0x03, 0x05]
         var frame = Frame(copyBuffer: bytes)

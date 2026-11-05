@@ -110,9 +110,6 @@ struct SentPacketRecord: ~Copyable {
             (ecn == .ect0 || ecn == .ect1)
         }
     }
-    var totalLength = 0
-    var sentPath: MultiplexingPathIdentifier = .none
-    var identifier: PacketIdentifier = .init(space: .initial, number: 0)
 
     struct Flags: OptionSet {
         init(rawValue: Self.RawValue) {
@@ -125,6 +122,9 @@ struct SentPacketRecord: ~Copyable {
         static let isECNValidationPacket = Flags(rawValue: 1 << 3)
     }
     private var flags = Flags()
+    var totalLength = 0
+    var sentPath: MultiplexingPathIdentifier = .none
+    var identifier: PacketIdentifier = .init(space: .initial, number: 0)
     var isAckEliciting: Bool {
         @inline(always)
         get { flags.contains(.isAckEliciting) }
