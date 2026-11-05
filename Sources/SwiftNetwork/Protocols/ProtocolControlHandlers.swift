@@ -45,7 +45,7 @@ public protocol UpperProtocolHandler<LowerProtocol>: ~Copyable, ProtocolInstance
 /// A protocol closer to the network, with a linkage to an upper protocol toward the app.
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol LowerProtocolHandler<UpperProtocol>: ~Copyable, ProtocolInstance {
+public protocol LowerProtocolHandler<UpperProtocol>: ~Copyable, ProtocolInstance, NetworkMetricsProviding {
     associatedtype UpperProtocol: UpperProtocolLinkage
 
     mutating func attachUpperProtocol(
@@ -78,9 +78,4 @@ public protocol LowerProtocolHandler<UpperProtocol>: ~Copyable, ProtocolInstance
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) -> ProtocolMetadata<P>?
-    func getMetrics(
-        requestedNetworkMetric: RequestedNetworkMetrics,
-        for instance: InstanceIdentifier,
-        in eventContext: inout NetworkContext.EventContext
-    ) -> NetworkMetrics?
 }
