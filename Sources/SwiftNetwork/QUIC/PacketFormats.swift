@@ -54,7 +54,7 @@ private func validateSerializationResult(_ result: SerializationResult) throws(Q
 
 // MARK: - Version Negotiation
 @available(Network 0.1.0, *)
-struct QUICVersionNegotiation: ~Copyable {
+struct QUICVersionNegotiationPacket: ~Copyable {
     // 0                   1                   2                   3
     // 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     // +-+-+-+-+-+-+-+-+
@@ -62,10 +62,6 @@ struct QUICVersionNegotiation: ~Copyable {
     // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     // |                          Version (32)                         |
     // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    // The `type' is a random number and `version' must be 0x00000000.
-    let firstByte: UInt8 = 0x80
-    let version: [UInt8] = [0, 0, 0, 0]
-
     // | DCID Len (8)  |
     // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     // |               Destination Connection ID (0..2040)            ...
@@ -83,49 +79,75 @@ struct QUICVersionNegotiation: ~Copyable {
     // |                   [Supported Version N (32)]                ...
     // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     //
+    // The `type' is a random number and `version' must be 0x00000000.
+    let firstByte: UInt8
+    let version: [UInt8] = [0, 0, 0, 0]
+    let destinationConnectionID: QUICConnectionID
+    let sourceConnectionID: QUICConnectionID
+    let supportedVersions: [QUICVersion]
 
-    var header = [UInt8]()
-
+    var length: Int {
+        PacketFormatConstants.preambleLength + version.count
+            + QUICConnectionID.headerCIDLength + destinationConnectionID.length
+            + QUICConnectionID.headerCIDLength + sourceConnectionID.length
+            + supportedVersions.count * QUICVersion.versionHeaderSize
+    }
+    // For outgoing packets.
     init(
         destinationConnectionID: QUICConnectionID,
         sourceConnectionID: QUICConnectionID,
         supportedVersions: [QUICVersion]
-    ) throws(QUICError) {
-
-        let dcid = destinationConnectionID.connectionID
-        let scid = sourceConnectionID.connectionID
-
-        let expectedLength =
-            PacketFormatConstants.preambleLength + version.count + QUICConnectionID.headerCIDLength
-            + dcid.count + QUICConnectionID.headerCIDLength + scid.count + supportedVersions.count
-            * QUICVersion.versionHeaderSize
-
-        header = Serializer.serialize { write in
-            write.uint8(firstByte)
-            write.buffer(version)
-            write.uint8(UInt8(dcid.count))
-            write.buffer(dcid)
-            write.uint8(UInt8(scid.count))
-            write.buffer(scid)
-
-            for element in supportedVersions {
-                write.uint32NetworkByteOrder(element.rawValue)
-            }
-        }
-        if expectedLength != header.count {
-            throw QUICError.packetFormats(QUICPacketFormatsError.unexpectedLength)
-        }
+    ) {
+        // Only the long header bit is required, but RFC 9000 Section 17.2.1
+        // says servers SHOULD also set 0x40 so VN packets appear to have the
+        // Fixed Bit when QUIC is multiplexed with other protocols.
+        self.init(
+            firstByte: 0xC0 | (UInt8.random(in: .min ... .max) & 0x3F),
+            destinationConnectionID: destinationConnectionID,
+            sourceConnectionID: sourceConnectionID,
+            supportedVersions: supportedVersions
+        )
     }
 
-    func serialize() -> [UInt8] {
-        header
+    // For incoming packets. Keeps the first byte as received on the wire.
+    init(
+        firstByte: UInt8,
+        destinationConnectionID: QUICConnectionID,
+        sourceConnectionID: QUICConnectionID,
+        supportedVersions: [QUICVersion]
+    ) {
+        self.firstByte = firstByte
+        self.destinationConnectionID = destinationConnectionID
+        self.sourceConnectionID = sourceConnectionID
+        self.supportedVersions = supportedVersions
+    }
+
+    private func write<F: SerializerSpanFactory & ~Copyable & ~Escapable>(
+        into write: inout InPlaceSerializer<F>
+    ) throws(SerializationError) {
+        try write.uint8(firstByte)
+        try write.buffer(version)
+        try write.connectionID(destinationConnectionID)
+        try write.connectionID(sourceConnectionID)
+        for element in supportedVersions {
+            try write.uint32NetworkByteOrder(element.rawValue)
+        }
     }
 
     func write(outputFrame: inout Frame, claim: Bool) throws(QUICError) {
-        let result = Serializer.serialize(&outputFrame, claim: claim) { write throws(SerializationError) in
-            try write.buffer(header)
+        let result = Serializer.serialize(&outputFrame, claim: claim) { w throws(SerializationError) in
+            try self.write(into: &w)
         }
         try validateSerializationResult(result)
+    }
+
+    func serialize() throws(QUICError) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: length)
+        let result = Serializer.serialize(bytes.mutableSpan) { w throws(SerializationError) in
+            try self.write(into: &w)
+        }
+        try validateSerializationResult(result)
+        return bytes
     }
 }
 
@@ -157,28 +179,36 @@ struct QUICRetryPacket: ~Copyable {
     // +                                                               +
     // |                                                               |
     // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    // Used for calculating the integrity tag on sent RETRY packets
-    static let firstByte: UInt8 = 0xF0
-    var header = [UInt8]()
+    // Long header, fixed bit and the Retry packet type. The low 4 bits are unused.
+    static let firstByteBase: UInt8 = 0xF0
+    static let unusedBitsMask: UInt8 = 0x0F
 
+    let firstByte: UInt8
+    let version: QUICVersion
+    let destinationConnectionID: QUICConnectionID
+    let sourceConnectionID: QUICConnectionID
+    let token: [UInt8]
+    let retryTag: [UInt8]
+
+    var length: Int {
+        PacketFormatConstants.preambleLength + QUICVersion.versionHeaderSize
+            + QUICConnectionID.headerCIDLength + destinationConnectionID.length
+            + QUICConnectionID.headerCIDLength + sourceConnectionID.length
+            + token.count + retryTag.count
+    }
+
+    // For outgoing packets. Computes the integrity tag over the pseudo-packet
+    // that includes the DCID of the client's first Initial packet.
     init(
-        version: QUICVersion,
+        version: QUICVersion = .v1,
         destinationConnectionID: QUICConnectionID,
         sourceConnectionID: QUICConnectionID,
         originalDCID: QUICConnectionID,
         token: [UInt8]
     ) throws(QUICError) {
-
-        let dcid = destinationConnectionID.connectionID
-        let scid = sourceConnectionID.connectionID
-
-        var expectedLength =
-            PacketFormatConstants.preambleLength + MemoryLayout<UInt32>.size
-            + QUICConnectionID.headerCIDLength
-            + dcid.count + QUICConnectionID.headerCIDLength + scid.count + token.count
-        // Construct a RETRY pseudo header to calculate the integrity tag.
+        let firstByte = Self.firstByteBase | (UInt8.random(in: .min ... .max) & Self.unusedBitsMask)
         let pseudoRetry = QUICPseudoRetry.assemble(
-            firstByte: QUICRetryPacket.firstByte,
+            firstByte: firstByte,
             version: version,
             destinationCID: destinationConnectionID,
             sourceCID: sourceConnectionID,
@@ -186,32 +216,82 @@ struct QUICRetryPacket: ~Copyable {
             token: token
         )
         do throws(QUICError) {
-            let retryTag = try Protector.sealRetry(pseudoRetry.span.bytes)
-            expectedLength += retryTag.count
-
-            header = Serializer.serialize { write in
-                write.uint8(QUICRetryPacket.firstByte)
-                write.uint32NetworkByteOrder(version.rawValue)
-                write.uint8(UInt8(dcid.count))
-                write.buffer(dcid)
-                write.uint8(UInt8(scid.count))
-                write.buffer(scid)
-                write.buffer(token)
-                write.buffer(retryTag)
-            }
-            if expectedLength != header.count {
-                throw QUICError.packetFormats(QUICPacketFormatsError.unexpectedLength)
-            }
+            self.retryTag = try Protector.sealRetry(pseudoRetry.span.bytes)
         } catch {
             throw QUICError.packetFormats(.sealingFailure)
         }
+        self.firstByte = firstByte
+        self.version = version
+        self.destinationConnectionID = destinationConnectionID
+        self.sourceConnectionID = sourceConnectionID
+        self.token = token
+    }
+
+    // For incoming packets. The first byte must be the one received on the
+    // wire because the unused bits are covered by the integrity tag.
+    init(
+        firstByte: UInt8,
+        version: QUICVersion,
+        destinationConnectionID: QUICConnectionID,
+        sourceConnectionID: QUICConnectionID,
+        token: [UInt8],
+        retryTag: [UInt8]
+    ) {
+        self.firstByte = firstByte
+        self.version = version
+        self.destinationConnectionID = destinationConnectionID
+        self.sourceConnectionID = sourceConnectionID
+        self.token = token
+        self.retryTag = retryTag
+    }
+
+    private func write<F: SerializerSpanFactory & ~Copyable & ~Escapable>(
+        into write: inout InPlaceSerializer<F>
+    ) throws(SerializationError) {
+        try write.uint8(firstByte)
+        try write.uint32NetworkByteOrder(version.rawValue)
+        try write.connectionID(destinationConnectionID)
+        try write.connectionID(sourceConnectionID)
+        try write.buffer(token)
+        try write.buffer(retryTag)
     }
 
     func write(outputFrame: inout Frame, claim: Bool) throws(QUICError) {
-        let result = Serializer.serialize(&outputFrame, claim: claim) { write throws(SerializationError) in
-            try write.buffer(header)
+        let result = Serializer.serialize(&outputFrame, claim: claim) { w throws(SerializationError) in
+            try self.write(into: &w)
         }
         try validateSerializationResult(result)
+    }
+
+    func serialize() throws(QUICError) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: length)
+        let result = Serializer.serialize(bytes.mutableSpan) { w throws(SerializationError) in
+            try self.write(into: &w)
+        }
+        try validateSerializationResult(result)
+        return bytes
+    }
+
+    // Verifies the integrity tag. `originalDCID` is the DCID the client used
+    // in its first Initial packet.
+    func open(originalDCID: QUICConnectionID) -> Bool {
+        guard retryTag.count == Int(Constants.retryTokenIntegrityTagLength) else {
+            return false
+        }
+        let pseudoRetry = QUICPseudoRetry.assemble(
+            firstByte: firstByte,
+            version: version,
+            destinationCID: destinationConnectionID,
+            sourceCID: sourceConnectionID,
+            originalDCID: originalDCID,
+            token: token
+        )
+        do throws(QUICError) {
+            try Protector.openRetry(retryPseudo: pseudoRetry.span.bytes, retryTag: retryTag.span.bytes)
+            return true
+        } catch {
+            return false
+        }
     }
 }
 
