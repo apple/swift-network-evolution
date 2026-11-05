@@ -21,8 +21,8 @@ import Android
 
 #if !hasFeature(Embedded)
 
+@available(Network 0.1.0, *)
 final class SwiftNetworkSafeAccessTests: NetTestCase {
-
     func testLoadingValidCStructure() throws {
         var ipv4Addr = sockaddr_in()
         ipv4Addr.sin_family = sa_family_t(AF_INET)
