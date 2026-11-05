@@ -474,6 +474,13 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     func testQUICRecoverySendAnnouncesReopenedRoom() {
         QUICTestHarness().runRecoverySendAnnouncesReopenedRoom()
     }
+
+    /// A PTO sends one or two probe datagrams (RFC 9002 Section 6.2.4). A burst of the ordinary 40 packets
+    /// puts bytes in flight that nothing acknowledges, since a probe goes out when the window is full.
+    func testQUICProbeSendBurstsAtMostTwoPackets() {
+        let probePacketCount = QUICTestHarness().runProbeSendWithQueuedData()
+        XCTAssertEqual(probePacketCount, 2, "A probe must send exactly two packets when more is queued")
+    }
     #endif
 
     #if canImport(SwiftNetwork)
@@ -640,6 +647,114 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
     func testQUICEcho40KiBBatched() {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 4, shouldBatchSends: true)
     }
+
+    #if canImport(SwiftNetwork)
+    /// While the application batches its sends, the packets the connection receives are not answered
+    /// on the spot: whatever is pending to send (control frames, and the ACK that goes with them) waits
+    /// for the batch to end and goes out with what the application writes, instead of as a datagram of
+    /// its own ahead of it.
+    func testReceivedPacketsAreNotAnsweredDuringAnApplicationBatch() {
+        let manual = ManualTimeContext(#function)
+        QUICTestHarness(manual: manual).runQUICTest(
+            streamCount: 1,
+            blockSize: 1000,
+            blockCount: 1,
+            sendFIN: false,
+            afterData: { harness in
+                guard let state = harness.state else {
+                    XCTFail("State must be non-nil")
+                    return
+                }
+                let client = state.clientHarness.upperHarnesses[0]
+
+                // Let anything left over from the echo settle, then start a batch on the receiving side
+                // with a frame waiting to be sent, which is more than a lone ACK, so receiving
+                // packets would send at once.
+                harness.allow(.milliseconds(200))
+                harness.flush()
+                harness.onContext {
+                    XCTAssertFalse(state.serverInstance.applicationPendingItems.ping)
+                    state.serverHarness.invokeApplicationEvent(.outboundDataBatchStart)
+                    state.serverInstance.applicationPendingItems.ping = true
+                    XCTAssertTrue(client.write(Array(repeating: 0x2a, count: 2000)))
+                }
+                harness.allow(.milliseconds(2))
+                harness.flush()
+
+                // The packets arrived, and the frame is still waiting.
+                var receivedBytes = 0
+                var waitingDuringBatch = false
+                harness.onContext {
+                    receivedBytes = state.serverInstance.stats.connectionStatistics[.rxStreamBytes] ?? 0
+                    waitingDuringBatch = state.serverInstance.applicationPendingItems.ping
+                }
+                XCTAssertGreaterThanOrEqual(receivedBytes, 2000, "the server received the client's data")
+                XCTAssertTrue(waitingDuringBatch, "nothing is sent in answer to the packets during the batch")
+
+                // The batch ends, and what was waiting goes out.
+                harness.onContext { state.serverHarness.invokeApplicationEvent(.outboundDataBatchEnd) }
+                harness.allow(.milliseconds(2))
+                harness.flush()
+                var waitingAfterBatch = true
+                harness.onContext { waitingAfterBatch = state.serverInstance.applicationPendingItems.ping }
+                XCTAssertFalse(waitingAfterBatch, "what was waiting goes out when the batch ends")
+            }
+        )
+    }
+    #endif
+
+    #if canImport(SwiftNetwork)
+    /// Whatever calls to send while the application batches, a lone ACK waits for the batch's end,
+    /// even one that is due at once: the stream removal that follows a read, for one, asks to send.
+    func testALoneAckIsHeldForAnApplicationBatchWhateverAsksToSend() {
+        let manual = ManualTimeContext(#function)
+        QUICTestHarness(manual: manual).runQUICTest(
+            streamCount: 1,
+            blockSize: 1000,
+            blockCount: 1,
+            sendFIN: false,
+            afterData: { harness in
+                guard let state = harness.state else {
+                    XCTFail("State must be non-nil")
+                    return
+                }
+                let client = state.clientHarness.upperHarnesses[0]
+                let server = state.serverInstance
+
+                harness.allow(.milliseconds(200))
+                harness.flush()
+                harness.onContext {
+                    state.serverHarness.invokeApplicationEvent(.outboundDataBatchStart)
+                    // The ACK for what arrives is due at once.
+                    server.ack.ackAgressively()
+                    XCTAssertTrue(client.write(Array(repeating: 0x2a, count: 500)))
+                }
+                harness.allow(.milliseconds(2))
+                harness.flush()
+
+                var sentBefore = 0
+                var sentDuring = 0
+                harness.onContext {
+                    sentBefore = server.stats.connectionStatistics[.txPackets] ?? 0
+                    XCTAssertTrue(server.applicationPendingItems.isAckOnly, "only an ACK is waiting")
+                    XCTAssertGreaterThan(server.ack.immediateAcks, 0)
+                    server.fromExternal { eventContext in
+                        _ = server.sendFrames(in: &eventContext)
+                    }
+                    sentDuring = server.stats.connectionStatistics[.txPackets] ?? 0
+                }
+                XCTAssertEqual(sentDuring, sentBefore, "no ACK goes out on its own during the batch")
+
+                var sentAfter = 0
+                harness.onContext {
+                    state.serverHarness.invokeApplicationEvent(.outboundDataBatchEnd)
+                    sentAfter = server.stats.connectionStatistics[.txPackets] ?? 0
+                }
+                XCTAssertGreaterThan(sentAfter, sentBefore, "the held ACK goes out when the batch ends")
+            }
+        )
+    }
+    #endif
 
     func testQUICEcho40KiBSmallReads() {
         QUICTestHarness().runQUICTest(blockSize: 10240, blockCount: 4, clientReadChunkSize: 1000)
@@ -869,10 +984,6 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     #if !os(Linux)
     func testQUICSevereDrops() throws {
-        // On a mock clock, a probe bursts past the two datagrams RFC 9002 Section 6.2.4
-        // allows, and the connection stalls. The system clock hides the stall behind timing.
-        try XCTSkipUnless(QUICTestHarness.usesRealTime, "Stalls on a mock clock")
-
         // Induce severe drops (100 in each direction) to heavily exercise recovery
         // The patterns of drops were generated randomly, but shown to hit pathological cases.
         // They are statically included here to ensure that behavior is hit consistently.

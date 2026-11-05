@@ -240,24 +240,25 @@ public struct QUICConnectionUtilities {
         sourceConnectionID: QUICConnectionID
     ) throws(NetworkError) -> [UInt8]? {
         let versions: [QUICVersion] = [.v1, .negotiationPattern]
-
         // Version Negotiation packets are special, they are not a specific frame type and they do not sealed so they can be sent as a one-off.
         // N.B.: The packet scid/dcid are swapped when constructing QUICVersionNegotiation
-        guard
-            let versionNegotiationPacket = try? QUICVersionNegotiation(
-                destinationConnectionID: sourceConnectionID,
-                sourceConnectionID: destinationConnectionID,
-                supportedVersions: versions
-            )
-        else {
+        let versionNegotiationPacket = QUICVersionNegotiationPacket(
+            destinationConnectionID: sourceConnectionID,
+            sourceConnectionID: destinationConnectionID,
+            supportedVersions: versions
+        )
+        let bytes: [UInt8]
+        do {
+            bytes = try versionNegotiationPacket.serialize()
+        } catch {
             throw NetworkError(
                 category: .init(
                     identifier: "QUICUtilities",
-                    description: "Failed to build a valid version negotiation packet"
+                    description: "Failed to serialize version negotiation packet: \(error)"
                 )
             )
         }
-        guard versionNegotiationPacket.header.count >= Constants.minimumPacketSize else {
+        guard bytes.count >= Constants.minimumPacketSize else {
             throw NetworkError(
                 category: .init(
                     identifier: "QUICUtilities",
@@ -266,7 +267,7 @@ public struct QUICConnectionUtilities {
             )
 
         }
-        return versionNegotiationPacket.header
+        return bytes
     }
 }
 #endif

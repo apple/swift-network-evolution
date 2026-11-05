@@ -372,31 +372,15 @@ struct AckBlockIterator: IteratorProtocol {
                 return nil
             }
             let range = ranges[index].range
-            guard range <= largest else {
-                // Guard against underflow
+            let nextGap: PacketNumber? = index + 1 != ranges.count ? ranges[index + 1].gap : nil
+            guard let block = Ack.decodeStep(largest: &largest, range: range, nextGap: nextGap) else {
                 return nil
             }
-            let smallest = largest - range
-            let savedLargest = largest
-            // Only recompute `largest' if we are iterating again.
-            // Otherwise, we might end up with an integer underflow.
-            if index + 1 != ranges.count {
-                guard smallest >= 2 else {
-                    // Guard against underflow
-                    return nil
-                }
-                let gap = ranges[index + 1].gap
-                guard gap <= smallest - 2 else {
-                    // Guard against underflow
-                    return nil
-                }
-                largest = smallest - gap - 2
-            }
             index += 1
-            if savedLargest < oldestPacketNumber {
+            if block.end < oldestPacketNumber {
                 continue
             } else {
-                return (start: smallest, end: savedLargest)
+                return block
             }
         }
     }
@@ -542,10 +526,10 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     @discardableResult
-    mutating func withAckSpace(
-        packetNumberSpace: PacketNumberSpace,
-        closure: (_: inout AckSpace) -> Bool
-    ) -> Bool {
+    mutating func withAckSpace<Result: ~Copyable>(
+        for packetNumberSpace: PacketNumberSpace,
+        closure: (_: inout AckSpace) -> Result
+    ) -> Result {
         switch packetNumberSpace {
         case .applicationData:
             return closure(&applicationAckSpace)
@@ -561,9 +545,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         packetNumber: PacketNumber,
         now: NetworkClock.Instant
     ) {
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.append(packetNumber, packetNumberSpace: packetNumberSpace, now: now)
-            return true
         }
     }
 
@@ -572,7 +555,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         packetNumberLow: PacketNumber,
         packetNumberHigh: PacketNumber
     ) -> Bool {
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.packetsMissingBetween(
                 packetNumberLow: packetNumberLow,
                 packetNumberHigh: packetNumberHigh
@@ -607,7 +590,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             shouldSend = true
         } else {
             let delayExponent = localDelayExponent
-            withAckSpace(packetNumberSpace: packetNumberSpace) {
+            withAckSpace(for: packetNumberSpace) {
                 ackSpace in
                 // We may be bundling an ACK, so set this to false to avoid sending
                 // another ACK when the delayed ACK timer fires.
@@ -620,7 +603,6 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 )
                 shouldSend = ackSize > 0
                 ackSpace.needsTransmission = false
-                return true
             }
         }
         return shouldSend
@@ -641,7 +623,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 log.datapath("ACK frame already in the builder")
                 shouldSend = true
             } else {
-                withAckSpace(packetNumberSpace: packetNumberSpace) {
+                withAckSpace(for: packetNumberSpace) {
                     ackSpace in
                     if ackSpace.needsTransmission {
                         var ecnCounter: ECNCounter? = nil
@@ -664,7 +646,6 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                         shouldSend = shouldSend || ackSize > 0
                         ackSpace.needsTransmission = false
                     }
-                    return true
                 }
             }
         }
@@ -732,25 +713,83 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         return shouldSend
     }
 
-    static func blockSequence(
+    @inline(always)
+    fileprivate static func decodeStep(
+        largest: inout PacketNumber,
+        range: PacketNumber,
+        nextGap: PacketNumber?
+    ) -> AckBlock? {
+        guard range <= largest else {
+            // Guard against underflow
+            return nil
+        }
+        let smallest = largest - range
+        let savedLargest = largest
+        // Only recompute `largest` if we are iterating again.
+        // Otherwise, we might end up with an integer underflow.
+        if let nextGap {
+            guard smallest >= 2 else {
+                // Guard against underflow
+                return nil
+            }
+            guard nextGap <= smallest - 2 else {
+                // Guard against underflow
+                return nil
+            }
+            largest = smallest - nextGap - 2
+        }
+        return (start: smallest, end: savedLargest)
+    }
+
+    /// Decodes the ACK ranges of `ranges`, calling `body` with each resulting
+    /// block, without copying `ranges` out to a heap-allocated array.
+    private static func withBlocks(
+        largest startingLargest: PacketNumber,
+        ranges: borrowing SmallArray<FrameAckRange>,
+        oldestPacketNumber: PacketNumber,
+        _ body: (AckBlock) -> Void
+    ) {
+        var largest = startingLargest
+        var index = 0
+        let count = ranges.count
+        while index < count {
+            let range = ranges[index].range
+            let nextGap: PacketNumber? = index + 1 != count ? ranges[index + 1].gap : nil
+            guard let block = decodeStep(largest: &largest, range: range, nextGap: nextGap) else {
+                return
+            }
+            index += 1
+            if block.end >= oldestPacketNumber {
+                body(block)
+            }
+        }
+    }
+
+    /// Decodes the ACK ranges of a `FrameAck`, calling `body` with each block.
+    static func withBlocks(
         frame: borrowing FrameAck,
-        oldestPacketNumber: PacketNumber = .initial
-    ) -> AckBlockSequence {
-        AckBlockSequence(
+        oldestPacketNumber: PacketNumber = .initial,
+        _ body: (AckBlock) -> Void
+    ) {
+        withBlocks(
             largest: frame.largest,
             ranges: frame.ranges,
-            oldestPacketNumber: oldestPacketNumber
+            oldestPacketNumber: oldestPacketNumber,
+            body
         )
     }
 
-    static func blockSequence(
-        frame: TransmittedItems.TransmittedAckFrame,
-        oldestPacketNumber: PacketNumber = .initial
-    ) -> AckBlockSequence {
-        AckBlockSequence(
+    /// Decodes the ACK ranges of a `TransmittedAckFrame`, calling `body` with each block.
+    static func withBlocks(
+        frame: borrowing TransmittedItems.TransmittedAckFrame,
+        oldestPacketNumber: PacketNumber = .initial,
+        _ body: (AckBlock) -> Void
+    ) {
+        withBlocks(
             largest: frame.largest,
             ranges: frame.ranges,
-            oldestPacketNumber: oldestPacketNumber
+            oldestPacketNumber: oldestPacketNumber,
+            body
         )
     }
 
@@ -855,9 +894,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         between startPN: PacketNumber,
         and endPN: PacketNumber
     ) {
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.acknowledged(between: startPN, and: endPN)
-            return true
         }
     }
 
@@ -872,18 +910,16 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     mutating func shouldTransmit(packetNumberSpace: PacketNumberSpace) {
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.needsTransmission = true
-            return true
         }
     }
 
     mutating func flush(for packetNumberSpace: PacketNumberSpace) {
         log.debug("Flushing all PN for \(packetNumberSpace)")
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.blocks = []
             ackSpace.needsTransmission = false
-            return true
         }
     }
 
@@ -899,7 +935,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             return 0
         }
         var generationCount = 0
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             // The generation counter needs to be updated at
             // least every 5 ms.
             let updateInterval: NetworkDuration = .milliseconds(5)
@@ -913,7 +949,6 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 ackSpace.lastGenerationCountUpdate = now
             }
             generationCount = ackSpace.generationCount
-            return true
         }
         return generationCount
     }
@@ -935,10 +970,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
     ) {
-        withAckSpace(packetNumberSpace: packetNumberSpace) {
-            ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.updateLargestAckElicitingPacketNumber(packetNumber)
-            return true
         }
     }
 
@@ -946,44 +979,33 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace
     ) {
-        withAckSpace(packetNumberSpace: packetNumberSpace) {
-            ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             ackSpace.updateLargestPacketNumber(packetNumber)
-            return true
         }
     }
 
     mutating func getLargestReceivedPacketNumber(
         packetNumberSpace: PacketNumberSpace
     ) -> PacketNumber? {
-        var largestReceivedPacketNumber: PacketNumber? = nil
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
-            largestReceivedPacketNumber = ackSpace.largestPNReceived
-            return true
+        withAckSpace(for: packetNumberSpace) { ackSpace in
+            ackSpace.largestPNReceived
         }
-        return largestReceivedPacketNumber
     }
 
     mutating func getLargestAckElicitingPacketNumber(
         packetNumberSpace: PacketNumberSpace
     ) -> PacketNumber {
-        var largestAckElicitingPacketNumber: PacketNumber = .none
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
-            largestAckElicitingPacketNumber = ackSpace.largestAckElicitingPNReceived
-            return true
+        withAckSpace(for: packetNumberSpace) { ackSpace in
+            ackSpace.largestAckElicitingPNReceived
         }
-        return largestAckElicitingPacketNumber
     }
 
     mutating func blocksForPacketNumberSpace(
         packetNumberSpace: PacketNumberSpace
     ) -> Int {
-        var blocks = 0
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
-            blocks = ackSpace.blocks.count
-            return true
+        withAckSpace(for: packetNumberSpace) { ackSpace in
+            ackSpace.blocks.count
         }
-        return blocks
     }
 }
 
@@ -1012,7 +1034,7 @@ struct AckBitstring: ~Copyable {
 
     // Same as init, but does not zero out bitstring[]
     mutating func reinit(frame: borrowing FrameAck, oldestPN: PacketNumber) {
-        for block in Ack.blockSequence(frame: frame, oldestPacketNumber: oldestPN) {
+        Ack.withBlocks(frame: frame, oldestPacketNumber: oldestPN) { block in
             let start = max(block.start, oldestPN)
             nset(start: start, stop: block.end)
         }
@@ -1309,7 +1331,7 @@ extension Ack {
         var size = 0
         let delayExponent = localDelayExponent
         let delaySize = self.delaySize
-        withAckSpace(packetNumberSpace: packetNumberSpace) { ackSpace in
+        withAckSpace(for: packetNumberSpace) { ackSpace in
             size = ackSpace.build(
                 packetNumberSpace: packetNumberSpace,
                 delayExponent: delayExponent,
@@ -1318,7 +1340,6 @@ extension Ack {
                 ecnCounter: ecnCounter,
                 now: now
             )
-            return true
         }
         return size
     }

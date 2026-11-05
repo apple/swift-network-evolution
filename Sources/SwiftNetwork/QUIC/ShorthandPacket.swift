@@ -16,43 +16,56 @@
 
 @available(Network 0.1.0, *)
 struct ShorthandPacket: ShorthandLogEntry {
-    let delta: NetworkDuration
-    let keyState: PacketKeyState?
-    let number: PacketNumber
-    let longHeader: Bool
-    let outgoing: Bool
-    var retry: Bool = false
-    var versionNegotiation: Bool = false
+    enum Kind {
+        case versionNegotiation
+        case retry
+        case failedDecryption
+        case protected(keyState: PacketKeyState, number: PacketNumber, longHeader: Bool)
+    }
 
-    init(packet: borrowing Packet, outgoing: Bool, delta: NetworkDuration) {
-        keyState = packet.keyState
-        longHeader = packet.longHeader
-        number = packet.number
-        self.outgoing = outgoing
+    let delta: NetworkDuration
+    let outgoing: Bool
+    let kind: Kind
+
+    // For outgoing packets.
+    init(packet: borrowing Packet, delta: NetworkDuration) {
+        self.outgoing = true
         self.delta = delta
-        self.retry = packet.retry
-        self.versionNegotiation = packet.versionNegotiation
+        self.kind = .protected(keyState: packet.keyState, number: packet.number, longHeader: packet.longHeader)
+    }
+
+    // For incoming packets.
+    init(parsedPacket: borrowing PacketParser.ParsedPacket, delta: NetworkDuration) {
+        self.outgoing = false
+        self.delta = delta
+        switch parsedPacket {
+        case .versionNegotiation:
+            self.kind = .versionNegotiation
+        case .retry:
+            self.kind = .retry
+        case .failedDecryption:
+            self.kind = .failedDecryption
+        case .protected(let packet):
+            self.kind = .protected(keyState: packet.keyState, number: packet.number, longHeader: packet.longHeader)
+        }
     }
 
     var description: String {
         let duration = Double(delta.milliseconds) / 1000.0
-        var description = "\(outgoing ? "snd" : "rcv") \(duration)s "
-        if longHeader {
-            var type = ""
-            if retry {
-                type = "retry"
-            } else if versionNegotiation {
-                type = "vn"
-            } else if let keyState = keyState {
-                type = keyState.description
+        let prefix = "\(outgoing ? "snd" : "rcv") \(duration)s "
+        switch kind {
+        case .versionNegotiation:
+            return prefix + "LH<vn>"
+        case .retry:
+            return prefix + "LH<retry>"
+        case .failedDecryption:
+            return prefix + "<undecryptable>"
+        case .protected(let keyState, let number, let longHeader):
+            if longHeader {
+                return prefix + "LH<\(keyState.description), \(number.value)>"
             }
-            description += "LH<\(type), "
-        } else {
-            description += "SH<"
+            return prefix + "SH<\(number.value)>"
         }
-        description += "\(number.value)>"
-
-        return description
     }
 }
 #endif

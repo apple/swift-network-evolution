@@ -273,6 +273,9 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         var serverQUICMultipathLinkage: TestDatagramMultipathLinkage?
 
         var pairedPathsArray = [PairedUDPIPPaths]()
+        #if !NETWORK_PRIVATE
+        var quicConnections: [QUICConnection] = []
+        #endif
 
         context.async {
             defer { expectation.fulfill() }
@@ -289,6 +292,11 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             let clientPath = PathProperties(parameters: clientParameters)
             let (clientQUICStreamListener, _, clientQUICMultipath) = storage.createTestQUICInstance()
             clientQUICMultipathLinkage = clientQUICMultipath
+            #if !NETWORK_PRIVATE
+            if let connection = storage.quicInstance(for: clientQUICStreamListener.base) {
+                quicConnections.append(connection)
+            }
+            #endif
 
             let clientQUICOptions: ProtocolOptions<QUICProtocol>
             if migrateCount > 0 {
@@ -352,6 +360,11 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             let serverPath = PathProperties(parameters: serverParameters)
             let (serverQUICStreamListener, _, serverQUICMultipath) = storage.createTestQUICInstance()
             serverQUICMultipathLinkage = serverQUICMultipath
+            #if !NETWORK_PRIVATE
+            if let connection = storage.quicInstance(for: serverQUICStreamListener.base) {
+                quicConnections.append(connection)
+            }
+            #endif
 
             let serverQUICOptions = self.createQUICTestOptions(
                 server: true,
@@ -549,6 +562,9 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             stopExpectation.fulfill()
         }
         wait(for: [stopExpectation], timeout: 10.0)
+        #if !NETWORK_PRIVATE
+        waitForQUICConnectionsToFinish(quicConnections, on: context)
+        #endif
     }
 
     func testQUICStackHandshakeIPv4() {
@@ -657,6 +673,9 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         var clientUpperHarness: StreamUpperHarness<TestStreamLinkageFamily>?
         var serverUpperHarness: NewStreamFlowHarness<TestStreamLinkageFamily>?
         var pairedPathsArray = [PairedUDPIPPaths]()
+        #if !NETWORK_PRIVATE
+        var quicConnections: [QUICConnection] = []
+        #endif
 
         var receivedPathChangedInfo: QUICPathInfo?
         var receivedPathValidatedInfo: QUICPathInfo?
@@ -682,6 +701,11 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             clientQUICOptions.setLogID(prefix: "C", parent: "pathEvents", protocolLogIDNumber: 1)
             let (clientQUICStreamListener, _, clientQUICMultipath) = storage.createTestQUICInstance()
             clientQUICMultipathLinkage = clientQUICMultipath
+            #if !NETWORK_PRIVATE
+            if let connection = storage.quicInstance(for: clientQUICStreamListener.base) {
+                quicConnections.append(connection)
+            }
+            #endif
             clientQUICOptions.setProtocolInstance(clientQUICStreamListener.identifier)
 
             clientParameters.defaultStack.prepend(applicationProtocol: .quic(clientQUICOptions))
@@ -728,6 +752,11 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             serverQUICOptions.setLogID(prefix: "L", parent: "pathEvents", protocolLogIDNumber: 1)
             let (serverQUICStreamListener, _, serverQUICMultipath) = storage.createTestQUICInstance()
             serverQUICMultipathLinkage = serverQUICMultipath
+            #if !NETWORK_PRIVATE
+            if let connection = storage.quicInstance(for: serverQUICStreamListener.base) {
+                quicConnections.append(connection)
+            }
+            #endif
             serverQUICOptions.setProtocolInstance(serverQUICStreamListener.identifier)
 
             serverParameters.defaultStack.prepend(applicationProtocol: .quic(serverQUICOptions))
@@ -893,6 +922,9 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             stopExpectation.fulfill()
         }
         wait(for: [stopExpectation], timeout: 10.0)
+        #if !NETWORK_PRIVATE
+        waitForQUICConnectionsToFinish(quicConnections, on: context)
+        #endif
     }
 
     // After the handshake the same limit applies to any address the server has not validated yet

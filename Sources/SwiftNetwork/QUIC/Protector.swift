@@ -1042,12 +1042,10 @@ struct Protector: ~Copyable, PrefixedLoggable {
 
     mutating func seal(_ packet: inout Packet, frame: inout Frame) throws(QUICError) {
         let signpostInterval = QUICSignpost.sealBegin(
-            keyState: packet.keyState!.description,
+            keyState: packet.keyState.description,
             packetNumber: packet.number
         )
-        guard let keyStateIndex: Int = packet.keyState?.rawValue else {
-            throw QUICError.protector(SecFramerError.noFramerFound)
-        }
+        let keyStateIndex: Int = packet.keyState.rawValue
         try Self.sealInner(&packet, frame: &frame, keys: writeFramer[keyStateIndex])
         QUICSignpost.sealEnd(signpostInterval)
         // Upon success, increment the sequence number all the way to the
@@ -1108,9 +1106,7 @@ struct Protector: ~Copyable, PrefixedLoggable {
 
     func openHeader(_ packet: inout Packet, frame: inout Frame) throws(QUICError) {
         do throws(QUICError) {
-            guard let keyStateIndex: Int = packet.keyState?.rawValue else {
-                throw QUICError.protector(SecFramerError.noFramerFound)
-            }
+            let keyStateIndex: Int = packet.keyState.rawValue
             try openHeaderInner(keys: readFramer[keyStateIndex], packet: &packet, frame: &frame)
         } catch QUICError.protector(SecFramerError.noFramerFound) {
             throw QUICError.protector(SecFramerError.noFramerFound)
@@ -1146,12 +1142,10 @@ struct Protector: ~Copyable, PrefixedLoggable {
 
     func open(_ packet: inout Packet, frame: inout Frame) throws(QUICError) {
         let signpostInterval = QUICSignpost.openBegin(
-            keyState: packet.keyState!.description,
+            keyState: packet.keyState.description,
             packetNumber: packet.number
         )
-        guard let keyStateIndex: Int = packet.keyState?.rawValue else {
-            throw QUICError.protector(SecFramerError.noFramerFound)
-        }
+        let keyStateIndex: Int = packet.keyState.rawValue
         try Self.openInner(keys: readFramer[keyStateIndex], packet: &packet, frame: &frame)
         QUICSignpost.openEnd(signpostInterval)
     }

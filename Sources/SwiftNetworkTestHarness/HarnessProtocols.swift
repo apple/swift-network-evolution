@@ -211,7 +211,10 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
         }
     }
 
+    public private(set) var outboundRoomAvailableCount = 0
+
     public func handleOutboundRoomAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
+        outboundRoomAvailableCount += 1
         if let outboundRoomAvailableCompletion = self.completions.outboundRoomAvailable {
             self.completions.outboundRoomAvailable = nil
             outboundRoomAvailableCompletion(&eventContext)
@@ -787,6 +790,14 @@ public class LowerHarness<LinkageFamily: DataLinkageFamily>: BottomProtocolHandl
 
     public func deliverPathIsNotPrimary() {
         deliverNetworkProtocolEvent(.pathIsNotPrimary)
+    }
+
+    public func deliverFlowControlled() {
+        deliverNetworkProtocolEvent(.flowControlled)
+    }
+
+    public func deliverFlowAllowed() {
+        deliverNetworkProtocolEvent(.flowAllowed)
     }
 }
 
