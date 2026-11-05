@@ -31,8 +31,13 @@ enum Constants {
     static let quicIPv4HeaderSize = (UDPProtocol.headerLength + IPProtocol.ipv4HeaderLength)
     static let quicIPv6HeaderSize = (UDPProtocol.headerLength + IPProtocol.ipv6HeaderLength)
 
+    #if NETWORK_EMBEDDED
+    // Check burst every 40 packets
+    static let packetBurstCount = 40
+    #else
     // Check burst every 10 packets
     static let packetBurstCount = 10
+    #endif
 
     // Don't burst more than 40 packets at a time
     static let maxPacketBurstCount = 40
