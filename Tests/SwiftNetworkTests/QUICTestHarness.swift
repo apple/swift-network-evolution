@@ -2347,12 +2347,19 @@ class QUICTestHarness {
 
         var busyStreamRoom: Int?
         var quietStreamRoomAfterWriting: Int?
+        #if canImport(SwiftNetwork)
         var filledPendingBytes: UInt64?
+        #endif
         onContext {
             for _ in 0..<chunkCount {
                 XCTAssertTrue(busyStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
             }
+            // `flowControlState` is internal to the package. The internal Network build only sees
+            // the SPI surface, so it cannot read the connection's queue directly and falls back to
+            // the busy stream's own room below.
+            #if canImport(SwiftNetwork)
             filledPendingBytes = self.state?.clientInstance.flowControlState.pendingOutboundBytesToSend
+            #endif
             do {
                 busyStreamRoom = try busyStream.invokeGetOutboundStreamDataRoomAvailable()
                 XCTAssertTrue(quietStream.write([UInt8](repeating: 0x5a, count: 100)))
@@ -2372,6 +2379,7 @@ class QUICTestHarness {
         // The peer ACKs immediately, so between turns the queued data goes out and the
         // congestion window grows. Fill the queue again in the turn that opens the later stream,
         // so that its room is set while the queue is as full as it was.
+        #if canImport(SwiftNetwork)
         var pendingBytesWhenLaterStreamOpened: UInt64?
         let refillQueue = {
             guard let connection = self.state?.clientInstance, let filledPendingBytes else {
@@ -2387,15 +2395,40 @@ class QUICTestHarness {
             }
             pendingBytesWhenLaterStreamOpened = connection.flowControlState.pendingOutboundBytesToSend
         }
+        #else
+        var busyStreamRoomWhenLaterStreamOpened: Int?
+        let refillQueue = {
+            var refills = 0
+            while ((try? busyStream.invokeGetOutboundStreamDataRoomAvailable()) ?? 0) > 0
+                && refills < 16 * chunkCount
+            {
+                XCTAssertTrue(busyStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
+                refills += 1
+            }
+            do {
+                busyStreamRoomWhenLaterStreamOpened = try busyStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+        }
+        #endif
         guard let laterStream = createNewStream(identifier: "C3", beforeOpening: refillQueue) else {
             XCTFail("Failed to create a stream while the connection's queue is full")
             return
         }
+        #if canImport(SwiftNetwork)
         XCTAssertGreaterThanOrEqual(
             pendingBytesWhenLaterStreamOpened ?? 0,
             filledPendingBytes ?? UInt64.max,
             "The connection's queue must be full when the later stream opens"
         )
+        #else
+        XCTAssertEqual(
+            busyStreamRoomWhenLaterStreamOpened,
+            0,
+            "The stream serving the connection's queue must still have no room when the later stream opens"
+        )
+        #endif
         var laterStreamRoom: Int?
         onContext {
             do {

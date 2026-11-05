@@ -7247,6 +7247,9 @@ extension QUICConnection {
         case .announceNewInboundConnectionID(let connectionID, let statelessResetToken):
             log.info("Announcing new CID \(connectionID) to the peer")
             announceNewConnectionID(connectionID, statelessResetToken: statelessResetToken, in: &eventContext)
+            // The NEW_CONNECTION_ID frame is queued, not sent: send it now rather than waiting for
+            // unrelated traffic or an ACK timer to flush it.
+            sendFrames(in: &eventContext)
         case .retireOutboundConnectionID(let connectionID):
             log.info("Retire outbound CID \(connectionID) to the peer")
             sendRetireConnectionIDFrame(connectionID, in: &eventContext)
