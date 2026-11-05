@@ -23,7 +23,7 @@
 @available(Network 0.1.0, *)
 #endif
 public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStringConvertible {
-    public private(set) var nanoseconds: Int64
+    public var nanoseconds: Int64
 
     // These are computed properties wrapping literals, and deliberately not
     // `static let`s. A `static let` becomes a lazily initialised global, so every
@@ -31,13 +31,14 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
     // literal constant-folds at each use site. Deriving them from
     // `System.Time.NSEC_PER_USEC` and friends would not fold either, because those
     // are themselves `static let`s.
-    private static var nanosecondsPerMicrosecond: Int64 { 1_000 }
-    private static var nanosecondsPerMillisecond: Int64 { 1_000_000 }
-    private static var nanosecondsPerSecond: Int64 { 1_000_000_000 }
-    private static var nanosecondsPerMinute: Int64 { 60 * nanosecondsPerSecond }
-    private static var nanosecondsPerHour: Int64 { 60 * nanosecondsPerMinute }
-    private static var nanosecondsPerDay: Int64 { 24 * nanosecondsPerHour }
+    @inlinable static var nanosecondsPerMicrosecond: Int64 { 1_000 }
+    @inlinable static var nanosecondsPerMillisecond: Int64 { 1_000_000 }
+    @inlinable static var nanosecondsPerSecond: Int64 { 1_000_000_000 }
+    @inlinable static var nanosecondsPerMinute: Int64 { 60 * nanosecondsPerSecond }
+    @inlinable static var nanosecondsPerHour: Int64 { 60 * nanosecondsPerMinute }
+    @inlinable static var nanosecondsPerDay: Int64 { 24 * nanosecondsPerHour }
 
+    @usableFromInline
     init(nanoseconds: Int64) {
         self.nanoseconds = nanoseconds
     }
@@ -110,38 +111,47 @@ public struct NetworkDuration: DurationProtocol, Hashable, Equatable, CustomStri
         lhs.nanoseconds == rhs.nanoseconds
     }
 
+    @inlinable
     public static func nanoseconds<T>(_ nanoseconds: T) -> NetworkDuration where T: BinaryInteger {
         NetworkDuration(nanoseconds: Int64(nanoseconds))
     }
 
+    @inlinable
     public static func microseconds<T>(_ microseconds: T) -> NetworkDuration where T: BinaryInteger {
         NetworkDuration(nanoseconds: Int64(microseconds) * NetworkDuration.nanosecondsPerMicrosecond)
     }
 
+    @inlinable
     public static func microseconds(_ microseconds: Double) -> NetworkDuration {
         NetworkDuration(nanoseconds: Int64(microseconds * Double(NetworkDuration.nanosecondsPerMicrosecond)))
     }
 
+    @inlinable
     public static func milliseconds<T>(_ milliseconds: T) -> NetworkDuration where T: BinaryInteger {
         NetworkDuration(nanoseconds: Int64(milliseconds) * NetworkDuration.nanosecondsPerMillisecond)
     }
 
+    @inlinable
     public static func milliseconds(_ milliseconds: Double) -> NetworkDuration {
         NetworkDuration(nanoseconds: Int64(milliseconds * Double(NetworkDuration.nanosecondsPerMillisecond)))
     }
 
+    @inlinable
     public static func seconds<T>(_ seconds: T) -> NetworkDuration where T: BinaryInteger {
         NetworkDuration(nanoseconds: Int64(seconds) * NetworkDuration.nanosecondsPerSecond)
     }
 
+    @inlinable
     public static func minutes<T>(_ minutes: T) -> NetworkDuration where T: BinaryInteger {
         NetworkDuration(nanoseconds: Int64(minutes) * NetworkDuration.nanosecondsPerMinute)
     }
 
+    @inlinable
     public static func hours<T>(_ hours: T) -> NetworkDuration where T: BinaryInteger {
         NetworkDuration(nanoseconds: Int64(hours) * NetworkDuration.nanosecondsPerHour)
     }
 
+    @inlinable
     public static func days<T>(_ days: T) -> NetworkDuration where T: BinaryInteger {
         NetworkDuration(nanoseconds: Int64(days) * NetworkDuration.nanosecondsPerDay)
     }
