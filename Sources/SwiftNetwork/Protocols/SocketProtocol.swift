@@ -168,9 +168,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     // This applies the options from the parameters to a datagram socket. It logs a failure and
     // goes on.
     private func applyParameterOptions(socket: SystemSocket, parameters: Parameters) {
-        for failure in socket.applySocketOptions(from: parameters) {
-            log.info(failure)
-        }
+        socket.applySocketOptions(from: parameters, log)
 
         let stack = parameters.defaultStack
         let ipOptions = stack.internetOptionsAsIPOptions(mutable: false)?.perProtocolOptions
@@ -185,9 +183,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
                 // QUIC discovers the path MTU itself, so its datagrams must not be fragmented.
                 options.fragmentationEnabled = false
             }
-            for failure in socket.applyIPOptions(options, isIPv6: isIPv6) {
-                log.info(failure)
-            }
+            socket.applyIPOptions(options, isIPv6: isIPv6, log)
             if let dscpValue = options.dscpValue {
                 configuredDSCP = dscpValue
                 lastTypeOfService = dscpValue << 2
@@ -739,18 +735,14 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
 
         applyDefaultSocketOptions(socket: socket)
         if let parameters {
-            for failure in socket.applySocketOptions(from: parameters) {
-                log.info(failure)
-            }
+            socket.applySocketOptions(from: parameters, log)
         }
 
         if let stack = parameters?.defaultStack {
             if let ipOptions = stack.internetOptionsAsIPOptions(mutable: false)?.perProtocolOptions,
                 let isIPv6 = remote.isIPv6Address
             {
-                for failure in socket.applyIPOptions(ipOptions, isIPv6: isIPv6) {
-                    log.info(failure)
-                }
+                socket.applyIPOptions(ipOptions, isIPv6: isIPv6, log)
             }
             // A Unix-domain socket skips the TCP options. Setting them would fail on it.
             if !isUnixDomain, case .tcp(let options) = stack.transport, let tcpOptions = options.perProtocolOptions {
@@ -1450,9 +1442,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             do { try socket.setRetransmitFinDrop(true) } catch { log.info("Failed to set TCP_RXT_FINDROP: \(error)") }
         }
         #if NETWORK_PRIVATE
-        for failure in socket.apply(opts.privateSocketOptions) {
-            log.info(failure)
-        }
+        socket.apply(opts.privateSocketOptions, log)
         #endif
         // Zero means the option isn't set, so the kernel default applies.
         let timeouts: [(name: CInt, label: String, seconds: UInt32)] = [
@@ -1701,9 +1691,8 @@ extension SystemSocket {
         }
     }
 
-    /// Sets the socket-level options from the parameters, and returns a message for each one it
-    /// couldn't set.
-    fileprivate func applySocketOptions(from parameters: Parameters) -> [String] {
+    /// Sets the socket-level options from the parameters, and logs each one it couldn't set.
+    fileprivate func applySocketOptions(from parameters: Parameters, _ log: borrowing NetworkLoggerState) {
         var options: [SocketOption] = []
         if parameters.reuseLocalAddress {
             options.append((SOL_SOCKET, SO_REUSEADDR, 1, "SO_REUSEADDR"))
@@ -1712,20 +1701,18 @@ extension SystemSocket {
         #if NETWORK_PRIVATE
         options += parameters.privateSocketOptions
         #endif
-        return apply(options)
+        apply(options, log)
     }
 
-    /// Sets each option, and returns a message for each one it couldn't set.
-    func apply(_ options: [SocketOption]) -> [String] {
-        var failures: [String] = []
+    /// Sets each option, and logs each one it couldn't set.
+    func apply(_ options: [SocketOption], _ log: borrowing NetworkLoggerState) {
         for option in options {
             do {
                 try setSocketOption(level: option.level, name: option.name, value: option.value)
             } catch {
-                failures.append("Failed to set \(option.label): \(error)")
+                log.info("Failed to set \(option.label): \(error)")
             }
         }
-        return failures
     }
 
     /// Sets an IP-level option to `value`, at the IPv6 level with `v6` or the IPv4 level with
@@ -1734,14 +1721,13 @@ extension SystemSocket {
         try setSocketOption(level: CInt(isIPv6 ? IPPROTO_IPV6 : IPPROTO_IP), name: isIPv6 ? v6 : v4, value: value)
     }
 
-    /// Applies the IP options to the socket and returns a message for each option it couldn't set.
-    fileprivate func applyIPOptions(_ opts: IPProtocol.Options, isIPv6: Bool) -> [String] {
-        var failures: [String] = []
+    /// Applies the IP options to the socket, and logs each option it couldn't set.
+    fileprivate func applyIPOptions(_ opts: IPProtocol.Options, isIPv6: Bool, _ log: borrowing NetworkLoggerState) {
         if let hopLimit = opts.hopLimit {
             do {
                 try setIPOption(isIPv6: isIPv6, v4: IP_TTL, v6: IPV6_UNICAST_HOPS, value: CInt(hopLimit))
             } catch {
-                failures.append("Failed to set hop limit: \(error)")
+                log.info("Failed to set hop limit: \(error)")
             }
         }
 
@@ -1750,7 +1736,7 @@ extension SystemSocket {
             do {
                 try setIPOption(isIPv6: isIPv6, v4: IP_TOS, v6: IPV6_TCLASS, value: CInt(dscpValue) << 2)
             } catch {
-                failures.append("Failed to set DSCP: \(error)")
+                log.info("Failed to set DSCP: \(error)")
             }
         }
 
@@ -1763,7 +1749,7 @@ extension SystemSocket {
                     value: CInt(1)
                 )
             } catch {
-                failures.append("Failed to set IPV6_USE_MIN_MTU: \(error)")
+                log.info("Failed to set IPV6_USE_MIN_MTU: \(error)")
             }
         }
 
@@ -1776,7 +1762,7 @@ extension SystemSocket {
                     value: fragmentationEnabled ? 0 : 1
                 )
             } catch {
-                failures.append("Failed to set DONTFRAG: \(error)")
+                log.info("Failed to set DONTFRAG: \(error)")
             }
         }
         #elseif canImport(Glibc) || canImport(Musl) || canImport(Android)
@@ -1785,11 +1771,10 @@ extension SystemSocket {
             do {
                 try setIPOption(isIPv6: isIPv6, v4: IP_MTU_DISCOVER, v6: IPV6_MTU_DISCOVER, value: discovery)
             } catch {
-                failures.append("Failed to set MTU_DISCOVER: \(error)")
+                log.info("Failed to set MTU_DISCOVER: \(error)")
             }
         }
         #endif
-        return failures
     }
 }
 

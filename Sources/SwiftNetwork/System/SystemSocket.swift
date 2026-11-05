@@ -163,16 +163,21 @@ class SystemSocket {
             throw NetworkError.posix(EINVAL)
         }
         var address = sockaddr_un()
-        let pathBytes = Array(path.utf8)
-        // sun_path needs room for the terminating NUL.
-        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
-            throw NetworkError.posix(ENAMETOOLONG)
-        }
         #if canImport(Darwin)
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
         #endif
         address.sun_family = sa_family_t(AF_UNIX)
-        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: pathBytes) }
+        // withUTF8 is mutating, so it needs a variable. It copies straight from the string's
+        // storage, and sun_path needs room for the terminating NUL.
+        var path = path
+        let pathFits = path.withUTF8 { utf8 in
+            guard utf8.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+            withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: utf8) }
+            return true
+        }
+        guard pathFits else {
+            throw NetworkError.posix(ENAMETOOLONG)
+        }
         let descriptor = self.sockfd
         let result = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
