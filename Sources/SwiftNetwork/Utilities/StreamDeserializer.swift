@@ -16,6 +16,11 @@
 internal import SwiftSystem
 #endif
 
+// When a stream ends where truncation is allowed, the parser is fed zero bytes in blocks of this size,
+// up to this many times, to read the elements that were omitted. Parsing that still needs more is invalid.
+private let truncationZeroBlockByteCount = 64
+private let truncationZeroBlockLimit = 64
+
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 @resultBuilder
@@ -120,10 +125,12 @@ public struct StreamDeserializer<
         case forward(StepByteCountEvaluator, StepByteForwarder)
         case finalize
         case finalizeWhen(StepConditionEvaluator)
+        /// Marks the point after which the stream may end between elements. See `allowTruncation()`.
+        case allowTruncation
 
         func shouldExecute(for value: inout T) -> Bool {
             switch self {
-            case .beginState: return false  // Nothing to do
+            case .beginState, .allowTruncation: return false  // Nothing to do
             case .parse, .finalize, .forward: return true
             case .jumpToState(_, let evaluator): return evaluator(&value)
             case .parseWhen(let evaluator, _): return evaluator(&value)
@@ -190,6 +197,9 @@ public struct StreamDeserializer<
         streamSteps.count
     }
 
+    // Set once parsing passes an allowTruncation() step, until the message completes
+    private var truncationAllowed = false
+
     private var currentLoopStepCursor: Int?
     private var stepLoopMaximumBytes: Int?  // Stored value for currentLoopStepCursor, max bytes to parse in loop
     private var stepLoopByteCount: Int?  // Stored value for currentLoopStepCursor, current bytes parsed in loop
@@ -221,6 +231,7 @@ public struct StreamDeserializer<
     private mutating func extractValueAndReset() -> T {
         // Reset step cursors
         stepCursor = 0
+        truncationAllowed = false
         currentLoopStepCursor = 0
         currentForwardBytesStepCursor = 0
 
@@ -253,6 +264,11 @@ public struct StreamDeserializer<
             throw storedFailure
         }
         while stepCursor < stepCount {
+            if case .allowTruncation = streamSteps[stepCursor] {
+                truncationAllowed = true
+                stepCursor += 1
+                continue
+            }
             // Check condition before executing builder
             guard streamSteps[stepCursor].shouldExecute(for: &value) else {
                 // Ignore this step and move to the next
@@ -360,6 +376,73 @@ public struct StreamDeserializer<
         return extractValueAndReset()
     }
 
+    /// Ends deserialization, returning the partially parsed value, such as to release resources it
+    /// holds when the deserializer is discarded before a message completes.
+    public consuming func takePartialValue() -> T {
+        value
+    }
+
+    private enum EndOfStreamAction {
+        /// Nothing of a message had been parsed, so there is no message
+        case noMessage
+        /// The remaining steps should be fed zero bytes
+        case readOmittedElements
+    }
+
+    /// Whether the current step has consumed part of what it needs, so the stream ended inside an element.
+    private mutating func currentStepHasPartialProgress() -> Bool {
+        guard stepCursor < stepCount else { return false }
+        switch streamSteps[stepCursor] {
+        case .forward:
+            let remaining: Int
+            if currentForwardBytesStepCursor == stepCursor {
+                remaining = stepForwardTotalByteCount - stepForwardCurrentByteCount
+            } else {
+                remaining = streamSteps[stepCursor].byteCount(for: &value) ?? 0
+            }
+            return remaining > 0
+        case .parseWhile:
+            if currentLoopStepCursor == stepCursor, let stepLoopMaximumBytes, let stepLoopByteCount {
+                return stepLoopByteCount < stepLoopMaximumBytes
+            }
+            return false
+        default:
+            return false
+        }
+    }
+
+    private mutating func endOfStreamAction(
+        leftoverByteCount: Int
+    ) throws(DeserializationError) -> EndOfStreamAction {
+        if let storedFailure {
+            throw storedFailure
+        }
+        let firstStep = streamSteps.steps.firstIndex { step in
+            if case .beginState = step { return false }
+            return true
+        }
+        let partialProgress = currentStepHasPartialProgress()
+        if stepCursor <= (firstStep ?? 0) && !partialProgress {
+            guard leftoverByteCount == 0 else {
+                storedFailure = .parsingFailed
+                throw .parsingFailed
+            }
+            return .noMessage
+        }
+        // Leftover bytes were not enough for the current step, and partial progress means the
+        // stream ended inside an element, so neither can be treated as an omitted element.
+        guard truncationAllowed, leftoverByteCount == 0, !partialProgress else {
+            storedFailure = .parsingFailed
+            throw .parsingFailed
+        }
+        return .readOmittedElements
+    }
+
+    fileprivate mutating func failTruncated() throws(DeserializationError) -> Never {
+        storedFailure = .parsingFailed
+        throw .parsingFailed
+    }
+
     public mutating func handleInput(_ factory: inout Factory) throws(DeserializationError) -> T? {
         try handleInputInternal(
             { builder, value in
@@ -407,6 +490,18 @@ public struct StreamDeserializer<
         to forwarder: @escaping StepByteForwarder
     ) -> [Step] {
         StreamDeserializationBuilder<T, StateIdentifier, Factory>.buildExpression(.forward(byteCount, forwarder))
+    }
+
+    /// Allows the stream to end after this point, between elements, without invalidating the message.
+    ///
+    /// By default, a stream that ends before the message is complete is invalid. After this step has
+    /// been passed, `handleEndOfStream` completes the message instead when the stream ends where no
+    /// element is partly received: the steps that remain are run as if the missing bytes were zero. Use
+    /// this for formats that let an encoder omit trailing zero-length elements, and place it so that
+    /// everything before it stays required. A message that ends before this step, or in the middle of
+    /// an element, is still invalid.
+    public static func allowTruncation() -> [Step] {
+        StreamDeserializationBuilder<T, StateIdentifier, Factory>.buildExpression(.allowTruncation)
     }
 
     public static func finalizeMessage() -> [Step] {
@@ -462,7 +557,68 @@ extension StreamDeserializer where T: ~Copyable, Factory == FrameArraySpanFactor
 }
 
 @available(Network 0.1.0, *)
+extension StreamDeserializer where T: ~Copyable, Factory == FrameArraySpanFactory {
+    /// Tells the deserializer that no more frames will arrive.
+    ///
+    /// Call this after `handleFrames` has returned nil and the stream has ended. Returns the message
+    /// if the stream ended where the parser allows truncation (see `allowTruncation()`), nil if no part
+    /// of a message had been received, and throws if the message was cut short.
+    public mutating func handleEndOfStream(_ frames: inout FrameArray) throws(DeserializationError) -> T? {
+        switch try endOfStreamAction(leftoverByteCount: frames.unclaimedLength) {
+        case .noMessage:
+            return nil
+        case .readOmittedElements:
+            for _ in 0..<truncationZeroBlockLimit {
+                frames.add(frames: FrameArray(frame: Frame(count: truncationZeroBlockByteCount)))
+                let message: T?
+                do {
+                    message = try handleFrames(&frames)
+                } catch {
+                    dropUnparsedFrames(&frames)
+                    throw error
+                }
+                if let message {
+                    // Whatever is left is the zero bytes that were added
+                    dropUnparsedFrames(&frames)
+                    return message
+                }
+            }
+            dropUnparsedFrames(&frames)
+            try failTruncated()
+        }
+    }
+
+    private func dropUnparsedFrames(_ frames: inout FrameArray) {
+        let length = frames.unclaimedLength
+        if length > 0 {
+            _ = frames.claim(fromStart: length, removeClaimedFrames: true)
+        }
+    }
+}
+
+@available(Network 0.1.0, *)
 extension StreamDeserializer where T: ~Copyable, Factory == EmptySpanFactory {
+    /// Tells the deserializer that no more bytes will arrive.
+    ///
+    /// Call this after `handleSpan` has returned nil and the stream has ended, passing the span that
+    /// `handleSpan` was last given if it could not be fully parsed. See the frame array variant.
+    public mutating func handleEndOfStream(
+        remaining span: RawSpan = RawSpan()
+    ) throws(DeserializationError) -> T? {
+        switch try endOfStreamAction(leftoverByteCount: span.byteCount) {
+        case .noMessage:
+            return nil
+        case .readOmittedElements:
+            let zeros = [UInt8](repeating: 0, count: truncationZeroBlockByteCount)
+            for _ in 0..<truncationZeroBlockLimit {
+                if let message = try handleSpan(zeros.span.bytes) {
+                    return message
+                }
+            }
+            try failTruncated()
+        }
+    }
+
     public mutating func handleSpan(_ span: RawSpan) throws(DeserializationError) -> T? {
         try handleInputInternal(
             { builder, value in
