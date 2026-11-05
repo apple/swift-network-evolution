@@ -21,11 +21,27 @@ public struct NetworkEventDomain: Sendable, Hashable, CustomStringConvertible {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
+public struct LinkCongestionInfo: Sendable, Equatable {
+    public var congestionCount: Int
+    public var congestionExperiencedCount: Int
+    public var packetCount: Int
+
+    public init(congestionCount: Int, congestionExperiencedCount: Int, packetCount: Int) {
+        self.congestionCount = congestionCount
+        self.congestionExperiencedCount = congestionExperiencedCount
+        self.packetCount = packetCount
+    }
+}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
 /// An extensible event that a lower protocol reports to upper protocols.
 public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible {
     enum InternalEvent: Equatable {
         case viabilityChanged(viable: Bool)
         case pathPrimaryChanged(primary: Bool)
+        case flowControlChanged(controlled: Bool)
+        case linkCongestion(info: LinkCongestionInfo)
         case quic(event: QUICEvent)
         #if !NETWORK_EMBEDDED
         case custom(event: any DomainSpecificNetworkProtocolEvent)
@@ -33,6 +49,10 @@ public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible
 
         static func == (lhs: NetworkProtocolEvent.InternalEvent, rhs: NetworkProtocolEvent.InternalEvent) -> Bool {
             switch (lhs, rhs) {
+            case (.flowControlChanged(let lEvent), .flowControlChanged(let rEvent)):
+                return lEvent == rEvent
+            case (.linkCongestion(let lInfo), .linkCongestion(let rInfo)):
+                return lInfo == rInfo
             case (.viabilityChanged(let lEvent), .viabilityChanged(let rEvent)):
                 return lEvent == rEvent
             case (.quic(let lEvent), .quic(let rEvent)):
@@ -76,6 +96,24 @@ public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible
         .init(internalEvent: .pathPrimaryChanged(primary: false))
     }
 
+    static public var flowControlled: NetworkProtocolEvent {
+        .init(internalEvent: .flowControlChanged(controlled: true))
+    }
+
+    static public var flowAllowed: NetworkProtocolEvent {
+        .init(internalEvent: .flowControlChanged(controlled: false))
+    }
+
+    static public func linkCongestion(_ info: LinkCongestionInfo) -> NetworkProtocolEvent {
+        .init(internalEvent: .linkCongestion(info: info))
+    }
+
+    /// Whether this is a flow control event, and if so whether the flow is controlled.
+    public var flowControlState: Bool? {
+        if case .flowControlChanged(let controlled) = internalEvent { return controlled }
+        return nil
+    }
+
     #if !NETWORK_EMBEDDED
     public init(custom: (any DomainSpecificNetworkProtocolEvent)) {
         self.internalEvent = .custom(event: custom)
@@ -85,6 +123,11 @@ public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible
     public var description: String {
         switch internalEvent {
         case .quic(let event): return event.description
+        case .flowControlChanged(let controlled):
+            return controlled ? "Flow Controlled" : "Flow Allowed"
+        case .linkCongestion(let info):
+            return
+                "Link Congestion (congestion: \(info.congestionCount), CE: \(info.congestionExperiencedCount), packets: \(info.packetCount))"
         case .viabilityChanged(let viable):
             if viable {
                 return "Viable"
