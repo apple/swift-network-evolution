@@ -1154,4 +1154,334 @@ final class SwiftNetworkStreamDeserializationTests: NetTestCase {
         XCTAssertEqual(parsed.strings, strings)
         feedFrames.finalizeAllFramesAsFailed()
     }
+
+    // MARK: - Empty frames
+
+    func testEmptyFramesBetweenBytes() {
+        // Type 100 needs a two byte VLE, so empty frames fall inside a multi-byte integer
+        let tlvBytes = serializeTLVBytes(type: 100, value: [0x0A, 0x0B, 0x0C])
+        var tlvParser = TLVProtocol()
+        var feedFrames = FrameArray()
+
+        for (i, byte) in tlvBytes.enumerated() {
+            // Each byte is preceded by a varying number of empty frames
+            for _ in 0..<(i % 4) {
+                feedFrames.add(frames: FrameArray(frame: Frame(copyBuffer: [])))
+            }
+            feedFrames.add(frames: FrameArray(frame: Frame(copyBuffer: [byte])))
+            if i < tlvBytes.count - 1 {
+                if var result = tlvParser.parse(from: &feedFrames) {
+                    XCTFail("Should not parse with only \(i + 1) of \(tlvBytes.count) bytes")
+                    result.value.finalizeAllFramesAsFailed()
+                }
+            }
+        }
+
+        guard var parsed = tlvParser.parse(from: &feedFrames) else {
+            XCTFail("Failed to parse complete TLV")
+            feedFrames.finalizeAllFramesAsFailed()
+            return
+        }
+        XCTAssertEqual(parsed.type, 100)
+        XCTAssertEqual(extractBytes(from: parsed.value), [0x0A, 0x0B, 0x0C])
+        parsed.value.finalizeAllFramesAsFailed()
+        feedFrames.finalizeAllFramesAsFailed()
+    }
+
+    func testEmptyFramesInOneArray() {
+        var tlvParser = TLVProtocol()
+        var feedFrames = FrameArray()
+        let pieces: [[UInt8]] = [[], [], [0x40], [], [], [0x64], [], [0x03], [], [0x0A, 0x0B], [], [], [0x0C], []]
+        for piece in pieces {
+            feedFrames.add(frames: FrameArray(frame: Frame(copyBuffer: piece)))
+        }
+
+        guard var parsed = tlvParser.parse(from: &feedFrames) else {
+            XCTFail("Failed to parse TLV spread across empty frames")
+            feedFrames.finalizeAllFramesAsFailed()
+            return
+        }
+        XCTAssertEqual(parsed.type, 100)
+        XCTAssertEqual(extractBytes(from: parsed.value), [0x0A, 0x0B, 0x0C])
+        parsed.value.finalizeAllFramesAsFailed()
+        feedFrames.finalizeAllFramesAsFailed()
+    }
+
+    func testOnlyEmptyFrames() {
+        var tlvParser = TLVProtocol()
+        var feedFrames = FrameArray()
+        for _ in 0..<3 {
+            feedFrames.add(frames: FrameArray(frame: Frame(copyBuffer: [])))
+        }
+        if var result = tlvParser.parse(from: &feedFrames) {
+            XCTFail("Should not parse from empty frames")
+            result.value.finalizeAllFramesAsFailed()
+        }
+        feedFrames.finalizeAllFramesAsFailed()
+    }
+
+    // MARK: - End of stream
+
+    // A message that is a type, followed by an optional length and value. An encoder may stop after
+    // the type, in which case the length is zero.
+    struct TruncatableProtocol: ~Copyable {
+        struct State: ~Copyable, StreamDeserializerState {
+            typealias StateMachineStepIdentifier = Step
+            enum Step: Hashable {
+                case readingType
+                case readingTail
+            }
+
+            var type = 0
+            var length = 0
+            var value = FrameArray()
+        }
+
+        static let parser = FrameArrayStreamDeserializer<State>.parser { stream in
+            stream.beginState(.readingType)
+            stream.parsePartialMessage { read, state throws(DeserializationError) in
+                try read.vle(&state.type)
+            }
+            stream.allowTruncation()
+            stream.beginState(.readingTail)
+            stream.parsePartialMessage { read, state throws(DeserializationError) in
+                try read.vle(&state.length)
+            }
+            stream.forwardPartialMessage(byteCount: { $0.length }) { byteCount, factory, state in
+                let drainedFrames = factory.drainArray(maximumByteCount: byteCount)
+                let drainedByteCount = drainedFrames.unclaimedLength
+                state.value.add(frames: drainedFrames)
+                return drainedByteCount
+            }
+            stream.finalizeMessage()
+        }
+    }
+
+    enum EndOutcome: ~Copyable {
+        case message(FrameArray, type: Int, length: Int)
+        case noMessage
+        case failed
+    }
+
+    func finishStream(_ bytes: [UInt8]) -> EndOutcome {
+        var parser = StreamDeserializer(parser: TruncatableProtocol.parser)
+        var frames = FrameArray()
+        if !bytes.isEmpty {
+            frames.add(frames: FrameArray(frame: Frame(copyBuffer: bytes)))
+        }
+        let outcome: EndOutcome
+        do {
+            if var complete = try parser.handleFrames(&frames) {
+                outcome = .message(
+                    FrameArray(frame: Frame(copyBuffer: extractBytes(from: complete.value))),
+                    type: complete.type,
+                    length: complete.length
+                )
+                complete.value.finalizeAllFramesAsFailed()
+            } else if var truncated = try parser.handleEndOfStream(&frames) {
+                outcome = .message(
+                    FrameArray(frame: Frame(copyBuffer: extractBytes(from: truncated.value))),
+                    type: truncated.type,
+                    length: truncated.length
+                )
+                truncated.value.finalizeAllFramesAsFailed()
+            } else {
+                outcome = .noMessage
+            }
+        } catch {
+            outcome = .failed
+        }
+        // Release any value the parser was still building
+        var partial = (consume parser).takePartialValue()
+        partial.value.finalizeAllFramesAsFailed()
+        frames.finalizeAllFramesAsFailed()
+        return outcome
+    }
+
+    func testEndOfStreamWithNothingReceived() {
+        guard case .noMessage = finishStream([]) else {
+            XCTFail("An empty stream has no message")
+            return
+        }
+    }
+
+    func testEndOfStreamAfterTruncationPointCompletesMessage() {
+        guard case .message(var value, let type, let length) = finishStream([0x07]) else {
+            XCTFail("A stream ending after the type should complete")
+            return
+        }
+        XCTAssertEqual(type, 7)
+        XCTAssertEqual(length, 0)
+        XCTAssertEqual(extractBytes(from: value), [])
+        value.finalizeAllFramesAsFailed()
+    }
+
+    func testEndOfStreamAfterEmptyLengthCompletesMessageWithoutTruncation() {
+        guard case .message(var value, let type, let length) = finishStream([0x07, 0x00]) else {
+            XCTFail("A complete message should parse")
+            return
+        }
+        XCTAssertEqual(type, 7)
+        XCTAssertEqual(length, 0)
+        value.finalizeAllFramesAsFailed()
+    }
+
+    func testEndOfStreamInsideValueFails() {
+        guard case .failed = finishStream([0x07, 0x03, 0x01]) else {
+            XCTFail("A stream ending inside the value is invalid")
+            return
+        }
+        // Ending right after the length, before any of the value
+        guard case .failed = finishStream([0x07, 0x03]) else {
+            XCTFail("A stream ending before the value is invalid")
+            return
+        }
+    }
+
+    func testEndOfStreamInsideLengthFails() {
+        // 0x40 starts a two byte length
+        guard case .failed = finishStream([0x07, 0x40]) else {
+            XCTFail("A stream ending inside the length is invalid")
+            return
+        }
+    }
+
+    func testEndOfStreamBeforeTruncationPointFails() {
+        // A two byte type, cut after its first byte
+        guard case .failed = finishStream([0x40]) else {
+            XCTFail("A stream ending inside the type is invalid")
+            return
+        }
+    }
+
+    /// The outcome of one deserializer call, for states that cannot be compared or released generically.
+    enum CallResult: ~Copyable {
+        case message
+        case noMessage
+        case threw
+    }
+
+    func handleFrames<T: StreamDeserializerState & ~Copyable>(
+        _ parser: inout FrameArrayStreamDeserializer<T>,
+        _ frames: inout FrameArray
+    ) -> CallResult where T.StateMachineStepIdentifier: Sendable {
+        do {
+            return try parser.handleFrames(&frames) == nil ? .noMessage : .message
+        } catch {
+            return .threw
+        }
+    }
+
+    func handleEndOfStream<T: StreamDeserializerState & ~Copyable>(
+        _ parser: inout FrameArrayStreamDeserializer<T>,
+        _ frames: inout FrameArray
+    ) -> CallResult where T.StateMachineStepIdentifier: Sendable {
+        do {
+            return try parser.handleEndOfStream(&frames) == nil ? .noMessage : .message
+        } catch {
+            return .threw
+        }
+    }
+
+    func testEndOfStreamWithoutTruncationPointFails() {
+        var parser = StreamDeserializer(parser: TLVProtocol.parser)
+        // Type only, with no length
+        var frames = FrameArray(frame: Frame(copyBuffer: [0x01]))
+        guard case .noMessage = handleFrames(&parser, &frames) else {
+            XCTFail("Should need more data")
+            return
+        }
+        guard case .threw = handleEndOfStream(&parser, &frames) else {
+            XCTFail("Without a truncation point the stream cannot end here")
+            return
+        }
+        // The failure sticks
+        guard case .threw = handleEndOfStream(&parser, &frames) else {
+            XCTFail("The failure should stick")
+            return
+        }
+        frames.finalizeAllFramesAsFailed()
+    }
+
+    func testEndOfStreamWithoutTruncationPointAndNothingReceived() {
+        var parser = StreamDeserializer(parser: TLVProtocol.parser)
+        var frames = FrameArray()
+        guard case .noMessage = handleEndOfStream(&parser, &frames) else {
+            XCTFail("An empty stream has no message")
+            return
+        }
+    }
+
+    func testParserReusableAfterTruncatedMessage() {
+        var parser = StreamDeserializer(parser: TruncatableProtocol.parser)
+        var frames = FrameArray(frame: Frame(copyBuffer: [0x07]))
+        guard case .noMessage = handleFrames(&parser, &frames) else {
+            XCTFail("Should need more data")
+            return
+        }
+        if var first = try? parser.handleEndOfStream(&frames) {
+            XCTAssertEqual(first.type, 7)
+            first.value.finalizeAllFramesAsFailed()
+        } else {
+            XCTFail("Should complete")
+        }
+        XCTAssertEqual(frames.unclaimedLength, 0)
+
+        // A second message on the same parser starts over, so truncation is not allowed
+        // until its type has arrived
+        frames.add(frames: FrameArray(frame: Frame(copyBuffer: [0x40])))
+        guard case .noMessage = handleFrames(&parser, &frames) else {
+            XCTFail("Should need more data")
+            return
+        }
+        guard case .threw = handleEndOfStream(&parser, &frames) else {
+            XCTFail("Ending inside the second type should fail")
+            return
+        }
+        frames.finalizeAllFramesAsFailed()
+    }
+
+    // Span variant of a message with an optional trailing two byte count
+    struct SpanTruncatableProtocol: ~Copyable {
+        struct State: StreamDeserializerState {
+            typealias StateMachineStepIdentifier = Step
+            enum Step: Hashable {
+                case readingType
+                case readingCount
+            }
+
+            var type = 0
+            var count: UInt16 = 0
+        }
+
+        static let parser = SpanStreamDeserializer<State>.parser { stream in
+            stream.beginState(.readingType)
+            stream.parsePartialMessage { read, state throws(DeserializationError) in
+                try read.vle(&state.type)
+            }
+            stream.allowTruncation()
+            stream.beginState(.readingCount)
+            stream.parsePartialMessage { read, state throws(DeserializationError) in
+                try read.uint16(&state.count)
+            }
+            stream.finalizeMessage()
+        }
+    }
+
+    func testSpanEndOfStream() throws {
+        var parser = StreamDeserializer(parser: SpanTruncatableProtocol.parser)
+        let bytes: [UInt8] = [0x07]
+        XCTAssertNil(try parser.handleSpan(bytes.span.bytes))
+        let message = try XCTUnwrap(try parser.handleEndOfStream())
+        XCTAssertEqual(message.type, 7)
+        XCTAssertEqual(message.count, 0)
+    }
+
+    func testSpanEndOfStreamInsideElementFails() {
+        var parser = StreamDeserializer(parser: SpanTruncatableProtocol.parser)
+        let bytes: [UInt8] = [0x07]
+        XCTAssertNil(try parser.handleSpan(bytes.span.bytes))
+        // One byte of the count arrived, but not the second
+        XCTAssertThrowsError(try parser.handleEndOfStream(remaining: [0x40].span.bytes))
+    }
 }
