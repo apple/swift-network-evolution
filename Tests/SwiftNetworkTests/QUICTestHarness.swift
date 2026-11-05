@@ -585,7 +585,7 @@ class QUICTestHarness {
             }
         }
 
-        wait(until: { handshakeFinished }, timeout: timeout, "qUIC connection to be established")
+        wait(until: { handshakeFinished }, timeout: timeout, "QUIC connection to be established")
 
         if let expectHandshakeError {
             XCTAssertFalse(clientConnected && serverConnected, "QUIC client and server incorrectly became connected")

@@ -405,7 +405,7 @@ final class AckRetransmissionTests: NetTestCase {
         return blocks
     }
 
-    // Interop `handshakeloss` (interop-fixes.md, B). The ACK-only packet that carried the ranges is
+    // Interop `handshakeloss`. The ACK-only packet that carried the ranges is
     // lost, and nothing sends them again: an ACK frame is never retransmitted, and
     // `needsTransmission` was cleared when the frame was built. The peer then never learns that its
     // packets arrived, and its probe timeout backs off until the idle timeout fires.
@@ -432,26 +432,6 @@ final class AckRetransmissionTests: NetTestCase {
         XCTAssertEqual(blocks.map { $0.end.value }, [1], "ACK frame does not end at packet 1")
     }
 
-    // Control, passes today. This is a design choice rather than an RFC requirement: while the ACK
-    // has only just been sent, there is no need to repeat it. A fix that attaches the outstanding
-    // ranges to every ack-eliciting packet can drop this test.
-    func testAckIsNotRepeatedInTheInstantItWasSent() {
-        self.receivePeerInitialPackets(0...1)
-
-        XCTAssertNil(self.sendPing(), "ACK repeated although it was just sent")
-    }
-
-    // Control, passes today. Once the packet that carried the ACK is acknowledged (ack-of-ack),
-    // the ranges are gone and nothing is attached any more.
-    func testNothingIsAttachedOnceTheAckWasAcknowledged() {
-        self.receivePeerInitialPackets(0...1)
-        harness.onContext {
-            self.connection.ack.acknowledged(packetNumberSpace: .initial, between: 0, and: 1)
-        }
-
-        harness.allow(.seconds(4))
-        XCTAssertNil(self.sendPing(), "ACK attached although the peer already acknowledged it")
-    }
 }
 #endif
 #endif

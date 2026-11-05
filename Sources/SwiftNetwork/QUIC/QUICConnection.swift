@@ -4031,6 +4031,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var totalTxBytes: Int = 0
         var totalTxPackets: Int = 0
 
+        repeatStaleAckRanges(
+            path: path,
+            now: startSendingTimestamp,
+            initial: false,
+            handshake: false,
+            application: applicationPendingItems.hasPendingItems
+        )
+
         var datagramBatch = prepareApplicationDatagramBatch(
             path: path,
             availableCongestionWindow: availableCongestionWindow,
@@ -4078,6 +4086,30 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         )
         sendOutboundFrames(on: path, in: &eventContext)
         return true
+    }
+
+    /// An ACK frame is never retransmitted, so if the packet that carried ours was lost the peer
+    /// still lacks those ranges. They stay in the ACK state until the peer acknowledges the ACK, so
+    /// when no ACK went out for a PTO, assign the packets about to be built carry them.
+    private func repeatStaleAckRanges(
+        path: QUICPath,
+        now: NetworkClock.Instant,
+        initial: Bool,
+        handshake: Bool,
+        application: Bool
+    ) {
+        var pto: NetworkDuration? = nil
+        func repeatIfStale(_ space: PacketNumberSpace) {
+            guard ack.hasOutstandingRanges(packetNumberSpace: space) else { return }
+            let interval = pto ?? Recovery.computedPTO(rtt: path.rtt)
+            pto = interval
+            if ack.lastSentIsStale(after: interval, now: now) {
+                ack.shouldTransmit(packetNumberSpace: space)
+            }
+        }
+        if initial { repeatIfStale(.initial) }
+        if handshake { repeatIfStale(.handshake) }
+        if application { repeatIfStale(.applicationData) }
     }
 
     // Don't use directly, use above sendFrames*()
@@ -4174,6 +4206,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         else {
             return false
         }
+
+        repeatStaleAckRanges(
+            path: path,
+            now: startSendingTimestamp,
+            initial: initialPendingItems.hasPendingItems,
+            handshake: handshakePendingItems.hasPendingItems,
+            application: applicationPendingItems.hasPendingItems
+        )
 
         var datagramBatch = prepareApplicationDatagramBatch(
             path: path,
@@ -4401,33 +4441,26 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        if !pendingItems.isAckSet {
-            if pendingItems.hasAckElicitingPendingItems {
-                ack.repeatOutstandingRanges(
-                    packetNumberSpace: packetNumberSpace,
-                    staleAfter: Recovery.computedPTO(rtt: path.rtt),
-                    now: self.now
-                )
-
-            }
-            if ack.ackRequiresAssembly(packetNumberSpace: packetNumberSpace) {
-                func scheduleAckFrame(
-                    packetNumberSpace: PacketNumberSpace,
-                    ackFrame: consuming QUICFrame,
-                    sendPing: Bool
-                ) {
-                    if packetNumberSpace == pendingItems.packetNumberSpace {
-                        pendingItems.setAckFrame(ackFrame, ping: sendPing)
-                    }
+        if !pendingItems.isAckSet && ack.ackRequiresAssembly(packetNumberSpace: packetNumberSpace) {
+            func scheduleAckFrame(
+                packetNumberSpace: PacketNumberSpace,
+                ackFrame: consuming QUICFrame,
+                sendPing: Bool
+            ) {
+                if packetNumberSpace == pendingItems.packetNumberSpace {
+                    pendingItems.setAckFrame(ackFrame, ping: sendPing)
                 }
-                let receivedIPECNCounter = ecn.counters[packetNumberSpace].rxECNPackets
-                let _ = ack.assemble(
-                    for: packetNumberSpace,
-                    isAckSet: false,  // it was just checked
-                    setAckFrame: scheduleAckFrame,
-                    ecnCounter: receivedIPECNCounter,
-                    now: self.now
-                )
+            }
+            let receivedIPECNCounter = ecn.counters[packetNumberSpace].rxECNPackets
+            let ackBundled = ack.assemble(
+                for: packetNumberSpace,
+                isAckSet: false,  // it was just checked
+                setAckFrame: scheduleAckFrame,
+                ecnCounter: receivedIPECNCounter,
+                now: self.now
+            )
+            if ackBundled {
+                ack.sent(self.now)
             }
         }
 
