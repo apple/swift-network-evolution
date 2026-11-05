@@ -4401,24 +4401,34 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        if !pendingItems.isAckSet && ack.ackRequiresAssembly(packetNumberSpace: packetNumberSpace) {
-            func scheduleAckFrame(
-                packetNumberSpace: PacketNumberSpace,
-                ackFrame: consuming QUICFrame,
-                sendPing: Bool
-            ) {
-                if packetNumberSpace == pendingItems.packetNumberSpace {
-                    pendingItems.setAckFrame(ackFrame, ping: sendPing)
-                }
+        if !pendingItems.isAckSet {
+            if pendingItems.hasAckElicitingPendingItems {
+                ack.repeatOutstandingRanges(
+                    packetNumberSpace: packetNumberSpace,
+                    staleAfter: Recovery.computedPTO(rtt: path.rtt),
+                    now: self.now
+                )
+
             }
-            let receivedIPECNCounter = ecn.counters[packetNumberSpace].rxECNPackets
-            let _ = ack.assemble(
-                for: packetNumberSpace,
-                isAckSet: false,  // it was just checked
-                setAckFrame: scheduleAckFrame,
-                ecnCounter: receivedIPECNCounter,
-                now: self.now
-            )
+            if ack.ackRequiresAssembly(packetNumberSpace: packetNumberSpace) {
+                func scheduleAckFrame(
+                    packetNumberSpace: PacketNumberSpace,
+                    ackFrame: consuming QUICFrame,
+                    sendPing: Bool
+                ) {
+                    if packetNumberSpace == pendingItems.packetNumberSpace {
+                        pendingItems.setAckFrame(ackFrame, ping: sendPing)
+                    }
+                }
+                let receivedIPECNCounter = ecn.counters[packetNumberSpace].rxECNPackets
+                let _ = ack.assemble(
+                    for: packetNumberSpace,
+                    isAckSet: false,  // it was just checked
+                    setAckFrame: scheduleAckFrame,
+                    ecnCounter: receivedIPECNCounter,
+                    now: self.now
+                )
+            }
         }
 
         // Request a full size frame, up to the available congestion window,

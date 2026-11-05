@@ -51,6 +51,9 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
     // ACK-eliciting packet to the list, then we don't need to send an
     // ACK.
     var needsTransmission = true
+    // When `build` last emitted a frame for this space. Used to decide whether the ranges are
+    // stale enough to repeat in an ack-eliciting packet.
+    var lastBuiltTime: NetworkClock.Instant = .zero
 
     init(logPrefixer: LogPrefixer) {
         self.log = logPrefixer
@@ -301,12 +304,13 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
         }
         if let frame {
             setAckFrame(packetNumberSpace, frame, (blockCount > Ack.pingThreshold))
+            // Only a frame that was handed off counts as sent; the `delaySize` path builds none.
+            lastBuiltTime = now
         }
         if blockCount > Ack.maxAckBlocks {
             blocks.removeFirst()
             generationCount += 1
         }
-
         return len
     }
 
@@ -574,6 +578,24 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             return (handshakeAckSpace.needsTransmission && handshakeAckSpace.blocks.count > 0)
         case .initial:
             return (initialAckSpace.needsTransmission && initialAckSpace.blocks.count > 0)
+        }
+    }
+
+    /// An ACK frame is never retransmitted, so a lost ACK-only packet leaves the peer without the
+    /// ranges. They stay in `blocks` until the peer acknowledges the ACK, so while they are still there and `interval` has passed
+    /// since they were last sent, send them again with the next ack-eliciting packet.
+    mutating func repeatOutstandingRanges(
+        packetNumberSpace: PacketNumberSpace,
+        staleAfter interval: NetworkDuration,
+        now: NetworkClock.Instant
+    ) {
+        withAckSpace(for: packetNumberSpace) { ackSpace in
+            guard !ackSpace.needsTransmission,
+                !ackSpace.blocks.isEmpty,
+                ackSpace.lastBuiltTime != .zero,
+                ackSpace.lastBuiltTime.advanced(by: interval) <= now
+            else { return }
+            ackSpace.needsTransmission = true
         }
     }
 

@@ -22,6 +22,10 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
+#if canImport(SwiftNetworkTestSupport)
+@_spi(Essentials) import SwiftNetworkTestSupport
+#endif
+
 #if canImport(SwiftNetworkTestHarness)
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
@@ -271,6 +275,182 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                 }
             }
         )
+    }
+}
+
+@available(Network 0.1.0, *)
+final class AckRetransmissionTests: NetTestCase {
+
+    let ackRetransmissionTestsLogPrefixer: LogPrefixer = LogPrefixer("[AckRetransmissionTests]")
+
+    // The harness supplies the context and clock: on a mock clock the tests move time with
+    // `allow(_:)` instead of pinning the connection's clock.
+    private var harness: QUICTestHarness!
+    private var connection: QUICConnection!
+    private var path: QUICPath!
+
+    static let originalDCID = QUICConnectionID([0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08])!
+
+    override func setUp() {
+        super.setUp()
+        let harness = QUICTestHarness(identifier: self.name)
+        self.harness = harness
+        harness.onContext {
+            let connection = QUICConnection(context: harness.context)
+            self.connection = connection
+            try? connection.setup(remote: nil, local: nil, parameters: nil, path: nil)
+            connection.recovery = Recovery(logPrefixer: self.ackRetransmissionTestsLogPrefixer)
+            connection.recovery.connection = connection
+            connection.protector = Protector(
+                isClient: true,
+                destinationCID: Self.originalDCID,
+                logPrefixer: self.ackRetransmissionTestsLogPrefixer
+            )
+            // The base linkages are storage-backed, so lower harnesses have to come from storage
+            // rather than being wrapped in a bare linkage.
+            let (lowerHarness, lowerHarnessLinkage) = harness.storage.createDatagramLowerHarness(
+                identifier: "Client",
+                context: harness.context
+            )
+            lowerHarness.fromExternal { eventContext in
+                lowerHarness.connect(in: &eventContext)
+            }
+            var newPath = QUICPath.makeFromExternalTest(parent: connection)
+            newPath.set(interface: nil, priority: 1, isInitial: true)
+            connection.fromExternal { eventContext in
+                newPath.assignDCID(QUICConnectionID(0), in: &eventContext)
+            }
+            newPath.setSCID(QUICConnectionID(0))
+            // Bind both directions, as `RecoveryTests` does, so the path can get frames to send.
+            _ = try? newPath.attachLowerProtocol(lowerHarnessLinkage.base)
+            try? lowerHarnessLinkage.base.invokeAttachUpperProtocol(
+                newPath.asUpperLinkage(),
+                remote: nil,
+                local: nil,
+                parameters: nil,
+                path: nil
+            )
+            self.path = newPath
+            connection.currentPath = newPath
+            connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+        }
+    }
+
+    override func tearDown() {
+        harness.onContext {
+            self.connection.currentPath = nil
+            self.path.destroyFromExternalTest()
+            self.connection.multiplexingPaths.removeAll()
+        }
+        self.path = nil
+        self.connection = nil
+        self.harness = nil
+        super.tearDown()
+    }
+
+    // The peer's ack-eliciting Initial packets `numbers` arrive. This repeats what
+    // `handleInboundPacket` records for such packets and then runs `inboundStopping`, where the
+    // receive path sends the ACK it owes. Initial packets are acknowledged immediately.
+    private func receivePeerInitialPackets(_ numbers: ClosedRange<Int64>) {
+        harness.onContext {
+            for number in numbers {
+                self.connection.ack.append(
+                    packetNumberSpace: .initial,
+                    packetNumber: PacketNumber(number),
+                    now: self.connection.now
+                )
+                self.connection.ack.shouldTransmit(packetNumberSpace: .initial)
+                self.connection.ack.unackedPacketCount += 1
+            }
+            self.connection.ack.ackImmediately()
+            self.connection.fromExternal { eventContext in
+                self.connection.inboundStopping(path: self.path.pathIdentifier, in: &eventContext)
+            }
+        }
+    }
+
+    // Sends a PING in an Initial packet, as a retransmission or a probe would, and returns the
+    // acknowledged ranges of the ACK frame that packet carried, or nil if it carried none.
+    private func sendPing() -> [AckBlock]? {
+        var blocks: [AckBlock]? = nil
+        harness.onContext {
+            let number = self.connection.protector.getPacketNumber(for: .initial)
+            self.connection.withPendingItems(for: .initial) { $0.ping = true }
+            self.connection.fromExternal { eventContext in
+                _ = self.connection.sendFrames(in: &eventContext)
+            }
+            XCTAssertEqual(
+                self.connection.protector.getPacketNumber(for: .initial).value,
+                number.value + 1,
+                "setup: the PING packet was not sent"
+            )
+            self.connection.recovery.withImmutableInnerState(packetNumberSpace: .initial) { innerState in
+                innerState.findSentPacketEntry(packetNumber: number) { entry in
+                    // The transmitted frame is noncopyable, so borrow it while reading its fields.
+                    switch entry.packet.transmittedItems.ackFrame {
+                    case .some(let frame):
+                        blocks = Array(
+                            AckBlockSequence(
+                                largest: frame.largest,
+                                ranges: frame.ranges.toArray(),
+                                oldestPacketNumber: .initial
+                            )
+                        )
+                    case .none:
+                        break
+                    }
+                }
+            }
+        }
+        return blocks
+    }
+
+    // Interop `handshakeloss` (interop-fixes.md, B). The ACK-only packet that carried the ranges is
+    // lost, and nothing sends them again: an ACK frame is never retransmitted, and
+    // `needsTransmission` was cleared when the frame was built. The peer then never learns that its
+    // packets arrived, and its probe timeout backs off until the idle timeout fires.
+    func testLostAckOnlyPacketIsRepeatedInTheNextAckElicitingPacket() {
+        self.receivePeerInitialPackets(0...1)
+        harness.onContext {
+            XCTAssertEqual(
+                self.connection.protector.getPacketNumber(for: .initial),
+                1,
+                "setup: the ACK-only packet was not sent"
+            )
+        }
+
+        // That packet is lost, so `Ack.acknowledged` is never called for it. Four seconds
+        // later, as in the interop trace, the connection retransmits something.
+        harness.allow(.seconds(4))
+        let blocks = self.sendPing()
+
+        guard let blocks else {
+            XCTFail("No ACK frame in an ack-eliciting packet sent 4 s after the only ACK for packets 0-1 was lost")
+            return
+        }
+        XCTAssertEqual(blocks.map { $0.start.value }, [0], "ACK frame does not start at packet 0")
+        XCTAssertEqual(blocks.map { $0.end.value }, [1], "ACK frame does not end at packet 1")
+    }
+
+    // Control, passes today. This is a design choice rather than an RFC requirement: while the ACK
+    // has only just been sent, there is no need to repeat it. A fix that attaches the outstanding
+    // ranges to every ack-eliciting packet can drop this test.
+    func testAckIsNotRepeatedInTheInstantItWasSent() {
+        self.receivePeerInitialPackets(0...1)
+
+        XCTAssertNil(self.sendPing(), "ACK repeated although it was just sent")
+    }
+
+    // Control, passes today. Once the packet that carried the ACK is acknowledged (ack-of-ack),
+    // the ranges are gone and nothing is attached any more.
+    func testNothingIsAttachedOnceTheAckWasAcknowledged() {
+        self.receivePeerInitialPackets(0...1)
+        harness.onContext {
+            self.connection.ack.acknowledged(packetNumberSpace: .initial, between: 0, and: 1)
+        }
+
+        harness.allow(.seconds(4))
+        XCTAssertNil(self.sendPing(), "ACK attached although the peer already acknowledged it")
     }
 }
 #endif
