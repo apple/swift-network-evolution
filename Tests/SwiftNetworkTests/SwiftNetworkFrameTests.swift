@@ -18,7 +18,7 @@ import XCTest
 @available(anyAppleOS 27, *)
 final class SwiftNetworkFrameTests: XCTestCase {
     func testFrameLayout() {
-        XCTAssertEqual(MemoryLayout<Frame>.size, 136)
-        XCTAssertEqual(MemoryLayout<Frame>.stride, 136)
+        XCTAssertEqual(MemoryLayout<Frame>.size, 110)
+        XCTAssertEqual(MemoryLayout<Frame>.stride, 112)
     }
 }
