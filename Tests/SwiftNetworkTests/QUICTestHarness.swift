@@ -2267,19 +2267,26 @@ class QUICTestHarness {
     /// so its writer must be woken when the room returns to the connection, whichever stream's
     /// bytes were sent.
     func runOutboundRoomReturnsToStreamWaitingBehindOtherStreams(
+        unidirectional: Bool = false,
         chunkCount: Int = 4,
         chunkSize: Int = 16 * 1024,
         timeout: TimeInterval = 5.0
     ) {
+        let clientOptions = QUICProtocol.options()
+        let serverOptions = QUICProtocol.options()
+        if unidirectional {
+            clientOptions.isUnidirectional = true
+            serverOptions.isUnidirectional = true
+        }
         do {
-            try quicHandshake()
+            try quicHandshake(clientOptions: clientOptions, serverOptions: serverOptions)
         } catch {
             XCTFail("Handshake failed: \(error)")
             return
         }
 
-        guard let busyStream = createNewStream(identifier: "C1"),
-            let waitingStream = createNewStream(identifier: "C2")
+        guard let busyStream = createNewStream(identifier: "C1", quicOptions: clientOptions),
+            let waitingStream = createNewStream(identifier: "C2", quicOptions: clientOptions)
         else {
             XCTFail("Failed to create client streams")
             return

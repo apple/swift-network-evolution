@@ -474,6 +474,10 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runOutboundRoomReturnsToStreamWaitingBehindOtherStreams()
     }
 
+    func testQUICOutboundRoomReturnsToUnidirectionalStreamWaitingBehindOtherStreams() {
+        QUICTestHarness().runOutboundRoomReturnsToStreamWaitingBehindOtherStreams(unidirectional: true)
+    }
+
     #if canImport(SwiftNetwork)
     func testQUICRecoverySendAnnouncesReopenedRoom() {
         QUICTestHarness().runRecoverySendAnnouncesReopenedRoom()
