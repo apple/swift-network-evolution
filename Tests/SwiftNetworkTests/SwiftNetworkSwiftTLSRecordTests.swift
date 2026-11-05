@@ -554,6 +554,46 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
         loopbackStop(state: result)
     }
 
+    func testSwiftTLSRecordEstablishmentReport() throws {
+        let state = try XCTUnwrap(runTLSHandshake(identifier: #function), "TLS handshake failed")
+
+        var clientReports: [ProtocolEstablishmentReport] = []
+        var serverReports: [ProtocolEstablishmentReport] = []
+        let collected = XCTestExpectation(description: "Wait for the establishment reports")
+        state.context.async {
+            if case .protocolEstablishmentReports(let reports)? = state.clientApplicationLayer.getMetrics(
+                requestedNetworkMetric: .protocolEstablishmentReports
+            ) {
+                clientReports = reports
+            }
+            if case .protocolEstablishmentReports(let reports)? = state.serverApplicationLayer.getMetrics(
+                requestedNetworkMetric: .protocolEstablishmentReports
+            ) {
+                serverReports = reports
+            }
+            collected.fulfill()
+        }
+        wait(for: [collected], timeout: 5.0)
+
+        XCTAssertEqual(clientReports.count, 1, "The client's TLS reports its handshake")
+        XCTAssertEqual(serverReports.count, 1, "The server's TLS reports its handshake")
+        if let client = clientReports.first {
+            XCTAssertEqual(client.protocolIdentifier, SwiftTLSProtocol.identifier)
+            XCTAssertGreaterThanOrEqual(client.handshakeDuration, .zero)
+            XCTAssertGreaterThanOrEqual(client.handshakeRTT, .zero)
+            XCTAssertLessThanOrEqual(
+                client.handshakeRTT,
+                client.handshakeDuration,
+                "The first round trip is part of the handshake"
+            )
+        }
+        if let server = serverReports.first {
+            XCTAssertEqual(server.protocolIdentifier, SwiftTLSProtocol.identifier)
+            XCTAssertEqual(server.handshakeRTT, .zero, "A server has no measurement of the round trip")
+        }
+        loopbackStop(state: state)
+    }
+
     func testSwiftTLSRecordSendDataBlock() {
         Logger.test.debug("Test phase: Starting handshake")
         let state = runTLSHandshake(identifier: #function)

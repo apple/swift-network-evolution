@@ -236,6 +236,16 @@ public struct SwiftTLSProtocol: NetworkProtocol {
     {
         private var recordLayer: SwiftTLSRecordLayerInstance<TLSUpperProtocol, TLSLowerProtocol>?
 
+        /// The handshake, once it has completed.
+        var protocolEstablishmentReport: ProtocolEstablishmentReport? {
+            guard let recordLayer, let duration = recordLayer.handshakeDuration else { return nil }
+            return ProtocolEstablishmentReport(
+                handshakeDuration: duration,
+                handshakeRTT: recordLayer.handshakeRTT,
+                protocolIdentifier: SwiftTLSProtocol.identifier
+            )
+        }
+
         /// Called from the record layer's `completeHandshake` before the connected event, so the
         /// metadata is already in place for anyone observing `.ready`.
         func publishMetadata(tlsMetadata: SwiftTLS.SwiftTLSMetadata) {
@@ -1034,6 +1044,15 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         var options: SwiftTLSProtocolOptions
         var setConnectionClosed: Bool = false
 
+        // What the establishment report is made of. The handshake runs from when the lower protocol is
+        // connected to when the record layer reports it complete. A client's round trip is the time from
+        // sending its first flight to the first bytes that came back; a server has no such measurement.
+        private var handshakeStartTime: NetworkClock.Instant?
+        private var firstFlightSentTime: NetworkClock.Instant?
+        private var firstResponseTime: NetworkClock.Instant?
+        private(set) var handshakeDuration: NetworkDuration?
+        private(set) var handshakeRTT: NetworkDuration = .zero
+
         init(
             _ handle: SwiftTLSRecordInstance<TLSUpperProtocol, TLSLowerProtocol>,
             _ options: SwiftTLSProtocolOptions,
@@ -1088,11 +1107,13 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         // It starts the TLS handshake
         // by sending the client hello if we are a client.
         func connect(in eventContext: inout NetworkContext.EventContext) {
+            handshakeStartTime = handle.context.now
             do {
                 if !isServer {
                     try tlsManager.startHandshake()
                     // Send initial handshake data for client
                     try? sendAllOutgoingData(in: &eventContext)
+                    firstFlightSentTime = handle.context.now
                 }
             } catch {
                 handle.log.error("failed to start client handshake: \(error)")
@@ -1105,6 +1126,13 @@ public struct SwiftTLSProtocol: NetworkProtocol {
         // know that we are connected
         func completeHandshake(in eventContext: inout NetworkContext.EventContext) {
             handle.log.debug("handshake completed successfully")
+            let now = handle.context.now
+            if handshakeDuration == nil, let handshakeStartTime {
+                handshakeDuration = handshakeStartTime.duration(to: now)
+                if let firstFlightSentTime, let firstResponseTime, firstResponseTime >= firstFlightSentTime {
+                    handshakeRTT = firstFlightSentTime.duration(to: firstResponseTime)
+                }
+            }
             handle.publishMetadata(tlsMetadata: tlsManager.metadata)
             handle.deliverConnectedEvent(in: &eventContext)
         }
@@ -1296,6 +1324,10 @@ public struct SwiftTLSProtocol: NetworkProtocol {
                     break
                 }
                 frame.finalize(success: true)
+            }
+
+            if totalReceivedBytes > 0, priorTLSState == .handshake, firstResponseTime == nil {
+                firstResponseTime = handle.context.now
             }
 
             if generatedError {

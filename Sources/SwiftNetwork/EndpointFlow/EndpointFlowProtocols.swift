@@ -113,6 +113,29 @@ class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtoco
         self.identifier = .init(context: context, eventManager: &self.eventManager)
     }
 
+    /// The establishment reports of the protocols beneath the flow, lowest first. This is an external
+    /// entry point; see `protocolEstablishmentReports(in:)`.
+    func protocolEstablishmentReports() -> [ProtocolEstablishmentReport] {
+        fromExternal { eventContext in
+            protocolEstablishmentReports(in: &eventContext)
+        }
+    }
+
+    /// The same, using an event context the caller already holds.
+    func protocolEstablishmentReports(
+        in eventContext: inout NetworkContext.EventContext
+    ) -> [ProtocolEstablishmentReport] {
+        let metrics = lower.invokeGetMetrics(
+            requestedNetworkMetric: .protocolEstablishmentReports,
+            for: identifier,
+            in: &eventContext
+        )
+        guard case .protocolEstablishmentReports(let reports)? = metrics else {
+            return []
+        }
+        return reports
+    }
+
     func handleConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
         log.debug("Received connected event")
         recordEvent(in: &eventContext) { $0.connected = .some(nil) }
@@ -513,6 +536,14 @@ final class PassthroughStreamEndpointFlowProtocol: OneToOneStreamProtocol {
         }
     }
 
+    /// The establishment reports of the protocols beneath this flow, lowest first. This is an external entry
+    /// point; see `protocolEstablishmentReports(in:)`.
+    func protocolEstablishmentReports() -> [ProtocolEstablishmentReport] {
+        fromExternal { eventContext in
+            protocolEstablishmentReports(in: &eventContext)
+        }
+    }
+
     func protocolEstablishmentReports(
         in eventContext: inout NetworkContext.EventContext
     ) -> [ProtocolEstablishmentReport] {
@@ -749,6 +780,14 @@ final class PassthroughDatagramEndpointFlowProtocol: OneToOneDatagramProtocol {
     func invokeGetMetadata<P: NetworkProtocol>() -> ProtocolMetadata<P>? {
         fromExternal { eventContext in
             lower.invokeGetMetadata(for: identifier, in: &eventContext)
+        }
+    }
+
+    /// The establishment reports of the protocols beneath this flow, lowest first. This is an external entry
+    /// point; see `protocolEstablishmentReports(in:)`.
+    func protocolEstablishmentReports() -> [ProtocolEstablishmentReport] {
+        fromExternal { eventContext in
+            protocolEstablishmentReports(in: &eventContext)
         }
     }
 
