@@ -26,6 +26,12 @@ import XCTest
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
+#if canImport(CryptoKit)
+import CryptoKit
+#elseif canImport(Crypto)
+import Crypto
+#endif
+
 @available(Network 0.1.0, *)
 final class QUICConnectionTests: XCTestCase {
     var connection: QUICConnection!
@@ -387,6 +393,137 @@ final class QUICConnectionTests: XCTestCase {
                     storage.releaseHeldInstances()
                 }
             }
+        }
+    }
+
+    /// A packet whose header protection can be removed but whose payload fails authentication is
+    /// reported as undecryptable, carrying the last 16 bytes of the datagram as a candidate
+    /// Stateless Reset token (RFC 9000 Section 10.3.1).
+    func testParseUndecryptablePacketReturnsStatelessResetToken() {
+        let destinationConnectionID = QUICConnectionID([0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08])!
+        let statelessResetToken: [UInt8] = (0..<16).map { UInt8(0xA0 + $0) }
+        // Packet number, payload and what would be the AEAD tag. None of it is valid ciphertext.
+        let protectedPayload = [UInt8](repeating: 0x5A, count: 48) + statelessResetToken
+        let bytes: [UInt8] =
+            [
+                0xc0,  // Long header, Initial
+                0x00, 0x00, 0x00, 0x01,  // Version
+                UInt8(destinationConnectionID.length),
+            ] + destinationConnectionID.connectionID
+            + [
+                0x00,  // SCIL
+                0x00,  // Token length
+                0x40 | UInt8(protectedPayload.count >> 8), UInt8(protectedPayload.count & 0xff),  // Length
+            ] + protectedPayload
+
+        connection.context.onQueue {
+            // Initial keys derived from the DCID, so header protection can be removed.
+            self.connection.protector = Protector(
+                isClient: false,
+                destinationCID: destinationConnectionID,
+                logPrefixer: LogPrefixer("[QUICConnectionTests]")
+            )
+            var parser = PacketParser(logPrefixer: LogPrefixer("[QUICConnectionTests]"))
+            var frame = Frame(copyBuffer: bytes)
+            defer {
+                frame.finalize(success: true)
+            }
+            self.connection.fromExternal { eventContext in
+                let parsedPacket = self.connection.withPacketParsingState { ack, stats, protector in
+                    parser.parse(
+                        frame: &frame,
+                        connection: self.connection,
+                        ack: &ack,
+                        protector: &protector,
+                        stats: &stats,
+                        in: &eventContext
+                    )
+                }
+                guard let parsedPacket else {
+                    XCTFail("Expected an undecryptable packet, got nothing")
+                    return
+                }
+                switch consume parsedPacket {
+                case .failedDecryption(let token):
+                    XCTAssertEqual(token, QUICStatelessResetToken(statelessResetToken))
+                case .versionNegotiation:
+                    XCTFail("Expected an undecryptable packet, got a VN packet")
+                case .retry:
+                    XCTFail("Expected an undecryptable packet, got a RETRY packet")
+                case .protected:
+                    XCTFail("Expected an undecryptable packet, got a protected packet")
+                }
+            }
+            XCTAssertTrue(parser.framesReceived.isEmpty, "No frames must be parsed from an undecryptable packet")
+        }
+    }
+
+    /// A Stateless Reset is built to look like a short header packet (RFC 9000 Section 10.3). Once
+    /// 1-RTT keys are installed, the parser must get through header protection removal and report it
+    /// as undecryptable, carrying the token from the end of the datagram.
+    func testParseStatelessResetPacketReturnsToken() throws {
+        let statelessResetToken = QUICStatelessResetToken((0..<16).map { UInt8(0xB0 + $0) })!
+        // The reset's first byte and the header protection mask are both random, so the key phase
+        // bit and the packet number length the parser decodes vary between packets.
+        let resets = try (0..<64).map { _ in
+            try QUICConnectionUtilities.createStatelessResetPacket(
+                token: statelessResetToken,
+                triggeringPacketLength: 100
+            )
+        }
+
+        connection.context.onQueue {
+            self.connection.state = .connected
+            self.connection.localCIDLength = 8
+            self.connection.protector = Protector(
+                isClient: true,
+                destinationCID: QUICConnectionID(8),
+                logPrefixer: LogPrefixer("[QUICConnectionTests]")
+            )
+            self.connection.protector.keyUpdate(
+                for: .application,
+                cipherSuite: .aesGCM128SHA256,
+                secret: SymmetricKey(size: .bits256),
+                isWrite: false
+            )
+            defer {
+                // Teardown must not act on a connection that never finished a handshake.
+                self.connection.state = .invalid
+            }
+            var parser = PacketParser(logPrefixer: LogPrefixer("[QUICConnectionTests]"))
+            for reset in resets {
+                var frame = Frame(copyBuffer: reset)
+                defer {
+                    frame.finalize(success: true)
+                }
+                self.connection.fromExternal { eventContext in
+                    let parsedPacket = self.connection.withPacketParsingState { ack, stats, protector in
+                        parser.parse(
+                            frame: &frame,
+                            connection: self.connection,
+                            ack: &ack,
+                            protector: &protector,
+                            stats: &stats,
+                            in: &eventContext
+                        )
+                    }
+                    guard let parsedPacket else {
+                        XCTFail("Expected an undecryptable packet, got nothing (first byte \(reset[0]))")
+                        return
+                    }
+                    switch consume parsedPacket {
+                    case .failedDecryption(let token):
+                        XCTAssertEqual(token, statelessResetToken)
+                    case .versionNegotiation:
+                        XCTFail("Expected an undecryptable packet, got a VN packet")
+                    case .retry:
+                        XCTFail("Expected an undecryptable packet, got a RETRY packet")
+                    case .protected:
+                        XCTFail("Expected an undecryptable packet, got a protected packet")
+                    }
+                }
+            }
+            XCTAssertTrue(parser.framesReceived.isEmpty, "No frames must be parsed from a Stateless Reset")
         }
     }
 }
