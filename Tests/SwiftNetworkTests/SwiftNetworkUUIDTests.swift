@@ -103,6 +103,45 @@ final class SwiftNetworkUUIDTests: NetTestCase {
         XCTAssertEqual(converted.description, "00000000-0000-0000-0000-000000000000")
     }
 
+    func testUUIDFromStringRoundTrip() throws {
+        let uuid = SystemUUID()
+        let parsed = SystemUUID(uuidString: uuid.description)
+        XCTAssertEqual(parsed, uuid)
+    }
+
+    func testUUIDFromStringKnownValue() throws {
+        let string = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+        let parsed = try XCTUnwrap(SystemUUID(uuidString: string))
+        XCTAssertEqual(parsed.description, string)
+    }
+
+    func testUUIDFromStringAcceptsLowercase() throws {
+        let lowercased = "e621e1f8-c36c-495a-93fc-0c247a3e6e5f"
+        let parsed = try XCTUnwrap(SystemUUID(uuidString: lowercased))
+        // `description` always renders uppercase.
+        XCTAssertEqual(parsed.description, lowercased.uppercased())
+    }
+
+    func testUUIDFromStringParsesNULL() throws {
+        let parsed = try XCTUnwrap(SystemUUID(uuidString: "00000000-0000-0000-0000-000000000000"))
+        XCTAssertTrue(parsed.isUUIDNULL)
+    }
+
+    func testUUIDFromStringRejectsInvalid() {
+        // Too short / too long.
+        XCTAssertNil(SystemUUID(uuidString: ""))
+        XCTAssertNil(SystemUUID(uuidString: "E621E1F8-C36C-495A-93FC-0C247A3E6E5"))
+        XCTAssertNil(SystemUUID(uuidString: "E621E1F8-C36C-495A-93FC-0C247A3E6E5FF"))
+        // Missing hyphens (correct number of hex digits, wrong layout).
+        XCTAssertNil(SystemUUID(uuidString: "E621E1F8C36C495A93FC0C247A3E6E5F0000"))
+        // Hyphen in the wrong position.
+        XCTAssertNil(SystemUUID(uuidString: "E621E1F8C-36C-495A-93FC-0C247A3E6E5F"))
+        // Non-hex character in a hex slot.
+        XCTAssertNil(SystemUUID(uuidString: "G621E1F8-C36C-495A-93FC-0C247A3E6E5F"))
+        // Non-hyphen character in a separator slot.
+        XCTAssertNil(SystemUUID(uuidString: "E621E1F8xC36C-495A-93FC-0C247A3E6E5F"))
+    }
+
     #if canImport(Foundation)
     func testSystemUUIDCreationFromFoundation() throws {
         let foundationUUID = UUID()
