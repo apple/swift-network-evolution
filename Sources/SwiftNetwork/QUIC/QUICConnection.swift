@@ -3822,12 +3822,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let awaitingMembership = self.streamsAwaitingOutboundRoom.membership
         while let flowID = self.streamsAwaitingOutboundRoom.removeFirstIdentifier() {
             withFlow(flowID) { (stream: inout Flow) in
-                stream.listMembership.remove(awaitingMembership)
+                stream.listMembership.subtract(awaitingMembership)
             }
         }
         for flowID in self.streamsWithReopenedOutboundRoom {
             withFlow(flowID) { (stream: inout Flow) in
-                stream.listMembership.remove(.reopenedOutboundRoom)
+                stream.listMembership.subtract(.reopenedOutboundRoom)
             }
         }
         self.streamsWithReopenedOutboundRoom.removeAll()
