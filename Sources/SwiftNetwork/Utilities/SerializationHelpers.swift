@@ -174,32 +174,32 @@ extension MutableRawSpan {
         var offset = 0
         while count &- offset >= 8 {
             storeBytes(
-                of: source.unsafeLoadUnaligned(fromByteOffset: sourceOffset &+ offset, as: UInt64.self),
-                toByteOffset: destinationOffset &+ offset,
+                of: source.unsafeLoadUnaligned(fromUncheckedByteOffset: sourceOffset &+ offset, as: UInt64.self),
+                toUncheckedByteOffset: destinationOffset &+ offset,
                 as: UInt64.self
             )
             offset &+= 8
         }
         if count & 4 != 0 {
             storeBytes(
-                of: source.unsafeLoadUnaligned(fromByteOffset: sourceOffset &+ offset, as: UInt32.self),
-                toByteOffset: destinationOffset &+ offset,
+                of: source.unsafeLoadUnaligned(fromUncheckedByteOffset: sourceOffset &+ offset, as: UInt32.self),
+                toUncheckedByteOffset: destinationOffset &+ offset,
                 as: UInt32.self
             )
             offset &+= 4
         }
         if count & 2 != 0 {
             storeBytes(
-                of: source.unsafeLoadUnaligned(fromByteOffset: sourceOffset &+ offset, as: UInt16.self),
-                toByteOffset: destinationOffset &+ offset,
+                of: source.unsafeLoadUnaligned(fromUncheckedByteOffset: sourceOffset &+ offset, as: UInt16.self),
+                toUncheckedByteOffset: destinationOffset &+ offset,
                 as: UInt16.self
             )
             offset &+= 2
         }
         if count & 1 != 0 {
             storeBytes(
-                of: source.unsafeLoadUnaligned(fromByteOffset: sourceOffset &+ offset, as: UInt8.self),
-                toByteOffset: destinationOffset &+ offset,
+                of: source.unsafeLoadUnaligned(fromUncheckedByteOffset: sourceOffset &+ offset, as: UInt8.self),
+                toUncheckedByteOffset: destinationOffset &+ offset,
                 as: UInt8.self
             )
         }

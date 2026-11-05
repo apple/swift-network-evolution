@@ -852,7 +852,7 @@ extension Deserializer where Factory: ~Escapable {
         _ value: inout QUICConnectionIDStorage,
         length: Int
     ) throws(DeserializationError) {
-        guard length <= QUICConnectionID.maximumSize else {
+        guard length >= 0, length <= QUICConnectionID.maximumSize else {
             try invalidate(.parsingFailed)
         }
         var mutableBytes = value.mutableSpan
