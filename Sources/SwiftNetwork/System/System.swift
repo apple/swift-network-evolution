@@ -97,7 +97,23 @@ internal struct System {
 
         static func nanosecondsToAbsolute(nanoseconds: UInt64) -> UInt64 {
             // N.B.: swapped numerator/denominator
-            nanoseconds * timebaseDenominator / timebaseNumerator
+            guard timebaseNumerator != 0 else { return nanoseconds }
+            return nanoseconds * timebaseDenominator / timebaseNumerator
+        }
+
+        static func absoluteToNanoseconds(_ absolute: UInt64) -> UInt64 {
+            guard timebaseDenominator != 0 else { return absolute }
+            return (absolute * timebaseNumerator) / timebaseDenominator
+        }
+
+        static func continuousToMicroseconds(_ continuous: UInt64) -> UInt64 {
+            guard timebaseDenominator != 0 else { return continuous / NSEC_PER_USEC }
+            return (continuous * timebaseNumerator) / timebaseDenominator / NSEC_PER_USEC
+        }
+
+        static func microsecondsToContinuous(_ microseconds: UInt64) -> UInt64 {
+            guard timebaseNumerator != 0 else { return microseconds * NSEC_PER_USEC }
+            return microseconds * NSEC_PER_USEC * timebaseDenominator / timebaseNumerator
         }
     }
 }

@@ -42,18 +42,26 @@ public struct Frame: ~Copyable {
 
     @usableFromInline
     var _bytes: UniqueArray<UInt8> = .init()
-    var protocolMetadatas: NetworkUniqueArray<FrameProtocolMetadata> = .init(minimumCapacity: 0)
-    var ipPacketValues: IPPacketValues? = nil
+    var protocolMetadatas: UniqueArray<FrameProtocolMetadata> = .init(minimumCapacity: 0)
+    /// Values few frames carry, kept out of line (see `PacketExtras`) so the common frame stays small.
+    var extras = PacketExtras()
     public var buffer: Buffer
-    var appMetadata: AppMetadata? = nil
+
+    // The fields below are in this order on purpose. `buffer` ends at an odd offset, and everything after it
+    // is no bigger than a 4-byte value, so the one-byte flags and the two-byte packet info sit in the padding
+    // `buffer` leaves, and the checksum, which only needs two-byte alignment, ends the frame without more.
+    var flags: Flags = Flags()
+
+    /// Service class (bits 0-2), ECN (bits 3-4), DSCP (bits 5-10), whether a DSCP is set (bit 11) and the kernel's
+    /// own name for the service class if it has one (bits 12-15): what IP sets or reads on every packet.
+    private var _packetInfo: UInt16 = 0
 
     private var _startOffset: UInt32 = 0
-
-    var timestamp: FrameTimestamp? = nil
-    var flags: Flags = Flags()
     private var _endOffset: UInt32 = 0
     private var _effectiveBufferLength: UInt32 = 0
-    private var _aggregateBufferLength: UInt32 = 0
+
+    /// What the NIC is asked to do (TX) or reports it did (RX), as one or the other.
+    private var _checksum: ChecksumOffload = .none
 
     @usableFromInline var startOffset: Int {
         @inline(always)
@@ -74,12 +82,20 @@ public struct Frame: ~Copyable {
         @inline(always)
         set { _effectiveBufferLength = UInt32(newValue) }
     }
+    /// The length of the whole packet a single-IP aggregate (LRO) frame is the head of. Only those frames
+    /// carry one, so it is kept with the values that few frames carry.
     @usableFromInline
     var aggregateBufferLength: Int {
         @inline(always)
-        get { Int(_aggregateBufferLength) }
+        get {
+            Int(extras.read(default: 0) { $0.aggregateBufferLength })
+        }
         @inline(always)
-        set { _aggregateBufferLength = UInt32(newValue) }
+        set {
+            extras.write(setsNonDefault: newValue != 0) {
+                $0.aggregateBufferLength = UInt32(truncatingIfNeeded: newValue)
+            }
+        }
     }
 
     // MARK: - Initializers
@@ -451,12 +467,12 @@ public struct Frame: ~Copyable {
         ensureStorageAsBytes()
     }
 
-    private mutating func _extractBytes() -> NetworkUniqueArray<UInt8> {
+    private mutating func _extractBytes() -> UniqueArray<UInt8> {
         // First, copy into _bytes if needed
         ensureStorageAsBytes()
 
         let effectiveBufferLength = self.effectiveBufferLength
-        var extractedBytes = NetworkUniqueArray<UInt8>()
+        var extractedBytes = UniqueArray<UInt8>()
         swap(&_bytes, &extractedBytes)
         buffer = .empty
 
@@ -496,128 +512,329 @@ public struct Frame: ~Copyable {
         init(rawValue: Self.RawValue) {
             self.rawValue = rawValue
         }
-        var rawValue: UInt16
-        static let isSingleIPAggregate = Frame.Flags(rawValue: 1 << 0)
-        static let isPacketChainMember = Frame.Flags(rawValue: 1 << 1)
-        static let isWakePacket = Frame.Flags(rawValue: 1 << 2)
-        static let isKeepalive = Frame.Flags(rawValue: 1 << 3)
-        static let isRetransmit = Frame.Flags(rawValue: 1 << 4)
-        static let isBackground = Frame.Flags(rawValue: 1 << 5)
-        static let isRealtime = Frame.Flags(rawValue: 1 << 6)
-        static let metadataComplete = Frame.Flags(rawValue: 1 << 7)
-        static let connectionComplete = Frame.Flags(rawValue: 1 << 8)
+        var rawValue: UInt8
+        static let metadataComplete = Frame.Flags(rawValue: 1 << 0)
+        static let connectionComplete = Frame.Flags(rawValue: 1 << 1)
     }
 
-    struct IPPacketValues {
-        struct Flags: OptionSet {
+    /// The checksum work for a frame. A frame is on its way out or on its way in, so the one field serves
+    /// both: the transmit case says what the NIC is asked to compute, the receive case what it reported.
+    enum ChecksumOffload {
+        struct ReceiveFlags: OptionSet {
             init(rawValue: Self.RawValue) {
                 self.rawValue = rawValue
             }
             var rawValue: UInt8
-            static let isLastPacket = Flags(rawValue: 1 << 0)
-            static let isChecksumIPChecked = Flags(rawValue: 1 << 1)
-            static let isChecksumIPValid = Flags(rawValue: 1 << 2)
-            static let fragmentationOverride = Flags(rawValue: 1 << 3)
-            // RX: the hardware validated the transport (TCP/UDP) checksum.
-            static let isChecksumDataValid = Flags(rawValue: 1 << 4)
-            // RX: the validated checksum value already folds in the pseudo-header.
-            static let isChecksumPseudoHeader = Flags(rawValue: 1 << 5)
-            // TX: the TSO segment size below describes an IPv6 super-packet.
-            static let isTSOIPv6 = Flags(rawValue: 1 << 6)
+            // The hardware checked the IP header checksum, and found it valid.
+            static let ipChecked = ReceiveFlags(rawValue: 1 << 0)
+            static let ipValid = ReceiveFlags(rawValue: 1 << 1)
+            // The hardware validated the transport (TCP/UDP) checksum.
+            static let dataValid = ReceiveFlags(rawValue: 1 << 2)
+            // The validated checksum value already folds in the pseudo-header.
+            static let pseudoHeader = ReceiveFlags(rawValue: 1 << 3)
+            // The value is a partial checksum, to be completed from `startOffset`.
+            static let partial = ReceiveFlags(rawValue: 1 << 4)
         }
-        var flags: Flags = Flags()
-        var serviceClass = Parameters.ServiceClass.bestEffort
-        var ecnFlag: IPProtocol.ECN = .nonECT
-        var dscpValue: UInt8?
-        var hopLimit: UInt8 = 0
-        var checksumOffloadFlags: UInt8 = 0
 
-        // TX partial-checksum offload: byte offset (from the packet start / IP header)
-        // where the NIC begins the 1's-complement sum, and where it stores the result.
-        // Zero for the IP-header-only case, which the NIC locates itself.
-        var checksumStartOffset: UInt16 = 0
-        var checksumStoreOffset: UInt16 = 0
+        case none
+        /// TX: where the NIC begins the 1's-complement sum and where it stores the result (both zero for the
+        /// IP-header-only case, which it locates itself), and which checksums it computes.
+        case transmit(startOffset: UInt16, storeOffset: UInt16, flags: UInt8)
+        /// RX: the final or partial transport checksum the hardware reported, where a partial one begins, and
+        /// what it validated.
+        case receive(value: UInt16, startOffset: UInt16, flags: ReceiveFlags)
+    }
 
-        // TX segmentation offload (TSO): the per-segment TCP payload size the
-        // hardware should cut this frame into, or 0 for an ordinary single-segment
-        // frame. A non-zero value means the frame's payload deliberately exceeds
-        // the path MTU.
-        var tsoSegmentSize: UInt16 = 0
+    // MARK: - Rarely set values, kept out of line
 
-        // RX: the final/partial transport checksum value the hardware reported.
-        var hardwareChecksumValue: UInt16 = 0
-
-        var departureTime: UInt64 = 0  // departure time at which kernel should send the packet, used for kernel pacing
-        var isLastPacket: Bool {
-            get { flags.contains(.isLastPacket) }
-            set { if newValue { flags.insert(.isLastPacket) } else { flags.remove(.isLastPacket) } }
-        }
-        var isChecksumIPChecked: Bool {
-            get { flags.contains(.isChecksumIPChecked) }
-            set { if newValue { flags.insert(.isChecksumIPChecked) } else { flags.remove(.isChecksumIPChecked) } }
-        }
-        var isChecksumIPValid: Bool {
-            get { flags.contains(.isChecksumIPValid) }
-            set { if newValue { flags.insert(.isChecksumIPValid) } else { flags.remove(.isChecksumIPValid) } }
-        }
-        var isChecksumDataValid: Bool {
-            get { flags.contains(.isChecksumDataValid) }
-            set { if newValue { flags.insert(.isChecksumDataValid) } else { flags.remove(.isChecksumDataValid) } }
-        }
-        var isChecksumPseudoHeader: Bool {
-            get { flags.contains(.isChecksumPseudoHeader) }
-            set { if newValue { flags.insert(.isChecksumPseudoHeader) } else { flags.remove(.isChecksumPseudoHeader) } }
-        }
-        var fragmentationOverride: Bool? {
-            get { flags.contains(.fragmentationOverride) ? true : nil }
-            set {
-                if let newValue = newValue, newValue {
-                    flags.insert(.fragmentationOverride)
-                } else {
-                    flags.remove(.fragmentationOverride)
-                }
+    /// Values that few frames carry, because they take an opt-in (a receive time or hop limit that the app
+    /// asked for, an expiry, kernel pacing, packet IDs for failure reports, TSO, LRO aggregation) or only come
+    /// up for certain packets (wake, keepalive, last packet, retransmit). Each is read or written only by the
+    /// protocols at the bottom of a stack, down to the channel. The fields are ordered to leave no padding.
+    struct ExtraValues {
+        struct Flags: OptionSet {
+            init(rawValue: Self.RawValue) {
+                self.rawValue = rawValue
             }
+            var rawValue: UInt16
+            // TX: the TSO segment size describes an IPv6 super-packet.
+            static let isTSOIPv6 = Flags(rawValue: 1 << 0)
+            static let fragmentationOverride = Flags(rawValue: 1 << 1)
+            static let isLastPacket = Flags(rawValue: 1 << 2)
+            static let isKeepalive = Flags(rawValue: 1 << 3)
+            static let isRetransmit = Flags(rawValue: 1 << 4)
+            static let isBackground = Flags(rawValue: 1 << 5)
+            static let isRealtime = Flags(rawValue: 1 << 6)
+            static let isWakePacket = Flags(rawValue: 1 << 7)
+            // RX: the frame is the head of a single-IP aggregate (LRO), or a later buflet of one.
+            static let isSingleIPAggregate = Flags(rawValue: 1 << 8)
+            static let isPacketChainMember = Flags(rawValue: 1 << 9)
+            // TX: the IP fragmentation setting was overridden to disabled (the override flag means enabled).
+            static let fragmentationDisabled = Flags(rawValue: 1 << 10)
+            // RX: the link layer addressed the frame to a multicast or broadcast address.
+            static let isLinkMulticast = Flags(rawValue: 1 << 11)
+            static let isLinkBroadcast = Flags(rawValue: 1 << 12)
+        }
+
+        /// The time at which the kernel should send the packet, for kernel pacing.
+        var departureTime: UInt64 = 0
+        /// The time a packet was received, or the time after which it should be dropped.
+        var timestamp: FrameTimestamp?
+        /// The ID the kernel names this packet by when it reports that sending it failed.
+        var packetID: SystemUUID?
+        var appMetadata: AppMetadata?
+        var hopLimit: UInt8 = 0
+        /// RX: how many segments the kernel coalesced into this frame, or 0 if it did not say.
+        var segmentCount: UInt8 = 0
+        /// The generation of the header compression state this packet was compressed against.
+        var compressionGenerationCount: UInt32 = 0
+        /// The length of the whole packet a single-IP aggregate frame is the head of.
+        var aggregateBufferLength: UInt32 = 0
+        /// TX segmentation offload: the per-segment TCP payload size the hardware should cut this frame
+        /// into, or 0 for an ordinary single-segment frame. Non-zero means the payload deliberately exceeds
+        /// the path MTU.
+        var tsoSegmentSize: UInt16 = 0
+        var flags = Flags()
+    }
+
+    /// The frame's `ExtraValues`, behind a reference that is only there once something is set. It behaves as a
+    /// value: copying it shares the storage, and the first write to a copy gives that copy its own.
+    struct PacketExtras {
+        private final class Storage {
+            var values: ExtraValues
+            init(_ values: ExtraValues) {
+                self.values = values
+            }
+        }
+
+        private var storage: Storage?
+
+        init() {}
+
+        /// Something has been set, and the values have storage.
+        var isAllocated: Bool { storage != nil }
+
+        /// The value `get` reads from the extras, or `defaultValue` while nothing has been set. Passing the default
+        /// in, rather than returning an optional, saves each accessor from unwrapping with the same default.
+        @inline(always)
+        func read<T>(default defaultValue: T, _ get: (ExtraValues) -> T) -> T {
+            guard let storage else { return defaultValue }
+            return get(storage.values)
+        }
+
+        /// Applies `change`. With no storage yet, a write of a value that is the default allocates nothing and
+        /// changes nothing, so `setsNonDefault` says whether `change` writes something other than the default.
+        @inline(always)
+        mutating func write(setsNonDefault: Bool, _ change: (inout ExtraValues) -> Void) {
+            if storage == nil {
+                guard setsNonDefault else { return }
+                storage = Storage(ExtraValues())
+            } else if !isKnownUniquelyReferenced(&storage) {
+                storage = Storage(storage!.values)
+            }
+            change(&storage!.values)
         }
     }
 
-    struct AppMetadata: ~Copyable {
+    struct AppMetadata {
         let appType: UInt8
         let appMetadata: UInt8
     }
 
+    private func extraFlag(_ flag: ExtraValues.Flags) -> Bool {
+        extras.read(default: false) { $0.flags.contains(flag) }
+    }
+
+    private mutating func setExtraFlag(_ flag: ExtraValues.Flags, _ value: Bool) {
+        extras.write(setsNonDefault: value) {
+            if value { $0.flags.insert(flag) } else { $0.flags.remove(flag) }
+        }
+    }
+
     var isSingleIPAggregate: Bool {
-        get { flags.contains(.isSingleIPAggregate) }
-        set { if newValue { flags.insert(.isSingleIPAggregate) } else { flags.remove(.isSingleIPAggregate) } }
+        get {
+            extraFlag(.isSingleIPAggregate)
+        }
+        set {
+            setExtraFlag(.isSingleIPAggregate, newValue)
+        }
     }
 
     var isPacketChainMember: Bool {
-        get { flags.contains(.isPacketChainMember) }
-        set { if newValue { flags.insert(.isPacketChainMember) } else { flags.remove(.isPacketChainMember) } }
+        get {
+            extraFlag(.isPacketChainMember)
+        }
+        set {
+            setExtraFlag(.isPacketChainMember, newValue)
+        }
     }
 
     var isWakePacket: Bool {
-        get { flags.contains(.isWakePacket) }
-        set { if newValue { flags.insert(.isWakePacket) } else { flags.remove(.isWakePacket) } }
+        get {
+            extraFlag(.isWakePacket)
+        }
+        set {
+            setExtraFlag(.isWakePacket, newValue)
+        }
     }
 
     var isKeepalive: Bool {
-        get { flags.contains(.isKeepalive) }
-        set { if newValue { flags.insert(.isKeepalive) } else { flags.remove(.isKeepalive) } }
+        get {
+            extraFlag(.isKeepalive)
+        }
+        set {
+            setExtraFlag(.isKeepalive, newValue)
+        }
     }
 
     var isRetransmit: Bool {
-        get { flags.contains(.isRetransmit) }
-        set { if newValue { flags.insert(.isRetransmit) } else { flags.remove(.isRetransmit) } }
+        get {
+            extraFlag(.isRetransmit)
+        }
+        set {
+            setExtraFlag(.isRetransmit, newValue)
+        }
     }
 
     var isBackground: Bool {
-        get { flags.contains(.isBackground) }
-        set { if newValue { flags.insert(.isBackground) } else { flags.remove(.isBackground) } }
+        get {
+            extraFlag(.isBackground)
+        }
+        set {
+            setExtraFlag(.isBackground, newValue)
+        }
     }
 
     var isRealtime: Bool {
-        get { flags.contains(.isRealtime) }
-        set { if newValue { flags.insert(.isRealtime) } else { flags.remove(.isRealtime) } }
+        get {
+            extraFlag(.isRealtime)
+        }
+        set {
+            setExtraFlag(.isRealtime, newValue)
+        }
+    }
+
+    var isLastPacket: Bool {
+        get {
+            extraFlag(.isLastPacket)
+        }
+        set {
+            setExtraFlag(.isLastPacket, newValue)
+        }
+    }
+
+    var isLinkMulticast: Bool {
+        get {
+            extraFlag(.isLinkMulticast)
+        }
+        set {
+            setExtraFlag(.isLinkMulticast, newValue)
+        }
+    }
+
+    var isLinkBroadcast: Bool {
+        get {
+            extraFlag(.isLinkBroadcast)
+        }
+        set {
+            setExtraFlag(.isLinkBroadcast, newValue)
+        }
+    }
+
+    var isTSOIPv6: Bool {
+        get {
+            extraFlag(.isTSOIPv6)
+        }
+        set {
+            setExtraFlag(.isTSOIPv6, newValue)
+        }
+    }
+
+    /// Whether IP fragmentation is forced on (true) or off (false) for this frame, or nil to leave it to the
+    /// protocol.
+    var fragmentationOverride: Bool? {
+        get {
+            if extraFlag(.fragmentationOverride) { return true }
+            return extraFlag(.fragmentationDisabled) ? false : nil
+        }
+        set {
+            setExtraFlag(.fragmentationOverride, newValue == true)
+            setExtraFlag(.fragmentationDisabled, newValue == false)
+        }
+    }
+
+    var timestamp: FrameTimestamp? {
+        get {
+            extras.read(default: nil) { $0.timestamp }
+        }
+        set {
+            extras.write(setsNonDefault: newValue != nil) { $0.timestamp = newValue }
+        }
+    }
+
+    /// The time at which the kernel should send the packet, in nanoseconds of the absolute clock.
+    var departureTime: UInt64 {
+        get {
+            extras.read(default: 0) { $0.departureTime }
+        }
+        set {
+            extras.write(setsNonDefault: newValue != 0) { $0.departureTime = newValue }
+        }
+    }
+
+    var packetID: SystemUUID? {
+        get {
+            extras.read(default: nil) { $0.packetID }
+        }
+        set {
+            extras.write(setsNonDefault: newValue != nil) { $0.packetID = newValue }
+        }
+    }
+
+    var compressionGenerationCount: UInt32 {
+        get {
+            extras.read(default: 0) { $0.compressionGenerationCount }
+        }
+        set {
+            extras.write(setsNonDefault: newValue != 0) { $0.compressionGenerationCount = newValue }
+        }
+    }
+
+    var appMetadata: AppMetadata? {
+        get {
+            extras.read(default: nil) { $0.appMetadata }
+        }
+        set {
+            extras.write(setsNonDefault: newValue != nil) { $0.appMetadata = newValue }
+        }
+    }
+
+    var tsoSegmentSize: UInt16 {
+        get {
+            extras.read(default: 0) { $0.tsoSegmentSize }
+        }
+        set {
+            extras.write(setsNonDefault: newValue != 0) { $0.tsoSegmentSize = newValue }
+        }
+    }
+
+    var hopLimit: UInt8 {
+        get {
+            extras.read(default: 0) { $0.hopLimit }
+        }
+        set {
+            extras.write(setsNonDefault: newValue != 0) { $0.hopLimit = newValue }
+        }
+    }
+
+    /// RX: how many segments the kernel coalesced into this frame, or 0 if it did not say.
+    var segmentCount: UInt8 {
+        get {
+            extras.read(default: 0) { $0.segmentCount }
+        }
+        set {
+            extras.write(setsNonDefault: newValue != 0) { $0.segmentCount = newValue }
+        }
     }
 
     /// Whether the metadata attached to this frame is complete.
@@ -662,179 +879,171 @@ public struct Frame: ~Copyable {
         }
     }
 
-    var dscpValue: UInt8? {
-        get { ipPacketValues?.dscpValue }
+    var serviceClass: Parameters.ServiceClass {
+        get {
+            Parameters.ServiceClass(rawValue: UInt8(_packetInfo & 0x7)) ?? .bestEffort
+        }
         set {
-            guard let newValue else {
-                if ipPacketValues != nil {
-                    ipPacketValues!.dscpValue = nil
-                }
-                return
-            }
-            guard newValue < 64 else {
-                outlinedProtoLogError("Cannot set DSCP value", newValue)
-                return
-            }
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.dscpValue = newValue
+            // A class set this way is a network service class, and replaces any the kernel's own was kept for
+            _packetInfo = (_packetInfo & ~0x7 & ~(0xf << 12)) | UInt16(newValue.rawValue & 0x7)
         }
     }
 
-    var hopLimit: UInt8 {
-        get { ipPacketValues?.hopLimit ?? 0 }
+    /// The kernel's own name for this frame's service class, or 0 if it has none and `serviceClass` stands. A
+    /// network service class cannot name every packet class (control, OAM, system background, audio/video and
+    /// real-time video fold into the nearest), so a frame that arrives with one keeps it and goes out as it came
+    /// in. Setting it also sets the `serviceClass` it folds into.
+    var packetServiceClassCode: UInt8 {
+        get {
+            UInt8((_packetInfo >> 12) & 0xf)
+        }
         set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
+            guard newValue != 0 else {
+                _packetInfo &= ~(0xf << 12)
+                return
             }
-            ipPacketValues!.hopLimit = newValue
+            let folded: Parameters.ServiceClass
+            switch newValue {
+            case 1, 2: folded = .background  // system background, background
+            case 4, 5, 10: folded = .responsiveData  // responsive data, OAM, control
+            case 6, 7, 8: folded = .interactiveVideo  // audio/video, real-time video, video
+            case 9: folded = .interactiveVoice
+            case 11: folded = .signaling
+            default: folded = .bestEffort
+            }
+            _packetInfo =
+                (_packetInfo & ~0x7 & ~(0xf << 12)) | UInt16(folded.rawValue & 0x7) | (UInt16(newValue & 0xf) << 12)
         }
     }
 
     var ecnFlag: IPProtocol.ECN {
-        get { ipPacketValues?.ecnFlag ?? .nonECT }
+        get {
+            IPProtocol.ECN(rawValue: UInt8((_packetInfo >> 3) & 0x3)) ?? .nonECT
+        }
         set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.ecnFlag = newValue
+            _packetInfo = (_packetInfo & ~(0x3 << 3)) | (UInt16(newValue.rawValue & 0x3) << 3)
         }
     }
 
-    var isLastPacket: Bool {
-        get { ipPacketValues?.isLastPacket ?? false }
+    /// The DSCP, which is six bits wide, or nil if none has been set.
+    var dscpValue: UInt8? {
+        get {
+            _packetInfo & (1 << 11) != 0 ? UInt8((_packetInfo >> 5) & 0x3f) : nil
+        }
         set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
+            let cleared = _packetInfo & ~(0x3f << 5) & ~(1 << 11)
+            guard let newValue else {
+                _packetInfo = cleared
+                return
             }
-            ipPacketValues!.isLastPacket = newValue
+            _packetInfo = cleared | (UInt16(newValue & 0x3f) << 5) | (1 << 11)
         }
     }
 
-    var fragmentationOverride: Bool? {
-        get { ipPacketValues?.fragmentationOverride }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.fragmentationOverride = newValue
+    private var transmitChecksum: (startOffset: UInt16, storeOffset: UInt16, flags: UInt8) {
+        if case .transmit(let start, let store, let flags) = _checksum {
+            return (start, store, flags)
         }
+        return (0, 0, 0)
     }
 
-    var departureTime: UInt64 {
-        get { ipPacketValues?.departureTime ?? 0 }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.departureTime = newValue
+    private var receiveChecksum: (value: UInt16, startOffset: UInt16, flags: ChecksumOffload.ReceiveFlags) {
+        if case .receive(let value, let start, let flags) = _checksum {
+            return (value, start, flags)
         }
+        return (0, 0, [])
     }
 
+    /// Changes what the NIC is asked to compute. Writing nothing in particular to a frame that carries what
+    /// the NIC reported leaves that alone.
+    private mutating func updateTransmitChecksum(
+        _ change: (inout (startOffset: UInt16, storeOffset: UInt16, flags: UInt8)) -> Void
+    ) {
+        var values = transmitChecksum
+        change(&values)
+        if values.startOffset == 0 && values.storeOffset == 0 && values.flags == 0 {
+            if case .transmit = _checksum { _checksum = .none }
+            return
+        }
+        _checksum = .transmit(startOffset: values.startOffset, storeOffset: values.storeOffset, flags: values.flags)
+    }
+
+    /// Changes what the NIC reported, and likewise leaves what it was asked to do alone when there is
+    /// nothing to report.
+    private mutating func updateReceiveChecksum(
+        _ change: (inout (value: UInt16, startOffset: UInt16, flags: ChecksumOffload.ReceiveFlags)) -> Void
+    ) {
+        var values = receiveChecksum
+        change(&values)
+        if values.value == 0 && values.startOffset == 0 && values.flags.isEmpty {
+            if case .receive = _checksum { _checksum = .none }
+            return
+        }
+        _checksum = .receive(value: values.value, startOffset: values.startOffset, flags: values.flags)
+    }
+
+    private func receiveChecksumFlag(_ flag: ChecksumOffload.ReceiveFlags) -> Bool {
+        receiveChecksum.flags.contains(flag)
+    }
+
+    private mutating func setReceiveChecksumFlag(_ flag: ChecksumOffload.ReceiveFlags, _ value: Bool) {
+        updateReceiveChecksum { if value { $0.flags.insert(flag) } else { $0.flags.remove(flag) } }
+    }
+
+    /// TX: which checksums the NIC computes.
     var checksumOffloadFlags: UInt8 {
-        get { ipPacketValues?.checksumOffloadFlags ?? 0 }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.checksumOffloadFlags = newValue
-        }
+        get { transmitChecksum.flags }
+        set { updateTransmitChecksum { $0.flags = newValue } }
     }
+
+    /// TX: where the NIC begins the sum.
+    var checksumStartOffset: UInt16 {
+        get { transmitChecksum.startOffset }
+        set { updateTransmitChecksum { $0.startOffset = newValue } }
+    }
+
+    /// TX: where the NIC stores the result.
+    var checksumStoreOffset: UInt16 {
+        get { transmitChecksum.storeOffset }
+        set { updateTransmitChecksum { $0.storeOffset = newValue } }
+    }
+
+    /// RX: the checksum value the hardware reported.
+    var hardwareChecksumValue: UInt16 {
+        get { receiveChecksum.value }
+        set { updateReceiveChecksum { $0.value = newValue } }
+    }
+
     var isChecksumIPChecked: Bool {
-        get { ipPacketValues?.isChecksumIPChecked ?? false }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.isChecksumIPChecked = newValue
-        }
+        get { receiveChecksumFlag(.ipChecked) }
+        set { setReceiveChecksumFlag(.ipChecked, newValue) }
     }
 
     var isChecksumIPValid: Bool {
-        get { ipPacketValues?.isChecksumIPValid ?? false }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.isChecksumIPValid = newValue
-        }
+        get { receiveChecksumFlag(.ipValid) }
+        set { setReceiveChecksumFlag(.ipValid, newValue) }
     }
 
     var isChecksumDataValid: Bool {
-        get { ipPacketValues?.isChecksumDataValid ?? false }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.isChecksumDataValid = newValue
-        }
+        get { receiveChecksumFlag(.dataValid) }
+        set { setReceiveChecksumFlag(.dataValid, newValue) }
     }
 
     var isChecksumPseudoHeader: Bool {
-        get { ipPacketValues?.isChecksumPseudoHeader ?? false }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.isChecksumPseudoHeader = newValue
-        }
+        get { receiveChecksumFlag(.pseudoHeader) }
+        set { setReceiveChecksumFlag(.pseudoHeader, newValue) }
     }
 
-    var checksumStartOffset: UInt16 {
-        get { ipPacketValues?.checksumStartOffset ?? 0 }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.checksumStartOffset = newValue
-        }
+    /// RX: the hardware's checksum is a partial one, to be completed from `hardwareChecksumStart`.
+    var isChecksumPartial: Bool {
+        get { receiveChecksumFlag(.partial) }
+        set { setReceiveChecksumFlag(.partial, newValue) }
     }
 
-    var checksumStoreOffset: UInt16 {
-        get { ipPacketValues?.checksumStoreOffset ?? 0 }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.checksumStoreOffset = newValue
-        }
-    }
-
-    var hardwareChecksumValue: UInt16 {
-        get { ipPacketValues?.hardwareChecksumValue ?? 0 }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.hardwareChecksumValue = newValue
-        }
-    }
-
-    // Per-segment TCP payload size for a TSO super-packet, 0 when this frame is an
-    // ordinary single-segment frame.
-    var tsoSegmentSize: UInt16 {
-        get { ipPacketValues?.tsoSegmentSize ?? 0 }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.tsoSegmentSize = newValue
-        }
-    }
-
-    var isTSOIPv6: Bool {
-        get { ipPacketValues?.flags.contains(.isTSOIPv6) ?? false }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            if newValue {
-                ipPacketValues!.flags.insert(.isTSOIPv6)
-            } else {
-                ipPacketValues!.flags.remove(.isTSOIPv6)
-            }
-        }
+    /// RX: where a partial hardware checksum begins.
+    var hardwareChecksumStart: UInt16 {
+        get { receiveChecksum.startOffset }
+        set { updateReceiveChecksum { $0.startOffset = newValue } }
     }
 
     struct FrameProtocolMetadata: ~Copyable {
@@ -860,6 +1069,72 @@ public struct Frame: ~Copyable {
     enum FrameTimestamp {
         case receiveTime(_ timestamp: NetworkClock.Instant)
         case expireTime(_ timestamp: NetworkClock.Instant)
+    }
+
+    /// Copies every per-packet value `source` carries onto this frame, leaving a value alone where the source has
+    /// none.
+    ///
+    /// Not copied: protocol metadata and completion flags, which `inheritMetadata` handles.
+    mutating func copyValues(from source: borrowing Frame) {
+        if let packetID = source.packetID { self.packetID = packetID }
+        if let timestamp = source.timestamp { self.timestamp = timestamp }
+        let departureTime = source.departureTime
+        if departureTime != 0 { self.departureTime = departureTime }
+        if let appMetadata = source.appMetadata { self.appMetadata = appMetadata }
+
+        let serviceClass = source.serviceClass
+        if serviceClass != .bestEffort { self.serviceClass = serviceClass }
+        // The kernel's own class, where the network one folded it. 3 is best effort, which a frame has by default.
+        let packetServiceClassCode = source.packetServiceClassCode
+        if packetServiceClassCode != 0 && packetServiceClassCode != 3 {
+            self.packetServiceClassCode = packetServiceClassCode
+        }
+        let ecnFlag = source.ecnFlag
+        if ecnFlag != .nonECT { self.ecnFlag = ecnFlag }
+        if let dscpValue = source.dscpValue { self.dscpValue = dscpValue }
+        let hopLimit = source.hopLimit
+        if hopLimit != 0 { self.hopLimit = hopLimit }
+        if let fragmentationOverride = source.fragmentationOverride {
+            self.fragmentationOverride = fragmentationOverride
+        }
+
+        if source.isRetransmit { isRetransmit = true }
+        if source.isLastPacket { isLastPacket = true }
+        if source.isBackground { isBackground = true }
+        if source.isRealtime { isRealtime = true }
+        if source.isKeepalive { isKeepalive = true }
+        if source.isWakePacket { isWakePacket = true }
+        if source.isLinkMulticast { isLinkMulticast = true }
+        if source.isLinkBroadcast { isLinkBroadcast = true }
+
+        let tsoSegmentSize = source.tsoSegmentSize
+        if tsoSegmentSize != 0 { self.tsoSegmentSize = tsoSegmentSize }
+        if source.isTSOIPv6 { isTSOIPv6 = true }
+
+        // What the hardware reported on the way in, or what the protocols above asked of it on the way out.
+        let received = source.receiveChecksum
+        if received.value != 0 || received.startOffset != 0 || !received.flags.isEmpty {
+            updateReceiveChecksum { $0 = received }
+        }
+        let requested = source.transmitChecksum
+        if requested.flags != 0 {
+            updateTransmitChecksum { $0 = requested }
+        }
+
+        // A packet chain member carries none of the values that belong to the packet as a whole.
+        let isChainMember = source.isPacketChainMember
+        if !isChainMember {
+            let compressionGenerationCount = source.compressionGenerationCount
+            if compressionGenerationCount != 0 { self.compressionGenerationCount = compressionGenerationCount }
+            let segmentCount = source.segmentCount
+            if segmentCount != 0 { self.segmentCount = segmentCount }
+        }
+        if source.isSingleIPAggregate {
+            isSingleIPAggregate = true
+            let aggregateBufferLength = source.aggregateBufferLength
+            if aggregateBufferLength != 0 { self.aggregateBufferLength = aggregateBufferLength }
+        }
+        if isChainMember { isPacketChainMember = true }
     }
 
     mutating func reduceAggregateBufferLength(by length: Int) {
@@ -939,19 +1214,6 @@ public struct Frame: ~Copyable {
         }
     }
     #endif
-}
-
-@available(Network 0.1.0, *)
-extension Frame {
-    var serviceClass: Parameters.ServiceClass {
-        get { ipPacketValues?.serviceClass ?? .bestEffort }
-        set {
-            if ipPacketValues == nil {
-                ipPacketValues = IPPacketValues()
-            }
-            ipPacketValues!.serviceClass = newValue
-        }
-    }
 }
 
 @available(Network 0.1.0, *)
