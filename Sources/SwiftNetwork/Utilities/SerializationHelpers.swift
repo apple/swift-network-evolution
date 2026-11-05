@@ -156,3 +156,52 @@ public struct FrameArraySpanFactory: ~Copyable, ~Escapable, DeserializerSpanFact
 }
 
 #endif
+
+// MARK: - Small fixed-size copies
+
+extension MutableRawSpan {
+    /// Copies `count` bytes from `source` into this span using unaligned loads and stores of 8, 4, 2 and 1 bytes,
+    /// avoiding a variable-length memmove for small copies such as connection IDs.
+    ///
+    /// The caller must guarantee that `count` bytes are available at both offsets.
+    @inline(always)
+    mutating func copyUnchecked(
+        from source: RawSpan,
+        sourceOffset: Int = 0,
+        toByteOffset destinationOffset: Int = 0,
+        count: Int
+    ) {
+        var offset = 0
+        while count &- offset >= 8 {
+            storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: sourceOffset &+ offset, as: UInt64.self),
+                toByteOffset: destinationOffset &+ offset,
+                as: UInt64.self
+            )
+            offset &+= 8
+        }
+        if count & 4 != 0 {
+            storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: sourceOffset &+ offset, as: UInt32.self),
+                toByteOffset: destinationOffset &+ offset,
+                as: UInt32.self
+            )
+            offset &+= 4
+        }
+        if count & 2 != 0 {
+            storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: sourceOffset &+ offset, as: UInt16.self),
+                toByteOffset: destinationOffset &+ offset,
+                as: UInt16.self
+            )
+            offset &+= 2
+        }
+        if count & 1 != 0 {
+            storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: sourceOffset &+ offset, as: UInt8.self),
+                toByteOffset: destinationOffset &+ offset,
+                as: UInt8.self
+            )
+        }
+    }
+}

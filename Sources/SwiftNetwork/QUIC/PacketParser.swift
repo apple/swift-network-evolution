@@ -856,12 +856,11 @@ extension Deserializer where Factory: ~Escapable {
             try invalidate(.parsingFailed)
         }
         var mutableBytes = value.mutableSpan
-        // The default connection ID length is 8 bytes, which fits a single unaligned load and store.
-        // Fast path to avoid a variable-length memmove for every packet received.
-        if length == MemoryLayout<UInt64>.size, hasRoom(length) {
-            let bytes = currentSpan.unsafeLoadUnaligned(fromByteOffset: cursor, as: UInt64.self)
+        // Connection IDs are at most 20 bytes, and the default length is 8 bytes. Copy with unaligned 8/4/2/1 byte
+        // loads and stores to avoid a variable-length memmove for every packet received.
+        if hasRoom(length) {
             var destination = mutableBytes.mutableBytes
-            destination.storeBytes(of: bytes, toByteOffset: 0, as: UInt64.self)
+            destination.copyUnchecked(from: currentSpan, sourceOffset: cursor, count: length)
             moveCursorUnchecked(length)
             return
         }
