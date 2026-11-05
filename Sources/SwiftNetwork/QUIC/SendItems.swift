@@ -280,7 +280,7 @@ extension FrameAck: SendableItem {
             toShorthandLogEntry(
                 delay: pendingItems.ackFrame!.delay,
                 largest: pendingItems.ackFrame!.largest,
-                ranges: pendingItems.ackFrame!.ranges,
+                ranges: pendingItems.ackFrame!.ranges.toArray(),
                 ecnCounter: pendingItems.ackFrame!.ecnCounter
             )
         )
@@ -1901,6 +1901,8 @@ enum PrioritizedSendableItems: CaseIterable {
         }
     }
 
+    // Inline for compilation with (-Osize)
+    @inline(always)
     func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         switch self {
         case .datagram:
@@ -3018,7 +3020,6 @@ struct PendingItems: ~Copyable {
 
 @available(Network 0.1.0, *)
 struct TransmittedItems: ~Copyable {
-    var simpleSendableItems = SimpleSendableItemsFlags(rawValue: 0)
     var ping: Bool {
         get { simpleSendableItems.contains(.ping) }
         set {
@@ -3342,12 +3343,11 @@ struct TransmittedItems: ~Copyable {
             }
         }
     }
-    var sentStreams = SentStreams()
 
-    struct TransmittedAckFrame {
+    struct TransmittedAckFrame: ~Copyable {
         var largest = PacketNumber.none
         var delay: UInt64 = 0
-        var ranges: [FrameAckRange]
+        var ranges: SmallArray<FrameAckRange>
         var pendingGap: PacketNumber?
 
         init?(_ ackFrame: consuming FrameAck?) {
@@ -3358,15 +3358,16 @@ struct TransmittedItems: ~Copyable {
             pendingGap = ackFrame.pendingGap == .none ? nil : ackFrame.pendingGap
         }
     }
-    var ackFrame: TransmittedAckFrame?
-
+    // Fields are ordered in this manner to save padding
     var maxStreamDataFlows: Deque<MultiplexedFlowIdentifier>?
     var streamDataBlockedFlows: Deque<MultiplexedFlowIdentifier>?
     var streamResets: Deque<PendingItems.StreamReset>?
     var streamStopSendings: Deque<PendingItems.StreamStopSending>?
     var newConnectionIDs: Deque<FrameNewConnectionID>?
     var retireConnectionIDs: Deque<FrameRetireConnectionID>?
-
+    var sentStreams = SentStreams()
+    var simpleSendableItems = SimpleSendableItemsFlags(rawValue: 0)
+    var ackFrame: TransmittedAckFrame?
     var pmtudProbeMSS: Int?
 
     // Add new Frame support here, unless it's covered by flags.
@@ -3379,6 +3380,7 @@ struct TransmittedItems: ~Copyable {
         // ackFrame is never retransmitted
     }
 
+    @_optimize(none)
     func allAcknowledged(
         connection: QUICConnection,
         packetNumber: PacketNumber,
@@ -3386,9 +3388,10 @@ struct TransmittedItems: ~Copyable {
         sentPath: QUICPath,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if let ackFrame {
+        if ackFrame != nil {
+            // Using a force unwrap here is fine because ackFrame was checked directly above
             connection.acknowledgedAck(
-                frame: ackFrame,
+                frame: ackFrame!,
                 packetNumber: packetNumber,
                 packetNumberSpace: packetNumberSpace,
                 sentPath: sentPath

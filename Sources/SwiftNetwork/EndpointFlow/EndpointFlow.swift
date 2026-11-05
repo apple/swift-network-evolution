@@ -1030,6 +1030,17 @@ struct EndpointFlow: ~Copyable {
         }
     }
 
+    /// The establishment reports of the protocols this flow's stack is made of, lowest first.
+    mutating func protocolEstablishmentReports() -> [ProtocolEstablishmentReport] {
+        switch self.flowProtocol {
+        case .stream(let flow): return flow.protocolEstablishmentReports()
+        case .datagram(let flow): return flow.protocolEstablishmentReports()
+        case .passthroughStream(let flow): return flow.protocolEstablishmentReports()
+        case .passthroughDatagram(let flow): return flow.protocolEstablishmentReports()
+        case .inboundStream, .inboundDatagram, .none: return []
+        }
+    }
+
     /// Fail and finalize any pending write and read requests.
     private mutating func failPendingRequests() {
         while var writeRequest = self.writeRequests.popFirst() {

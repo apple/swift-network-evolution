@@ -95,19 +95,21 @@ struct SentPacketRecord: ~Copyable {
     var transmittedItems: TransmittedItems = TransmittedItems()
 
     var number: PacketNumber {
-        identifier.number
+        @inline(always)
+        get { identifier.number }
     }
     var numberSpace: PacketNumberSpace {
-        identifier.space
+        @inline(always)
+        get { identifier.space }
     }
 
     var ecn: IPProtocol.ECN = .nonECT
     var ectMarked: Bool {
-        (ecn == .ect0 || ecn == .ect1)
+        @inline(always)
+        get {
+            (ecn == .ect0 || ecn == .ect1)
+        }
     }
-    var totalLength = 0
-    var sentPath: MultiplexingPathIdentifier = .none
-    var identifier: PacketIdentifier = .init(space: .initial, number: 0)
 
     struct Flags: OptionSet {
         init(rawValue: Self.RawValue) {
@@ -120,7 +122,11 @@ struct SentPacketRecord: ~Copyable {
         static let isECNValidationPacket = Flags(rawValue: 1 << 3)
     }
     private var flags = Flags()
+    var totalLength = 0
+    var sentPath: MultiplexingPathIdentifier = .none
+    var identifier: PacketIdentifier = .init(space: .initial, number: 0)
     var isAckEliciting: Bool {
+        @inline(always)
         get { flags.contains(.isAckEliciting) }
         set {
             if newValue {
@@ -131,6 +137,7 @@ struct SentPacketRecord: ~Copyable {
         }
     }
     var isInFlightEligible: Bool {
+        @inline(always)
         get { flags.contains(.isInFlightEligible) }
         set {
             if newValue {
@@ -141,6 +148,7 @@ struct SentPacketRecord: ~Copyable {
         }
     }
     var largerPacket: Bool {
+        @inline(always)
         get { flags.contains(.largerPacket) }
         set {
             if newValue {
@@ -151,6 +159,7 @@ struct SentPacketRecord: ~Copyable {
         }
     }
     var isECNValidationPacket: Bool {
+        @inline(always)
         get { flags.contains(.isECNValidationPacket) }
         set {
             if newValue {
@@ -206,12 +215,15 @@ struct Packet: ~Copyable {
         guard headerLength > 0 else { return nil }
         return Int(headerLength)
     }
+    @inline(always)
     var headerRange: Range<Int> {
         0..<Int(headerLength) + Int(packetNumberLength)
     }
+    @inline(always)
     var payloadRange: Range<Int> {
         (Int(headerLength) + Int(packetNumberLength))..<(Int(headerLength) + Int(payloadLength) - Int(tagLength))
     }
+    @inline(always)
     var tagRange: Range<Int> {
         (Int(headerLength) + Int(payloadLength) - Int(tagLength))..<(Int(headerLength) + Int(payloadLength))
     }
@@ -227,17 +239,19 @@ struct Packet: ~Copyable {
         return sampleStart..<(sampleStart + Int(tagLength))
     }
 
-    private(set) var keyState: PacketKeyState?
+    private(set) var keyState: PacketKeyState
 
     var identifier: PacketIdentifier
     var number: PacketNumber {
+        @inline(always)
         get { identifier.number }
         set(newValue) {
             identifier.number = newValue
         }
     }
     var numberSpace: PacketNumberSpace {
-        identifier.space
+        @inline(always)
+        get { identifier.space }
     }
 
     // Temporary storage used for logging, only set when datapath logs or QLog is enabled
@@ -247,13 +261,9 @@ struct Packet: ~Copyable {
     var tokenLength: Int {
         token?.count ?? 0
     }
-    var tag: [UInt8]?
 
-    // Initial and Version Negotiation Packet
+    // The version carried in the long header. nil for received short header packets.
     private(set) var version: QUICVersion?
-
-    // Version Negotiation
-    private(set) var versions: [QUICVersion]?
 
     // Flags
     struct Flags: OptionSet {
@@ -263,11 +273,10 @@ struct Packet: ~Copyable {
         var rawValue: UInt8
         static let longHeader = Flags(rawValue: 1 << 0)
         static let spinValue = Flags(rawValue: 1 << 2)
-        static let versionNegotiation = Flags(rawValue: 1 << 3)
-        static let failedDecryption = Flags(rawValue: 1 << 4)
     }
     private var flags = Flags()
     var longHeader: Bool {
+        @inline(always)
         get { flags.contains(.longHeader) }
         set {
             if newValue {
@@ -278,6 +287,7 @@ struct Packet: ~Copyable {
         }
     }
     var spinValue: Bool {
+        @inline(always)
         get { flags.contains(.spinValue) }
         set {
             if newValue {
@@ -287,32 +297,6 @@ struct Packet: ~Copyable {
             }
         }
     }
-    var versionNegotiation: Bool {
-        get { flags.contains(.versionNegotiation) }
-        set {
-            if newValue {
-                flags.insert(.versionNegotiation)
-            } else {
-                flags.remove(.versionNegotiation)
-            }
-        }
-    }
-    var failedDecryption: Bool {
-        get { flags.contains(.failedDecryption) }
-        set {
-            if newValue {
-                flags.insert(.failedDecryption)
-            } else {
-                flags.remove(.failedDecryption)
-            }
-        }
-    }
-
-    private(set) var retryFirstOctet: UInt8?
-    var retry: Bool {
-        retryFirstOctet != nil
-    }
-
     // Note well: For use ONLY with test vectors from RFC 9001
     private var _overrideSentNumberSize: EncodedPacketNumber.Size?
     var overrideSentNumberSize: EncodedPacketNumber.Size? {
@@ -333,8 +317,8 @@ struct Packet: ~Copyable {
         }
     }
 
+    // Generic init used by packet specific initializers.
     init(
-        versionNegotiation: Bool = false,
         number: PacketNumber,
         lastAcked: PacketNumber,
         keyState: PacketKeyState,
@@ -346,50 +330,22 @@ struct Packet: ~Copyable {
             space: PacketNumberSpace.fromKeyState(keyState: keyState),
             number: number
         )
-        self.versionNegotiation = versionNegotiation
+        self.keyState = keyState
         self.longHeader = Packet.requiresLongHeader(keyState: keyState)
         self.lastAcked = lastAcked
-        self.keyState = keyState
         self.destinationConnectionID = destinationConnectionID
         self.sourceConnectionID = sourceConnectionID
         self.version = version
     }
 
-    // Version Negotiation Packet
+    // Initial Packet.
     init(
-        destinationConnectionID: QUICConnectionID,
-        sourceConnectionID: QUICConnectionID,
-        version: QUICVersion,
-        versions: [QUICVersion]
-    ) {
-        identifier = PacketIdentifier(space: .initial, number: .none)
-        longHeader = true
-        versionNegotiation = true
-
-        self.destinationConnectionID = destinationConnectionID
-        self.sourceConnectionID = sourceConnectionID
-        self.versions = versions
-
-        var headerLength = Packet.longHeaderBaseSize
-        headerLength += QUICConnectionID.headerCIDLength + destinationConnectionID.length
-        headerLength += QUICConnectionID.headerCIDLength + sourceConnectionID.length
-        headerLength += 4 * versions.count
-
-        self.headerLength = UInt16(headerLength)
-
-        self.version = version
-    }
-
-    // Initial Packet
-    init(
-        retryFirstOctet: UInt8? = nil,
         destinationConnectionID: QUICConnectionID,
         sourceConnectionID: QUICConnectionID,
         keyState: PacketKeyState,
         space: PacketNumberSpace,
         version: QUICVersion,
         token: [UInt8],
-        tag: [UInt8]? = nil,
         payloadLength: UInt16,
         headerLength: UInt16
     ) {
@@ -401,14 +357,11 @@ struct Packet: ~Copyable {
             payloadLength: payloadLength,
             headerLength: headerLength
         )
-
         self.token = token
         self.version = version
-        self.tag = tag
-        self.retryFirstOctet = retryFirstOctet
     }
 
-    // 0-RTT Packet, Handshake Packet, and Initial Packets
+    // 0-RTT and Handshake Packets.
     init(
         destinationConnectionID: QUICConnectionID,
         sourceConnectionID: QUICConnectionID,
@@ -422,16 +375,14 @@ struct Packet: ~Copyable {
             space: PacketNumberSpace.fromKeyState(keyState: keyState),
             number: .none
         )
-        longHeader = true
-
         self.destinationConnectionID = destinationConnectionID
         self.sourceConnectionID = sourceConnectionID
         self.keyState = keyState
-
         self.payloadLength = payloadLength
-
         self.headerLength = headerLength
         self.version = version
+        assert(Packet.requiresLongHeader(keyState: keyState))
+        longHeader = Packet.requiresLongHeader(keyState: keyState)
     }
 
     // Short Header Packet
@@ -439,16 +390,15 @@ struct Packet: ~Copyable {
         identifier = PacketIdentifier(space: .applicationData, number: .none)
         self.destinationConnectionID = destinationConnectionID
         self.headerLength = headerLength
-        spinValue = spin
-
         keyState = .phase0
+        spinValue = spin
     }
 
-    static func requiresLongHeader(keyState: PacketKeyState?) -> Bool {
+    static func requiresLongHeader(keyState: PacketKeyState) -> Bool {
         switch keyState {
         case .phase0, .phase1:
             return false
-        default:
+        case .initial, .handshake, .earlyData:
             return true
         }
     }
@@ -500,7 +450,7 @@ struct Packet: ~Copyable {
             headerType = 0x02
         case .earlyData:
             headerType = 0x01
-        case .phase0, .phase1, .none:
+        case .phase0, .phase1:
             throw QUICError.packet(.invalidHeaderType)
         }
 
@@ -610,7 +560,7 @@ struct Packet: ~Copyable {
         let numberLength = truncatedPacketNumber.headerFieldSize
         let result = Serializer.serialize(&frame, claim: true) { write throws(SerializationError) in
             try write.uint8(preamble | spinBit | keyPhase | numberLength)
-            try write.span(dcid.connectionIDStorage.span.bytes.extracting(unchecked: 0..<dcid.length))
+            try write.connectionIDBytes(dcid)
             try write.encodedPacketNumber(truncatedPacketNumber)
         }
 
@@ -656,7 +606,7 @@ struct Packet: ~Copyable {
 
     // MARK: Update KeyState
     // During shortheader processing, keyState will change from .phase0 to phase1
-    // Note: keystate is part of the protected region of the header so cannot be
+    // Note: keyState is part of the protected region of the header so cannot be
     // determined during initial deserialization when a Packet is initialized
     mutating func updateKeyState(to newState: PacketKeyState) throws(QUICError) {
         if longHeader {
@@ -692,17 +642,64 @@ extension InPlaceSerializer where Factory: ~Escapable, Factory: ~Copyable {
     }
 
     @_optimize(speed)
-    mutating func encodedPacketNumber(_ value: EncodedPacketNumber) throws(SerializationError) {
-        let encodedSize = value.size.rawValue
-        let offset = MemoryLayout<UInt64>.size - encodedSize
-
-        try withUnsafeBytes(of: value.number.bigEndian) { bytes throws(SerializationError) in
-            let sourcePtr = bytes.baseAddress!.advanced(by: offset)
-            let bufferPtr = UnsafeBufferPointer(
-                start: sourcePtr.assumingMemoryBound(to: UInt8.self),
-                count: encodedSize
+    mutating func connectionIDBytes(_ value: QUICConnectionID) throws(SerializationError) {
+        let length = value.length
+        guard hasRoom(length) else {
+            try self.span(value.connectionIDStorage.span.bytes.extracting(unchecked: 0..<length))
+            return
+        }
+        // Write exactly the length of the bytes to the storage
+        let source = value.connectionIDStorage.span.bytes
+        var offset = 0
+        while length &- offset >= 8 {
+            currentSpan.storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt64.self),
+                toByteOffset: cursor &+ offset,
+                as: UInt64.self
             )
-            try self.span(bufferPtr.span.bytes)
+            offset &+= 8
+        }
+        if length & 4 != 0 {
+            currentSpan.storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt32.self),
+                toByteOffset: cursor &+ offset,
+                as: UInt32.self
+            )
+            offset &+= 4
+        }
+        if length & 2 != 0 {
+            currentSpan.storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt16.self),
+                toByteOffset: cursor &+ offset,
+                as: UInt16.self
+            )
+            offset &+= 2
+        }
+        if length & 1 != 0 {
+            currentSpan.storeBytes(
+                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt8.self),
+                toByteOffset: cursor &+ offset,
+                as: UInt8.self
+            )
+        }
+        moveCursorUnchecked(length)
+    }
+
+    @_optimize(speed)
+    mutating func encodedPacketNumber(_ value: EncodedPacketNumber) throws(SerializationError) {
+        // The packet number is written big endian using only its low `size` bytes. Fixed-size
+        // writes avoid a variable-length memmove for these 1 to 4 bytes.
+        let number = value.number
+        switch value.size {
+        case .oneByte:
+            try self.uint8(UInt8(truncatingIfNeeded: number))
+        case .twoBytes:
+            try self.uint16NetworkByteOrder(UInt16(truncatingIfNeeded: number))
+        case .threeBytes:
+            try self.uint16NetworkByteOrder(UInt16(truncatingIfNeeded: number >> 8))
+            try self.uint8(UInt8(truncatingIfNeeded: number))
+        case .fourBytes:
+            try self.uint32NetworkByteOrder(UInt32(truncatingIfNeeded: number))
         }
     }
 }

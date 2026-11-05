@@ -43,10 +43,12 @@ public struct FrameArray: ~Copyable {
         self.frames = NetworkUniqueDeque<Frame>(minimumCapacity: capacity)
     }
 
+    @_optimize(speed)
     public mutating func add(frame: consuming Frame) {
         self.frames.append(frame)
     }
 
+    @_optimize(speed)
     public mutating func add(frames: consuming FrameArray) {
         // Taking the incoming storage is only a win when this side would have to grow to hold
         // the incoming frames. A drained queue that kept its capacity has room already, and

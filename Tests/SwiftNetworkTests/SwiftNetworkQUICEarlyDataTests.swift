@@ -279,6 +279,28 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
         let storage = TestNetworkProtocolStorage(context: context)
 
         var pairedPathsArray = [PairedUDPIPPaths]()
+        #if !NETWORK_PRIVATE
+        var quicConnections: [QUICConnection] = []
+        #endif
+
+        // Every exit has to run this: a connection left up keeps its timers armed on the shared
+        // implicit context, and keeps running during the tests that follow in the same process.
+        func stopAndTearDown() {
+            let stopExpectation = XCTestExpectation()
+            context.async {
+                clientUpperHarness?.stop()
+                serverUpperHarness?.stop()
+
+                clientUpperHarness?.teardown()
+                serverUpperHarness?.teardown()
+                storage.releaseHeldInstances()
+                stopExpectation.fulfill()
+            }
+            wait(for: [stopExpectation], timeout: 10.0)
+            #if !NETWORK_PRIVATE
+            waitForQUICConnectionsToFinish(quicConnections, on: context)
+            #endif
+        }
 
         var earlyDataRejected = false
         var remoteTransportParameters: [UInt8]? = nil
@@ -301,6 +323,11 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
             let clientPath = PathProperties(parameters: clientParameters)
             let (clientQUICStreamListener, _, clientQUICMultipath) = storage.createTestQUICInstance()
             clientQUICInstance = clientQUICStreamListener.identifier
+            #if !NETWORK_PRIVATE
+            if let connection = storage.quicInstance(for: clientQUICStreamListener.base) {
+                quicConnections.append(connection)
+            }
+            #endif
 
             let clientQUICOptions: ProtocolOptions<QUICProtocol>
             clientQUICOptions = self.createQUICTestOptions(
@@ -360,6 +387,11 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
             let serverPath = PathProperties(parameters: serverParameters)
             let (serverQUICStreamListener, _, serverQUICMultipath) = storage.createTestQUICInstance()
             serverQUICInstance = serverQUICStreamListener.identifier
+            #if !NETWORK_PRIVATE
+            if let connection = storage.quicInstance(for: serverQUICStreamListener.base) {
+                quicConnections.append(connection)
+            }
+            #endif
 
             let serverQUICOptions = self.createQUICTestOptions(server: true, enableEarlyData: acceptEarlyData)
             serverQUICOptions.setLogID(prefix: "L", parent: "1", protocolLogIDNumber: 1)
@@ -496,6 +528,7 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
                     XCTAssertTrue(earlyDataRejected, "Early data not rejected")
                     if expectRoomReopenedAfterRejection {
                         wait(for: [roomReopenedExpectation], timeout: 5.0)
+                        stopAndTearDown()
                         return nil
                     }
                     context.async {
@@ -530,17 +563,7 @@ final class SwiftNetworkQUICEarlyDataTests: NetTestCase {
             }
         }
 
-        let stopExpectation = XCTestExpectation()
-        context.async {
-            clientUpperHarness?.stop()
-            serverUpperHarness?.stop()
-
-            clientUpperHarness?.teardown()
-            serverUpperHarness?.teardown()
-            storage.releaseHeldInstances()
-            stopExpectation.fulfill()
-        }
-        wait(for: [stopExpectation], timeout: 10.0)
+        stopAndTearDown()
 
         return remoteTransportParameters
     }
