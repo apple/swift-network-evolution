@@ -1397,7 +1397,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     // already the value we want), and attempting to set it fails with ENOPROTOOPT.
     //
     // SO_NOSIGPIPE makes a write to a closed peer fail with EPIPE instead of raising
-    // SIGPIPE, which would kill the process.
+    // SIGPIPE, which terminates the process by default.
     private func applyDefaultSocketOptions(socket: SystemSocket) {
         do { try socket.setReceiveLowWatermark(1) } catch { log.info("Failed to set SO_RCVLOWAT: \(error)") }
         #if canImport(Darwin)

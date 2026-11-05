@@ -1029,10 +1029,12 @@ extension SwiftNetworkSocketTests {
     ) {
         onContext(context) {
             do {
-                guard var frames = try harness.invokeGetDatagramsToSend(
-                    maximumDatagramCount: 1,
-                    minimumDatagramSize: payload.count
-                ) else {
+                guard
+                    var frames = try harness.invokeGetDatagramsToSend(
+                        maximumDatagramCount: 1,
+                        minimumDatagramSize: payload.count
+                    )
+                else {
                     return XCTFail("no datagram to send")
                 }
                 frames.iterateMutableFrames { frame in
@@ -1065,7 +1067,8 @@ extension SwiftNetworkSocketTests {
     }
 
     /// Accepts one connection on `listener` and returns its descriptor, or -1 after five seconds.
-    /// The timeout makes a connection that never arrives fail the test. Without it, the test hangs.
+    /// The timeout makes a connection that never arrives fail the test. Without it, the test never
+    /// finishes.
     private func acceptWithTimeout(_ listener: CInt) -> CInt {
         var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
         guard poll(&descriptor, 1, 5000) == 1 else { return -1 }
@@ -1103,7 +1106,7 @@ extension SwiftNetworkSocketTests {
     }
 
     /// Sets a receive timeout on `fd`, so a read that gets nothing fails the test instead of
-    /// hanging it.
+    /// blocking it forever.
     private func setReceiveTimeout(_ fd: CInt, seconds: Int = 2) {
         var timeout = timeval(tv_sec: seconds, tv_usec: 0)
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
@@ -1188,7 +1191,7 @@ extension SwiftNetworkSocketTests {
     /// Writing to a peer that has closed must fail the send without raising SIGPIPE. The server
     /// closes without reading, so the client sees EOF and stays connected. Its first write draws
     /// an RST, and the writes after that hit a reset socket. The test counts SIGPIPE with its own
-    /// handler, so a missing SO_NOSIGPIPE shows up as a count instead of killing the test runner.
+    /// handler, so a missing SO_NOSIGPIPE shows up as a count instead of ending the test runner.
     func testTCPWriteToClosedPeerDoesNotRaiseSIGPIPE() throws {
         var previous = sigaction()
         var counting = sigaction()
@@ -1780,9 +1783,14 @@ extension SwiftNetworkSocketTests {
         }
         XCTAssertEqual(echoed, payload.count, "the echo didn't come back")
 
-        guard case .dataTransferSnapshot(let snapshot)? = onContext(context, {
-            harness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
-        }) else {
+        guard
+            case .dataTransferSnapshot(let snapshot)? = onContext(
+                context,
+                {
+                    harness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
+                }
+            )
+        else {
             return XCTFail("no data transfer snapshot")
         }
         XCTAssertGreaterThanOrEqual(snapshot.sentTransportByteCount, UInt64(payload.count))
@@ -1791,9 +1799,14 @@ extension SwiftNetworkSocketTests {
         XCTAssertGreaterThan(snapshot.receivedIPPacketCount, 0)
         XCTAssertGreaterThan(snapshot.transportCongestionWindow, 0)
 
-        guard case .protocolEstablishmentReports(let reports)? = onContext(context, {
-            harness.getMetrics(requestedNetworkMetric: .protocolEstablishmentReports)
-        }) else {
+        guard
+            case .protocolEstablishmentReports(let reports)? = onContext(
+                context,
+                {
+                    harness.getMetrics(requestedNetworkMetric: .protocolEstablishmentReports)
+                }
+            )
+        else {
             return XCTFail("no establishment reports")
         }
         let report = try XCTUnwrap(reports.first { $0.protocolIdentifier == TCPProtocol.identifier })
@@ -1841,9 +1854,14 @@ extension SwiftNetworkSocketTests {
         }
         XCTAssertEqual(received, reply)
 
-        guard case .dataTransferSnapshot(let snapshot)? = onContext(context, {
-            upper.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
-        }) else {
+        guard
+            case .dataTransferSnapshot(let snapshot)? = onContext(
+                context,
+                {
+                    upper.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
+                }
+            )
+        else {
             return XCTFail("no data transfer snapshot")
         }
         XCTAssertEqual(snapshot.sentTransportByteCount, 3)
