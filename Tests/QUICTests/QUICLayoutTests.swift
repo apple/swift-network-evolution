@@ -52,6 +52,17 @@ final class QUICLayoutTests: XCTestCase {
         XCTAssertEqual(frameAckSize, MemoryLayout<FrameAck>.size)
     }
 
+    func testReceivedFrameLayout() {
+        // A QUICFrame is appended to the packet's frame queue, popped, and unwrapped for every frame
+        // received. Above about 112 bytes each of those moves is a call to memmove, where below it
+        // the copy is inline (measured at 3 ns against 24 ns for the round trip), so the frames
+        // carry their payload in a byte storage that is a reference, and not as an embedded Frame.
+        XCTAssertLessThanOrEqual(MemoryLayout<QUICFrame>.size, 112, "QUICFrame's size regressed past 112")
+        XCTAssertLessThanOrEqual(MemoryLayout<FrameStreamReceived>.size, 112)
+        XCTAssertLessThanOrEqual(MemoryLayout<FrameCrypto>.size, 112)
+        XCTAssertLessThanOrEqual(MemoryLayout<FrameDatagram>.size, 112)
+    }
+
     func testStreamLayout() {
         // Note that stream size can have a major impact memory usage in server use cases
         // Streams are stored inline in the connection's flow table rather than allocated one by one,

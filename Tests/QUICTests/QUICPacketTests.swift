@@ -73,9 +73,9 @@ final class PacketTests: XCTestCase {
         defer {
             while let leftover = parser.framesReceived.popFirst() {
                 switch leftover {
-                case .crypto(var f): f.frame.finalize(success: false)
-                case .stream(var f): f.frame.finalize(success: false)
-                case .datagram(var f): f.frame.finalize(success: false)
+                case .crypto(var f): f.payloadStorage.finalize(success: false)
+                case .stream(var f): f.payloadStorage.finalize(success: false)
+                case .datagram(var f): f.payloadStorage.finalize(success: false)
                 default: break
                 }
             }

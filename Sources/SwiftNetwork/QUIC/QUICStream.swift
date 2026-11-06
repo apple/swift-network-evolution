@@ -805,7 +805,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
 
         // Ignore STREAM frame when all data has already been received
         if self.receive.state.dataHasAlreadyBeenReceived {
-            frame.frame.finalize(success: true)
+            frame.payloadStorage.finalize(success: true)
             return true
         }
 
@@ -813,7 +813,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         if self.receive.state.isReceivingData {
             result = processIncomingStreamData(connection: connection, frame: frame, in: &eventContext)
         } else {
-            frame.frame.finalize(success: false)
+            frame.payloadStorage.finalize(success: false)
         }
         log.datapath("Received bytes up to \(self.flowControlState.totalInOrderInboundBytesRead)")
         return result
@@ -833,7 +833,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
             log.error(
                 "Not enough receive buffer space \(frame.length) > \(maximumUnreadInboundBytesAllowed)"
             )
-            frame.frame.finalize(success: false)
+            frame.payloadStorage.finalize(success: false)
             return false
         }
 
@@ -844,7 +844,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
             // so does not represent a problem in 64bit systems.
             guard
                 let appendResult = receive.tryAppend(
-                    frame: frame.frame,
+                    frame: frame.payloadStorage.takeFrame(),
                     offset: Int(frame.offset),
                     fin: frame.isFinal,
                     maximumUnreadInboundBytesAllowed: maximumUnreadInboundBytesAllowed
