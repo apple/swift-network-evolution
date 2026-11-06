@@ -178,12 +178,16 @@ public struct Endpoint: EndpointProtocol, Hashable, Sendable {
             self.type = .address(endpoint)
         case AddressFamily.unix.rawValue:
             guard length > 2 else { return nil }
-            var path: String = ""
+            var pathBytes = [UInt8]()
             result = Deserializer.deserialize(&serializedData) { read throws(DeserializationError) in
-                try read.fixedLengthUTF8(&path, byteCount: Int(length - 2))
+                try read.buffer(&pathBytes, length: Int(length - 2))
             }
             guard result.isValid else { return nil }
-            guard let endpoint = AddressEndpoint(path) else { return nil }
+            let pathLength = pathBytes.firstIndex(of: 0) ?? pathBytes.count
+            let pathSlice = pathBytes[..<pathLength]
+            // Repairing invalid UTF-8 would change the path, so reject it instead
+            let path = String(decoding: pathSlice, as: UTF8.self)
+            guard path.utf8.elementsEqual(pathSlice), let endpoint = AddressEndpoint(path) else { return nil }
             self.type = .address(endpoint)
         case AddressFamily.unspecified.rawValue:
             #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
