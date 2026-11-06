@@ -2647,6 +2647,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         // Try to send more data on all streams due to a received MAX_DATA or ACK
         if applicationPendingItems.triggerAllStreamsUnblocked {
+            // The scan puts back every stream that can send now; one that still cannot is noted again.
+            applicationPendingItems.streamsMayBeBlocked = false
             applyToAllFlows { stream in
                 applicationPendingItems.prependStreamToService(&stream)
             }
