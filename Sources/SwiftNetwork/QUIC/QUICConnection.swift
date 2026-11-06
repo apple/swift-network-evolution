@@ -5766,7 +5766,7 @@ extension QUICConnection {
         )
         guard let streamID = QUICStreamID(frame.id) else {
             log.error("Stream frame with invalid stream ID \(frame.id)")
-            frame.frame.finalize(success: true)
+            frame.payloadStorage.finalize(success: true)
             return false
         }
 
@@ -5779,7 +5779,7 @@ extension QUICConnection {
                 "STREAM frame received for send-only stream \(streamID)"
             )
             close(with: .streamStateError, "STREAM frame on send-only stream", in: &eventContext)
-            frame.frame.finalize(success: true)
+            frame.payloadStorage.finalize(success: true)
             return false
         }
 
@@ -5794,16 +5794,16 @@ extension QUICConnection {
                     connection: self,
                     in: &eventContext
                 )
-                frame.frame.finalize(success: true)
+                frame.payloadStorage.finalize(success: true)
                 return true
             }
             if !inboundStreamResult.created {
-                frame.frame.finalize(success: true)
+                frame.payloadStorage.finalize(success: true)
                 return false
             }
         }
         guard let flowID = knownFlowID ?? knownFlows[streamID] else {
-            frame.frame.finalize(success: true)
+            frame.payloadStorage.finalize(success: true)
             return true
         }
         var pendingFrame: FrameStreamReceived? = frame
@@ -5816,14 +5816,14 @@ extension QUICConnection {
                 stream.log.datapath(
                     "Unable to handle frame len \(frame.length) offset \(frame.offset) fin \(frame.isFinal) on stream"
                 )
-                frame.frame.finalize(success: true)
+                frame.payloadStorage.finalize(success: true)
                 return true
             }
         }
         guard let processed else {
             log.error("Cannot look up stream for flowID \(flowID.debugDescription)")
             if var leftover = pendingFrame.take() {
-                leftover.frame.finalize(success: true)
+                leftover.payloadStorage.finalize(success: true)
             }
             return true
         }
@@ -5847,7 +5847,7 @@ extension QUICConnection {
             log.info(
                 "Discarded one crypto frame in the crypto PN space \(packetNumberSpace)"
             )
-            frame.frame.finalize(success: false)
+            frame.payloadStorage.finalize(success: false)
             return false
         }
         guard
@@ -6895,7 +6895,7 @@ extension QUICConnection {
                 log.error(
                     "No secondary inbound flow handler, cannot accept datagram flow"
                 )
-                frame.frame.finalize(success: false)
+                frame.payloadStorage.finalize(success: false)
                 return true
             }
 
@@ -6934,11 +6934,11 @@ extension QUICConnection {
 
         guard let matchingFlowIdentifier else {
             log.error("Failed to get matching datagram flow identifier")
-            frame.frame.finalize(success: false)
+            frame.payloadStorage.finalize(success: false)
             return false
         }
 
-        var frame = frame.frame
+        var frame = frame.payloadStorage.takeFrame()
         frame.metadataComplete = true
         try? deliverInboundDatagrams(
             flow: matchingFlowIdentifier,
