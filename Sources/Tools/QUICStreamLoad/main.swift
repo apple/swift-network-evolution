@@ -57,7 +57,8 @@ final class QUICStreamLoad {
         concurrentStreams: Int,
         uploadSize: Int,
         downloadSize: Int,
-        linkDelay: NetworkDuration
+        linkDelay: NetworkDuration,
+        writeChunkSize: Int
     ) -> NetworkDuration {
         let ipv4Client = Endpoint(address: IPv4Address(localIPv4Address)!, port: 1234)
         let ipv4Server = Endpoint(address: IPv4Address(remoteIPv4Address)!, port: 2345)
@@ -70,6 +71,7 @@ final class QUICStreamLoad {
         print(
             "Running QUIC stream load of \(streamCount) streams (\(concurrentStreams) at a time), with \(uploadSize) upload bytes and \(downloadSize) download bytes"
         )
+        print("Each upload is written in \(writeChunkSize) byte chunks, only while the stream reports room")
         let startTime = NetworkClock.Instant.systemNow
 
         var handshakeDuration = NetworkDuration.zero
@@ -324,7 +326,52 @@ final class QUICStreamLoad {
                 return
             }
 
-            clientStream.start()
+            // Write as `EndpointFlow` does: once the stream is connected, ask it for its room
+            // before each chunk, and wait to be told when it has none. With many streams open
+            // this leaves the connection's writers waiting for room together.
+            var bytesWritten = 0
+            var writeNextChunk: ((inout NetworkContext.EventContext) -> Void)? = nil
+            writeNextChunk = { eventContext in
+                while bytesWritten < uploadSize {
+                    let room: Int
+                    do {
+                        room = try clientStream.invokeGetOutboundStreamDataRoomAvailable(in: &eventContext)
+                    } catch {
+                        print("Issue took place reading the room on the client \(myIndex): \(error)")
+                        group.leave()
+                        return
+                    }
+                    if room <= 0 {
+                        clientStream.waitForOutboundRoomAvailable(in: &eventContext) { eventContext in
+                            writeNextChunk?(&eventContext)
+                        }
+                        return
+                    }
+                    let length = min(writeChunkSize, uploadSize - bytesWritten)
+                    let chunk = Array(uploadPayload[bytesWritten..<(bytesWritten + length)])
+                    let isLast = bytesWritten + length == uploadSize
+                    guard clientStream.write(chunk, sendFIN: isLast, earlyData: true, in: &eventContext) else {
+                        print("Issue took place writing on the client \(myIndex)")
+                        group.leave()
+                        return
+                    }
+                    bytesWritten += length
+                }
+                writeNextChunk = nil
+            }
+            clientStream.start { connected in
+                guard connected else {
+                    print("Client stream \(myIndex) failed to connect")
+                    group.leave()
+                    return
+                }
+                // The connected callback still holds the event context, so write on a fresh hop.
+                context.async {
+                    clientStream.fromExternal { eventContext in
+                        writeNextChunk?(&eventContext)
+                    }
+                }
+            }
 
             var serverStreamToTeardown: StreamUpperHarness<TestStreamLinkageFamily>? = nil
 
@@ -405,14 +452,6 @@ final class QUICStreamLoad {
                 }
                 clientReadCompletion!(&newFlowState, true)
             }
-
-            // Send from client to server, which triggers the new flow above
-            let writeSuccess = clientStream.write(uploadPayload, sendFIN: true, earlyData: true)
-            guard writeSuccess else {
-                print("Issue took place writing on the client")
-                group.leave()
-                return
-            }
         }
 
         // Kick off first round of streams. Each stream will in turn kick another.
@@ -468,6 +507,7 @@ if #available(anyAppleOS 26, *) {
     var streamCount = 1_000_000
     var concurrentStreams = 100
     var linkDelay = NetworkDuration.zero
+    var writeChunkSize = 16 * 1024
     let arguments = CommandLine.arguments.dropFirst(0)
 
     if arguments.contains("-logging"),
@@ -539,6 +579,16 @@ if #available(anyAppleOS 26, *) {
         }
     }
 
+    if arguments.contains("-write-chunk-size"),
+        let index = arguments.firstIndex(of: "-write-chunk-size")
+    {
+        if arguments.count >= (index + 2) {
+            if let sizeOption = Int(arguments[index + 1]), sizeOption > 0 {
+                writeChunkSize = sizeOption
+            }
+        }
+    }
+
     // Create and run the transfers
     let quicStreamLoad = QUICStreamLoad()
     let group = DispatchGroup()
@@ -549,7 +599,8 @@ if #available(anyAppleOS 26, *) {
         concurrentStreams: concurrentStreams,
         uploadSize: uploadSize,
         downloadSize: downloadSize,
-        linkDelay: linkDelay
+        linkDelay: linkDelay,
+        writeChunkSize: writeChunkSize
     )
     if totalTime > .zero {
         print("Finished test in \(totalTime)")

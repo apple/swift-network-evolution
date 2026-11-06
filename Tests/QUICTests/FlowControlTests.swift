@@ -113,6 +113,212 @@ final class FlowControlTests: XCTestCase {
         }
     }
 
+    /// Runs `body` on the test clock with a connection, an outbound stream and a path whose
+    /// maximum segment size is `maximumSegmentSize`.
+    private func withOutboundStream(
+        maximumSegmentSize: Int = 1200,
+        _ body: (_ connection: QUICConnection, _ stream: inout QUICStreamInstance, _ path: QUICPath) -> Void
+    ) {
+        let logPrefixer = LogPrefixer("[FlowControlTests]")
+        let clock = TestClockContext("test context")
+        let connection = clock.onQueue {
+            QUICConnection(context: clock.context)
+        }
+        defer { clock.onQueue { connection.destroyFromExternalTest() } }
+
+        clock.onQueue {
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
+            defer { stream.destroyFromExternalTest() }
+
+            stream.setup(
+                streamID: QUICStreamID(0),
+                logPrefixer: logPrefixer
+            )
+            let path = QUICPath.makeFromExternalTest(parent: connection)
+            defer {
+                connection.currentPath = nil
+                path.destroyFromExternalTest()
+            }
+
+            path.mss = maximumSegmentSize
+            path.initialMSS = maximumSegmentSize
+            path.resetCongestionControl()
+            connection.currentPath = path
+
+            body(connection, &stream, path)
+        }
+    }
+
+    func testOutboundRoomIsTargetMinusPendingBytes() {
+        withOutboundStream { connection, stream, path in
+            XCTAssertTrue(stream.updateOutboundMaxData(to: 8_000_000))
+            XCTAssertTrue(connection.updateOutboundMaxData(to: 8_000_000))
+
+            let window = Int(path.congestionControlAvailableCongestionWindow)
+            XCTAssertGreaterThan(window, 0, "An open window is what makes the room continuous")
+            let minimumTarget = Int(FlowControlGlobals.sendQueueFactor) * path.mss
+            let target = window + minimumTarget
+
+            // The room must shrink by exactly the bytes enqueued, including across the minimum
+            // target of pending bytes; otherwise a writer sees the room jump to zero.
+            var pending = 0
+            for nextPending in [0, minimumTarget - 1, minimumTarget, minimumTarget + 1, target - 1, target] {
+                stream.updateFlowControlWithEnqueuedBytesToSend(UInt64(nextPending - pending), connection: connection)
+                pending = nextPending
+                stream.updateOutboundFlowControlCredit(connection: connection)
+                XCTAssertEqual(stream.maximumStreamDataSize, target - pending, "pending bytes: \(pending)")
+            }
+
+            // Beyond the target there is no room, and sending the bytes restores it.
+            stream.updateFlowControlWithEnqueuedBytesToSend(5000, connection: connection)
+            stream.updateOutboundFlowControlCredit(connection: connection)
+            XCTAssertEqual(stream.maximumStreamDataSize, 0)
+            stream.updateFlowControlWithSentBytes(5000 + 1, connection: connection)
+            stream.updateOutboundFlowControlCredit(connection: connection)
+            XCTAssertEqual(stream.maximumStreamDataSize, 1)
+        }
+    }
+
+    func testOutboundRoomIsLimitedByPeerFlowControl() {
+        withOutboundStream { connection, stream, path in
+            let window = Int(path.congestionControlAvailableCongestionWindow)
+            XCTAssertGreaterThan(window, 3000, "The window must not be what limits the room here")
+            let minimumTarget = Int(FlowControlGlobals.sendQueueFactor) * path.mss
+
+            // The connection may send 500 more bytes and the stream a lot more, so the connection's
+            // limit plus the minimum target is the room.
+            XCTAssertTrue(stream.updateOutboundMaxData(to: 8_000_000))
+            XCTAssertTrue(connection.updateOutboundMaxData(to: 500))
+            stream.updateOutboundFlowControlCredit(connection: connection)
+            XCTAssertEqual(stream.maximumStreamDataSize, 500 + minimumTarget)
+
+            // A stream limited to 3000 more bytes gets that limit plus the minimum target once the
+            // connection's limit is the looser one.
+            XCTAssertTrue(connection.updateOutboundMaxData(to: 8_000_000))
+            var limitedStream = QUICStreamInstance(parent: connection, inbound: false)
+            defer { limitedStream.destroyFromExternalTest() }
+
+            limitedStream.setup(
+                streamID: QUICStreamID(4),
+                logPrefixer: LogPrefixer("[FlowControlTests]")
+            )
+            XCTAssertTrue(limitedStream.updateOutboundMaxData(to: 3000))
+            limitedStream.updateOutboundFlowControlCredit(connection: connection)
+            XCTAssertEqual(limitedStream.maximumStreamDataSize, 3000 + minimumTarget)
+        }
+    }
+
+    func testOutboundRoomIsZeroWhilePeerLimitIsBelowBytesSent() {
+        withOutboundStream { connection, stream, _ in
+            XCTAssertTrue(stream.updateOutboundMaxData(to: 8_000_000))
+            XCTAssertTrue(connection.updateOutboundMaxData(to: 8_000_000))
+            stream.updateFlowControlWithEnqueuedBytesToSend(2000, connection: connection)
+            stream.updateFlowControlWithSentBytes(2000, connection: connection)
+            // A new transport parameter set can lower the limit, as when early data is rejected.
+            stream.flowControlState.initializeMaxDataValues(remoteMaxData: 1000, localMaxData: 0)
+            stream.updateOutboundFlowControlCredit(connection: connection)
+            XCTAssertEqual(
+                stream.maximumStreamDataSize,
+                0,
+                "A stream whose peer limit is below the bytes it sent must not keep an earlier room"
+            )
+        }
+    }
+
+    func testOutboundTargetIsCappedAtQueueLimit() {
+        // A level nothing limits must not overflow when the headroom is added, and must stop at the
+        // limit; otherwise a writer could queue without bound.
+        XCTAssertEqual(
+            FlowControlState.outboundTarget(
+                allowedBytes: .max,
+                headroom: 12_000,
+                guaranteedQueueLength: 12_000,
+                queueLimit: 50 * 1024
+            ),
+            50 * 1024
+        )
+    }
+
+    func testOutboundTargetAddsHeadroomToAllowedBytes() {
+        XCTAssertEqual(
+            FlowControlState.outboundTarget(
+                allowedBytes: 10_000,
+                headroom: 12_000,
+                guaranteedQueueLength: 12_000,
+                queueLimit: 50 * 1024
+            ),
+            22_000
+        )
+    }
+
+    func testOutboundTargetIsNeverBelowGuaranteedQueueLength() {
+        // The headroom alone does not lift the target to the guarantee; otherwise a writer could
+        // be held back for less than the guarantee.
+        XCTAssertEqual(
+            FlowControlState.outboundTarget(
+                allowedBytes: 1000,
+                headroom: 2000,
+                guaranteedQueueLength: 12_000,
+                queueLimit: 50 * 1024
+            ),
+            12_000
+        )
+    }
+
+    func testGuaranteedQueueLengthWinsOverSmallerConfiguredQueueLimit() {
+        // A configured limit below the guarantee must not shrink the room below it; otherwise a
+        // writer could be held back for less than a few packets.
+        var state = FlowControlState(isStream: true)
+        state.initializeMaxDataValues(remoteMaxData: 8_000_000, localMaxData: 0)
+        XCTAssertEqual(
+            state.outboundRoomAvailable(
+                congestionWindow: nil,
+                headroom: 12_000,
+                guaranteedQueueLength: 12_000,
+                configuredQueueLimit: 1000
+            ),
+            12_000
+        )
+    }
+
+    func testStreamThatCanNeverSendAgainDoesNotAwaitOutboundRoom() {
+        withOutboundStream { connection, stream, _ in
+            stream.writeClosed = true
+            connection.awaitOutboundRoom(of: &stream)
+            XCTAssertTrue(
+                connection.streamsAwaitingOutboundRoom.isEmpty,
+                "A write-closed stream has no room to wait for"
+            )
+
+            stream.writeClosed = false
+            stream.closed = true
+            connection.awaitOutboundRoom(of: &stream)
+            XCTAssertTrue(connection.streamsAwaitingOutboundRoom.isEmpty, "A closed stream has no room to wait for")
+            stream.closed = false
+
+            connection.awaitOutboundRoom(of: &stream)
+            XCTAssertFalse(
+                connection.streamsAwaitingOutboundRoom.isEmpty,
+                "A stream that can send must be remembered"
+            )
+        }
+    }
+
+    func testClosingTheConnectionForgetsStreamsAwaitingOutboundRoom() {
+        withOutboundStream { connection, stream, _ in
+            connection.awaitOutboundRoom(of: &stream)
+            XCTAssertFalse(connection.streamsAwaitingOutboundRoom.isEmpty)
+
+            connection.fromExternal { eventContext in
+                connection.close(sendCloseFrame: false, in: &eventContext)
+            }
+
+            // A stream woken after the connection has closed would be told about room it can
+            // never use.
+            XCTAssertTrue(connection.streamsAwaitingOutboundRoom.isEmpty)
+        }
+    }
+
     func testSendPermitReopensAfterDrainWithoutMaxStreamData() {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let selected = TestClockContext("test context")
@@ -146,7 +352,9 @@ final class FlowControlTests: XCTestCase {
             // Send the bytes to drain the backlog, with no MAX_STREAM_DATA arriving.
             stream.updateFlowControlWithSentBytes(16_384, connection: connection)
 
-            // Draining reopens the permit without an inbound MAX_STREAM_DATA
+            // Draining reopens the permit without an inbound MAX_STREAM_DATA. The room is
+            // computed when the application asks for it.
+            stream.updateOutboundFlowControlCredit(connection: connection)
             XCTAssertGreaterThan(stream.maximumStreamDataSize, 0)
             connection.fromExternal { eventContext in
                 XCTAssertGreaterThan(
