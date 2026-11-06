@@ -261,6 +261,30 @@ public struct Frame: ~Copyable {
         }
     }
 
+    /// Claims the first `length` unclaimed bytes into a frame of their own that shares this frame's
+    /// storage, so nothing is copied; the storage stays alive as long as either frame does.
+    ///
+    /// Only a frame whose storage has a custom owner can share it: `nil` for any other, and for a
+    /// frame with fewer than `length` unclaimed bytes.
+    mutating func claimSharedBytes(_ length: Int) -> Frame? {
+        guard length >= 0, length <= unclaimedLength else { return nil }
+        var shared: Frame
+        switch buffer {
+        case .customOwner(let storage, let owner):
+            shared = Frame(customBuffer: storage, owner: owner)
+        default:
+            return nil
+        }
+        let behindTheBytes = endOffset + unclaimedLength - length
+        guard shared.claim(fromStart: startOffset, fromEnd: behindTheBytes, adjustSingleIPAggregate: false),
+            claim(fromStart: length)
+        else {
+            shared.finalize(success: false)
+            return nil
+        }
+        return shared
+    }
+
     // Only unclaimed bytes in frame, for unsafe types
     @usableFromInline
     var unsafeUnclaimedBuffer: UnsafeMutableRawBufferPointer? {
