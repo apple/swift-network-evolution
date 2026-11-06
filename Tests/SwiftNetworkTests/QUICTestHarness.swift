@@ -2700,6 +2700,75 @@ class QUICTestHarness {
         stop()
     }
 
+    /// Fills the connection's send queue from one stream while another has a little queued of its
+    /// own, then waits for the second stream's writer to be told it has room again.
+    ///
+    /// The second stream has no room because the connection is full, not because of its own queue,
+    /// so its writer must be woken when the room returns to the connection, whichever stream's
+    /// bytes were sent.
+    func runOutboundRoomReturnsToStreamWaitingBehindOtherStreams(
+        unidirectional: Bool = false,
+        chunkCount: Int = 4,
+        chunkSize: Int = 16 * 1024,
+        timeout: TimeInterval = 5.0
+    ) {
+        let clientOptions = QUICProtocol.options()
+        let serverOptions = QUICProtocol.options()
+        if unidirectional {
+            clientOptions.isUnidirectional = true
+            serverOptions.isUnidirectional = true
+        }
+        do {
+            try quicHandshake(clientOptions: clientOptions, serverOptions: serverOptions)
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let busyStream = createNewStream(identifier: "C1", quicOptions: clientOptions),
+            let waitingStream = createNewStream(identifier: "C2", quicOptions: clientOptions)
+        else {
+            XCTFail("Failed to create client streams")
+            return
+        }
+
+        var dataQueued = false
+        var roomReturned = false
+        var waitingStreamRoom: Int?
+        context.async {
+            for _ in 0..<chunkCount {
+                XCTAssertTrue(busyStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
+            }
+            // More than a packet, so the stream does not get the packet's worth a stream with
+            // nothing queued is left.
+            XCTAssertTrue(waitingStream.write([UInt8](repeating: 0x5a, count: 4000)))
+            do {
+                waitingStreamRoom = try waitingStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+            // Room announcements from the writes above are not the one this test waits for.
+            waitingStream.discardPendingOutboundRoomAvailable()
+            waitingStream.fromExternal { eventContext in
+                waitingStream.waitForOutboundRoomAvailable(in: &eventContext) { _ in
+                    roomReturned = true
+                }
+            }
+            dataQueued = true
+        }
+
+        wait(until: { dataQueued }, timeout: timeout, "the data to be queued and the room read")
+        XCTAssertEqual(
+            waitingStreamRoom,
+            0,
+            "A stream with a packet queued must have no room while other streams fill the connection"
+        )
+        if waitingStreamRoom == 0 {
+            wait(until: { roomReturned }, timeout: timeout, "the waiting stream's room to be announced")
+        }
+        stop()
+    }
+
     /// Queues more data on a stream in one turn than the connection can send, then checks what the
     /// stream tells the application about its room for more.
     ///
@@ -2798,7 +2867,7 @@ class QUICTestHarness {
                 // Queue the announcement the way packet building does when space reopens, so the
                 // recovery send has an event to deliver.
                 _ = clientConnection.withFlow(flowID) { (flow: inout QUICStreamInstance) in
-                    clientConnection.queueOutboundRoomAvailableEvent(for: flow)
+                    clientConnection.queueOutboundRoomAvailableEvent(for: &flow)
                 }
 
                 var discardInitialRecoveryState = false
