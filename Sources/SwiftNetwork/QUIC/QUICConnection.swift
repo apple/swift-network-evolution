@@ -366,6 +366,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var stateMachine = QUICConnectionStateMachine()
 
     private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
+    /// The message identifier of every inbound stream's metadata.
+    static let inboundStreamMessageIdentifier = SystemUUID(insecure: true)
 
     var localCIDLength: Int = 0  // would be private(set)
     private var initialSourceConnectionID: QUICConnectionID?
@@ -2980,7 +2982,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             streamID = nil
         }
 
-        stream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
         stream.setup(streamID: streamID, logPrefixer: logPrefixer)
 
         if let remoteTransportParameters {
@@ -6051,8 +6052,7 @@ extension QUICConnection {
                     return false
                 }
                 // To inform QUICStreamMetadata
-                stream.streamMetadata.streamID = stream.streamID?.value ?? 0  // Default for QUICStreamMetadata is 0
-                stream.streamMetadata.streamType = streamType
+                stream.updateStreamMetadataID()
                 return true
             }
             guard readied == true else {
@@ -6716,7 +6716,6 @@ extension QUICConnection {
                 inbound: true,
                 in: &eventContext
             )
-            newStream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
 
             let newFlowIdentifier = newStream.flowIdentifier
             knownFlows[newStreamID] = newFlowIdentifier
@@ -6740,10 +6739,12 @@ extension QUICConnection {
             let newStreamMetadata = newStream.streamMetadata
             insertFlow(newStream, for: newFlowIdentifier)
 
+            // The message identifier names a message; a stream's metadata is not one, so inbound
+            // streams share one, which saves the locked counter a fresh insecure identifier takes.
             let abstractMetadata: AbstractProtocolMetadata = ProtocolMetadata<QUICStreamProtocol>(
                 protocolIdentifier: QUICStreamProtocol.identifier,
                 perProtocolMetadata: newStreamMetadata,
-                messageIdentifier: SystemUUID(insecure: true)
+                messageIdentifier: QUICConnection.inboundStreamMessageIdentifier
             )
             deliverNewInboundFlowEvent(
                 newStreamInstance,
