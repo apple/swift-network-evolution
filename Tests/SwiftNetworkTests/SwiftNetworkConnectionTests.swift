@@ -103,8 +103,7 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             case .success(let stream):
                 XCTAssertNotNil(stream)
             case .failure(let error):
-                print("Couldn't create stream: \(error)")
-                XCTAssertTrue(false)
+                XCTFail("Couldn't create stream: \(error)")
             }
         }
     }
@@ -398,7 +397,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
         let tunnel = NetworkConnection(to: Endpoint(address: IPv4Address.loopback, port: 7777)) {
             QUIC(alpn: ["QUICTest"])
         }.onStateUpdate { _, state in
-            print("New tunnel state \(state)")
             semaphore.signal()
             if case .cancelled = state { cancelled.signal() }
         }.start()
@@ -438,7 +436,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 8889))
         )
         .onStateUpdate { _, state in
-            print("client \(state)")
             switch state {
             case .ready:
                 group.leave()
@@ -463,7 +460,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                 .serverMode(true)
         )
         .onStateUpdate { _, state in
-            print("server \(state)")
             switch state {
             case .ready:
                 group.leave()
@@ -514,7 +510,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 8889))
         )
         .onStateUpdate { _, state in
-            print("client \(state)")
             switch state {
             case .ready:
                 group.leave()
@@ -539,7 +534,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                 .serverMode(true)
         )
         .onStateUpdate { _, state in
-            print("server \(state)")
             switch state {
             case .ready:
                 group.leave()
@@ -575,7 +569,7 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                 }
                 break
             case .failure(let error):
-                print("Couldn't create stream: \(error)")
+                XCTFail("Couldn't create stream: \(error)")
             }
             group.leave()
         }
@@ -606,7 +600,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
         }
 
         deinit {
-            print("Freeing test buffer")
             buffer.deallocate()
         }
     }
@@ -631,7 +624,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 8889))
         )
         .onStateUpdate { _, state in
-            print("client \(state)")
             switch state {
             case .ready:
                 group.leave()
@@ -656,7 +648,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                 .serverMode(true)
         )
         .onStateUpdate { _, state in
-            print("server \(state)")
             switch state {
             case .ready:
                 group.leave()
@@ -692,7 +683,7 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                 }
                 break
             case .failure(let error):
-                print("Couldn't create stream: \(error)")
+                XCTFail("Couldn't create stream: \(error)")
             }
             group.leave()
         }
@@ -731,20 +722,16 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             case .udp:
                 let udpConnection = Unmanaged<NetworkConnection<UDP>>.fromOpaque(connection).takeUnretainedValue()
                 XCTAssertNotNil(udpConnection)
-                print("UDP in C interop test")
             case .quic:
                 let quicConnection = Unmanaged<NetworkConnection<QUIC>>.fromOpaque(connection).takeUnretainedValue()
                 XCTAssertNotNil(quicConnection)
-                print("QUIC in C interop test")
             case .tls:
                 let tlsConnection = Unmanaged<NetworkConnection<TLS>>.fromOpaque(connection).takeUnretainedValue()
                 XCTAssertNotNil(tlsConnection)
-                print("TLS in C interop test")
             case .noTransport:
                 let noTransportConnection = Unmanaged<NetworkConnection<NoTransport>>.fromOpaque(connection)
                     .takeUnretainedValue()
                 XCTAssertNotNil(noTransportConnection)
-                print("NoTransport in C interop test")
             }
         }
 
@@ -781,7 +768,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv6Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
-            print("c1 \(state)")
             switch state {
             case .ready:
                 XCTFail("Should not be ready")
@@ -817,7 +803,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
-            print("c1 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -839,7 +824,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7778))
         )
         .onStateUpdate { _, state in
-            print("c2 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -892,7 +876,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
-            print("c1 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -914,7 +897,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7778))
         )
         .onStateUpdate { _, state in
-            print("c2 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -959,7 +941,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
-            print("c1 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -979,7 +960,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7778))
         )
         .onStateUpdate { _, state in
-            print("c2 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -1030,7 +1010,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
-            print("c1 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -1050,7 +1029,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7778))
         )
         .onStateUpdate { _, state in
-            print("c2 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -1095,7 +1073,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
-            print("c1 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -1115,7 +1092,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7778))
         )
         .onStateUpdate { _, state in
-            print("c2 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -1183,7 +1159,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
-            print("c1 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -1208,7 +1183,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                 .serverMode(true)
         )
         .onStateUpdate { _, state in
-            print("c2 \(state)")
             switch state {
             case .cancelled:
                 group.leave()
@@ -1275,7 +1249,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
-            print("c1 \(state)")
             switch state {
             case .ready:
                 group.leave()
@@ -1371,7 +1344,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
             }.localEndpoint(Endpoint(address: IPv4Address.loopback, port: 7777))
         )
         .onStateUpdate { _, state in
-            print("client \(state)")
             if case .ready = state { handshaken.leave() }
         }
 
@@ -1401,7 +1373,6 @@ final class SwiftNetworkConnectionTests: NetTestCase {
                 .serverMode(true)
         )
         .onStateUpdate { _, state in
-            print("server \(state)")
             if case .ready = state { handshaken.leave() }
         }
 
