@@ -171,6 +171,12 @@ extension MutableRawSpan {
         toByteOffset destinationOffset: Int = 0,
         count: Int
     ) {
+        assert(
+            count >= 0 && sourceOffset >= 0 && destinationOffset >= 0
+                && sourceOffset &+ count <= source.byteCount
+                && destinationOffset &+ count <= byteCount,
+            "copyUnchecked requires `count` bytes to be available at both offsets"
+        )
         var offset = 0
         while count &- offset >= 8 {
             storeBytes(
