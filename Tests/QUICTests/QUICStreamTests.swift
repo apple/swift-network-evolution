@@ -420,7 +420,7 @@ final class QUICStreamUpperProtocolBorrowingTests: XCTestCase {
                 // What reopening a stream's room does, then what the next send does with the queue
                 _ = stack.connection.performOnStream(flowID, in: &eventContext) {
                     (stream: inout QUICStreamInstance, _: inout NetworkContext.EventContext) in
-                    stack.connection.queueOutboundRoomAvailableEvent(for: stream)
+                    stack.connection.queueOutboundRoomAvailableEvent(for: &stream)
                 }
                 stack.connection.deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
             }
