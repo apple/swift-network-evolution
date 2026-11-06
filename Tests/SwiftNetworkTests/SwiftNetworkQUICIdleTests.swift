@@ -147,6 +147,70 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
         )
     }
 
+    #if canImport(SwiftNetwork)
+    func testQUICConnectionReportsIdleWhenABatchEndSendsTheOwedAck() {
+        // An ACK held while the application batches goes out when the batch ends, and that is the last
+        // thing the connection owed: the idle state must be re-evaluated then.
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello World!".utf8),
+            afterHandshake: { harness in
+                harness.onContext {
+                    if let client = harness.state?.clientInstance {
+                        client.fromExternal { eventContext in
+                            client.ack.maxDelay = .seconds(30)
+                            if client.ack.timerScheduled, let timerID = client.ack.timerID {
+                                client.timer.reschedule(
+                                    identifier: timerID,
+                                    fromNow: client.ack.maxDelay,
+                                    timerNow: client.now,
+                                    in: &eventContext
+                                )
+                            }
+                        }
+                    }
+                    harness.state?.serverInstance.currentPath?.rtt.remoteMaxAckDelay = .seconds(30)
+                }
+            },
+            afterData: { harness in
+                guard let state = harness.state else {
+                    XCTFail("State must be non-nil")
+                    return
+                }
+                harness.onContext {
+                    let client = state.clientInstance
+                    for upperHarness in state.clientHarness.upperHarnesses {
+                        upperHarness.invokeConnectionIdleEvent()
+                    }
+                    XCTAssertGreaterThan(client.ack.unackedPacketCount, 0, "the client owes an ACK")
+                    XCTAssertFalse(client.currentPath?.reportedIdleEvent ?? true)
+
+                    // The ACK for what arrives next is due at once, but the batch holds it.
+                    state.clientHarness.invokeApplicationEvent(.outboundDataBatchStart)
+                    client.ack.ackAgressively()
+                    state.serverInstance.fromExternal { eventContext in
+                        state.serverInstance.withPendingItems(for: .applicationData) { $0.ping = true }
+                        state.serverInstance.sendFrames(in: &eventContext)
+                    }
+                }
+                harness.allow(.milliseconds(2))
+                harness.flush()
+                harness.onContext {
+                    let client = state.clientInstance
+                    XCTAssertTrue(client.applicationPendingItems.isAckOnly, "only an ACK is waiting")
+                    XCTAssertFalse(client.currentPath?.reportedIdleEvent ?? true, "an ACK is owed")
+
+                    state.clientHarness.invokeApplicationEvent(.outboundDataBatchEnd)
+                    XCTAssertFalse(client.applicationPendingItems.hasPendingItems, "the batch's end sends the ACK")
+                    XCTAssertTrue(
+                        client.currentPath?.reportedIdleEvent ?? false,
+                        "the connection reports idle once the batch's end has sent the last ACK it owed"
+                    )
+                }
+            }
+        )
+    }
+    #endif
+
     func testDelayedAckTimerCanSendPMTUDProbe() {
         // Sending a delayed ACK can also send a PMTUD probe, and sending the probe reads
         // the connection's ACK state, so the timer must not still hold that state when it

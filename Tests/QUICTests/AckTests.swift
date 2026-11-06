@@ -55,6 +55,17 @@ extension Ack {
         )
     }
 
+    /// Collects the blocks produced by `withBlocks` into a heap array. Tests only;
+    /// production code must stay on the `SmallArray` path of `withBlocks`.
+    static func blocks(
+        frame: borrowing FrameAck,
+        oldestPacketNumber: PacketNumber = .initial
+    ) -> [AckBlock] {
+        var blocks: [AckBlock] = []
+        withBlocks(frame: frame, oldestPacketNumber: oldestPacketNumber) { blocks.append($0) }
+        return blocks
+    }
+
     mutating func append(packetNumberSpace: PacketNumberSpace, packetNumber: PacketNumber) {
         self.append(
             packetNumberSpace: packetNumberSpace,
@@ -441,7 +452,9 @@ final class AckTests: XCTestCase {
             delay: 0,
             ranges: [FrameAckRange(gap: 0, range: 0)]
         )
-        for block in Ack.blockSequence(frame: frame) {
+        let blocks = Ack.blocks(frame: frame)
+        XCTAssertEqual(blocks.count, 1)
+        for block in blocks {
             XCTAssertEqual(block.start, 100)
             XCTAssertEqual(block.end, 100)
         }
@@ -455,7 +468,9 @@ final class AckTests: XCTestCase {
             ranges: [FrameAckRange(gap: 0, range: 10)]
         )
 
-        for block in Ack.blockSequence(frame: frame) {
+        let blocks = Ack.blocks(frame: frame)
+        XCTAssertEqual(blocks.count, 1)
+        for block in blocks {
             XCTAssertEqual(block.start, 0)
             XCTAssertEqual(block.end, 10)
         }
@@ -470,7 +485,7 @@ final class AckTests: XCTestCase {
         )
         var blockNumber = 0
 
-        for block in Ack.blockSequence(frame: frame) {
+        for block in Ack.blocks(frame: frame) {
             if blockNumber == 0 {
                 XCTAssertEqual(block.start, 5)
                 XCTAssertEqual(block.end, 7)
@@ -540,6 +555,44 @@ final class AckTests: XCTestCase {
         XCTAssertEqual(ack.blocksForPacketNumberSpace(packetNumberSpace: .initial), 2)
         ack.flush(for: .initial)
         XCTAssertEqual(ack.blocksForPacketNumberSpace(packetNumberSpace: .initial), 0)
+    }
+
+    func testAckDelayMeasuredForEachFrame() {
+        // A fixed delay size skips building the frame, and the frame carries the delay.
+        ack.delaySize = 0
+        var delay: UInt64?
+        let captureDelay: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void = { _, frame, _ in
+            guard case .ack(let ackFrame) = frame else {
+                XCTFail("Expected an ACK frame")
+                return
+            }
+            delay = ackFrame.delay
+        }
+        let base = NetworkClock.Instant.testBase
+        let exponent = ack.localDelayExponent
+
+        ack.append(packetNumberSpace: .applicationData, packetNumber: 0, now: base)
+        _ = ack.buildForTesting(
+            for: .applicationData,
+            setAckFrame: captureDelay,
+            now: base.advanced(by: .milliseconds(10))
+        )
+        XCTAssertEqual(delay, UInt64(10_000) >> exponent)
+
+        // The next frame must measure its delay from the receipt of the new largest
+        // packet number, not reuse the delay of the previous frame.
+        delay = nil
+        ack.append(
+            packetNumberSpace: .applicationData,
+            packetNumber: 1,
+            now: base.advanced(by: .milliseconds(20))
+        )
+        _ = ack.buildForTesting(
+            for: .applicationData,
+            setAckFrame: captureDelay,
+            now: base.advanced(by: .milliseconds(21))
+        )
+        XCTAssertEqual(delay, UInt64(1_000) >> exponent)
     }
 
     func testAckBitstringBasic() {
@@ -1014,7 +1067,7 @@ final class AckTests: XCTestCase {
             ]
         )
 
-        let seq = Ack.blockSequence(frame: frame)
+        let seq = Ack.blocks(frame: frame)
 
         var emittedBlocks = 0
         for block in seq {
@@ -1030,6 +1083,24 @@ final class AckTests: XCTestCase {
         XCTAssertEqual(emittedBlocks, 2)
     }
 
+    func testAckBlocksOldestPacketNumberFilter() {
+        let frame = FrameAck(
+            packetNumberSpace: .initial,
+            largest: 10,
+            delay: 0,
+            ranges: [
+                FrameAckRange(gap: 0, range: 4),
+                FrameAckRange(gap: 1, range: 2),
+            ]
+        )
+
+        // The second block ends at 3, so an oldest packet number of 4 drops it.
+        let blocks = Ack.blocks(frame: frame, oldestPacketNumber: 4)
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks.first?.start, 6)
+        XCTAssertEqual(blocks.first?.end, 10)
+    }
+
     func testAckBlockIteratorInvalidUnderflow() {
         // Generate a FrameAck with invalid gaps that could create underflow
         let frame = FrameAck(
@@ -1042,7 +1113,7 @@ final class AckTests: XCTestCase {
             ]
         )
 
-        let seq = Ack.blockSequence(frame: frame)
+        let seq = Ack.blocks(frame: frame)
 
         var emittedBlocks = 0
         for _ in seq {

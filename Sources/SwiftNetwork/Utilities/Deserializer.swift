@@ -290,7 +290,8 @@ public struct Deserializer<Factory: DeserializerSpanFactory & ~Copyable & ~Escap
     @inline(always)
     mutating func decodeVariableLength() throws(DeserializationError) -> (UInt64, Int) {
         // Ensure at least 1 byte is available to peek at the length prefix
-        if !hasRoom(MemoryLayout<UInt8>.size) {
+        // Spans may be empty, so keep refilling until one has a byte
+        while !hasRoom(MemoryLayout<UInt8>.size) {
             guard refill() else {
                 try invalidate(.bufferTooShort)
             }
