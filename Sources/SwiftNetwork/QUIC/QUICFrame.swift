@@ -29,6 +29,123 @@ internal import os
 
 // MARK: - QUIC Frames
 
+/// The bytes a received STREAM, CRYPTO or DATAGRAM frame carries, kept small.
+///
+/// A `Frame` is a large value (over a hundred bytes), and the frame types that held one were large
+/// enough that every move of a `QUICFrame` was a call to `memmove`. Usually the bytes are a run in the
+/// storage of the datagram they arrived in (`Frame.SharedBytes`), which keeps that storage alive, so a
+/// frame that does not end its packet costs neither a copy of its bytes nor an allocation. When the
+/// datagram's storage cannot be shared, the bytes are copied, or the datagram's frame is moved in
+/// whole if the payload is all that is left of it; those live in a box.
+@available(Network 0.1.0, *)
+struct QUICFrameByteStorage: ~Copyable {
+    private final class FrameBox {
+        var frame: Frame
+
+        init(_ frame: consuming Frame) {
+            self.frame = frame
+        }
+    }
+
+    private enum Storage {
+        case empty
+        case shared(Frame.SharedBytes)
+        case boxed(FrameBox)
+    }
+
+    private var storage: Storage = .empty
+
+    init() {}
+
+    /// Storage that is `frame`, whole.
+    init(frame: consuming Frame) {
+        var frame = frame
+        frame.takeOwnershipOfBytes()
+        self.storage = .boxed(FrameBox(frame))
+    }
+
+    private init(sharing bytes: Frame.SharedBytes) {
+        self.storage = .shared(bytes)
+    }
+
+    /// Takes the next `length` bytes out of `frame`, claiming them there.
+    ///
+    /// - Parameters:
+    ///   - copy: Whether more of `frame` follows the bytes. If not, bytes that cannot share the
+    ///     datagram's storage take the whole of `frame`, which is left empty.
+    ///   - preservingMetadata: Whether the storage has to be the frame itself (with what it carries,
+    ///     such as its receive time) when it ends the packet, so sharing is not an option then.
+    /// - Returns: The storage, or `nil` if `frame` does not hold `length` bytes.
+    static func extract(
+        from frame: inout Frame,
+        length: Int,
+        copy: Bool,
+        preservingMetadata: Bool = false
+    ) -> QUICFrameByteStorage? {
+        if copy || !preservingMetadata, let shared = frame.claimSharedBytes(length) {
+            return QUICFrameByteStorage(sharing: shared)
+        }
+        if copy {
+            var copied = Frame(count: length)
+            let bytesCopied = frame.copyInto(&copied, length: length)
+            guard frame.claim(fromStart: length), bytesCopied == length else {
+                copied.finalize(success: false)
+                return nil
+            }
+            return QUICFrameByteStorage(frame: copied)
+        }
+        // The storage is the rest of the frame: take it whole.
+        var whole = Frame()
+        swap(&whole, &frame)
+        return QUICFrameByteStorage(frame: whole)
+    }
+
+    /// The bytes as a frame of their own, leaving this storage empty.
+    mutating func takeFrame() -> Frame {
+        var old = Storage.empty
+        swap(&old, &self.storage)
+        switch consume old {
+        case .empty:
+            return Frame()
+        case .shared(let bytes):
+            return bytes.makeFrame()
+        case .boxed(let box):
+            var taken = Frame()
+            swap(&taken, &box.frame)
+            return taken
+        }
+    }
+
+    /// Lets go of the bytes.
+    mutating func finalize(success: Bool) {
+        var old = Storage.empty
+        swap(&old, &self.storage)
+        switch consume old {
+        case .empty, .shared:
+            break
+        case .boxed(let box):
+            box.frame.finalize(success: success)
+        }
+    }
+
+    /// A copy of the bytes. For tests and logging.
+    func copyBytes() -> [UInt8] {
+        switch storage {
+        case .empty:
+            return []
+        case .shared(let bytes):
+            let span = bytes.span
+            return .init(copying: span, maxCount: span.count)
+        case .boxed(let box):
+            var frame = Frame()
+            swap(&frame, &box.frame)
+            defer { swap(&frame, &box.frame) }
+            guard let span = frame.span else { return [] }
+            return .init(copying: span, maxCount: span.count)
+        }
+    }
+}
+
 @available(Network 0.1.0, *)
 enum QUICFrame: ~Copyable {
     case padding(frame: FramePadding)
@@ -85,11 +202,11 @@ enum QUICFrame: ~Copyable {
     static func discard(_ frame: consuming QUICFrame, success: Bool = false) {
         switch consume frame {
         case .crypto(var frame):
-            frame.frame.finalize(success: success)
+            frame.payloadStorage.finalize(success: success)
         case .stream(var frame):
-            frame.frame.finalize(success: success)
+            frame.payloadStorage.finalize(success: success)
         case .datagram(var frame):
-            frame.frame.finalize(success: success)
+            frame.payloadStorage.finalize(success: success)
         default:
             break
         }
@@ -1448,7 +1565,7 @@ struct FrameCrypto: ~Copyable, QUICFrameProtocol {
     private(set) var offset: UInt64 = 0
     private(set) var length = 0
 
-    var frame = Frame()
+    var payloadStorage = QUICFrameByteStorage()
 
     static func parse(
         frame: inout Frame,
@@ -1475,7 +1592,7 @@ struct FrameCrypto: ~Copyable, QUICFrameProtocol {
         self.offset = offset
         self.length = data.count
         if self.length > 0 {
-            self.frame = Frame(copyBuffer: data)
+            self.payloadStorage = QUICFrameByteStorage(frame: Frame(copyBuffer: data))
         }
     }
 
@@ -1518,24 +1635,13 @@ struct FrameCrypto: ~Copyable, QUICFrameProtocol {
 
         self.length = cryptoLength
 
-        if shouldCopyBytes {
-            self.frame = Frame(count: cryptoLength)
-            let bytesCopied = frame.copyInto(&self.frame, length: cryptoLength)
-
-            // Claim from the start of the original frame
-            guard frame.claim(fromStart: cryptoLength), bytesCopied == cryptoLength else {
-
-                // If this fails, discard our local copy
-                self.frame.finalize(success: false)
-
-                throw QUICError.frameParse(FrameParseError.parsingError)
-            }
-        } else {
-            // Consume the frame, and clear the passed-in frame
-            self.frame = frame
-            frame = .init()
+        // Bytes that share the packet's storage, or, when it cannot be shared, a copy (when more of the
+        // packet follows) or the packet's frame itself, which is left empty.
+        guard let storage = QUICFrameByteStorage.extract(from: &frame, length: cryptoLength, copy: shouldCopyBytes)
+        else {
+            throw QUICError.frameParse(FrameParseError.parsingError)
         }
-        self.frame.takeOwnershipOfBytes()
+        self.payloadStorage = storage
 
         FrameCrypto.updateStats(
             isRx: true,
@@ -1980,7 +2086,7 @@ struct FrameStreamReceived: ~Copyable, QUICFrameProtocol {
     private(set) var offset: UInt64 = 0
     private(set) var length: Int = 0
 
-    var frame = Frame()
+    var payloadStorage = QUICFrameByteStorage()
 
     private(set) var isFinal: Bool = false
 
@@ -2002,7 +2108,7 @@ struct FrameStreamReceived: ~Copyable, QUICFrameProtocol {
         self.offset = offset
         self.length = data.count
         if self.length > 0 {
-            self.frame = Frame(copyBuffer: data)
+            self.payloadStorage = QUICFrameByteStorage(frame: Frame(copyBuffer: data))
         }
         self.isFinal = isFinal
 
@@ -2070,24 +2176,13 @@ struct FrameStreamReceived: ~Copyable, QUICFrameProtocol {
         self.id = streamID
         self.offset = offset
         self.length = streamLength
-        if shouldCopyBytes {
-            self.frame = Frame(count: streamLength)
-            let bytesCopied = frame.copyInto(&self.frame, length: streamLength)
-
-            // Claim from the start of the original frame
-            guard frame.claim(fromStart: streamLength), bytesCopied == streamLength else {
-
-                // If this fails, discard our local copy
-                self.frame.finalize(success: false)
-
-                throw QUICError.frameParse(FrameParseError.parsingError)
-            }
-        } else {
-            // Consume the frame, and clear the passed-in frame
-            self.frame = frame
-            frame = .init()
+        // Bytes that share the packet's storage, or, when it cannot be shared, a copy (when more of the
+        // packet follows) or the packet's frame itself, which is left empty.
+        guard let storage = QUICFrameByteStorage.extract(from: &frame, length: streamLength, copy: shouldCopyBytes)
+        else {
+            throw QUICError.frameParse(FrameParseError.parsingError)
         }
-        self.frame.takeOwnershipOfBytes()
+        self.payloadStorage = storage
     }
 
     static private func hasOffset(_ rawType: UInt64) -> Bool {
@@ -3053,7 +3148,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
     private(set) var contextID: UInt64?
     private(set) var length: Int = 0
 
-    var frame = Frame()
+    var payloadStorage = QUICFrameByteStorage()
 
     static func length(dataLength: UInt64, flowID: UInt64?, contextID: UInt64?) -> UInt64 {
         var length = dataLength
@@ -3105,7 +3200,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         self.contextID = contextID
         self.length = data.count
         if self.length > 0 {
-            self.frame = Frame(copyBuffer: data)
+            self.payloadStorage = QUICFrameByteStorage(frame: Frame(copyBuffer: data))
         }
         if let flowID {
             self.flowID = flowID & ~Constants.streamIDDatagramMask
@@ -3204,24 +3299,19 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
 
         self.length = datagramLength
 
-        if shouldCopyBytes {
-            self.frame = Frame(count: datagramLength)
-            let bytesCopied = frame.copyInto(&self.frame, length: datagramLength)
-
-            // Claim from the start of the original frame
-            guard frame.claim(fromStart: datagramLength), bytesCopied == datagramLength else {
-
-                // If this fails, discard our local copy
-                self.frame.finalize(success: false)
-
-                throw QUICError.frameParse(FrameParseError.parsingError)
-            }
-        } else {
-            // Consume the frame, and clear the passed-in frame
-            self.frame = frame
-            frame = .init()
+        // A datagram that ends the packet is the packet's frame itself, with what it carries (its
+        // receive time and IP values): the application is told about those.
+        guard
+            let storage = QUICFrameByteStorage.extract(
+                from: &frame,
+                length: datagramLength,
+                copy: shouldCopyBytes,
+                preservingMetadata: true
+            )
+        else {
+            throw QUICError.frameParse(FrameParseError.parsingError)
         }
-        self.frame.takeOwnershipOfBytes()
+        self.payloadStorage = storage
 
         if hasLength {
             stats.increment(.rxDatagramFrameWithLength)

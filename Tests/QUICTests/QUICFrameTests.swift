@@ -39,24 +39,21 @@ extension Frame {
 @available(Network 0.1.0, *)
 extension FrameCrypto {
     fileprivate var data: [UInt8] {
-        guard let span = frame.span else { return [] }
-        return .init(copying: span, maxCount: span.count)
+        payloadStorage.copyBytes()
     }
 }
 
 @available(Network 0.1.0, *)
 extension FrameStreamReceived {
     fileprivate var data: [UInt8] {
-        guard let span = frame.span else { return [] }
-        return .init(copying: span, maxCount: span.count)
+        payloadStorage.copyBytes()
     }
 }
 
 @available(Network 0.1.0, *)
 extension FrameDatagram {
     fileprivate var data: [UInt8] {
-        guard let span = frame.span else { return [] }
-        return .init(copying: span, maxCount: span.count)
+        payloadStorage.copyBytes()
     }
 }
 
@@ -509,7 +506,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.offset, 3)
         XCTAssertEqual(quicFrame.length, 3)
         XCTAssertEqual(quicFrame.data, [0xab, 0xba, 0x11])
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -631,7 +628,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
         XCTAssertEqual(quicFrame.isFinal, false)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -646,7 +643,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, false)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -681,7 +678,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
         XCTAssertEqual(quicFrame.isFinal, true)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -696,7 +693,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, true)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -732,7 +729,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
         XCTAssertEqual(quicFrame.isFinal, false)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -748,7 +745,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, false)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -908,7 +905,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
         XCTAssertEqual(quicFrame.isFinal, true)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -924,7 +921,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, true)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -1103,7 +1100,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
         XCTAssertEqual(quicFrame.isFinal, false)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -1119,7 +1116,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.offset, 10)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, false)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -1156,7 +1153,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
         XCTAssertEqual(quicFrame.isFinal, true)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -1172,7 +1169,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.offset, 10)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, true)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -1209,7 +1206,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.offset, 10)
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -1225,7 +1222,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.id, 4)
         XCTAssertEqual(quicFrame.offset, 1)
         XCTAssertEqual(quicFrame.length, 0)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -1664,7 +1661,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.offset, 10)
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -1680,7 +1677,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertEqual(quicFrame.id, 4)
         XCTAssertEqual(quicFrame.offset, 1)
         XCTAssertEqual(quicFrame.length, 0)
-        quicFrame.frame.finalize(success: true)
+        quicFrame.payloadStorage.finalize(success: true)
         frame.finalize(success: true)
     }
 
@@ -2734,7 +2731,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.contextID, nil)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -2757,7 +2754,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.contextID, nil)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -2782,7 +2779,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, 77)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -2806,7 +2803,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, 77)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -2831,7 +2828,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, nil)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -2855,7 +2852,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, nil)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -2881,7 +2878,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, 77)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -2906,7 +2903,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, 77)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -3178,7 +3175,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.contextID, nil)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -3202,7 +3199,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.contextID, nil)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -3228,7 +3225,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, 77)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -3253,7 +3250,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, 77)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -3279,7 +3276,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, nil)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -3304,7 +3301,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, nil)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -3331,7 +3328,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, 77)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -3357,7 +3354,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.flowID, 77)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -3641,7 +3638,7 @@ class QUICFrameTests: XCTestCase {
             XCTAssertEqual(quicFrame.contextID, 13)
             XCTAssertEqual(quicFrame.length, 8)
             XCTAssertEqual(quicFrame.data, data)
-            quicFrame.frame.finalize(success: true)
+            quicFrame.payloadStorage.finalize(success: true)
             frame.finalize(success: true)
         }
     }
@@ -3675,7 +3672,7 @@ class QUICFrameTests: XCTestCase {
                     in: &connection.context.eventContext
                 )
 
-                quicFrame.frame.finalize(success: true)
+                quicFrame.payloadStorage.finalize(success: true)
             }
         } catch {
             threwError = true
@@ -3908,6 +3905,115 @@ class QUICFrameTests: XCTestCase {
                 "\(type.description) 0x\(String(type.rawValue, radix: 16)) missing from table"
             )
         }
+    }
+}
+
+/// Owns the bytes of a datagram that frames share, and says when they are released.
+@available(Network 0.1.0, *)
+private final class SharedDatagram {
+    let base: UnsafeMutableRawPointer
+    let count: Int
+    private let onDeinit: () -> Void
+
+    init(bytes: [UInt8], onDeinit: @escaping () -> Void = {}) {
+        self.base = .allocate(byteCount: bytes.count, alignment: 1)
+        self.base.copyMemory(from: bytes, byteCount: bytes.count)
+        self.count = bytes.count
+        self.onDeinit = onDeinit
+    }
+
+    deinit {
+        base.deallocate()
+        onDeinit()
+    }
+
+    func makeFrame() -> Frame {
+        Frame(customBuffer: UnsafeMutableRawBufferPointer(start: base, count: count), owner: self)
+    }
+}
+
+@available(Network 0.1.0, *)
+final class QUICFrameByteStorageTests: XCTestCase {
+    private func extracted(
+        from frame: inout Frame,
+        length: Int,
+        copy: Bool,
+        preservingMetadata: Bool = false
+    ) -> QUICFrameByteStorage {
+        let result = QUICFrameByteStorage.extract(
+            from: &frame,
+            length: length,
+            copy: copy,
+            preservingMetadata: preservingMetadata
+        )
+        switch consume result {
+        case .some(let byteStorage): return byteStorage
+        case .none:
+            XCTFail("the frame holds \(length) bytes")
+            return QUICFrameByteStorage()
+        }
+    }
+
+    func testBytesOfASharedFrameShareItsStorageAndKeepItAlive() {
+        var released = false
+        var byteStorage = QUICFrameByteStorage()
+        do {
+            let datagram = SharedDatagram(bytes: Array(0..<10)) { released = true }
+            var frame = datagram.makeFrame()
+            byteStorage = extracted(from: &frame, length: 4, copy: true)
+            XCTAssertEqual(frame.unclaimedLength, 6, "the bytes are claimed from the frame")
+            frame.finalize(success: true)
+        }
+        XCTAssertFalse(released, "the shared bytes keep the datagram's storage alive")
+        XCTAssertEqual(byteStorage.copyBytes(), [0, 1, 2, 3])
+        byteStorage = QUICFrameByteStorage()
+        XCTAssertTrue(released)
+    }
+
+    func testTakingSharedBytesAsAFrameKeepsTheStorageAlive() {
+        var released = false
+        var taken = Frame()
+        do {
+            let datagram = SharedDatagram(bytes: [9, 8, 7, 6]) { released = true }
+            var frame = datagram.makeFrame()
+            var byteStorage = extracted(from: &frame, length: 3, copy: true)
+            taken = byteStorage.takeFrame()
+            XCTAssertEqual(byteStorage.copyBytes(), [], "taking the frame leaves the storage empty")
+            frame.finalize(success: true)
+        }
+        XCTAssertFalse(released)
+        XCTAssertEqual(taken.unclaimedLength, 3)
+        taken.finalize(success: true)
+        taken = Frame()
+        XCTAssertTrue(released)
+    }
+
+    func testBytesThatEndThePacketTakeTheWholeFrameWhenItMustKeepItsMetadata() {
+        let datagram = SharedDatagram(bytes: [1, 2, 3])
+        var frame = datagram.makeFrame()
+        var byteStorage = extracted(from: &frame, length: 3, copy: false, preservingMetadata: true)
+        XCTAssertEqual(byteStorage.copyBytes(), [1, 2, 3])
+        XCTAssertEqual(frame.unclaimedLength, 0, "the frame went whole into the storage")
+        byteStorage.finalize(success: true)
+    }
+
+    func testBytesOfAFrameWithNoSharedDatagramAreCopied() {
+        var frame = Frame(copyBuffer: [UInt8](0..<8))
+        var byteStorage = extracted(from: &frame, length: 5, copy: true)
+        XCTAssertEqual(byteStorage.copyBytes(), [0, 1, 2, 3, 4])
+        XCTAssertEqual(frame.unclaimedLength, 3)
+        byteStorage.finalize(success: true)
+        frame.finalize(success: true)
+    }
+
+    func testExtractingMoreThanTheFrameHoldsFails() {
+        let datagram = SharedDatagram(bytes: [1, 2, 3])
+        var frame = datagram.makeFrame()
+        switch QUICFrameByteStorage.extract(from: &frame, length: 4, copy: true) {
+        case .some: XCTFail("there are only three bytes")
+        case .none: break
+        }
+        frame.finalize(success: false)
     }
 }
 
