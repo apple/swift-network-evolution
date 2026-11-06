@@ -228,20 +228,17 @@ struct AckSpace: ~Copyable, PrefixedLoggable {
         }
         let largest = lastBlock.end
         log.datapath("Processing ACKs for \(packetNumberSpace)")
-        // Calculate ack_delay if assemble() is called
-        // without calling size().
+        // The ACK delay is measured from the receipt of the largest packet
+        // number to the time this frame is built (RFC 9000 Section 13.2.5).
         switch packetNumberSpace {
         case .initial, .handshake:
             delay = 0
         case .applicationData:
-            if delay == 0 {
-                // ACK Delay is an unsigned varint (RFC 9000 Section 19.3), and `UInt64` traps on a
-                // negative `Int64`. Clamp rather than widen: a delay measured as negative has no
-                // representation on the wire other than zero.
-                let elapsed = max(.zero, largestTimestamp.duration(to: now))
-                delay = UInt64(elapsed.microseconds) >> delayExponent
-            }
-
+            // ACK Delay is an unsigned varint (RFC 9000 Section 19.3), and `UInt64` traps on a
+            // negative `Int64`. Clamp rather than widen: a delay measured as negative has no
+            // representation on the wire other than zero.
+            let elapsed = max(.zero, largestTimestamp.duration(to: now))
+            delay = UInt64(elapsed.microseconds) >> delayExponent
         }
         var ackFrame: FrameAck? = nil
         var len = FrameType.ack.rawValue.variableLengthSize
@@ -688,6 +685,8 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         ecn: borrowing ECN,
         now: NetworkClock.Instant
     ) -> Bool {
+        // N.B.: sent() is called by the connection once the ACK is actually
+        // written into a packet.
         let shouldSend = assemble(
             for: path,
             delayExponent: localDelayExponent,
@@ -696,9 +695,6 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             ecn: ecn,
             now: now
         )
-        if shouldSend {
-            sent(now)
-        }
         log.datapath("\(shouldSend)")
         return shouldSend
     }

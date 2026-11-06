@@ -358,6 +358,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // List of streams that have app input data in their reassembly queue.
     var pendingReassemblyDequeue = QUICStreamList.pendingReassemblyDequeueList()
 
+    // Streams whose writers were told there is no room for more outbound data. A stream leaves
+    // this list when its room returns.
+    var streamsAwaitingOutboundRoom = QUICStreamList.awaitingOutboundRoomList()
+
     // Keeps track of flow table and sendFrame work on the connection
     var stateMachine = QUICConnectionStateMachine()
 
@@ -2630,8 +2634,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     func inboundStopping(path: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext) {
 
         // Send pending acks
+        var sendAckImmediately = false
         if !state.isTerminal {
-            _ = ack.processPending(
+            sendAckImmediately = ack.processPending(
                 connectionWindow: Int(self.flowControlState.remainingOutboundBytesAllowed),
                 isAckSet: isAckSet,
                 setAckFrame: scheduleAckFrame,
@@ -2677,6 +2682,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
+        // An acknowledgment or flow-control update may have opened room even when there was
+        // nothing to send.
+        deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
+
         // Service streams that are pending application reads
         let reassemblyMembership = pendingReassemblyDequeue.membership
         while let flowID = pendingReassemblyDequeue.removeFirstIdentifier() {
@@ -2709,9 +2718,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // While the application batches its sends, whatever is pending (an ACK for the datagrams just
         // received, say) goes out with the batch, when the application ends it: sending it now would
         // put a datagram of its own on the wire just ahead of the data the application is about to
-        // write.
+        // write. If processPending() decided to ACK immediately, the ACK frame is already queued:
+        // bypass the ACK-only early return in sendFrames() so it is not held back until the delayed
+        // ACK timer fires.
         if !pendOutboundData {
-            sendFrames(in: &eventContext)
+            sendFrames(delayedACK: sendAckImmediately, in: &eventContext)
         }
     }
 
@@ -3150,7 +3161,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         knownFlows.removeAll()
         // A stream still queued for a room-available notification is not going to get one, and the
         // queue holds the stream, which names this connection as its parent.
-        streamsWithReopenedOutboundRoom.removeAll()
+        forgetStreamsWaitingForOutboundRoom()
         localTransportParameters.removeAll()
         remoteTransportParameters?.removeAll()
 
@@ -3790,18 +3801,78 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     /// send completes.
     private var streamsWithReopenedOutboundRoom = [MultiplexedFlowIdentifier]()
 
-    func queueOutboundRoomAvailableEvent(for stream: borrowing QUICStreamInstance) {
-        streamsWithReopenedOutboundRoom.append(stream.flowIdentifier)
+    func queueOutboundRoomAvailableEvent(for stream: inout QUICStreamInstance) {
+        if stream.listMembership.contains(.reopenedOutboundRoom) {
+            return
+        }
+        stream.listMembership.insert(.reopenedOutboundRoom)
+        self.streamsWithReopenedOutboundRoom.append(stream.flowIdentifier)
+    }
+
+    /// Remembers a stream whose writer was told there is no room, so the writer is woken when
+    /// room returns. A stream that can never send again has no room to wait for.
+    func awaitOutboundRoom(of stream: inout QUICStreamInstance) {
+        if stream.receivedStopSending || stream.closed || stream.writeClosed {
+            return
+        }
+        self.streamsAwaitingOutboundRoom.append(&stream)
+    }
+
+    /// Drops every stream from the awaiting and reopened lists and clears their memberships, so no
+    /// writer is woken for room after the connection has closed and no stream keeps a membership for
+    /// a list that no longer holds it.
+    private func forgetStreamsWaitingForOutboundRoom() {
+        let awaitingMembership = self.streamsAwaitingOutboundRoom.membership
+        while let flowID = self.streamsAwaitingOutboundRoom.removeFirstIdentifier() {
+            withFlow(flowID) { (stream: inout Flow) in
+                stream.listMembership.subtract(awaitingMembership)
+            }
+        }
+        for flowID in self.streamsWithReopenedOutboundRoom {
+            withFlow(flowID) { (stream: inout Flow) in
+                stream.listMembership.subtract(.reopenedOutboundRoom)
+            }
+        }
+        self.streamsWithReopenedOutboundRoom.removeAll()
+    }
+
+    /// Moves each stream that has room again from the awaiting list to the reopened list.
+    ///
+    /// The room of a stream depends on the pending bytes of the whole connection, the congestion
+    /// window, and the peer's limits, so any send or acknowledgment can reopen a stream that did
+    /// not send anything itself.
+    private func reopenStreamsAwaitingOutboundRoom() {
+        let awaitingMembership = self.streamsAwaitingOutboundRoom.membership
+        var remainingStreamCount = self.streamsAwaitingOutboundRoom.count
+        while remainingStreamCount > 0 {
+            remainingStreamCount &-= 1
+            guard let flowID = self.streamsAwaitingOutboundRoom.removeFirstIdentifier() else {
+                continue
+            }
+            withFlow(flowID) { (stream: inout Flow) in
+                stream.listMembership.remove(awaitingMembership)
+                stream.updateOutboundFlowControlCredit(connection: self)
+                if stream.maximumStreamDataSize > 0 {
+                    self.queueOutboundRoomAvailableEvent(for: &stream)
+                } else {
+                    self.awaitOutboundRoom(of: &stream)
+                }
+            }
+        }
     }
 
     func deliverQueuedOutboundRoomAvailableEvents(
         in eventContext: inout NetworkContext.EventContext
     ) {
+        if !streamsAwaitingOutboundRoom.isEmpty {
+            reopenStreamsAwaitingOutboundRoom()
+        }
         guard !streamsWithReopenedOutboundRoom.isEmpty else { return }
         let streams = streamsWithReopenedOutboundRoom
         streamsWithReopenedOutboundRoom.removeAll(keepingCapacity: true)
         for flowID in streams {
             withFlow(flowID) { (stream: inout QUICStreamInstance) in
+                stream.listMembership.remove(.reopenedOutboundRoom)
                 stream.upper.deliverOutboundRoomAvailableEvent(from: stream.identifier, in: &eventContext)
             }
         }
@@ -4441,7 +4512,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        if !pendingItems.isAckSet && ack.ackRequiresAssembly(packetNumberSpace: packetNumberSpace) {
+        // Rebuild a queued ACK frame if ack-eliciting packets arrived since it
+        // was built, so that it covers them and carries an up to date ACK delay.
+        if ack.ackRequiresAssembly(packetNumberSpace: packetNumberSpace) {
             func scheduleAckFrame(
                 packetNumberSpace: PacketNumberSpace,
                 ackFrame: consuming QUICFrame,
@@ -4454,7 +4527,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             let receivedIPECNCounter = ecn.counters[packetNumberSpace].rxECNPackets
             let ackBundled = ack.assemble(
                 for: packetNumberSpace,
-                isAckSet: false,  // it was just checked
+                isAckSet: false,  // replace any queued ACK frame
                 setAckFrame: scheduleAckFrame,
                 ecnCounter: receivedIPECNCounter,
                 now: self.now
@@ -4648,7 +4721,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             sentPacketRecord.sentPath = path.pathIdentifier
             log(packet: packet)
 
+            let carriesAck = sentPacketRecord.transmittedItems.ackFrame != nil
             sentPackets.append(sentPacketRecord)
+            // Account for the ACK here, where it is known to be sent, rather
+            // than when it is built: an ACK can be built and then held back,
+            // or built here and bundled with other frames.
+            if carriesAck {
+                ack.sent(self.now)
+            }
 
             if isInFlightEligible {
                 totalSendBytes += UInt64(totalPacketLength)
@@ -5217,14 +5297,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 applicationPendingItems.retransmitStreams.removeAll()
                 flowControlState.resetSentBytes()
                 applyToAllFlows { stream in
-                    let hadNoRoom = stream.maximumStreamDataSize == 0
                     stream.resetSendStreamData()
-                    // The reset drops the bytes that held the room at zero. A writer waiting for
-                    // room would otherwise not hear that it has some again.
-                    stream.updateOutboundFlowControlCredit(connection: self)
-                    if hadNoRoom && stream.maximumStreamDataSize > 0 {
-                        queueOutboundRoomAvailableEvent(for: stream)
-                    }
                 }
                 deliverNetworkProtocolEvent(
                     flow: .allFlows,
@@ -7278,6 +7351,9 @@ extension QUICConnection {
         case .announceNewInboundConnectionID(let connectionID, let statelessResetToken):
             log.info("Announcing new CID \(connectionID) to the peer")
             announceNewConnectionID(connectionID, statelessResetToken: statelessResetToken, in: &eventContext)
+            // The NEW_CONNECTION_ID frame is queued, not sent: send it now rather than waiting for
+            // unrelated traffic or an ACK timer to flush it.
+            sendFrames(in: &eventContext)
         case .retireOutboundConnectionID(let connectionID):
             log.info("Retire outbound CID \(connectionID) to the peer")
             sendRetireConnectionIDFrame(connectionID, in: &eventContext)
