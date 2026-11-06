@@ -365,7 +365,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Keeps track of flow table and sendFrame work on the connection
     var stateMachine = QUICConnectionStateMachine()
 
-    private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
+    private(set) var knownFlows = QUICStreamFlowMap()
 
     var localCIDLength: Int = 0  // would be private(set)
     private var initialSourceConnectionID: QUICConnectionID?

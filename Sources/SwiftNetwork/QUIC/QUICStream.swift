@@ -301,6 +301,143 @@ struct QUICStreamIDState: ~Copyable {
     }
 }
 
+/// A connection's flows by stream ID, kept in a window per kind of stream rather than in a dictionary.
+@available(Network 0.1.0, *)
+struct QUICStreamFlowMap {
+    /// How far ahead of its kind's oldest stream a stream can be and still be kept in the window.
+    private static let maximumWindow: UInt64 = 1 << 14
+
+    /// The most streams a window holds when it is emptied into the dictionary to make room.
+    private static let maximumEvictedStreams = 1024
+
+    private struct Window {
+        var base: UInt64 = 0
+        var head = 0
+        var live = 0
+        var items = ContiguousArray<MultiplexedFlowIdentifier?>()
+
+        @inline(always)
+        func get(_ sequence: UInt64) -> MultiplexedFlowIdentifier? {
+            let offset = sequence &- base
+            // Compare as a UInt64: on a 32-bit target a peer's far-off stream ID would otherwise wrap
+            // into the window.
+            guard sequence >= base, offset < UInt64(items.count) else { return nil }
+            let index = Int(offset)
+            guard index >= head else { return nil }
+            return items[index]
+        }
+
+        /// Whether the stream was stored in the window.
+        mutating func insert(_ flow: MultiplexedFlowIdentifier, _ sequence: UInt64) -> Bool {
+            if head >= items.count {
+                items.removeAll(keepingCapacity: true)
+                head = 0
+                base = sequence
+            }
+            guard sequence >= base else { return false }
+            let offset = sequence &- base
+            // A stream this far ahead of the oldest one is not a window's worth: keep it aside.
+            guard offset < QUICStreamFlowMap.maximumWindow else { return false }
+            let index = Int(offset)
+            guard index >= head else { return false }
+            while items.count <= index { items.append(nil) }
+            if items[index] == nil { live += 1 }
+            items[index] = flow
+            return true
+        }
+
+        mutating func remove(_ sequence: UInt64) -> MultiplexedFlowIdentifier? {
+            let offset = sequence &- base
+            guard sequence >= base, offset < UInt64(items.count) else { return nil }
+            let index = Int(offset)
+            guard index >= head, let flow = items[index] else { return nil }
+            items[index] = nil
+            live -= 1
+            while head < items.count, items[head] == nil { head += 1 }
+            if head == items.count {
+                items.removeAll(keepingCapacity: true)
+                head = 0
+            } else if head >= 1024, head * 2 >= items.count {
+                items.removeFirst(head)
+                base &+= UInt64(head)
+                head = 0
+            }
+            return flow
+        }
+
+        /// Whether `sequence` is beyond the reach of the window as it stands.
+        func isBeyondReach(_ sequence: UInt64) -> Bool {
+            sequence >= base && sequence &- base >= QUICStreamFlowMap.maximumWindow
+        }
+
+        /// Whether the window is mostly holes: a few old streams that stay open hold its start back,
+        /// while the streams that came and went since left empty slots behind them.
+        var isSparse: Bool { live <= QUICStreamFlowMap.maximumEvictedStreams }
+
+        func liveStreams() -> [(sequence: UInt64, flow: MultiplexedFlowIdentifier)] {
+            var streams: [(sequence: UInt64, flow: MultiplexedFlowIdentifier)] = []
+            for index in head..<items.count {
+                if let flow = items[index] { streams.append((base &+ UInt64(index), flow)) }
+            }
+            return streams
+        }
+    }
+
+    private var windows = [Window](repeating: Window(), count: 4)
+    private var overflow: [QUICStreamID: MultiplexedFlowIdentifier] = [:]
+
+    /// How many streams the dictionary holds. For tests.
+    var overflowCount: Int { overflow.count }
+
+    subscript(_ id: QUICStreamID) -> MultiplexedFlowIdentifier? {
+        get {
+            let kind = Int(truncatingIfNeeded: id.value & 3)
+            if let flow = windows[kind].get(id.value >> 2) { return flow }
+            return overflow.isEmpty ? nil : overflow[id]
+        }
+        set {
+            if let newValue {
+                let kind = Int(truncatingIfNeeded: id.value & 3)
+                if !overflow.isEmpty { overflow.removeValue(forKey: id) }
+                let sequence = id.value >> 2
+                var stored = windows[kind].insert(newValue, sequence)
+                if !stored, windows[kind].isBeyondReach(sequence), windows[kind].isSparse {
+                    // Streams that stay open (an HTTP/3 control stream, a long-lived session) pin the
+                    // start of the window while thousands that came after them have closed. Move them
+                    // to the dictionary, which is where they would have gone had they been far from
+                    // the rest, and start the window again where the streams are now.
+                    evictWindow(kind: kind)
+                    stored = windows[kind].insert(newValue, sequence)
+                }
+                if !stored {
+                    overflow[id] = newValue
+                }
+            } else {
+                _ = removeValue(forKey: id)
+            }
+        }
+    }
+
+    private mutating func evictWindow(kind: Int) {
+        for (sequence, flow) in windows[kind].liveStreams() {
+            overflow[QUICStreamID((sequence << 2) | UInt64(kind))!] = flow
+        }
+        windows[kind] = Window()
+    }
+
+    @discardableResult
+    mutating func removeValue(forKey id: QUICStreamID) -> MultiplexedFlowIdentifier? {
+        let kind = Int(truncatingIfNeeded: id.value & 3)
+        if let flow = windows[kind].remove(id.value >> 2) { return flow }
+        return overflow.isEmpty ? nil : overflow.removeValue(forKey: id)
+    }
+
+    mutating func removeAll() {
+        windows = [Window](repeating: Window(), count: 4)
+        overflow.removeAll()
+    }
+}
+
 struct StreamListMembership: OptionSet {
     init(rawValue: Self.RawValue) {
         self.rawValue = rawValue

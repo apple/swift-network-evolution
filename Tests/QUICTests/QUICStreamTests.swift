@@ -217,6 +217,89 @@ final class QUICStreamIDStateTests: XCTestCase {
         XCTAssertEqual(streamsState.pendingStartStreams.count, 0)
         XCTAssertNil(streamsState.pendingStartStreams.first)
     }
+
+    /// Random inserts and removals, in and out of order and far apart, against a dictionary.
+    func testStreamFlowMapMatchesADictionary() {
+        var generator = SystemRandomNumberGenerator()
+        for seed in 0..<20 {
+            var map = QUICStreamFlowMap()
+            var model: [UInt64: MultiplexedFlowIdentifier] = [:]
+            var next: [UInt64] = [0, 1, 2, 3]
+            var live: [UInt64] = []
+            for step in 0..<4000 {
+                switch Int.random(in: 0..<10, using: &generator) {
+                case 0..<5:
+                    // The next stream of a kind, or sometimes one far ahead or below the window.
+                    let kind = Int.random(in: 0..<4, using: &generator)
+                    var id = next[kind]
+                    switch Int.random(in: 0..<20, using: &generator) {
+                    case 0: id &+= UInt64.random(in: 20_000..<80_000, using: &generator) * 4
+                    case 1: id = UInt64(kind) + UInt64.random(in: 0..<next[kind] / 4 + 1, using: &generator) * 4
+                    default: next[kind] += 4
+                    }
+                    map[QUICStreamID(id)!] = MultiplexedFlowIdentifier(testValue: UInt64(step))
+                    if model[id] == nil { live.append(id) }
+                    model[id] = MultiplexedFlowIdentifier(testValue: UInt64(step))
+                case 5..<9:
+                    guard !live.isEmpty else { continue }
+                    let at = Int.random(in: 0..<live.count, using: &generator)
+                    let id = live.remove(at: at)
+                    XCTAssertEqual(map.removeValue(forKey: QUICStreamID(id)!), model.removeValue(forKey: id))
+                default:
+                    let id = UInt64.random(in: 0..<next.max()! + 8, using: &generator)
+                    XCTAssertEqual(map[QUICStreamID(id)!], model[id], "seed \(seed) step \(step)")
+                }
+            }
+            for id in live {
+                XCTAssertEqual(map[QUICStreamID(id)!], model[id])
+            }
+            map.removeAll()
+            for id in live {
+                XCTAssertNil(map[QUICStreamID(id)!])
+            }
+        }
+    }
+
+    /// Streams that stay open must not pin the start of a window until every new stream falls back to
+    /// the dictionary.
+    func testStreamFlowMapStaysInItsWindowsWhileLongLivedStreamsStayOpen() {
+        var map = QUICStreamFlowMap()
+        func flow(_ id: UInt64) -> MultiplexedFlowIdentifier { MultiplexedFlowIdentifier(testValue: id + 1) }
+        // Stream 0 (bidirectional) and 2 and 3 (unidirectional) stay open the whole time.
+        for id: UInt64 in [0, 2, 3] { map[QUICStreamID(id)!] = flow(id) }
+        for sequence: UInt64 in 1..<40_000 {
+            for kind: UInt64 in [0, 2, 3] {
+                let id = (sequence << 2) | kind
+                map[QUICStreamID(id)!] = flow(id)
+                if sequence > 3 {
+                    let closed = ((sequence - 3) << 2) | kind
+                    XCTAssertEqual(map.removeValue(forKey: QUICStreamID(closed)!), flow(closed))
+                }
+            }
+        }
+        for id: UInt64 in [0, 2, 3] {
+            XCTAssertEqual(map[QUICStreamID(id)!], flow(id), "the long-lived stream \(id) is still found")
+        }
+        let latest = (UInt64(39_999) << 2) | 2
+        XCTAssertEqual(map[QUICStreamID(latest)!], flow(latest))
+        XCTAssertNil(map[QUICStreamID(((UInt64(10_000) << 2) | 2))!], "a closed stream is gone")
+        XCTAssertLessThanOrEqual(map.overflowCount, 6, "only the long-lived streams sit in the dictionary")
+        for id: UInt64 in [0, 2, 3] {
+            XCTAssertEqual(map.removeValue(forKey: QUICStreamID(id)!), flow(id))
+        }
+    }
+
+    /// A stream ID a peer chooses far beyond the window must not be mistaken for a stream in it.
+    func testStreamFlowMapDoesNotFindAStreamBeyondTheWindow() {
+        var map = QUICStreamFlowMap()
+        for id: UInt64 in [0, 4, 8] { map[QUICStreamID(id)!] = MultiplexedFlowIdentifier(testValue: id + 1) }
+        for sequence: UInt64 in [1 << 32, (1 << 32) + 1, (1 << 32) + 2, 1 << 40] {
+            let id = QUICStreamID(sequence << 2)!
+            XCTAssertNil(map[id])
+            XCTAssertNil(map.removeValue(forKey: id))
+        }
+        XCTAssertEqual(map[QUICStreamID(4)!], MultiplexedFlowIdentifier(testValue: 5))
+    }
 }
 
 @available(Network 0.1.0, *)
