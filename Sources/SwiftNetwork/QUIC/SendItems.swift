@@ -3380,7 +3380,6 @@ struct TransmittedItems: ~Copyable {
         // ackFrame is never retransmitted
     }
 
-    @_optimize(none)
     func allAcknowledged(
         connection: QUICConnection,
         packetNumber: PacketNumber,
