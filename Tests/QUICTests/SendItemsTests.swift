@@ -463,6 +463,27 @@ final class SendItemsTests: XCTestCase {
         XCTAssertEqual(outcome.flowsToService, 0, "The drained flow must be descheduled")
     }
 
+    func testFlushingQueuedStreamsKeepsAnAckLookingForBlockedStreams() {
+        var items = PendingItems(packetNumberSpace: .applicationData)
+        items.streamsMayBeBlocked = true
+        XCTAssertTrue(items.flushClearingQueuedStreams().isEmpty)
+        XCTAssertTrue(items.streamsMayBeBlocked, "a stream blocked before the flush is still blocked")
+
+        var unblocked = PendingItems(packetNumberSpace: .applicationData)
+        XCTAssertTrue(unblocked.flushClearingQueuedStreams().isEmpty)
+        XCTAssertFalse(unblocked.streamsMayBeBlocked, "nothing was dropped and nothing was blocked")
+    }
+
+    func testFlushingQueuedStreamsMarksTheDroppedStreamsForTheNextAck() {
+        var items = PendingItems(packetNumberSpace: .applicationData)
+        items.streamsToService.append(MultiplexedFlowIdentifier(testValue: 1))
+        XCTAssertFalse(items.streamsMayBeBlocked)
+        let dropped = items.flushClearingQueuedStreams()
+        XCTAssertEqual(dropped.count, 1)
+        XCTAssertTrue(items.streamsToService.isEmpty)
+        XCTAssertTrue(items.streamsMayBeBlocked, "the next ACK has to put the dropped streams back")
+    }
+
 }
 
 #endif
