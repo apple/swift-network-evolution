@@ -649,39 +649,11 @@ extension InPlaceSerializer where Factory: ~Escapable, Factory: ~Copyable {
             return
         }
         // Write exactly the length of the bytes to the storage
-        let source = value.connectionIDStorage.span.bytes
-        var offset = 0
-        while length &- offset >= 8 {
-            currentSpan.storeBytes(
-                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt64.self),
-                toByteOffset: cursor &+ offset,
-                as: UInt64.self
-            )
-            offset &+= 8
-        }
-        if length & 4 != 0 {
-            currentSpan.storeBytes(
-                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt32.self),
-                toByteOffset: cursor &+ offset,
-                as: UInt32.self
-            )
-            offset &+= 4
-        }
-        if length & 2 != 0 {
-            currentSpan.storeBytes(
-                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt16.self),
-                toByteOffset: cursor &+ offset,
-                as: UInt16.self
-            )
-            offset &+= 2
-        }
-        if length & 1 != 0 {
-            currentSpan.storeBytes(
-                of: source.unsafeLoadUnaligned(fromByteOffset: offset, as: UInt8.self),
-                toByteOffset: cursor &+ offset,
-                as: UInt8.self
-            )
-        }
+        currentSpan.copyUnchecked(
+            from: value.connectionIDStorage.span.bytes,
+            toByteOffset: cursor,
+            count: length
+        )
         moveCursorUnchecked(length)
     }
 
