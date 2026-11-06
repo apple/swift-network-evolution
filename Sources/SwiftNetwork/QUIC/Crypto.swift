@@ -584,7 +584,7 @@ extension QUICCrypto: TopStreamProtocol {
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         guard let linkage else {
-            cryptoFrame.frame.finalize(success: false)
+            cryptoFrame.payloadStorage.finalize(success: false)
             return false
         }
         let bufferLimitForPNSpace =
@@ -593,7 +593,7 @@ extension QUICCrypto: TopStreamProtocol {
             parentConnection?.log.error(
                 "Read crypto buffer size \(reassemblyQueue.size) is larger than limit \(bufferLimitForPNSpace)"
             )
-            cryptoFrame.frame.finalize(success: false)
+            cryptoFrame.payloadStorage.finalize(success: false)
             return false
         }
 
@@ -601,12 +601,12 @@ extension QUICCrypto: TopStreamProtocol {
             parentConnection?.log.error(
                 "Read crypto buffer has too many items, closing"
             )
-            cryptoFrame.frame.finalize(success: false)
+            cryptoFrame.payloadStorage.finalize(success: false)
             return false
         }
 
         reassemblyQueue.append(
-            frame: cryptoFrame.frame,
+            frame: cryptoFrame.payloadStorage.takeFrame(),
             offset: Int(cryptoFrame.offset),
             fin: false
         )

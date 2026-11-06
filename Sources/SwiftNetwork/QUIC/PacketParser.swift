@@ -76,11 +76,11 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             let receivedFrame = self.framesReceived.removeFirst()
             switch receivedFrame {
             case .crypto(var frame):
-                frame.frame.finalize(success: false)
+                frame.payloadStorage.finalize(success: false)
             case .stream(var frame):
-                frame.frame.finalize(success: false)
+                frame.payloadStorage.finalize(success: false)
             case .datagram(var frame):
-                frame.frame.finalize(success: false)
+                frame.payloadStorage.finalize(success: false)
             default: continue
             }
         }

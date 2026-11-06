@@ -261,6 +261,53 @@ public struct Frame: ~Copyable {
         }
     }
 
+    /// A run of bytes in a frame's shared storage, which its owner keeps alive: what a frame leaves
+    /// behind when some of its bytes are claimed for another use without being copied.
+    ///
+    /// The bytes sit in memory the owner manages, so this holds the address; it is private to the
+    /// frame, which hands the bytes out only as a `Span` or as a frame of their own.
+    struct SharedBytes {
+        private let owner: AnyObject
+        private let start: UnsafeMutableRawPointer
+        private let count: Int
+
+        fileprivate init(owner: AnyObject, start: UnsafeMutableRawPointer, count: Int) {
+            self.owner = owner
+            self.start = start
+            self.count = count
+        }
+
+        var span: Span<UInt8> {
+            @_lifetime(borrow self)
+            get {
+                let bytes = UnsafeRawBufferPointer(start: start, count: count).bindMemory(to: UInt8.self)
+                return _overrideLifetime(bytes.span, borrowing: self)
+            }
+        }
+
+        /// The bytes as a frame of their own, which shares the owner's storage.
+        func makeFrame() -> Frame {
+            Frame(customBuffer: UnsafeMutableRawBufferPointer(start: start, count: count), owner: owner)
+        }
+    }
+
+    /// Claims the first `length` unclaimed bytes, which are not copied. `nil` for a frame whose storage
+    /// is not shared (only a custom owner shares it), and for one with fewer than `length` unclaimed
+    /// bytes.
+    mutating func claimSharedBytes(_ length: Int) -> SharedBytes? {
+        guard length >= 0, length <= unclaimedLength else { return nil }
+        let shared: SharedBytes
+        switch buffer {
+        case .customOwner(let storage, let owner):
+            guard let base = storage.baseAddress else { return nil }
+            shared = SharedBytes(owner: owner, start: base.advanced(by: startOffset), count: length)
+        default:
+            return nil
+        }
+        guard claim(fromStart: length) else { return nil }
+        return shared
+    }
+
     // Only unclaimed bytes in frame, for unsafe types
     @usableFromInline
     var unsafeUnclaimedBuffer: UnsafeMutableRawBufferPointer? {
