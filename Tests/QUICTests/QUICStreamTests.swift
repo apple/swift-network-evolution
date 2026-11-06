@@ -217,6 +217,48 @@ final class QUICStreamIDStateTests: XCTestCase {
         XCTAssertEqual(streamsState.pendingStartStreams.count, 0)
         XCTAssertNil(streamsState.pendingStartStreams.first)
     }
+
+    /// Random inserts and removals, in and out of order and far apart, against a dictionary.
+    func testStreamFlowMapMatchesADictionary() {
+        var generator = SystemRandomNumberGenerator()
+        for seed in 0..<20 {
+            var map = QUICStreamFlowMap()
+            var model: [UInt64: MultiplexedFlowIdentifier] = [:]
+            var next: [UInt64] = [0, 1, 2, 3]
+            var live: [UInt64] = []
+            for step in 0..<4000 {
+                switch Int.random(in: 0..<10, using: &generator) {
+                case 0..<5:
+                    // The next stream of a kind, or sometimes one far ahead or below the window.
+                    let kind = Int.random(in: 0..<4, using: &generator)
+                    var id = next[kind]
+                    switch Int.random(in: 0..<20, using: &generator) {
+                    case 0: id &+= UInt64.random(in: 20_000..<80_000, using: &generator) * 4
+                    case 1: id = UInt64(kind) + UInt64.random(in: 0..<next[kind] / 4 + 1, using: &generator) * 4
+                    default: next[kind] += 4
+                    }
+                    map[QUICStreamID(id)!] = MultiplexedFlowIdentifier(testValue: UInt64(step))
+                    if model[id] == nil { live.append(id) }
+                    model[id] = MultiplexedFlowIdentifier(testValue: UInt64(step))
+                case 5..<9:
+                    guard !live.isEmpty else { continue }
+                    let at = Int.random(in: 0..<live.count, using: &generator)
+                    let id = live.remove(at: at)
+                    XCTAssertEqual(map.removeValue(forKey: QUICStreamID(id)!), model.removeValue(forKey: id))
+                default:
+                    let id = UInt64.random(in: 0..<next.max()! + 8, using: &generator)
+                    XCTAssertEqual(map[QUICStreamID(id)!], model[id], "seed \(seed) step \(step)")
+                }
+            }
+            for id in live {
+                XCTAssertEqual(map[QUICStreamID(id)!], model[id])
+            }
+            map.removeAll()
+            for id in live {
+                XCTAssertNil(map[QUICStreamID(id)!])
+            }
+        }
+    }
 }
 
 @available(Network 0.1.0, *)
