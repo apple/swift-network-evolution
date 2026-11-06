@@ -16,3 +16,13 @@ To use this benchmark for performance measurements, make sure that you build it 
 ```
 
 NOTE: Never run and measure this benchmark as a debug build the performance information will not be valid.
+
+## Writing only while the stream has room
+
+Each stream writes its upload in chunks of `-write-chunk-size` bytes (16 KB by default), asking the
+stream for its room before each chunk and waiting to be told when it has none, as `EndpointFlow`
+does. Open many streams at once to leave the connection's writers waiting for room together:
+
+```
+./QUICStreamLoad -concurrent-streams 1000 -stream-count 2000 -upload-size 65536
+```
