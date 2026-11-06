@@ -15,13 +15,45 @@
 #if !NETWORK_NO_SWIFT_QUIC
 @available(Network 0.1.0, *)
 struct Migration: ~Copyable {
-    static let defaultMigrationVersion = 7
+    static let defaultMigrationVersion = 9
     static let defaultPTOThreshold = 3
     static let defaultKeepaliveThreshold = 2
 
     var timerID: Timer.TimerID?
 
     var primaryPathID: MultiplexingPathIdentifier = .none
+
+    let strategy: MigrationStrategy
+
+    init(isServer: Bool) {
+        if isServer {
+            self.init(strategy: .followPeer(FollowPeerStrategy()))
+        } else {
+            self.init(strategy: .followPrimary(FollowPrimaryStrategy()))
+        }
+    }
+
+    init(strategy: MigrationStrategy) {
+        self.strategy = strategy
+    }
+
+    // Where the peer sent its highest-numbered non-probing packet.
+    private(set) var peerPathID: MultiplexingPathIdentifier?
+    private var largestNonProbingPacketNumber: PacketNumber?
+
+    // Records a non-probing packet from the peer, and returns whether it moved the peer to a
+    // different path. Only the highest-numbered one counts (RFC 9000 9.3).
+    mutating func peerSentNonProbingPacket(number: PacketNumber, on pathID: MultiplexingPathIdentifier) -> Bool {
+        if let largestNonProbingPacketNumber, number <= largestNonProbingPacketNumber {
+            return false
+        }
+        largestNonProbingPacketNumber = number
+        guard peerPathID != pathID else {
+            return false
+        }
+        peerPathID = pathID
+        return true
+    }
 
     private(set) var activeMigrationDisabled = false
     mutating func disableActiveMigration() {
@@ -105,7 +137,21 @@ struct Migration: ~Copyable {
         // The timer must be re-armed even when no challenge is due: `Timer` fires up to
         // `Timer.timerThreshold` early and has already disabled the entry, so an early wakeup would
         // otherwise stall probing. `resetTimer` sends whatever is due before arming.
+        let before = connection.migrationPathStates
         resetTimer(now: firedAt, connection: connection, in: &eventContext)
+
+        // Sending a challenge can find a path has run out of probes and mark it unreachable.
+        // That happens while frames are being built, where the strategy cannot run, so report it
+        // from here. The send that did it may also have been an ordinary one before this timer
+        // fired, so report every unusable path, not only the ones that changed just now: if it is
+        // the current path, the strategy has to move off it.
+        var events = connection.migrationEvents(since: before)
+        connection.applyToAllPaths { path in
+            if path.state.isUnusable, !events.contains(.pathChanged(path.pathIdentifier)) {
+                events.append(.pathChanged(path.pathIdentifier))
+            }
+        }
+        connection.runMigrationStrategy(events: events, in: &eventContext)
     }
 
     func migrate(
@@ -117,13 +163,13 @@ struct Migration: ~Copyable {
             return
         }
 
-        guard path.isValidated else {
-            path.beginValidation(in: &eventContext)
-            path.migrationPending = true
+        // A server follows the peer onto a path while it validates it (RFC 9000 9.3). A client
+        // only moves to a path it has validated.
+        guard path.isValidated || (connection.isServer && path.isProbing) else {
+            connection.log.fault("Refusing to migrate to unvalidated path \(path.pathIdentifier)")
             return
         }
 
-        let oldPath = connection.currentPath
         connection.log.notice("Migrating to path \(path.pathIdentifier)")
         connection.currentPath = path
         if let localEndpoint = path.localEndpoint, let remoteEndpoint = path.remoteEndpoint,
@@ -140,6 +186,8 @@ struct Migration: ~Copyable {
                 event: .init(quicEvent: .pathCurrent(pathInfo)),
                 in: &eventContext
             )
+        } else {
+            connection.log.error("Path \(path.pathIdentifier) is missing endpoints, not delivering pathCurrent")
         }
         path.spinValue = connection.initialSpinValue
         connection.recovery.resetTimer(now: connection.now, connection: connection, in: &eventContext)
@@ -161,10 +209,7 @@ struct Migration: ~Copyable {
         }
         // TODO: Handle preferred address migration
 
-        // Remove the path we just migrated away from.
-        if let oldPath, oldPath != path {
-            connection.tearDownMigratedPath(oldPath, in: &eventContext)
-        }
+        // Which of the other paths to keep is up to the migration strategy.
     }
 
     func probingPathCount(_ connection: QUICConnection) -> Int {
@@ -177,20 +222,8 @@ struct Migration: ~Copyable {
         return probingPaths
     }
 
-    func handshakeConfirmed(_ connection: QUICConnection) {
-        // TODO: pending migration feature completion
-    }
-
     func addPreferredAddress(_ preferredAddress: PreferredAddress) {
         // TODO: pending preferred address migration support
-    }
-
-    func newDCID(_ dcid: QUICConnectionID) {
-        // TODO: pending DCID migration handling
-    }
-
-    func retireDCID(_ dcid: QUICConnectionID) {
-        // TODO: pending DCID retirement during migration
     }
 
     func checkForKeepaliveLoss(outstandingCount: Int) {
@@ -198,8 +231,25 @@ struct Migration: ~Copyable {
     }
 }
 
+// Every path's state, taken before a change so that the strategy can be told what changed.
+@available(Network 0.1.0, *)
+struct MigrationPathStates {
+    let currentPathID: MultiplexingPathIdentifier?
+    let paths: [MigrationContext.PathSnapshot]
+}
+
+@available(Network 0.1.0, *)
+extension QUICPath {
+    var migrationSnapshot: MigrationContext.PathSnapshot {
+        MigrationContext.PathSnapshot(identifier: pathIdentifier, state: state, isPrimary: pathIsPrimary)
+    }
+}
+
 @available(Network 0.1.0, *)
 extension QUICConnection {
+    // A strategy that keeps asking for changes after this many events is not settling.
+    static let maximumMigrationEvents = 32
+
     public func handlePathChanged(
         path pathID: MultiplexingPathIdentifier,
         event: MultiplexingPathEvent,
@@ -218,54 +268,29 @@ extension QUICConnection {
             log.error("Path \(pathID.description) not found, ignoring")
             return
         }
+
+        let before = migrationPathStates
         switch event {
         case .available:
-            if !path.isRouteEstablished {
+            if path.state.isInvalid {
                 // Set before `set()`, which creates the pacer based on `pacePackets`.
                 path.pacePackets = pacingEnabled
                 path.set(interface: nil, priority: 0, isInitial: false)
                 setupL4S(on: path)
                 path.changeState(to: .routeAvailable)
-                if self.state == .connected {
-                    log.debug("Bringing up path \(pathID.description)")
-                    invokeEstablish(path: pathID, in: &eventContext)
-                }
             }
-            break
         case .established:
             if !path.isRouteEstablished {
                 path.changeState(to: .routeEstablished)
             }
-            if isServer, path != currentPath, !path.isValidated {
-                path.beginValidation(in: &eventContext)
-                sendFrames(on: path, in: &eventContext)
-                migration.resetTimer(now: self.now, connection: self, in: &eventContext)
-            }
-            break
         case .unavailable:
-            retireOutboundCID(forPathGoingAway: path)
             if path.state.isValidStateChange(to: .routeUnavailable) {
                 path.changeState(to: .routeUnavailable)
             }
-            break
         }
 
-        if isServer {
-            allPathIdentifiers { id in
-                guard var path = multiplexingPaths[id], path.state == .routeUnavailable, path !== currentPath else {
-                    return
-                }
-                path.destroy(in: &eventContext)
-                multiplexingPaths.removeValue(forKey: id)
-            }
-        }
+        logExistingPaths()
 
-        log.debug("Existing paths:")
-        applyToAllPaths { path in
-            log.debug(
-                "Path \(path.pathIdentifier) \(path.state) over \(path.interface?.description ?? "nil")"
-            )
-        }
         // Notify the stack about a path change event
         if case .available(let local, let remote, _, _) = event,
             let local, let remote,
@@ -286,46 +311,211 @@ extension QUICConnection {
             )
         }
 
-        // This is a new primary path. Migrate to it if we are the client.
-        if !isServer, path != currentPath, isPrimary, path.isRouteEstablished {
-            migration.migrate(to: path, connection: self, in: &eventContext)
-            // Send packets if necessary
-            sendFrames(on: path, in: &eventContext)
+        var events = migrationEvents(since: before)
+        if !events.contains(.pathChanged(pathID)) {
+            events.append(.pathChanged(pathID))
+        }
+        runMigrationStrategy(events: events, in: &eventContext)
+    }
+
+    func logExistingPaths() {
+        log.debug("Existing paths:")
+        applyToAllPaths { path in
+            log.debug(
+                "Path \(path.pathIdentifier) \(path.state) over \(path.interface?.description ?? "nil")"
+            )
         }
     }
 
-    // Retires a path's outbound CID and queues a RETIRE_CONNECTION_ID frame for it.
-    func retireOutboundCID(forPathGoingAway path: QUICPath) {
-        guard path.isOpenForSending, !path.hasPreAssignedCIDs, let dcid = path.dcid,
-            let retiredCID = remoteCIDs.retire(connectionID: dcid)
-        else {
+    private func migrationContext(currentPath: QUICPath) -> MigrationContext {
+        var otherPaths: [MigrationContext.PathSnapshot] = []
+        applyToAllPaths { path in
+            if path !== currentPath {
+                otherPaths.append(path.migrationSnapshot)
+            }
+        }
+        otherPaths.sort { $0.identifier < $1.identifier }
+        return MigrationContext(
+            currentPath: currentPath.migrationSnapshot,
+            otherPaths: otherPaths,
+            peerPathID: migration.peerPathID
+        )
+    }
+
+    // What the paths look like now, so that `migrationEvents(since:)` can tell what changed.
+    var migrationPathStates: MigrationPathStates {
+        var paths: [MigrationContext.PathSnapshot] = []
+        applyToAllPaths { path in
+            paths.append(path.migrationSnapshot)
+        }
+        return MigrationPathStates(currentPathID: currentPath?.pathIdentifier, paths: paths)
+    }
+
+    // The changes made to the connection's paths since `before` was taken.
+    func migrationEvents(since before: MigrationPathStates) -> [MigrationEvent] {
+        let after = migrationPathStates
+        var events: [MigrationEvent] = []
+        for oldPath in before.paths {
+            guard let newPath = after.paths.first(where: { $0.identifier == oldPath.identifier }) else {
+                continue
+            }
+            let wasCurrent = oldPath.identifier == before.currentPathID
+            let isCurrent = newPath.identifier == after.currentPathID
+            if newPath.state != oldPath.state || wasCurrent != isCurrent {
+                events.append(.pathChanged(oldPath.identifier))
+            }
+        }
+        return events
+    }
+
+    // Reports every path as changed, for when the strategy could not run while they did.
+    func runMigrationStrategyForAllPaths(in eventContext: inout NetworkContext.EventContext) {
+        var pathIDs: [MultiplexingPathIdentifier] = []
+        allPathIdentifiers { pathIDs.append($0) }
+        runMigrationStrategy(events: pathIDs.sorted().map { .pathChanged($0) }, in: &eventContext)
+    }
+
+    // Gives `events` to the migration strategy and applies what it decides. The changes each
+    // decision makes are fed back as further events until the strategy has nothing left to do.
+    // Then any path that can no longer be used is torn down.
+    func runMigrationStrategy(events: [MigrationEvent], in eventContext: inout NetworkContext.EventContext) {
+        guard !migration.activeMigrationDisabled || isServer else {
             return
         }
-        withPendingItems(for: .applicationData) {
-            $0.addRetireConnectionID(FrameRetireConnectionID(sequence: retiredCID.sequenceNumber))
+        // Neither side may migrate during the handshake. Confirming it reports every path as
+        // changed, which lets the strategy catch up on everything dropped here.
+        guard isHandshakeConfirmed else {
+            return
+        }
+        var events = events
+        var remaining = Self.maximumMigrationEvents
+        while !events.isEmpty {
+            // A connection that has closed has no current path, and nothing left to migrate. Its
+            // paths are cleaned up with it.
+            guard let currentPath else {
+                return
+            }
+            guard remaining > 0 else {
+                log.fault("Migration strategy did not settle, dropping \(events.count) events")
+                break
+            }
+            remaining -= 1
+            let event = events.removeFirst()
+            let context = migrationContext(currentPath: currentPath)
+            for decision in migration.strategy.pathEvent(event, now: now, context: context) {
+                let before = migrationPathStates
+                apply(decision, in: &eventContext)
+                events += migrationEvents(since: before)
+            }
+        }
+        if currentPath != nil {
+            tearDownUnusablePaths(in: &eventContext)
         }
     }
 
-    // Removes a path we migrated away from.
-    func tearDownMigratedPath(
-        _ oldPath: QUICPath,
+    private func tearDownUnusablePaths(in eventContext: inout NetworkContext.EventContext) {
+        var unusablePaths: [QUICPath] = []
+        applyToAllPaths { path in
+            if path.state.isUnusable, path !== currentPath {
+                // TODO: paths that come from the system and are unreachable CANNOT be torn down
+                unusablePaths.append(path)
+            }
+        }
+        for path in unusablePaths {
+            tearDownPath(path, in: &eventContext)
+        }
+    }
+
+    private func apply(_ decision: MigrationDecision, in eventContext: inout NetworkContext.EventContext) {
+        switch decision {
+        case .bringUp(let pathID):
+            guard let path = path(for: pathID), path.state == .routeAvailable else { return }
+            log.debug("Bringing up path \(pathID.description)")
+            invokeEstablish(path: pathID, in: &eventContext)
+        case .assignCID(let pathID):
+            guard let path = path(for: pathID), path.state == .routeEstablished else { return }
+            assignNewDCID(to: path, in: &eventContext)
+        // If it succeeds, the migration will get an event.
+        case .probe(let pathID):
+            guard let path = path(for: pathID), path.state == .cidAssigned else { return }
+            log.debug("Probing path \(pathID.description)")
+            path.beginValidation(in: &eventContext)
+            sendFrames(on: path, in: &eventContext)
+            migration.resetTimer(now: now, connection: self, in: &eventContext)
+        case .migrateTo(let pathID):
+            guard let path = path(for: pathID), path.isValidated || (isServer && path.isProbing),
+                path !== currentPath
+            else { return }
+            migration.migrate(to: path, connection: self, in: &eventContext)
+            sendFrames(on: path, in: &eventContext)
+        case .tearDown(let pathID):
+            guard let path = path(for: pathID), path !== currentPath else { return }
+            tearDownPath(path, in: &eventContext)
+        }
+    }
+
+    // Retires one of the peer's CIDs that a path has given up, unless the peer has retired it
+    // already. A path can give up its CID while a packet is being built, when the pending items
+    // are in use, so the RETIRE_CONNECTION_ID frame is queued here and added on the next send.
+    func retireOutboundCID(_ dcid: QUICConnectionID) {
+        guard let retiredCID = remoteCIDs.retire(connectionID: dcid) else {
+            return
+        }
+        queuedRetireConnectionIDSequences.append(retiredCID.sequenceNumber)
+    }
+
+    func addQueuedRetireConnectionIDs(to applicationPendingItems: inout PendingItems) {
+        guard !queuedRetireConnectionIDSequences.isEmpty else {
+            return
+        }
+        for sequence in queuedRetireConnectionIDSequences {
+            applicationPendingItems.addRetireConnectionID(FrameRetireConnectionID(sequence: sequence))
+        }
+        queuedRetireConnectionIDSequences.removeAll()
+    }
+
+    // Destroys a path and removes it from the connection; its CID goes with its state. A path
+    // whose datagrams are being handled is torn down once they have been, by `finishReceiving`.
+    func tearDownPath(
+        _ path: QUICPath,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        var oldPath = oldPath
-        guard oldPath !== currentPath else {
-            log.fault("Refusing to tear down the current path \(oldPath.pathIdentifier)")
+        var path = path
+        guard path !== currentPath else {
+            log.fault("Refusing to tear down the current path \(path.pathIdentifier)")
             return
         }
-        log.notice("Tearing down old path \(oldPath.pathIdentifier) after migration")
-
-        retireOutboundCID(forPathGoingAway: oldPath)
-
-        if oldPath.state.isValidStateChange(to: .routeUnavailable) {
-            oldPath.changeState(to: .routeUnavailable)
+        guard path.pathIdentifier != receivingPathID else {
+            log.debug("Deferring teardown of path \(path.pathIdentifier) until its datagrams are handled")
+            if !deferredTeardownPathIDs.contains(path.pathIdentifier) {
+                deferredTeardownPathIDs.append(path.pathIdentifier)
+            }
+            return
         }
-        oldPath.destroy(in: &eventContext)
-        multiplexingPaths.removeValue(forKey: oldPath.pathIdentifier)
+        log.notice("Tearing down path \(path.pathIdentifier) (\(path.state))")
+        if path.state.isValidStateChange(to: .routeUnavailable) {
+            path.changeState(to: .routeUnavailable)
+        }
+        path.destroy(in: &eventContext)
+        multiplexingPaths.removeValue(forKey: path.pathIdentifier)
         sendFrames(in: &eventContext)
+    }
+
+    // Called once the datagrams received on `receivingPathID` have been handled, to tear down the
+    // path if that was asked for while they were.
+    func finishReceiving(in eventContext: inout NetworkContext.EventContext) {
+        receivingPathID = nil
+        let pathIDs = deferredTeardownPathIDs
+        deferredTeardownPathIDs.removeAll()
+        // A connection that has closed cleans its paths up with it.
+        guard !state.isTerminal else {
+            return
+        }
+        for pathID in pathIDs {
+            if let path = path(for: pathID) {
+                tearDownPath(path, in: &eventContext)
+            }
+        }
     }
 }
 #endif
