@@ -36,7 +36,7 @@ struct FlowControlGlobals: ~Copyable {
     // Flow Control Constants
     static let sendQueueFactor: UInt64 = 10
     #if NETWORK_EMBEDDED
-    static private let highWaterMarkMax = 50 * 1024  // 50KB
+    static private let highWaterMarkMax = 100 * 1024  // 100KB
     static private let initialReceiveSpace = 50 * 1024  // 50KB
     #else
     static private let highWaterMarkMax = 4 * 1024 * 1024  // 4MB

@@ -866,10 +866,12 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         // packet carrying STREAM data is padded out much closer to the path's MTU.
         let ackOnlySizeThreshold = 100
         let ackOnlyPacketCount = packetSizes.filter { $0 < ackOnlySizeThreshold }.count
-        print("ackOnlyPacketCount: \(ackOnlyPacketCount), packetSizes: \(packetSizes.count)")
+        // A receiver ACKs every second ack-eliciting packet immediately (RFC 9000
+        // Section 13.2.2), so an ACK goes out alone whenever no STREAM data is ready
+        // at that point. Those must stay a small fraction of the packets.
         XCTAssertLessThan(
-            ackOnlyPacketCount,
-            10,  // Use 10 as an arbitrary threshold here
+            ackOnlyPacketCount * 20,  // Fewer than 5% of packets, an arbitrary threshold
+            packetSizes.count,
             "Most packets should bundle an ACK with STREAM data rather than going out alone"
         )
     }
