@@ -297,6 +297,7 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
         // First the stream itself: it checks the caller and closes its own side.
+        var wasClosed = false
         let tornDown = performOnStream(flowID, in: &eventContext) {
             (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) -> Bool in
             do throws(ProtocolInstanceError) {
@@ -304,14 +305,19 @@ extension QUICConnection {
             } catch {
                 return false
             }
+            wasClosed = stream.closed
             stream.teardown(in: &ctx)
             return true
         }
         guard tornDown == true else { throw NetworkError.posix(EINVAL) }
 
         // Then the connection's view of the flow, which looks at the stream and so cannot happen
-        // while it is borrowed.
-        teardown(flow: flowID, in: &eventContext)
+        // while it is borrowed. A stream that was already closed (both directions done, the upper
+        // told) has nothing left to stop: stopping it again would only run the stop handlers and
+        // `sendFrames` twice for nothing.
+        if !wasClosed {
+            teardown(flow: flowID, in: &eventContext)
+        }
 
         // Finally release the stream. Once it is out of the table nothing else can reach it.
         if var stream = removeFlow(flowID) {
