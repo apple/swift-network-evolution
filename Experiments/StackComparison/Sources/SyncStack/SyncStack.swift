@@ -19,7 +19,7 @@ public struct SyncEndpoint: ~Copyable {
     mutating func start() { app.start(tlv: &tlv, mux: &mux) }
 
     /// One pass of this endpoint's event loop. Returns true if it did anything.
-    mutating func turn(link: inout SyncLink) -> Bool {
+    mutating func turn<L: SyncLinkProtocol & ~Copyable>(link: inout L) -> Bool {
         var progress = false
         while let packet = link.receive(at: side) {
             mux.receive(packet)
@@ -46,8 +46,11 @@ public struct SyncEndpoint: ~Copyable {
 public enum SyncStackImpl: StackImplementation {
     public static let name = "sync"
 
-    public static func run(_ scenario: Scenario, verify: VerifyLevel) -> RunResult {
+    public static func supports(_ link: LinkKind) -> Bool { true }
+
+    public static func run(_ scenario: Scenario, verify: VerifyLevel, link kind: LinkKind) -> RunResult {
         scenario.validate()
+        if kind == .socket { return runOverSockets(scenario, verify: verify) }
         var link = SyncLink(packetsPerDirection: scenario.linkPackets)
         var client = SyncEndpoint(side: .a, spec: RoleSpec(scenario, .client), verify: verify)
         var server = SyncEndpoint(side: .b, spec: RoleSpec(scenario, .server), verify: verify)

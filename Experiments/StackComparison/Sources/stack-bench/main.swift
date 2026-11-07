@@ -11,6 +11,7 @@ struct Options {
     var scale = 1.0
     var verify = VerifyLevel.headers
     var repeatSeconds: Double?
+    var link = LinkKind.memory
 }
 
 func usage() -> Never {
@@ -23,6 +24,9 @@ func usage() -> Never {
           --iterations N             timed runs per scenario/stack (default 5, after one warm-up)
           --scale F                  multiply every scenario's message count by F
           --verify none|headers|full payload verification (default headers)
+          --link memory|socket       memory: in-memory queue polled by the driver (default)
+                                     socket: datagram socketpair signalled by dispatch sources
+                                     (async-actor supports memory only)
           --repeat-seconds S         run the selected stack/scenario in a loop for S seconds
                                      (for attaching Instruments / sample); prints nothing per run
         """)
@@ -61,6 +65,12 @@ func parse() -> Options {
             case "full": o.verify = .full
             default: usage()
             }
+        case "--link":
+            switch value() {
+            case "memory": o.link = .memory
+            case "socket": o.link = .socket
+            default: usage()
+            }
         case "--repeat-seconds": o.repeatSeconds = Double(value())
         default: usage()
         }
@@ -74,6 +84,7 @@ func parse() -> Options {
             return s
         }
     }
+    o.stacks = o.stacks.filter { $0.supports(o.link) }
     o.scenarios = o.scenarios.map { $0.scaled(by: o.scale) }
     return o
 }
@@ -89,21 +100,21 @@ if let seconds = options.repeatSeconds {
     let deadline = monotonicNanoseconds() + UInt64(seconds * 1e9)
     var runs = 0
     while monotonicNanoseconds() < deadline {
-        _ = impl.run(scenario, verify: options.verify)
+        _ = impl.run(scenario, verify: options.verify, link: options.link)
         runs += 1
     }
     print("\(impl.name) \(scenario.name): \(runs) runs")
     exit(0)
 }
 
-print("scenario       stack        ms(min)  ms(med)  ns/msg(med)    MB/s  pkts(k)  wakeups(k)  ok")
+print("scenario       stack        ms(min)  ms(med)  ns/msg(med)    MB/s  pkts(k)  wakeups(k)  blocked(k)  ok")
 var failures = 0
 for scenario in options.scenarios {
     var medians: [Double] = []
     for impl in options.stacks {
-        _ = impl.run(scenario.scaled(by: 0.1), verify: options.verify)  // warm-up
+        _ = impl.run(scenario.scaled(by: 0.1), verify: options.verify, link: options.link)  // warm-up
         var runs: [RunResult] = []
-        for _ in 0..<options.iterations { runs.append(impl.run(scenario, verify: options.verify)) }
+        for _ in 0..<options.iterations { runs.append(impl.run(scenario, verify: options.verify, link: options.link)) }
         runs.sort { $0.nanoseconds < $1.nanoseconds }
         let med = runs[runs.count / 2]
         let min = runs[0]
@@ -115,7 +126,7 @@ for scenario in options.scenarios {
                 + " \(pad(fmt(Double(min.nanoseconds) / 1e6), 8)) \(pad(fmt(Double(med.nanoseconds) / 1e6), 8))"
                 + " \(pad(fmt(med.nsPerMessage), 12)) \(pad(fmt(med.megabytesPerSecond, 0), 7))"
                 + " \(pad(fmt(Double(med.stackCounters.packetsSent) / 1e3), 8)) \(pad(fmt(Double(med.stackCounters.wakeups) / 1e3), 11))"
-                + "  \(bad ? "FAIL" : "ok")")
+                + " \(pad(fmt(Double(med.stackCounters.linkBlocked) / 1e3), 11))  \(bad ? "FAIL" : "ok")")
     }
     if medians.count > 1 {
         let ratios = medians.dropFirst().map { fmt($0 / medians[0], 2) + "x" }

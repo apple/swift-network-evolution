@@ -240,7 +240,15 @@ public struct RunResult: Sendable {
 
 public protocol StackImplementation {
     static var name: String { get }
-    static func run(_ scenario: Scenario, verify: VerifyLevel) -> RunResult
+    /// Whether this stack supports `link`.
+    static func supports(_ link: LinkKind) -> Bool
+    static func run(_ scenario: Scenario, verify: VerifyLevel, link: LinkKind) -> RunResult
+}
+
+extension StackImplementation {
+    public static func run(_ scenario: Scenario, verify: VerifyLevel) -> RunResult {
+        run(scenario, verify: verify, link: .memory)
+    }
 }
 
 import Darwin

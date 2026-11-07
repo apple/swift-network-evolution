@@ -153,7 +153,7 @@ public struct SyncMux: ~Copyable {
 
     /// Packs as many packets as the link has room for from the streams that are
     /// ready to send, round-robin. Returns true if any packet was sent.
-    public mutating func flush(_ link: inout SyncLink, side: Side) -> Bool {
+    public mutating func flush<L: SyncLinkProtocol & ~Copyable>(_ link: inout L, side: Side) -> Bool {
         var sentAny = false
         while !ready.isEmpty {
             guard var packet = link.allocate(from: side) else { break }

@@ -111,7 +111,7 @@ public final class AsyncMux: @unchecked Sendable {
     // MARK: Network side
 
     /// Reads packets from the link until it closes.
-    public func runReceivePump(link: AsyncLink, side: Side) async {
+    public func runReceivePump<L: AsyncLinkProtocol>(link: L, side: Side) async {
         while let packet = await link.receive(at: side) {
             receive(packet)
             link.release(packet, receivedAt: side)
@@ -119,7 +119,7 @@ public final class AsyncMux: @unchecked Sendable {
     }
 
     /// Packs streams that are ready to send into packets until the link closes.
-    public func runSendPump(link: AsyncLink, side: Side) async {
+    public func runSendPump<L: AsyncLinkProtocol>(link: L, side: Side) async {
         while true {
             if ready.isEmpty {
                 if closed { return }

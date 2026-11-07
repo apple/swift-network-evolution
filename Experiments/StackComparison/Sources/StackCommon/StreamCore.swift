@@ -116,6 +116,8 @@ public struct StackCounters: Sendable {
     /// Upward notifications (sync: events delivered) or suspensions (async).
     public var wakeups = 0
     public var flowViolations = 0
+    /// Sends that found the socket full and had to wait for a write-ready signal.
+    public var linkBlocked = 0
 
     public init() {}
 
@@ -127,6 +129,7 @@ public struct StackCounters: Sendable {
         r.creditFrames = a.creditFrames + b.creditFrames
         r.wakeups = a.wakeups + b.wakeups
         r.flowViolations = a.flowViolations + b.flowViolations
+        r.linkBlocked = a.linkBlocked + b.linkBlocked
         return r
     }
 }

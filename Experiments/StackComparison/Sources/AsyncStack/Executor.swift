@@ -18,13 +18,18 @@ final class RunLoop: TaskExecutor, @unchecked Sendable {
     static let shared = RunLoop()
 
     /// The thread driving the loop; set by `run` before any task is spawned.
-    var owner = pthread_self()
+    /// (nil when the loop is driven from dispatch queue blocks, whose thread may change).
+    var owner: pthread_t? = pthread_self()
     private var queue = RingQueue<UnownedJob>(minimumCapacity: 1024)
 
     func enqueue(_ job: consuming ExecutorJob) {
-        assert(pthread_equal(pthread_self(), owner) != 0, "RunLoop is single threaded: a job was enqueued from another thread")
+        assert(owner == nil || pthread_equal(pthread_self(), owner!) != 0, "RunLoop is single threaded: a job was enqueued from another thread")
         queue.pushBack(UnownedJob(job))
     }
+
+    /// Runs jobs until none remain. Called on the dispatch queue that owns the loop
+    /// after each source handler has resumed whatever it was waiting for.
+    func drain() { runUntilIdle() }
 
     /// Runs jobs until none remain.
     func runUntilIdle() {

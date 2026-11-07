@@ -66,6 +66,30 @@ backs the sender up. The sender buffers up to `sendBuffer` bytes per stream; wri
 a whole message either fit or wait. The link has `linkPackets` buffers per direction;
 when they are all in flight the sender waits for the receiver to release one.
 
+## Links: polled memory queue vs. real signalling
+
+`--link memory` (default) is an in-memory packet queue. It has no signalling: the sync
+stack's driver loop polls it every turn, and the async stack's pumps hand packets to
+each other directly. It isolates the cost of the layering itself.
+
+`--link socket` connects the endpoints with a non-blocking `AF_UNIX`/`SOCK_DGRAM`
+socketpair (a datagram socket that preserves boundaries and order and, unlike UDP
+loopback, never drops: a full buffer makes `send` fail with `EAGAIN`, which is
+real backpressure). Readiness is signalled by dispatch sources on a serial queue
+(`FDWatcher`, shared by both stacks):
+
+* **Sync:** a read source per endpoint runs one `turn` of that endpoint (drain the
+  socket, deliver `readable`/`writable` events up, flush what the app wrote). A packet
+  that hits `EAGAIN` stays in the transmit buffer and arms the endpoint's write source,
+  whose handler retries and runs another turn. Nothing polls.
+* **Async:** `receive()` tries `recv` and otherwise suspends on a continuation that the
+  read source resumes; `allocate()` suspends while the last packet is stuck in a full
+  socket, until the write source resumes it. Tasks run on the same serial dispatch
+  queue as the sources, via the same run loop, drained after each source handler.
+* `async-actor` supports the memory link only.
+
+The `blocked(k)` column counts sends that found the socket full.
+
 ## Fairness decisions
 
 The goal is to compare control-flow models, not implementations, so:
@@ -100,7 +124,7 @@ outstanding per stream), `pipelined-8` (8 outstanding), `mixed` (64 B with occas
 20 KB), `bidi-32` (both directions), `slow-reader` (receiver handles 4 messages per
 turn, 16 KB windows), `tiny-window` (4 KB windows, constant credit stalls).
 
-Options: `--scenario NAME` (repeatable), `--stack sync|async|async-actor|sync-async|all`,
+Options: `--link memory|socket` (see below), `--scenario NAME` (repeatable), `--stack sync|async|async-actor|sync-async|all`,
 `--iterations N`, `--scale F` (message count multiplier), `--verify`, and
 `--repeat-seconds S` to loop one stack/scenario for profiling.
 
@@ -135,6 +159,81 @@ and compare within a row. `ns/msg` is per application message.
 | bidi-32      |    76.4 |    131.9 |          185.1 |        1.7x  |              2.4x  |
 | slow-reader  |    24.6 |     40.4 |          108.3 |        1.6x  |              4.4x  |
 | tiny-window  |    20.2 |     51.0 |          583.2 |        2.5x  |             28.8x  |
+
+### Over datagram sockets (`--link socket`)
+
+Same machine, 5 iterations, median, load average ~6. Each packet now costs a `send`,
+a `recv` and a dispatch source wakeup in both stacks, so absolute times are 5-30x
+higher and the stacks converge. Percentages are relative to sync.
+
+```
+              Metric (unit)             sync               async
+bulk          Wall time (ms)           235.5         252.0 (+7%)
+              Time/message (ns)     11,774.8      12,598.2 (+7%)
+              Throughput (MB/s)        1,391         1,301 (-6%)
+              Packets sent (k)         276.6         278.1 (+1%)
+              Wakeups (k)                7.2        21.7 (+201%)
+
+small-msgs    Wall time (ms)            59.0         85.5 (+45%)
+              Time/message (ns)         59.0         85.5 (+45%)
+              Throughput (MB/s)        1,085          748 (-31%)
+              Packets sent (k)          59.1          59.1 (+0%)
+              Wakeups (k)                1.5         4.6 (+207%)
+
+streams-16    Wall time (ms)           101.8        147.6 (+45%)
+              Time/message (ns)        127.3        184.4 (+45%)
+              Throughput (MB/s)        1,006          694 (-31%)
+              Packets sent (k)          91.0          91.0 (+0%)
+              Wakeups (k)               37.6          40.0 (+6%)
+
+streams-1000  Wall time (ms)            64.2         97.4 (+52%)
+              Time/message (ns)        128.5        194.9 (+52%)
+              Throughput (MB/s)          778          513 (-34%)
+              Packets sent (k)          45.0          45.0 (+0%)
+              Wakeups (k)              136.2         137.4 (+1%)
+
+pingpong-1    Wall time (ms)           300.3        392.7 (+31%)
+              Time/message (ns)      1,501.7      1,963.4 (+31%)
+              Throughput (MB/s)           55           42 (-24%)
+              Packets sent (k)         200.0         200.0 (+0%)
+              Wakeups (k)              200.0       600.0 (+200%)
+
+pingpong-100  Wall time (ms)            43.1       106.0 (+146%)
+              Time/message (ns)        107.8       265.0 (+146%)
+              Throughput (MB/s)          761          309 (-59%)
+              Packets sent (k)          34.0          34.0 (+0%)
+              Wakeups (k)              400.0         408.2 (+2%)
+
+pipelined-8   Wall time (ms)            74.1        100.5 (+36%)
+              Time/message (ns)        185.2        251.2 (+36%)
+              Throughput (MB/s)        1,134          836 (-26%)
+              Packets sent (k)          77.5          77.5 (+0%)
+              Wakeups (k)               50.0         62.5 (+25%)
+
+mixed         Wall time (ms)           149.9         163.4 (+9%)
+              Time/message (ns)      1,171.0       1,276.9 (+9%)
+              Throughput (MB/s)        1,119         1,026 (-8%)
+              Packets sent (k)         142.9         142.9 (+0%)
+              Wakeups (k)               21.5         25.3 (+18%)
+
+bidi-32       Wall time (ms)           301.2        355.6 (+18%)
+              Time/message (ns)        941.3      1,111.2 (+18%)
+              Throughput (MB/s)        1,064          901 (-15%)
+              Packets sent (k)         273.4         273.4 (+0%)
+              Wakeups (k)              223.8         231.0 (+3%)
+
+slow-reader   Wall time (ms)           129.9        154.1 (+19%)
+              Time/message (ns)        811.7        962.9 (+19%)
+              Throughput (MB/s)        1,232        1,039 (-16%)
+              Packets sent (k)         138.3         138.8 (+0%)
+              Wakeups (k)               28.7         44.0 (+53%)
+
+tiny-window   Wall time (ms)           174.6        210.3 (+20%)
+              Time/message (ns)      1,454.9      1,752.5 (+20%)
+              Throughput (MB/s)        1,031          856 (-17%)
+              Packets sent (k)         180.0         180.0 (+0%)
+              Wakeups (k)              120.0        180.0 (+50%)
+```
 
 ## What the numbers say
 
@@ -179,9 +278,12 @@ rule does not have.
 
 * Single threaded on both sides; no multi-core scaling, which is where async's
   work-stealing executors would otherwise matter.
-* The "network" is an in-memory queue, so latency is zero and the link never loses or
-  reorders. Real I/O (a socketpair or UDP loopback underneath the link) would add syscalls
-  that are equal for both stacks and would shrink the ratios.
+* The memory link has zero latency and never loses or reorders; the socket link adds real
+  syscalls and readiness signalling but is still same-process, lossless and
+  single-queue (no real network, no packet loss, no UDP). With sockets the per-packet
+  syscall cost is common to both stacks and shrinks the ratios (see the socket table).
+* The socket link uses one serial dispatch queue for everything; a kqueue-driven loop
+  would avoid dispatch's per-event overhead for both stacks.
 * Not yet measured: a third async variant using default executors/actors (what an app that
   doesn't customise executors gets), owned-buffer reads (`Data`) instead of zero-copy views,
   allocation counts per message, and instruction-level comparison with

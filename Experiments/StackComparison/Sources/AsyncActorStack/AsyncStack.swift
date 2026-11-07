@@ -7,7 +7,10 @@ final class ResultBox: @unchecked Sendable {
 public enum AsyncActorStackImpl: StackImplementation {
     public static let name = "async-actor"
 
-    public static func run(_ scenario: Scenario, verify: VerifyLevel) -> RunResult {
+    public static func supports(_ link: LinkKind) -> Bool { link == .memory }
+
+    public static func run(_ scenario: Scenario, verify: VerifyLevel, link: LinkKind) -> RunResult {
+        precondition(link == .memory, "the actor variant only runs over the in-memory link")
         scenario.validate()
         let box = ResultBox()
         RunLoop.shared.liveTasks += 1
