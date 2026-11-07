@@ -40,6 +40,7 @@ public enum AsyncActorStackImpl: StackImplementation {
         let client = AsyncApplication(spec: clientSpec, verify: verify, mux: clientMux, completion: completion)
         let server = AsyncApplication(spec: serverSpec, verify: verify, mux: serverMux, completion: completion)
 
+        let cpuStart = CPUCost.now()
         let start = monotonicNanoseconds()
         spawn { await clientMux.runReceivePump(link: link, side: .a) }
         spawn { await clientMux.runSendPump(link: link, side: .a) }
@@ -58,6 +59,7 @@ public enum AsyncActorStackImpl: StackImplementation {
         stack.wakeups += link.suspensions
         return RunResult(
             stack: name, scenario: scenario.name, nanoseconds: elapsed,
-            app: client.counters + server.counters, stackCounters: stack, stalled: false)
+            app: client.counters + server.counters, stackCounters: stack, stalled: false,
+            cpu: completion.endCPU - cpuStart)
     }
 }

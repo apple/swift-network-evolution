@@ -235,6 +235,157 @@ tiny-window   Wall time (ms)           174.6        210.3 (+20%)
               Wakeups (k)              120.0        180.0 (+50%)
 ```
 
+### CPU cycles and instructions
+
+`stack-bench --cpu` reports CPU cycles and retired instructions for the same window as the
+wall time, read from the kernel's per-process counters (`proc_pid_rusage`, `ri_cycles` /
+`ri_instructions`, no root needed). They cover all threads of the process, so the dispatch
+threads of the socket link are included. Effective clock was ~3.96 GHz throughout, so cycle
+ratios track the wall-time ratios. Median of 5. Percentages relative to sync; IPC is
+instructions per cycle.
+
+In-memory link:
+
+```
+              Metric (unit)             sync                 async
+bulk          Cycles (M)               139.8          187.0 (+34%)
+              Instructions (M)         402.9          751.4 (+86%)
+              Cycles/message         6,987.8        9,351.3 (+34%)
+              Instr/message         20,146.7       37,568.9 (+86%)
+              IPC                       2.88           4.02 (+40%)
+
+small-msgs    Cycles (M)                57.0         161.3 (+183%)
+              Instructions (M)         282.0       1,004.8 (+256%)
+              Cycles/message            57.0         161.3 (+183%)
+              Instr/message            282.0       1,004.8 (+256%)
+              IPC                       4.95           6.23 (+26%)
+
+streams-16    Cycles (M)                90.8         214.4 (+136%)
+              Instructions (M)         382.0       1,167.2 (+206%)
+              Cycles/message           113.4         268.0 (+136%)
+              Instr/message            477.5       1,459.0 (+206%)
+              IPC                       4.21           5.44 (+29%)
+
+streams-1000  Cycles (M)                88.7         255.8 (+188%)
+              Instructions (M)         244.6       1,154.7 (+372%)
+              Cycles/message           177.4         511.6 (+188%)
+              Instr/message            489.2       2,309.4 (+372%)
+              IPC                       2.76           4.51 (+63%)
+
+pingpong-1    Cycles (M)                30.7        490.1 (+1496%)
+              Instructions (M)         224.6      2,893.2 (+1188%)
+              Cycles/message           153.7      2,450.3 (+1494%)
+              Instr/message          1,123.1     14,465.9 (+1188%)
+              IPC                       7.31           5.90 (-19%)
+
+pingpong-100  Cycles (M)                61.3         396.0 (+546%)
+              Instructions (M)         396.3       2,379.0 (+500%)
+              Cycles/message           153.3         989.9 (+546%)
+              Instr/message            990.8       5,947.6 (+500%)
+              IPC                       6.46            6.01 (-7%)
+
+pipelined-8   Cycles (M)                54.2         167.9 (+210%)
+              Instructions (M)         278.2         968.5 (+248%)
+              Cycles/message           135.5         419.7 (+210%)
+              Instr/message            695.5       2,421.4 (+248%)
+              IPC                       5.13           5.77 (+12%)
+
+mixed         Cycles (M)               148.5          204.2 (+38%)
+              Instructions (M)         384.6          701.4 (+82%)
+              Cycles/message         1,160.2        1,595.3 (+38%)
+              Instr/message          3,004.3        5,479.4 (+82%)
+              IPC                       2.59           3.43 (+32%)
+
+bidi-32       Cycles (M)               350.4          634.1 (+81%)
+              Instructions (M)         787.6       2,288.0 (+191%)
+              Cycles/message         1,095.0        1,981.6 (+81%)
+              Instr/message          2,461.1       7,149.9 (+191%)
+              IPC                       2.25           3.61 (+60%)
+
+slow-reader   Cycles (M)               100.1          180.6 (+80%)
+              Instructions (M)         380.2         935.6 (+146%)
+              Cycles/message           625.8        1,128.5 (+80%)
+              Instr/message          2,376.4       5,847.7 (+146%)
+              IPC                       3.80           5.18 (+36%)
+
+tiny-window   Cycles (M)                80.5         244.4 (+204%)
+              Instructions (M)         456.4       1,387.0 (+204%)
+              Cycles/message           670.5       2,036.4 (+204%)
+              Instr/message          3,803.2      11,558.5 (+204%)
+              IPC                       5.67            5.68 (+0%)
+```
+
+Datagram socket link:
+
+```
+              Metric (unit)             sync                 async
+bulk          Cycles (M)               941.8         1,015.2 (+8%)
+              Instructions (M)       4,373.1         4,687.0 (+7%)
+              Cycles/message        47,091.4        50,761.8 (+8%)
+              Instr/message        218,653.4       234,347.7 (+7%)
+              IPC                       4.64            4.62 (-0%)
+
+small-msgs    Cycles (M)               234.1          345.2 (+47%)
+              Instructions (M)       1,133.6        1,852.3 (+63%)
+              Cycles/message           234.1          345.2 (+47%)
+              Instr/message          1,133.6        1,852.3 (+63%)
+              IPC                       4.84           5.37 (+11%)
+
+streams-16    Cycles (M)               407.8          525.0 (+29%)
+              Instructions (M)       1,684.1        2,386.6 (+42%)
+              Cycles/message           509.7          656.3 (+29%)
+              Instr/message          2,105.2        2,983.2 (+42%)
+              IPC                       4.13           4.55 (+10%)
+
+streams-1000  Cycles (M)               237.1          372.8 (+57%)
+              Instructions (M)         889.4        1,640.4 (+84%)
+              Cycles/message           474.2          745.5 (+57%)
+              Instr/message          1,778.9        3,280.9 (+84%)
+              IPC                       3.75           4.40 (+17%)
+
+pingpong-1    Cycles (M)             1,201.0        1,576.7 (+31%)
+              Instructions (M)       5,669.5        7,672.7 (+35%)
+              Cycles/message         6,005.0        7,883.5 (+31%)
+              Instr/message         28,347.5       38,363.7 (+35%)
+              IPC                       4.72            4.87 (+3%)
+
+pingpong-100  Cycles (M)               171.7         427.7 (+149%)
+              Instructions (M)         899.4       2,423.6 (+169%)
+              Cycles/message           429.2       1,069.2 (+149%)
+              Instr/message          2,248.6       6,059.1 (+169%)
+              IPC                       5.24            5.67 (+8%)
+
+pipelined-8   Cycles (M)               293.2          400.7 (+37%)
+              Instructions (M)       1,384.8        2,003.6 (+45%)
+              Cycles/message           733.0        1,001.8 (+37%)
+              Instr/message          3,462.0        5,009.0 (+45%)
+              IPC                       4.72            5.00 (+6%)
+
+mixed         Cycles (M)               612.9           667.6 (+9%)
+              Instructions (M)       2,436.0        2,708.2 (+11%)
+              Cycles/message         4,788.2         5,215.8 (+9%)
+              Instr/message         19,031.0       21,158.1 (+11%)
+              IPC                       3.97            4.06 (+2%)
+
+bidi-32       Cycles (M)             1,198.3        1,437.7 (+20%)
+              Instructions (M)       4,629.5        5,764.3 (+25%)
+              Cycles/message         3,744.7        4,492.7 (+20%)
+              Instr/message         14,467.1       18,013.4 (+25%)
+              IPC                       3.86            4.01 (+4%)
+
+slow-reader   Cycles (M)               515.7          619.9 (+20%)
+              Instructions (M)       2,369.6        2,869.5 (+21%)
+              Cycles/message         3,223.4        3,874.7 (+20%)
+              Instr/message         14,810.2       17,934.2 (+21%)
+              IPC                       4.59            4.63 (+1%)
+
+tiny-window   Cycles (M)               697.6          847.6 (+22%)
+              Instructions (M)       3,243.9        3,969.2 (+22%)
+              Cycles/message         5,813.2        7,063.7 (+22%)
+              Instr/message         27,032.7       33,076.6 (+22%)
+              IPC                       4.65            4.68 (+1%)
+```
+
 ## What the numbers say
 
 **Where the time goes.** In the sync stack the cost of crossing a layer is a function

@@ -12,6 +12,7 @@ struct Options {
     var verify = VerifyLevel.headers
     var repeatSeconds: Double?
     var link = LinkKind.memory
+    var cpu = false
 }
 
 func usage() -> Never {
@@ -24,6 +25,8 @@ func usage() -> Never {
           --iterations N             timed runs per scenario/stack (default 5, after one warm-up)
           --scale F                  multiply every scenario's message count by F
           --verify none|headers|full payload verification (default headers)
+          --cpu                      report CPU cycles and instructions (whole process, via
+                                     proc_pid_rusage) instead of the timing columns
           --link memory|socket       memory: in-memory queue polled by the driver (default)
                                      socket: datagram socketpair signalled by dispatch sources
                                      (async-actor supports memory only)
@@ -65,6 +68,7 @@ func parse() -> Options {
             case "full": o.verify = .full
             default: usage()
             }
+        case "--cpu": o.cpu = true
         case "--link":
             switch value() {
             case "memory": o.link = .memory
@@ -107,7 +111,11 @@ if let seconds = options.repeatSeconds {
     exit(0)
 }
 
-print("scenario       stack        ms(min)  ms(med)  ns/msg(med)    MB/s  pkts(k)  wakeups(k)  blocked(k)  ok")
+if options.cpu {
+    print("scenario       stack        cycles(M)  instr(M)  cycles/msg  instr/msg   IPC  GHz  ok")
+} else {
+    print("scenario       stack        ms(min)  ms(med)  ns/msg(med)    MB/s  pkts(k)  wakeups(k)  blocked(k)  ok")
+}
 var failures = 0
 for scenario in options.scenarios {
     var medians: [Double] = []
@@ -121,6 +129,19 @@ for scenario in options.scenarios {
         let bad = runs.contains { $0.stalled || $0.app.verifyFailures != 0 || $0.stackCounters.flowViolations != 0 }
         if bad { failures += 1 }
         medians.append(Double(med.nanoseconds))
+        if options.cpu {
+            runs.sort { $0.cpu.cycles < $1.cpu.cycles }
+            let c = runs[runs.count / 2]
+            medians[medians.count - 1] = Double(c.cpu.cycles)
+            let ghz = Double(c.cpu.cycles) / Double(max(1, c.nanoseconds))
+            print(
+                "\(scenario.name.padding(toLength: 14, withPad: " ", startingAt: 0)) \(impl.name.padding(toLength: 12, withPad: " ", startingAt: 0))"
+                    + " \(pad(fmt(Double(c.cpu.cycles) / 1e6), 9)) \(pad(fmt(Double(c.cpu.instructions) / 1e6), 9))"
+                    + " \(pad(fmt(c.cyclesPerMessage), 11)) \(pad(fmt(c.instructionsPerMessage), 10))"
+                    + " \(pad(fmt(Double(c.cpu.instructions) / Double(max(1, c.cpu.cycles)), 2), 5)) \(pad(fmt(ghz, 2), 4))"
+                    + "  \(bad ? "FAIL" : "ok")")
+            continue
+        }
         print(
             "\(scenario.name.padding(toLength: 14, withPad: " ", startingAt: 0)) \(impl.name.padding(toLength: 12, withPad: " ", startingAt: 0))"
                 + " \(pad(fmt(Double(min.nanoseconds) / 1e6), 8)) \(pad(fmt(Double(med.nanoseconds) / 1e6), 8))"

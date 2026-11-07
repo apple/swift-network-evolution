@@ -65,6 +65,7 @@ public enum AsyncStackImpl: StackImplementation {
         let client = AsyncApplication(spec: clientSpec, verify: verify, mux: clientMux, completion: completion)
         let server = AsyncApplication(spec: serverSpec, verify: verify, mux: serverMux, completion: completion)
 
+        let cpuStart = CPUCost.now()
         let start = monotonicNanoseconds()
         spawn { await clientMux.runReceivePump(link: clientLink, side: .a) }
         spawn { await clientMux.runSendPump(link: clientLink, side: .a) }
@@ -86,6 +87,7 @@ public enum AsyncStackImpl: StackImplementation {
         stack.linkBlocked = clientLink.blockedSends + (serverLink !== clientLink ? serverLink.blockedSends : 0)
         return RunResult(
             stack: name, scenario: scenario.name, nanoseconds: elapsed,
-            app: client.counters + server.counters, stackCounters: stack, stalled: false)
+            app: client.counters + server.counters, stackCounters: stack, stalled: false,
+            cpu: completion.endCPU - cpuStart)
     }
 }

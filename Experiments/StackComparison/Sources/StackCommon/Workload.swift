@@ -219,11 +219,14 @@ public struct RunResult: Sendable {
     public var app: AppCounters
     public var stackCounters: StackCounters
     public var stalled: Bool
+    /// CPU consumed between the same two points the wall time covers.
+    public var cpu: CPUCost
 
     public init(
         stack: String, scenario: String, nanoseconds: UInt64, app: AppCounters,
-        stackCounters: StackCounters, stalled: Bool
+        stackCounters: StackCounters, stalled: Bool, cpu: CPUCost = .zero
     ) {
+        self.cpu = cpu
         self.stack = stack
         self.scenario = scenario
         self.nanoseconds = nanoseconds
@@ -234,6 +237,8 @@ public struct RunResult: Sendable {
 
     public var messages: Int { app.messagesSent }
     public var bytes: Int { app.bytesSent }
+    public var cyclesPerMessage: Double { Double(cpu.cycles) / Double(max(1, messages)) }
+    public var instructionsPerMessage: Double { Double(cpu.instructions) / Double(max(1, messages)) }
     public var nsPerMessage: Double { Double(nanoseconds) / Double(max(1, messages)) }
     public var megabytesPerSecond: Double { Double(bytes) / 1e6 / (Double(nanoseconds) / 1e9) }
 }

@@ -18,6 +18,8 @@ final class SyncSocketRun: @unchecked Sendable {
     var finished = false
     var start: UInt64 = 0
     var end: UInt64 = 0
+    var cpuStart = CPUCost.zero
+    var cpu = CPUCost.zero
 
     init(_ scenario: Scenario, verify: VerifyLevel) {
         let (a, b) = makeDatagramPorts(packets: scenario.linkPackets)
@@ -61,6 +63,7 @@ final class SyncSocketRun: @unchecked Sendable {
         if !finished && client.isFinished && server.isFinished {
             finished = true
             end = monotonicNanoseconds()
+            cpu = CPUCost.now() - cpuStart
             done.signal()
         }
     }
@@ -69,6 +72,7 @@ final class SyncSocketRun: @unchecked Sendable {
     /// waits for completion.
     func run() -> Bool {
         queue.async { [self] in
+            cpuStart = CPUCost.now()
             start = monotonicNanoseconds()
             client.start()
             server.start()
@@ -102,6 +106,6 @@ extension SyncStackImpl {
             stack: name, scenario: scenario.name, nanoseconds: completed ? run.end - run.start : 0,
             app: run.client.app.counters + run.server.app.counters,
             stackCounters: run.counters,
-            stalled: !completed)
+            stalled: !completed, cpu: run.cpu)
     }
 }

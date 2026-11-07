@@ -5,6 +5,7 @@ final class Completion: @unchecked Sendable {
     private var remaining: Int
     private var waiter: UnsafeContinuation<Void, Never>?
     private(set) var endTime: UInt64 = 0
+    private(set) var endCPU = CPUCost.zero
 
     init(tasks: Int) { remaining = tasks }
 
@@ -12,6 +13,7 @@ final class Completion: @unchecked Sendable {
         remaining -= 1
         if remaining == 0 {
             endTime = monotonicNanoseconds()
+            endCPU = CPUCost.now()
             if let w = waiter {
                 waiter = nil
                 w.resume()

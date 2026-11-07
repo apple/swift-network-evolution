@@ -55,6 +55,7 @@ public enum SyncStackImpl: StackImplementation {
         var client = SyncEndpoint(side: .a, spec: RoleSpec(scenario, .client), verify: verify)
         var server = SyncEndpoint(side: .b, spec: RoleSpec(scenario, .server), verify: verify)
 
+        let cpuStart = CPUCost.now()
         let start = monotonicNanoseconds()
         client.start()
         server.start()
@@ -68,11 +69,12 @@ public enum SyncStackImpl: StackImplementation {
             }
         }
         let elapsed = monotonicNanoseconds() - start
+        let cpu = CPUCost.now() - cpuStart
 
         return RunResult(
             stack: name, scenario: scenario.name, nanoseconds: elapsed,
             app: client.app.counters + server.app.counters,
             stackCounters: client.mux.counters + server.mux.counters,
-            stalled: stalled)
+            stalled: stalled, cpu: cpu)
     }
 }
