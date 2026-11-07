@@ -2708,9 +2708,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 let shouldCloseStream =
                     receiveIsDataRead
                     && (stream.receivedStopSending
-                        || (!stream.closed && stream.send.state == .dataReceived))
+                        || (!stream.closed && stream.send.state.isTerminal))
                 if shouldCloseStream {
-                    stream.close(errorCode: nil, in: &ctx)
+                    stream.close(errorCode: stream.closeError, in: &ctx)
                 }
             }
         }
@@ -7136,9 +7136,9 @@ extension QUICConnection {
             }
             if streamFinished, stream.peerAcknowledgedFIN, stream.send.state != .dataReceived {
                 stream.send.state.change(logIDString: stream.log.logPrefix, to: .dataReceived)
-                if !stream.closed, stream.receive.state == .dataRead {
+                if !stream.closed, stream.receive.state.isTerminal {
                     // If both directions are closed, and all data is read, close the stream
-                    stream.close(errorCode: nil, in: &ctx)
+                    stream.close(errorCode: stream.closeError, in: &ctx)
                 }
             }
         }

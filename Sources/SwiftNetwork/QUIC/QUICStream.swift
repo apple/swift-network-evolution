@@ -605,6 +605,14 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         get { flags.contains(.closed) }
         set { if newValue { flags.insert(.closed) } else { flags.remove(.closed) } }
     }
+    /// The error to report when the stream closes after both directions are done. A reset in either
+    /// direction is reported as `ECONNRESET`, so the app sees the same result regardless of whether
+    /// the RESET_STREAM ACK or the final read closes the stream.
+    var closeError: NetworkError? {
+        let wasReset =
+            send.state == .resetReceived || receive.state == .resetReceived || receive.state == .resetRead
+        return wasReset ? NetworkError.posix(ECONNRESET) : nil
+    }
     var unidirectional: Bool {
         get { flags.contains(.unidirectional) }
         set { if newValue { flags.insert(.unidirectional) } else { flags.remove(.unidirectional) } }
@@ -1088,9 +1096,9 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         // If all data has now been read, move to the data read state
         if receive.state != .dataRead, upperReceiveQueue.isEmpty, markedInboundFINOnFrame {
             receive.state.change(logIDString: log.logPrefix, to: .dataRead)
-            if !self.closed, self.send.state == .dataReceived {
+            if !self.closed, (self.unidirectional && self.send.state == .invalid) || self.send.state.isTerminal {
                 // If both directions are closed, and all data is read, close the stream
-                self.close(errorCode: nil, in: &eventContext)
+                self.close(errorCode: self.closeError, in: &eventContext)
             }
         }
     }
