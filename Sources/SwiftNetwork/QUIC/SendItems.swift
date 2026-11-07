@@ -117,6 +117,9 @@ extension SendableItem where Self: ~Copyable {
                 wroteFrame = true
                 addToTransmittedItems(&transmittedItems, from: &pendingItems)
                 if !isRepeatable { break }
+                // With no room left the next write can only throw `smallBuffer`.
+                // Stop here, with the same result and without the throw.
+                if availableRoomAfterWriting == 0 { break }
             } while true
         } catch {
             if !wroteFrame {
@@ -1830,6 +1833,8 @@ extension FrameDatagram: SendableItem {
 // This list is the priority order in which to send frames.
 @available(Network 0.1.0, *)
 enum PrioritizedSendableItems: CaseIterable {
+    // IMPORTANT: the declaration order is the sending priority, and it must stay in step with the bit order of
+    // `SimpleSendableItemsFlags`, which `PendingItems.write` uses to index `allCases`. Update both together.
     // Control frames come first so that they fit in the earliest outgoing frame
     case crypto
     case newToken
@@ -2374,30 +2379,38 @@ struct SimpleSendableItemsFlags: OptionSet {
         self.rawValue = rawValue
     }
     var rawValue: UInt32
-    static let ping = SimpleSendableItemsFlags(rawValue: 1 << 0)
-    static let maxData = SimpleSendableItemsFlags(rawValue: 1 << 1)
-    static let maxStreamsBidirectional = SimpleSendableItemsFlags(rawValue: 1 << 2)
-    static let maxStreamsUnidirectional = SimpleSendableItemsFlags(rawValue: 1 << 3)
-    static let dataBlocked = SimpleSendableItemsFlags(rawValue: 1 << 4)
-    static let connectionClose = SimpleSendableItemsFlags(rawValue: 1 << 6)
-    static let applicationClose = SimpleSendableItemsFlags(rawValue: 1 << 7)
-    static let handshakeDone = SimpleSendableItemsFlags(rawValue: 1 << 8)
-    static let streamsBlockedBidirectional = SimpleSendableItemsFlags(rawValue: 1 << 9)
-    static let streamsBlockedUnidirectional = SimpleSendableItemsFlags(rawValue: 1 << 10)
-    static let newToken = SimpleSendableItemsFlags(rawValue: 1 << 11)
-    static let isKeepalive = SimpleSendableItemsFlags(rawValue: 1 << 12)  // Flag to describe PING
-    static let ack = SimpleSendableItemsFlags(rawValue: 1 << 13)
-    static let stream = SimpleSendableItemsFlags(rawValue: 1 << 14)
-    static let newConnectionID = SimpleSendableItemsFlags(rawValue: 1 << 15)
-    static let retireConnectionID = SimpleSendableItemsFlags(rawValue: 1 << 16)
-    static let pathChallenge = SimpleSendableItemsFlags(rawValue: 1 << 17)
-    static let pathResponse = SimpleSendableItemsFlags(rawValue: 1 << 18)
-    static let datagram = SimpleSendableItemsFlags(rawValue: 1 << 19)
-    static let streamDataBlocked = SimpleSendableItemsFlags(rawValue: 1 << 20)
-    static let maxStreamData = SimpleSendableItemsFlags(rawValue: 1 << 21)
-    static let resetStream = SimpleSendableItemsFlags(rawValue: 1 << 22)
-    static let stopSendingFlag = SimpleSendableItemsFlags(rawValue: 1 << 23)
-    static let sendCrypto = SimpleSendableItemsFlags(rawValue: 1 << 24)
+    // Each flag's bit position in the UInt32 equals its item's position in the PrioritizedSendableItems enum.
+    // IMPORTANT: the order of these flags must match the order of the `PrioritizedSendableItems` cases.
+    // The packet writer indexes `PrioritizedSendableItems.allCases` by bit position, so if you add, remove,
+    // or reorder a flag or a case, update the other to match (and `itemFlagsMask`, and the bit for padding).
+    // The order is checked by a test.
+    static let sendCrypto = SimpleSendableItemsFlags(rawValue: 1 << 0)
+    static let newToken = SimpleSendableItemsFlags(rawValue: 1 << 1)
+    static let newConnectionID = SimpleSendableItemsFlags(rawValue: 1 << 2)
+    static let retireConnectionID = SimpleSendableItemsFlags(rawValue: 1 << 3)
+    static let pathChallenge = SimpleSendableItemsFlags(rawValue: 1 << 4)
+    static let pathResponse = SimpleSendableItemsFlags(rawValue: 1 << 5)
+    static let handshakeDone = SimpleSendableItemsFlags(rawValue: 1 << 6)
+    static let ack = SimpleSendableItemsFlags(rawValue: 1 << 7)
+    static let ping = SimpleSendableItemsFlags(rawValue: 1 << 8)
+    static let datagram = SimpleSendableItemsFlags(rawValue: 1 << 9)
+    static let dataBlocked = SimpleSendableItemsFlags(rawValue: 1 << 10)
+    static let streamDataBlocked = SimpleSendableItemsFlags(rawValue: 1 << 11)
+    static let streamsBlockedBidirectional = SimpleSendableItemsFlags(rawValue: 1 << 12)
+    static let streamsBlockedUnidirectional = SimpleSendableItemsFlags(rawValue: 1 << 13)
+    static let maxData = SimpleSendableItemsFlags(rawValue: 1 << 14)
+    static let maxStreamData = SimpleSendableItemsFlags(rawValue: 1 << 15)
+    static let maxStreamsBidirectional = SimpleSendableItemsFlags(rawValue: 1 << 16)
+    static let maxStreamsUnidirectional = SimpleSendableItemsFlags(rawValue: 1 << 17)
+    static let stream = SimpleSendableItemsFlags(rawValue: 1 << 18)
+    static let resetStream = SimpleSendableItemsFlags(rawValue: 1 << 19)
+    static let stopSendingFlag = SimpleSendableItemsFlags(rawValue: 1 << 20)
+    static let connectionClose = SimpleSendableItemsFlags(rawValue: 1 << 21)
+    static let applicationClose = SimpleSendableItemsFlags(rawValue: 1 << 22)
+    // Bit 23 is the priority of PADDING, which has no flag: it is present when `paddingApproach` is set.
+    static let isKeepalive = SimpleSendableItemsFlags(rawValue: 1 << 24)  // Flag to describe PING
+    // The flags that stand for an item to send, which is all of them but `isKeepalive`.
+    static let itemFlagsMask: UInt32 = (1 << 23) - 1
 }
 
 @available(Network 0.1.0, *)
@@ -2887,6 +2900,23 @@ struct PendingItems: ~Copyable {
         }
     }
 
+    /// The items present to send, one bit each at the item's `PrioritizedSendableItems` priority.
+    ///
+    /// Everything but crypto and padding is a flag. Crypto is present when there is also some to retransmit,
+    /// and padding when `paddingApproach` asks for it.
+    @inline(always)
+    var presentItemsMask: UInt32 {
+        var mask = simpleSendableItems.rawValue & SimpleSendableItemsFlags.itemFlagsMask
+        if !retransmitCrypto.isEmpty {
+            mask |= 1 << 0
+        }
+        if case .none = paddingApproach {
+        } else {
+            mask |= 1 << 23
+        }
+        return mask
+    }
+
     var hasAckElicitingPendingItems: Bool {
         for item in PrioritizedSendableItems.allCases {
             if item.isAckEliciting && item.isPresent(in: self) { return true }
@@ -2931,8 +2961,18 @@ struct PendingItems: ~Copyable {
 
         // Add QUIC Frames in priority order
         var frameCount = 0
-        for item in PrioritizedSendableItems.allCases {
-            guard item.isPresent(in: self) else { continue }
+        let items = PrioritizedSendableItems.allCases
+        var nextPriority = 0
+        // Iterate through only the items to send in presentItemsMask.
+        // presentItemsMask holds the actual frame values to send and this is used
+        // to directly index into PrioritizedSendableItems.allCases.
+        while true {
+            let remaining = presentItemsMask & (UInt32.max &<< UInt32(truncatingIfNeeded: nextPriority))
+            guard remaining != 0 else { break }
+            let priority = remaining.trailingZeroBitCount
+            nextPriority = priority &+ 1
+            let item = items[priority]
+            assert(item.isPresent(in: self), "\(item) is in the mask of present items but is not present")
 
             if case .padding = item, paddingApproach == .padToEnd {
                 // Don't write padding to end if it is the only frame present

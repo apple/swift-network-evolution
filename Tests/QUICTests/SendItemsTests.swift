@@ -29,6 +29,50 @@ import XCTest
 @available(Network 0.1.0, *)
 final class SendItemsTests: XCTestCase {
 
+    /// `PendingItems.write` finds the next item to send from the flags, so each flag has to sit at the
+    /// bit that is its item's sending priority.
+    func testPresentItemsMaskFollowsSendingPriority() {
+        let setters: [(PrioritizedSendableItems, (inout PendingItems) -> Void)] = [
+            (.crypto, { $0.sendCrypto = true }),
+            (.newToken, { $0.newToken = true }),
+            (.newConnectionID, { $0.newConnectionID = true }),
+            (.retireConnectionID, { $0.retireConnectionID = true }),
+            (.pathChallenge, { $0.pathChallenge = true }),
+            (.pathResponse, { $0.pathResponse = true }),
+            (.handshakeDone, { $0.handshakeDone = true }),
+            (.ack, { $0.ack = true }),
+            (.ping, { $0.ping = true }),
+            (.datagram, { $0.datagram = true }),
+            (.dataBlocked, { $0.dataBlocked = true }),
+            (.streamDataBlocked, { $0.streamDataBlocked = true }),
+            (.streamsBlockedBidirectional, { $0.streamsBlockedBidirectional = true }),
+            (.streamsBlockedUnidirectional, { $0.streamsBlockedUnidirectional = true }),
+            (.maxData, { $0.maxData = true }),
+            (.maxStreamData, { $0.maxStreamData = true }),
+            (.maxStreamsBidirectional, { $0.maxStreamsBidirectional = true }),
+            (.maxStreamsUnidirectional, { $0.maxStreamsUnidirectional = true }),
+            (.stream, { $0.stream = true }),
+            (.resetStream, { $0.resetStream = true }),
+            (.stopSending, { $0.stopSendingFlag = true }),
+            (.connectionClose, { $0.connectionClose = true }),
+            (.applicationClose, { $0.applicationClose = true }),
+            (.padding, { $0.paddingApproach = .padToEnd }),
+        ]
+        XCTAssertEqual(setters.count, PrioritizedSendableItems.allCases.count)
+        for (item, set) in setters {
+            let priority = PrioritizedSendableItems.allCases.firstIndex(of: item)!
+            var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+            XCTAssertEqual(pendingItems.presentItemsMask, 0)
+            set(&pendingItems)
+            XCTAssertEqual(pendingItems.presentItemsMask, UInt32(1) << UInt32(priority), "\(item)")
+        }
+
+        // The keepalive marker is not an item
+        var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+        pendingItems.isKeepalive = true
+        XCTAssertEqual(pendingItems.presentItemsMask, 0)
+    }
+
     func testHasFrames() {
         var pendingItems = PendingItems(packetNumberSpace: .initial)
         XCTAssertFalse(pendingItems.hasPendingItems)
