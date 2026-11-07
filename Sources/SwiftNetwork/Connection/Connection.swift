@@ -1496,7 +1496,7 @@ public struct UDP: DatagramProtocol, @unchecked Sendable {
     private var preferNoChecksum: Bool?
     var options: ProtocolOptions<UDPProtocol> {
         var options = UDPProtocol.Options()
-        if preferNoChecksum != nil { options.insert(.preferNoChecksum) }
+        if preferNoChecksum == true { options.insert(.preferNoChecksum) }
         return ProtocolOptions<UDPProtocol>(protocolIdentifier: UDPProtocol.identifier, perProtocolOptions: options)
     }
 
@@ -1554,27 +1554,11 @@ public struct IP: NetworkProtocolOptions {
         var options = IPProtocol.Options()
         if let version { options.version = version }
         if let hopLimit { options.hopLimit = hopLimit }
-        if useMinimumMTU != nil {
-            var flags = options.flags
-            flags.insert(.useMinimumMTU)
-            options.flags = flags
-        }
-        if disableFragmentation != nil {
-            var flags = options.flags
-            flags.remove(.fragmentationEnabled)
-            options.flags = flags
-        }
-        if calculateReceiveTime != nil {
-            var flags = options.flags
-            flags.remove(.calculateReceiveTime)
-            options.flags = flags
-        }
+        if let useMinimumMTU { options.useMinimumMTU = useMinimumMTU }
+        if let disableFragmentation { options.fragmentationEnabled = !disableFragmentation }
+        if let calculateReceiveTime { options.calculateReceiveTime = calculateReceiveTime }
         if let localAddressPreference { options.localAddressPreference = localAddressPreference }
-        if disableMulticastLoopback != nil {
-            var flags = options.flags
-            flags.insert(.disableMulticastLoopback)
-            options.flags = flags
-        }
+        if let disableMulticastLoopback { options.disableMulticastLoopback = disableMulticastLoopback }
         return ProtocolOptions<IPProtocol>(protocolIdentifier: IPProtocol.identifier, perProtocolOptions: options)
     }
 
