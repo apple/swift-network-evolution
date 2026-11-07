@@ -495,6 +495,22 @@ struct CongestionControl: ~Copyable {
         }
     }
 
+    mutating func reset(mss: Int) {
+        switch algorithm {
+        case .cubic(var cubic):
+            cubic.reset(state: &state, mss: mss, qlog: nil)
+            algorithm = .cubic(algorithm: cubic)
+        #if !NETWORK_EMBEDDED
+        case .ledbat(var ledbat):
+            ledbat.reset(state: &state, mss: mss, qlog: nil)
+            algorithm = .ledbat(algorithm: ledbat)
+        case .prague(var prague):
+            prague.reset(state: &state, mss: mss, qlog: nil)
+            algorithm = .prague(algorithm: prague)
+        #endif
+        }
+    }
+
     mutating func idleTimeout(mss: Int) {
         switch algorithm {
         case .cubic(var cubic):
