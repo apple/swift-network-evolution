@@ -263,6 +263,11 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
         runLocalCloseTest(payload: [0x7F, 0xFF], expectedCode: .frameEncodingError)
     }
 
+    func testTruncatedFrameTypeClosesWithFrameEncodingError() {
+        // PING, then a frame type whose 2-byte varint is cut off by the end of the packet.
+        runLocalCloseTest(payload: [0x01, 0x40], expectedCode: .frameEncodingError)
+    }
+
     func testStreamFrameLongerThanPacketClosesWithFrameEncodingError() {
         // STREAM with LEN: stream 0 claims 32 bytes, and carries 1.
         runLocalCloseTest(payload: [0x0A, 0x00, 0x20, 0xAA], expectedCode: .frameEncodingError)

@@ -383,8 +383,17 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
             // The packet was authenticated, so a frame that fails to parse is the peer's doing rather than
             // noise from the network: RFC 9000, Sections 12.4 and 20.1 require a FRAME_ENCODING_ERROR. A close
             // raised while parsing is more specific, and a connection already closing has decided.
-            if case .frameParse(let parseError) = error, connection.closeError == nil, !connection.state.isTerminal {
-                connection.close(with: .frameEncodingError, parseError.description(), in: &eventContext)
+            if connection.closeError == nil, !connection.state.isTerminal {
+                switch error {
+                case .frameParse(let parseError):
+                    connection.close(with: .frameEncodingError, parseError.description(), in: &eventContext)
+                case .packet(.deserializationError):
+                    // The Deserializer could not read a frame, such as a frame type cut off by the end of
+                    // the packet.
+                    connection.close(with: .frameEncodingError, "Frame deserialization failed", in: &eventContext)
+                default:
+                    break
+                }
             }
             return .dropped
         }
