@@ -30,7 +30,8 @@ import XCTest
 final class SendItemsTests: XCTestCase {
 
     /// `PendingItems.write` finds the next item to send from the flags, so each flag has to sit at the
-    /// bit that is its item's sending priority.
+    /// bit that is its item's sending priority. The flags are built from `PrioritizedSendableItems`, so this
+    /// checks that each one was built from the right item.
     func testPresentItemsMaskFollowsSendingPriority() {
         let setters: [(PrioritizedSendableItems, (inout PendingItems) -> Void)] = [
             (.crypto, { $0.sendCrypto = true }),
@@ -61,6 +62,8 @@ final class SendItemsTests: XCTestCase {
         XCTAssertEqual(setters.count, PrioritizedSendableItems.allCases.count)
         for (item, set) in setters {
             let priority = PrioritizedSendableItems.allCases.firstIndex(of: item)!
+            XCTAssertEqual(item.rawValue, priority, "\(item)")
+            XCTAssertEqual(item.flag?.rawValue ?? item.maskBit, item.maskBit, "\(item)")
             var pendingItems = PendingItems(packetNumberSpace: .applicationData)
             XCTAssertEqual(pendingItems.presentItemsMask, 0)
             set(&pendingItems)
