@@ -1,10 +1,11 @@
+import AsyncActorStack
 import AsyncStack
 import Foundation
 import StackCommon
 import SyncStack
 
 struct Options {
-    var stacks: [any StackImplementation.Type] = [SyncStackImpl.self, AsyncStackImpl.self]
+    var stacks: [any StackImplementation.Type] = [SyncStackImpl.self, AsyncStackImpl.self, AsyncActorStackImpl.self]
     var scenarios: [Scenario] = Scenarios.all
     var iterations = 5
     var scale = 1.0
@@ -18,7 +19,7 @@ func usage() -> Never {
         usage: stack-bench [options]
           --list                     list scenarios and exit
           --scenario NAME            run only this scenario (repeatable)
-          --stack sync|async|both    which stack(s) to run (default both)
+          --stack sync|async|async-actor|sync-async|all  which stack(s) (default all)
           --iterations N             timed runs per scenario/stack (default 5, after one warm-up)
           --scale F                  multiply every scenario's message count by F
           --verify none|headers|full payload verification (default headers)
@@ -46,7 +47,9 @@ func parse() -> Options {
             switch value() {
             case "sync": o.stacks = [SyncStackImpl.self]
             case "async": o.stacks = [AsyncStackImpl.self]
-            case "both": break
+            case "async-actor": o.stacks = [AsyncActorStackImpl.self]
+            case "sync-async": o.stacks = [SyncStackImpl.self, AsyncStackImpl.self]
+            case "all": break
             default: usage()
             }
         case "--iterations": o.iterations = Int(value()) ?? 5
@@ -93,7 +96,7 @@ if let seconds = options.repeatSeconds {
     exit(0)
 }
 
-print("scenario        stack   ms(min)  ms(med)  ns/msg(med)    MB/s  pkts(k)  wakeups(k)  ok")
+print("scenario       stack        ms(min)  ms(med)  ns/msg(med)    MB/s  pkts(k)  wakeups(k)  ok")
 var failures = 0
 for scenario in options.scenarios {
     var medians: [Double] = []
@@ -108,14 +111,15 @@ for scenario in options.scenarios {
         if bad { failures += 1 }
         medians.append(Double(med.nanoseconds))
         print(
-            "\(scenario.name.padding(toLength: 15, withPad: " ", startingAt: 0)) \(impl.name.padding(toLength: 6, withPad: " ", startingAt: 0))"
+            "\(scenario.name.padding(toLength: 14, withPad: " ", startingAt: 0)) \(impl.name.padding(toLength: 12, withPad: " ", startingAt: 0))"
                 + " \(pad(fmt(Double(min.nanoseconds) / 1e6), 8)) \(pad(fmt(Double(med.nanoseconds) / 1e6), 8))"
                 + " \(pad(fmt(med.nsPerMessage), 12)) \(pad(fmt(med.megabytesPerSecond, 0), 7))"
                 + " \(pad(fmt(Double(med.stackCounters.packetsSent) / 1e3), 8)) \(pad(fmt(Double(med.stackCounters.wakeups) / 1e3), 11))"
                 + "  \(bad ? "FAIL" : "ok")")
     }
-    if medians.count == 2 {
-        print("                async/sync = \(fmt(medians[1] / medians[0], 2))x")
+    if medians.count > 1 {
+        let ratios = medians.dropFirst().map { fmt($0 / medians[0], 2) + "x" }
+        print("                vs \(options.stacks[0].name): \(ratios.joined(separator: ", "))")
     }
 }
 exit(failures == 0 ? 0 : 1)

@@ -3,7 +3,6 @@ import StackCommon
 /// The TLV protocol for one stream, over the multiplexer. Each stream's
 /// application task owns one; it is a noncopyable value, but the state it
 /// manipulates (the stream's buffers) lives in the shared `AsyncMux`.
-@StackActor
 public struct AsyncTLV: ~Copyable {
     let mux: AsyncMux
     let stream: Int

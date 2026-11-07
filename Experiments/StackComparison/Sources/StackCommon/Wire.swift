@@ -25,6 +25,9 @@ public enum Wire {
     public static let streamFrameHeader = 7
     public static let creditFrameSize = 13
     public static let tlvHeader = 6
+    /// Most stream data one stream contributes to a packet while other streams are
+    /// waiting, so that busy streams interleave within a packet.
+    public static let streamQuantum = 400
 
     @usableFromInline static let typeStream: UInt8 = 0x01
     @usableFromInline static let typeStreamFin: UInt8 = 0x02

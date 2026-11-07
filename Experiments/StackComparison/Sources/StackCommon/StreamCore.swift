@@ -38,10 +38,13 @@ public struct StreamCore {
             || (finQueued && !finSent && sendBuf.count == 0)
     }
 
-    /// Writes as much of this stream's pending frames as fit in `writer`. Returns
-    /// the number of frames written.
+    /// Writes as much of this stream's pending frames as fit in `writer`, but at
+    /// most `quantum` bytes of stream data so that other ready streams get a share
+    /// of the packet. Returns the number of frames written.
     @inlinable
-    public mutating func emit(id: UInt32, window: Int, into writer: inout PacketWriter) -> Int {
+    public mutating func emit(
+        id: UInt32, window: Int, quantum: Int = Int.max, into writer: inout PacketWriter
+    ) -> Int {
         var frames = 0
         if creditPending && writer.space >= Wire.creditFrameSize {
             let limit = consumed &+ UInt64(window)
@@ -54,7 +57,7 @@ public struct StreamCore {
         let credit = Int(truncatingIfNeeded: min(sendLimit &- sent, UInt64(Int32.max)))
         let room = writer.space - Wire.streamFrameHeader
         if room >= 0 {
-            let n = min(pending, credit, room)
+            let n = min(pending, credit, room, quantum)
             let fin = finQueued && !finSent && n == pending
             if n > 0 || fin {
                 let dst = writer.appendStream(id: id, fin: fin, length: n)

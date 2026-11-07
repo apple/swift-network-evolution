@@ -1,69 +1,41 @@
-import Foundation
 import Darwin
 import StackCommon
 
-/// A run loop that is the executor every task in the async stack runs on, driven
-/// by the benchmark's calling thread.
+/// A single-threaded run loop that is the executor every task in the async stack
+/// runs on, driven by the benchmark's calling thread.
 ///
-/// In steady state all jobs are enqueued from that thread: every resumed
-/// continuation is enqueued by code that is itself running on this executor. The
-/// exception is a new task's very first hop - the runtime starts a `Task` on the
-/// global pool and then switches it to its actor - which arrives from a pool
-/// thread. So the queue has a lock, and the loop does not stop while a task that
-/// has been spawned has yet to finish. (Giving tasks a `TaskExecutor` preference
-/// instead avoids the pool hop but makes every later resume enqueue twice, which
-/// is far more expensive.) The lock is uncontended in steady state.
-final class RunLoop: SerialExecutor, @unchecked Sendable {
+/// It is a `TaskExecutor` that every task names as its preference, and the stack's
+/// types are deliberately *not* actor-isolated. The idiomatic alternative - a global
+/// actor whose `unownedExecutor` is this run loop - was tried first and costs far
+/// more here: a continuation resumed inside actor-isolated code is enqueued on the
+/// global pool, which runs it just long enough to hop it back onto the actor,
+/// waking a thread each time. With only a task-executor preference, a resume
+/// enqueues once, directly, from the thread that is already running the loop (see
+/// `AsyncActorStack` for the actor version).
+///
+/// Because every enqueue then comes from the loop thread, the queue needs no lock.
+final class RunLoop: TaskExecutor, @unchecked Sendable {
     static let shared = RunLoop()
 
-    private var lock = os_unfair_lock()
+    /// The thread driving the loop; set by `run` before any task is spawned.
+    var owner = pthread_self()
     private var queue = RingQueue<UnownedJob>(minimumCapacity: 1024)
-    /// Tasks spawned and not yet finished. Only touched from the loop thread.
-    var liveTasks = 0
-    var offThread = 0
-    var onThread = 0
 
     func enqueue(_ job: consuming ExecutorJob) {
-        let unowned = UnownedJob(job)
-        os_unfair_lock_lock(&lock)
-        if pthread_main_np() == 0 { offThread += 1; if offThread < 4 { for l in Thread.callStackSymbols.prefix(14) { fputs(l + "\n", stderr) } } } else { onThread += 1 }
-        queue.pushBack(unowned)
-        os_unfair_lock_unlock(&lock)
+        assert(pthread_equal(pthread_self(), owner) != 0, "RunLoop is single threaded: a job was enqueued from another thread")
+        queue.pushBack(UnownedJob(job))
     }
 
-    /// Runs jobs until none are queued and every spawned task has finished.
+    /// Runs jobs until none remain.
     func runUntilIdle() {
-        let executor = asUnownedSerialExecutor()
-        while true {
-            os_unfair_lock_lock(&lock)
-            let next = queue.popFront()
-            os_unfair_lock_unlock(&lock)
-            if let job = next {
-                job.runSynchronously(on: executor)
-            } else if liveTasks == 0 {
-                return
-            } else {
-                sched_yield()
-            }
+        let executor = asUnownedTaskExecutor()
+        while let job = queue.popFront() {
+            job.runSynchronously(on: executor)
         }
     }
 }
 
-@globalActor
-public actor StackActor {
-    public static let shared = StackActor()
-
-    public nonisolated var unownedExecutor: UnownedSerialExecutor {
-        RunLoop.shared.asUnownedSerialExecutor()
-    }
-}
-
-/// Starts a task on the stack's actor.
-@StackActor
-func spawn(_ body: @escaping @StackActor () async -> Void) {
-    RunLoop.shared.liveTasks += 1
-    Task { @StackActor in
-        await body()
-        RunLoop.shared.liveTasks -= 1
-    }
+/// Starts a task that runs on the run loop from the start.
+func spawn(_ body: @escaping @Sendable () async -> Void) {
+    Task(executorPreference: RunLoop.shared, operation: body)
 }

@@ -7,8 +7,7 @@ import StackCommon
 /// stack's actor rather than a noncopyable value. Waiting for data, for send room,
 /// or for work to send is an `await` on a continuation stored here and resumed
 /// when the condition arises.
-@StackActor
-public final class AsyncMux {
+public final class AsyncMux: @unchecked Sendable {
     let streams: UnsafeMutablePointer<StreamCore>
     let readWaiter: UnsafeMutablePointer<UnsafeContinuation<Bool, Never>?>
     let readNeed: UnsafeMutablePointer<Int>
@@ -40,7 +39,7 @@ public final class AsyncMux {
         }
     }
 
-    isolated deinit {
+    deinit {
         for i in 0..<streamCount { streams[i].deallocate() }
         streams.deallocate()
         readWaiter.deallocate()
@@ -176,7 +175,8 @@ public final class AsyncMux {
                 continue
             }
             let hadCredit = streams[s].creditPending
-            let frames = streams[s].emit(id: id, window: window, into: &writer)
+            let frames = streams[s].emit(
+                id: id, window: window, quantum: ready.isEmpty ? Int.max : Wire.streamQuantum, into: &writer)
             if frames == 0 {
                 ready.pushFront(id)
                 break

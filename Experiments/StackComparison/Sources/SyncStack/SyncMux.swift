@@ -165,7 +165,8 @@ public struct SyncMux: ~Copyable {
                     continue
                 }
                 let hadCredit = streams[s].creditPending
-                let frames = streams[s].emit(id: id, window: window, into: &writer)
+                let frames = streams[s].emit(
+                id: id, window: window, quantum: ready.isEmpty ? Int.max : Wire.streamQuantum, into: &writer)
                 if frames == 0 {
                     ready.pushFront(id)
                     break

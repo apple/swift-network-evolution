@@ -23,14 +23,15 @@ let package = Package(
         .target(name: "StackCommon", swiftSettings: common),
         .target(name: "SyncStack", dependencies: ["StackCommon"], swiftSettings: common),
         .target(name: "AsyncStack", dependencies: ["StackCommon"], swiftSettings: common),
+        .target(name: "AsyncActorStack", dependencies: ["StackCommon"], swiftSettings: common),
         .executableTarget(
             name: "stack-bench",
-            dependencies: ["StackCommon", "SyncStack", "AsyncStack"],
+            dependencies: ["StackCommon", "SyncStack", "AsyncStack", "AsyncActorStack"],
             swiftSettings: common
         ),
         .testTarget(
             name: "StackComparisonTests",
-            dependencies: ["StackCommon", "SyncStack", "AsyncStack"]
+            dependencies: ["StackCommon", "SyncStack", "AsyncStack", "AsyncActorStack"]
         ),
     ]
 )

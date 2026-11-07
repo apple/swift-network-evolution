@@ -1,8 +1,7 @@
 import StackCommon
 
 /// Signals that every application task on both endpoints has finished.
-@StackActor
-final class Completion {
+final class Completion: @unchecked Sendable {
     private var remaining: Int
     private var waiter: UnsafeContinuation<Void, Never>?
     private(set) var endTime: UInt64 = 0
@@ -30,8 +29,7 @@ final class Completion {
 /// stream (two for bidirectional), each of which just reads and writes and lets
 /// `await` deal with waiting. There is no per-stream state to save and restore;
 /// the task's own frame holds it.
-@StackActor
-public final class AsyncApplication {
+public final class AsyncApplication: @unchecked Sendable {
     let spec: RoleSpec
     let verify: VerifyLevel
     let mux: AsyncMux

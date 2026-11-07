@@ -3,8 +3,7 @@ import StackCommon
 /// The simulated network as seen by the async stack: the same bounded packet
 /// channels as the sync stack, but waiting for a packet to arrive or for room to
 /// send is an `await` on a continuation that the other side resumes.
-@StackActor
-public final class AsyncLink {
+public final class AsyncLink: @unchecked Sendable {
     // Index 0 carries a -> b, index 1 carries b -> a.
     private let channels: UnsafeMutablePointer<PacketChannel>
     private let rxWaiter: UnsafeMutablePointer<UnsafeContinuation<Packet?, Never>?>
@@ -22,7 +21,7 @@ public final class AsyncLink {
         allocWaiter.initialize(repeating: nil, count: 2)
     }
 
-    isolated deinit {
+    deinit {
         channels.deinitialize(count: 2)
         channels.deallocate()
         rxWaiter.deallocate()

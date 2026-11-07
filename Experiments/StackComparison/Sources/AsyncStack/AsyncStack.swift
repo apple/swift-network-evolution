@@ -11,15 +11,10 @@ public enum AsyncStackImpl: StackImplementation {
     public static func run(_ scenario: Scenario, verify: VerifyLevel) -> RunResult {
         scenario.validate()
         let box = ResultBox()
-        RunLoop.shared.liveTasks += 1
-        Task { @StackActor in
-            box.result = await execute(scenario, verify: verify)
-            RunLoop.shared.liveTasks -= 1
-        }
+        RunLoop.shared.owner = pthread_self()
+        spawn { box.result = await execute(scenario, verify: verify) }
         // The calling thread is the executor: run until every task has finished.
         RunLoop.shared.runUntilIdle()
-        fputs("on=\(RunLoop.shared.onThread) off=\(RunLoop.shared.offThread)\n", stderr)
-        RunLoop.shared.onThread = 0; RunLoop.shared.offThread = 0
         guard let result = box.result else {
             return RunResult(
                 stack: name, scenario: scenario.name, nanoseconds: 0, app: AppCounters(),
@@ -28,7 +23,6 @@ public enum AsyncStackImpl: StackImplementation {
         return result
     }
 
-    @StackActor
     static func execute(_ scenario: Scenario, verify: VerifyLevel) async -> RunResult {
         let link = AsyncLink(packetsPerDirection: scenario.linkPackets)
         let clientMux = AsyncMux(streams: scenario.streams, window: scenario.window, sendBuffer: scenario.sendBuffer)
