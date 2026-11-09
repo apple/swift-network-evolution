@@ -185,6 +185,19 @@ class QUICFrameTests: XCTestCase {
         frame.finalize(success: true)
     }
 
+    func testAckInitMissingRanges() throws {
+        // Header declares a range count but no ACK range bytes follow
+        let bytes: [UInt8] = [0x02, 0x2c, 0x21, 0x00]
+        var frame = Frame(copyBuffer: bytes)
+        do {
+            _ = try FrameAck(frame: &frame, packetNumberSpace: .applicationData)
+            XCTFail("Expected FrameAck parsing to fail")
+        } catch {
+            // Expected: the frame is missing its ACK ranges
+        }
+        frame.finalize(success: false)
+    }
+
     func testAckInitMultiRange() throws {
         let bytes: [UInt8] = [0x02, 0x2c, 0x21, 0x02, 0x21, 0x0a, 0x0a, 0x03, 0x05]
         var frame = Frame(copyBuffer: bytes)
@@ -767,7 +780,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -779,7 +792,7 @@ class QUICFrameTests: XCTestCase {
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: lengthToWrite,
                 isFinal: false
@@ -800,13 +813,13 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: 0,
                 isFinal: false
@@ -830,7 +843,7 @@ class QUICFrameTests: XCTestCase {
 
             XCTAssertEqual(frame.unclaimedLength, 7)
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             defer {
@@ -842,7 +855,7 @@ class QUICFrameTests: XCTestCase {
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 0,
                     length: lengthToWrite,
                     isFinal: false
@@ -862,7 +875,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let lengthToWrite = UInt64(0)
@@ -870,7 +883,7 @@ class QUICFrameTests: XCTestCase {
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 0,
                     length: lengthToWrite,
                     isFinal: false
@@ -944,7 +957,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -956,7 +969,7 @@ class QUICFrameTests: XCTestCase {
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: lengthToWrite,
                 isFinal: true
@@ -977,13 +990,13 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: 0,
                 isFinal: true
@@ -1004,13 +1017,13 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: 0,
                 isFinal: true
@@ -1031,14 +1044,14 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             XCTAssertThrowsError(
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 0,
                     length: 0,
                     isFinal: true
@@ -1057,13 +1070,13 @@ class QUICFrameTests: XCTestCase {
             defer {
                 frame.finalize(success: true)
             }
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 0,
                 length: 0,
                 isFinal: true
@@ -1248,7 +1261,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendDataBeforeOffset10 = Frame(copyBuffer: Array(repeating: UInt8(0), count: 10))
@@ -1262,7 +1275,7 @@ class QUICFrameTests: XCTestCase {
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1278,7 +1291,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1292,7 +1305,7 @@ class QUICFrameTests: XCTestCase {
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 10,
                     length: lengthToWrite,
                     isFinal: false
@@ -1314,7 +1327,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
 
@@ -1328,7 +1341,7 @@ class QUICFrameTests: XCTestCase {
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 1,
                 length: 0,
                 isFinal: false
@@ -1344,7 +1357,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1361,7 +1374,7 @@ class QUICFrameTests: XCTestCase {
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 10,
                     length: lengthToWrite,
                     isFinal: false
@@ -1384,7 +1397,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1400,7 +1413,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1425,7 +1438,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(
@@ -1443,7 +1456,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1471,7 +1484,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: streamData)
@@ -1487,7 +1500,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1517,7 +1530,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: streamData)
@@ -1533,7 +1546,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1561,7 +1574,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: streamData)
@@ -1577,7 +1590,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: false
@@ -1606,7 +1619,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: streamData)
@@ -1622,7 +1635,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: requestedLengthToWrite,
                 isFinal: false
@@ -1703,7 +1716,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1717,7 +1730,7 @@ class QUICFrameTests: XCTestCase {
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: true
@@ -1739,13 +1752,13 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(4), logPrefixer: .init("Test"))
             _ = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 1,
                 length: 0,
                 isFinal: true
@@ -1767,7 +1780,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1781,7 +1794,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: true
@@ -1805,7 +1818,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1819,7 +1832,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: lengthToWrite,
                 isFinal: true
@@ -1842,7 +1855,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             // Putting data in stream's send buffer, even though it should not be used,
@@ -1857,7 +1870,7 @@ class QUICFrameTests: XCTestCase {
             let length = try FrameStreamSendMetadata.write(
                 into: &frame,
                 stats: &stats,
-                stream: stream,
+                stream: &stream,
                 offset: 10,
                 length: 0,
                 isFinal: true
@@ -1875,7 +1888,7 @@ class QUICFrameTests: XCTestCase {
                 frame.finalize(success: true)
             }
 
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(6), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [0xaa, 0xbb, 0xcc, 0x44])
@@ -1890,7 +1903,7 @@ class QUICFrameTests: XCTestCase {
                 try FrameStreamSendMetadata.write(
                     into: &frame,
                     stats: &stats,
-                    stream: stream,
+                    stream: &stream,
                     offset: 10,
                     length: lengthToWrite,
                     isFinal: true
@@ -1902,7 +1915,7 @@ class QUICFrameTests: XCTestCase {
     #if NETWORK_PERF_TESTS
     func testStreamHeaderSizePerformance() {
         try self.connection.context.onQueue {
-            let stream = QUICStreamInstance(parent: connection, inbound: false)
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
             defer { stream.destroyFromExternalTest() }
             stream.setup(streamID: QUICStreamID(1), logPrefixer: .init("Test"))
             let sendData = Frame(copyBuffer: [UInt8](repeating: 0xab, count: 1400))
@@ -1934,7 +1947,7 @@ class QUICFrameTests: XCTestCase {
             }
             var streams: [QUICStreamInstance] = []
             for idx in 0..<1_000 {
-                let stream = QUICStreamInstance(parent: connection, inbound: false)
+                var stream = QUICStreamInstance(parent: connection, inbound: false)
                 defer { stream.destroyFromExternalTest() }
                 stream.setup(
                     streamID: QUICStreamID(UInt64(idx))!,
@@ -1949,7 +1962,7 @@ class QUICFrameTests: XCTestCase {
                         _ = try! FrameStreamSendMetadata.write(
                             into: &frame,
                             stats: &stats,
-                            stream: stream,
+                            stream: &stream,
                             offset: UInt64(idx),
                             length: 0,
                             isFinal: false
@@ -3674,253 +3687,227 @@ class QUICFrameTests: XCTestCase {
     func testIsAckEliciting() throws {
         // padding, acks and close frames are not ack eliciting
         XCTAssertFalse(
-            QUICFrame.isAckEliciting(
-                frame: QUICFrame.padding(
-                    frame: FramePadding(
-                        packetNumberSpace: PacketNumberSpace.initial,
-                        padding: 0
-                    )
+            QUICFrame.padding(
+                frame: FramePadding(
+                    packetNumberSpace: PacketNumberSpace.initial,
+                    padding: 0
                 )
-            )
+            ).isAckEliciting
         )
 
         XCTAssertFalse(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        QUICFrame
-                        .ack(
-                            frame: FrameAck(
-                                packetNumberSpace: .initial,
-                                largest: 1024,
-                                delay: 0
-                            )
-                        )
+            QUICFrame.ack(
+                frame: FrameAck(
+                    packetNumberSpace: .initial,
+                    largest: 1024,
+                    delay: 0
                 )
+            ).isAckEliciting
         )
 
         XCTAssertFalse(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        QUICFrame
-                        .ack(
-                            frame: FrameAck(
-                                packetNumberSpace: .initial,
-                                largest: 1024,
-                                delay: 0
-                            )
-                        )
+            QUICFrame.ack(
+                frame: FrameAck(
+                    packetNumberSpace: .initial,
+                    largest: 1024,
+                    delay: 0
                 )
+            ).isAckEliciting
         )
 
         XCTAssertFalse(
-            QUICFrame
-                .isAckEliciting(
-                    frame: QUICFrame.ack(
-                        frame: FrameAck(packetNumberSpace: .initial, largest: 2048, delay: 1)
-                    )
-                )
+            QUICFrame.ack(
+                frame: FrameAck(packetNumberSpace: .initial, largest: 2048, delay: 1)
+            ).isAckEliciting
         )
 
         XCTAssertFalse(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        QUICFrame
-                        .applicationClose(
-                            frame: FrameApplicationClose(
-                                errorCode: 0
-                            )
-                        )
+            QUICFrame.applicationClose(
+                frame: FrameApplicationClose(
+                    errorCode: 0
                 )
+            ).isAckEliciting
         )
 
         XCTAssertFalse(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        QUICFrame
-                        .connectionClose(
-                            frame: FrameConnectionClose(
-                                errorCode: 0,
-                                frameType: .ack
-                            )
-                        )
+            QUICFrame.connectionClose(
+                frame: FrameConnectionClose(
+                    errorCode: 0,
+                    frameType: .ack
                 )
+            ).isAckEliciting
         )
 
         // All other frame types are are eliciting
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        QUICFrame
-                        .ping(
-                            frame: FramePing(
-                                packetNumberSpace: .initial
-                            )
-                        )
+            QUICFrame.ping(
+                frame: FramePing(
+                    packetNumberSpace: .initial
                 )
+            ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame: QUICFrame.resetStream(
-                        frame: FrameResetStream(id: 1, code: 2, finalSize: 3)
-                    )
-                )
+            QUICFrame.resetStream(
+                frame: FrameResetStream(id: 1, code: 2, finalSize: 3)
+            ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        QUICFrame
-                        .stopSending(frame: FrameStopSending(id: 1, code: 2))
-                )
+            QUICFrame.stopSending(frame: FrameStopSending(id: 1, code: 2)).isAckEliciting
         )
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame: .crypto(
-                        frame: FrameCrypto(
-                            packetNumberSpace: .initial,
-                            offset: 0,
-                            data: []
-                        )
-                    )
+            QUICFrame.crypto(
+                frame: FrameCrypto(
+                    packetNumberSpace: .initial,
+                    offset: 0,
+                    data: []
                 )
+            ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame: .newToken(frame: FrameNewToken(token: [0]))
-                )
+            QUICFrame.newToken(frame: FrameNewToken(token: [0])).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame: .stream(frame: FrameStreamReceived(id: 0, offset: 0, data: []))
-                )
+            QUICFrame.stream(frame: FrameStreamReceived(id: 0, offset: 0, data: [])).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame: .maxData(frame: FrameMaxData(max: 1024))
-                )
+            QUICFrame.maxData(frame: FrameMaxData(max: 1024)).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        .maxStreamData(
-                            frame: FrameMaxStreamData(id: 42, max: 4200)
-                        )
-                )
+            QUICFrame.maxStreamData(
+                frame: FrameMaxStreamData(id: 42, max: 4200)
+            ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        .maxStreamsBidirectional(
-                            frame: FrameMaxStreamsBidirectional(max: 2048)
-                        )
-                )
+            QUICFrame.maxStreamsBidirectional(
+                frame: FrameMaxStreamsBidirectional(max: 2048)
+            ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        .maxStreamsUnidirectional(
-                            frame: FrameMaxStreamsUnidirectional(max: 1024)
-                        )
-                )
+            QUICFrame.maxStreamsUnidirectional(
+                frame: FrameMaxStreamsUnidirectional(max: 1024)
+            ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame: .dataBlocked(frame: FrameDataBlocked(limit: 10000))
-                )
+            QUICFrame.dataBlocked(frame: FrameDataBlocked(limit: 10000)).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        .streamDataBlocked(
-                            frame: FrameStreamDataBlocked(id: 0, limit: 20000)
-                        )
-                )
+            QUICFrame.streamDataBlocked(
+                frame: FrameStreamDataBlocked(id: 0, limit: 20000)
+            ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        .streamsBlockedBidirectional(
-                            frame: FrameStreamsBlockedBidirectional(limit: 22222)
-                        )
-                )
+            QUICFrame.streamsBlockedBidirectional(
+                frame: FrameStreamsBlockedBidirectional(limit: 22222)
+            ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        .streamsBlockedUnidirectional(
-                            frame: FrameStreamsBlockedUnidirectional(
-                                limit: 40000
-                            )
-                        )
+            QUICFrame.streamsBlockedUnidirectional(
+                frame: FrameStreamsBlockedUnidirectional(
+                    limit: 40000
                 )
+            ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame: .newToken(frame: FrameNewToken(token: [1]))
-                )
+            QUICFrame.newToken(frame: FrameNewToken(token: [1])).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame:
-                        .retireConnectionID(
-                            frame: FrameRetireConnectionID(sequence: 33333)
-                        )
-                )
+            QUICFrame.retireConnectionID(
+                frame: FrameRetireConnectionID(sequence: 33333)
+            ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame: .pathChallenge(frame: FramePathChallenge(data: 1234))
-                )
+            QUICFrame.pathChallenge(frame: FramePathChallenge(data: 1234)).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame: .pathResponse(frame: FramePathResponse(data: 1234))
-                )
+            QUICFrame.pathResponse(frame: FramePathResponse(data: 1234)).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame
-                .isAckEliciting(
-                    frame: .handshakeDone(frame: FrameHandshakeDone())
-                )
+            QUICFrame.handshakeDone(frame: FrameHandshakeDone()).isAckEliciting
         )
+    }
+
+    func testFrameTypeTraitsMatchRFC9000Table3() throws {
+        // RFC 9000, Section 12.4, Table 3, transcribed as (types, name, Pkts, Spec). The table lists
+        // CONNECTION_CLOSE (0x1c-0x1d) as "ih01": only type 0x1c can appear in Initial or Handshake
+        // packets, so the row is split here. DATAGRAM is from RFC 9221, Section 4. Verified errata are
+        // applied: 7365 (RETIRE_CONNECTION_ID is not allowed in 0-RTT, "__01" -> "___1") and 8240
+        // (CONNECTION_CLOSE does not count toward bytes in flight, "N" -> "NC").
+        let table: [(types: ClosedRange<UInt64>, name: String, pkts: String, spec: String)] = [
+            (0x00...0x00, "PADDING", "IH01", "NP"),
+            (0x01...0x01, "PING", "IH01", ""),
+            (0x02...0x03, "ACK", "IH_1", "NC"),
+            (0x04...0x04, "RESET_STREAM", "__01", ""),
+            (0x05...0x05, "STOP_SENDING", "__01", ""),
+            (0x06...0x06, "CRYPTO", "IH_1", ""),
+            (0x07...0x07, "NEW_TOKEN", "___1", ""),
+            (0x08...0x0f, "STREAM", "__01", "F"),
+            (0x10...0x10, "MAX_DATA", "__01", ""),
+            (0x11...0x11, "MAX_STREAM_DATA", "__01", ""),
+            (0x12...0x13, "MAX_STREAMS", "__01", ""),
+            (0x14...0x14, "DATA_BLOCKED", "__01", ""),
+            (0x15...0x15, "STREAM_DATA_BLOCKED", "__01", ""),
+            (0x16...0x17, "STREAMS_BLOCKED", "__01", ""),
+            (0x18...0x18, "NEW_CONNECTION_ID", "__01", "P"),
+            (0x19...0x19, "RETIRE_CONNECTION_ID", "___1", ""),
+            (0x1a...0x1a, "PATH_CHALLENGE", "__01", "P"),
+            (0x1b...0x1b, "PATH_RESPONSE", "___1", "P"),
+            (0x1c...0x1c, "CONNECTION_CLOSE", "IH01", "NC"),
+            (0x1d...0x1d, "CONNECTION_CLOSE", "__01", "NC"),
+            (0x1e...0x1e, "HANDSHAKE_DONE", "___1", ""),
+            (0x30...0x31, "DATAGRAM", "__01", ""),
+        ]
+
+        for row in table {
+            let pkts = Array(row.pkts)
+            XCTAssertEqual(pkts.count, 4, row.name)
+            // Initial and Handshake share a single trait.
+            XCTAssertEqual(pkts[0] == "I", pkts[1] == "H", row.name)
+
+            var expected: QUICFrameTraits = []
+            if pkts[0] == "I" { expected.insert(.allowedInHandshake) }
+            if pkts[2] == "0" { expected.insert(.allowedIn0RTT) }
+            // N.B.: "1" is ignored because it's always true.
+            if !row.spec.contains("N") { expected.insert(.ackEliciting) }
+            if row.spec.contains("P") { expected.insert(.probing) }
+            // RFC 9002, Section 2: a packet is in flight when it is ack-eliciting or contains PADDING.
+            if expected.contains(.ackEliciting) || row.name == "PADDING" { expected.insert(.inFlight) }
+            if row.spec.contains("C") { XCTAssertFalse(expected.contains(.inFlight), row.name) }
+
+            for code in row.types {
+                let type = try XCTUnwrap(FrameType(rawValue: code), "\(row.name) 0x\(String(code, radix: 16))")
+                XCTAssertEqual(type.rawValue, code, row.name)
+                XCTAssertEqual(
+                    type.traits.rawValue,
+                    expected.rawValue,
+                    "\(row.name) 0x\(String(code, radix: 16))"
+                )
+            }
+        }
+
+        // Every frame type the implementation knows about must be covered by the table.
+        for type in FrameType.allCases {
+            XCTAssertTrue(
+                table.contains { $0.types.contains(type.rawValue) },
+                "\(type.description) 0x\(String(type.rawValue, radix: 16)) missing from table"
+            )
+        }
     }
 }
 

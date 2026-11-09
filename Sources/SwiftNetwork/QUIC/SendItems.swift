@@ -36,11 +36,8 @@ internal import os
 
 @available(Network 0.1.0, *)
 protocol SendableItem: ~Copyable {
-    static var isAckEliciting: Bool { get }
-    static var isInFlightEligible: Bool { get }
-
+    static var frameType: FrameType { get }
     static var isRepeatable: Bool { get }  // More than one of this frame can be in one packet
-
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool
 
     static func addToTransmittedItems(
@@ -65,9 +62,6 @@ protocol SendableItem: ~Copyable {
 
 @available(Network 0.1.0, *)
 extension SendableItem where Self: ~Copyable {
-    static var isAckEliciting: Bool { true }  // Default to true for most frames
-    static var isInFlightEligible: Bool { isAckEliciting }  // Default to being the same as ack-eliciting
-
     static var isRepeatable: Bool { false }  // Default to false for most frames
 
     static func write(
@@ -86,7 +80,7 @@ extension SendableItem where Self: ~Copyable {
 
                 let availableRoom = frame.unclaimedLength
                 let amountClaimedFromEndForCongestionWindow: Int
-                if isInFlightEligible, availableCongestionWindow < availableRoom {
+                if Self.frameType.traits.isInFlightEligible, availableCongestionWindow < availableRoom {
                     amountClaimedFromEndForCongestionWindow =
                         (availableRoom - Int(availableCongestionWindow))
                     _ = frame.claim(fromStart: 0, fromEnd: amountClaimedFromEndForCongestionWindow)
@@ -143,8 +137,7 @@ extension SendableItem where Self: ~Copyable {
 
 @available(Network 0.1.0, *)
 extension FramePadding: SendableItem {
-    static var isAckEliciting: Bool { false }
-    static var isInFlightEligible: Bool { true }
+    static var frameType: FrameType { .padding }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         switch pendingItems.paddingApproach {
@@ -200,6 +193,8 @@ extension FramePadding: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FramePing: SendableItem {
+    static var frameType: FrameType { .ping }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool { pendingItems.ping }
 
     static func addToTransmittedItems(
@@ -239,7 +234,7 @@ extension FramePing: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameAck: SendableItem {
-    static var isAckEliciting: Bool { false }
+    static var frameType: FrameType { .ack }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         #if DEBUG
@@ -285,7 +280,7 @@ extension FrameAck: SendableItem {
             toShorthandLogEntry(
                 delay: pendingItems.ackFrame!.delay,
                 largest: pendingItems.ackFrame!.largest,
-                ranges: pendingItems.ackFrame!.ranges,
+                ranges: pendingItems.ackFrame!.ranges.toArray(),
                 ecnCounter: pendingItems.ackFrame!.ecnCounter
             )
         )
@@ -294,6 +289,8 @@ extension FrameAck: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameResetStream: SendableItem {
+    static var frameType: FrameType { .resetStream }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -359,6 +356,8 @@ extension FrameResetStream: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameStopSending: SendableItem {
+    static var frameType: FrameType { .stopSending }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -420,6 +419,8 @@ extension FrameStopSending: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameCrypto: SendableItem {
+    static var frameType: FrameType { .crypto }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -577,6 +578,8 @@ extension FrameCrypto: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameNewToken: SendableItem {
+    static var frameType: FrameType { .newToken }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.newToken
     }
@@ -612,6 +615,8 @@ extension FrameNewToken: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameStreamSendMetadata: SendableItem {
+    static var frameType: FrameType { .stream() }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -694,212 +699,264 @@ extension FrameStreamSendMetadata: SendableItem {
         while !sentStream, !pendingItems.retransmitStreams.isEmpty {
             let retransmitStreamFlowID = pendingItems.retransmitStreams[0].flowID
 
-            guard let stream = connection.flow(for: retransmitStreamFlowID) else {
+            // The stream is borrowed from the connection's flow table while it is written
+            let wroteRetransmission = try connection.withStreamBorrowed(retransmitStreamFlowID) {
+                (stream: inout QUICStreamInstance) throws(QUICError) -> Bool in
+                try writeRetransmission(
+                    into: &frame,
+                    pendingItems: &pendingItems,
+                    connection: connection,
+                    stats: &stats,
+                    shorthandFrames: &shorthandFrames,
+                    stream: &stream,
+                    flowID: retransmitStreamFlowID
+                )
+            }
+            guard let wroteRetransmission else {
                 connection.log.error("Unable to access state for flow \(retransmitStreamFlowID)")
                 _ = pendingItems.retransmitStreams.popFirst()
                 continue
             }
-
-            let retransmitStreamOffset = pendingItems.retransmitStreams[0].offset
-            let retransmitStreamLength = pendingItems.retransmitStreams[0].length
-            let retransmitStreamIsFinal = pendingItems.retransmitStreams[0].isFinal
-            let retransmitStreamStreamID = pendingItems.retransmitStreams[0].streamID
-
-            guard stream.isOpen else {
-                connection.log.info(
-                    "Not retransmitting data for closed flow \(retransmitStreamFlowID)"
-                )
-                _ = pendingItems.retransmitStreams.popFirst()
-                continue
-            }
-
-            guard stream.send.buffer.storageStartOffset <= retransmitStreamOffset else {
-                connection.log.datapath(
-                    "Not retransmitting data at offset \(retransmitStreamOffset), already acked"
-                )
-                _ = pendingItems.retransmitStreams.popFirst()
-                continue
-            }
-
-            // The sendBuffer may not still have this offset+length data because
-            // the ACK/timer that drove us to retransmit could have been a
-            // reordered event. It "should not" happen in current implementation
-            // because recovery deletes the recovered packet when retransmitting
-            // but a bug or implementation change could cause this to occur.
-            // And if it does, we'd stuck in a loop trying to write here and
-            // always throwing, so it is safer to guard against it.
-            let lengthWritten = try write(
-                into: &frame,
-                stats: &stats,
-                stream: stream,
-                offset: retransmitStreamOffset,
-                length: retransmitStreamLength,
-                isFinal: retransmitStreamIsFinal
-            )
-            if lengthWritten < retransmitStreamLength {
-                // Incomplete write. Save what was transmitted, and record what is left.
-                let writtenStream = TransmittedItems.SentStream(
-                    flowID: retransmitStreamFlowID,
-                    streamID: retransmitStreamStreamID,
-                    offset: retransmitStreamOffset,
-                    length: UInt64(lengthWritten),
-                    isFinal: false
-                )
-                pendingItems.transmittedStreams.append(writtenStream)
-                shorthandFrames?.append(
-                    toShorthandLogEntry(
-                        id: retransmitStreamStreamID.value,
-                        fin: retransmitStreamIsFinal,
-                        offset: retransmitStreamOffset,
-                        length: retransmitStreamLength
-                    )
-                )
-
-                let pendingStream = TransmittedItems.SentStream(
-                    flowID: retransmitStreamFlowID,
-                    streamID: retransmitStreamStreamID,
-                    offset: retransmitStreamOffset + UInt64(lengthWritten),
-                    length: retransmitStreamLength - UInt64(lengthWritten),
-                    isFinal: retransmitStreamIsFinal
-                )
-                _ = pendingItems.retransmitStreams.popFirst()
-                pendingItems.retransmitStreams.prepend(pendingStream)
-            } else {
-                // Complete write. Save it to transmitted items for a record.
-                let streamItem = pendingItems.retransmitStreams.popFirst()!
-                shorthandFrames?.append(
-                    toShorthandLogEntry(
-                        id: streamItem.streamID.value,
-                        fin: streamItem.isFinal,
-                        offset: streamItem.offset,
-                        length: streamItem.length
-                    )
-                )
-                pendingItems.transmittedStreams.append(streamItem)
-            }
-            sentStream = true
+            sentStream = wroteRetransmission
         }
 
         // Then, try to send new stream data
         while !sentStream, !pendingItems.streamsToService.isEmpty {
             let streamToService = pendingItems.streamsToService.first!
 
-            guard let stream = connection.flow(for: streamToService) else {
+            let wroteStreamData = try connection.withStreamBorrowed(streamToService) {
+                (stream: inout QUICStreamInstance) throws(QUICError) -> Bool in
+                try writeNewStreamData(
+                    into: &frame,
+                    pendingItems: &pendingItems,
+                    connection: connection,
+                    stats: &stats,
+                    shorthandFrames: &shorthandFrames,
+                    stream: &stream
+                )
+            }
+            guard let wroteStreamData else {
                 connection.log.error("Unable to access state for flow \(streamToService)")
                 pendingItems.popServicedStream()
                 continue
             }
+            sentStream = wroteStreamData
+        }
+    }
 
-            // Already completely written, ignore
-            guard !stream.send.state.dataHasAlreadyBeenSent else {
-                pendingItems.popServicedStream()
-                stream.listMembership.remove(.sendable)
-                continue
-            }
+    // Writes the first pending retransmission, which belongs to the borrowed stream. Returns
+    // whether a STREAM frame was written; when it was not, the retransmission has been discarded.
+    private static func writeRetransmission(
+        into frame: inout Frame,
+        pendingItems: inout PendingItems,
+        connection: QUICConnection,
+        stats: inout Statistics,
+        shorthandFrames: inout [QUICShorthandFrame]?,
+        stream: inout QUICStreamInstance,
+        flowID retransmitStreamFlowID: MultiplexedFlowIdentifier
+    ) throws(QUICError) -> Bool {
+        let retransmitStreamOffset = pendingItems.retransmitStreams[0].offset
+        let retransmitStreamLength = pendingItems.retransmitStreams[0].length
+        let retransmitStreamIsFinal = pendingItems.retransmitStreams[0].isFinal
+        let retransmitStreamStreamID = pendingItems.retransmitStreams[0].streamID
 
-            let (offset, remainingStreamLength, hasLast) = stream.availableSendData()
-            let allowedFlowControlLength = stream.availableRemoteReceiveWindow(for: connection)
-            let lengthToSend = min(remainingStreamLength, allowedFlowControlLength)
-            let isFinal = hasLast && lengthToSend == remainingStreamLength
+        guard stream.isOpen else {
+            connection.log.info(
+                "Not retransmitting data for closed flow \(retransmitStreamFlowID)"
+            )
+            _ = pendingItems.retransmitStreams.popFirst()
+            return false
+        }
 
-            let shouldSend = remainingStreamLength > 0 || isFinal
-            guard shouldSend else {
-                pendingItems.popServicedStream()
-                stream.listMembership.remove(.sendable)
-                continue
-            }
+        guard stream.send.buffer.storageStartOffset <= retransmitStreamOffset else {
+            connection.log.datapath(
+                "Not retransmitting data at offset \(retransmitStreamOffset), already acked"
+            )
+            _ = pendingItems.retransmitStreams.popFirst()
+            return false
+        }
 
-            if lengthToSend == 0 && remainingStreamLength > 0 {
-                // Has data to send, but cannot
-                // Remove the stream for now
-                pendingItems.popServicedStream()
-                stream.listMembership.remove(.sendable)
-                // And trigger sending blocked frames if necessary
-                stream.recordStreamDataSending(
-                    writtenLength: 0,
-                    isFinal: false,
-                    hasMoreDataToService: true,
-                    pendingItems: &pendingItems,
-                    connection: connection
+        // The sendBuffer may not still have this offset+length data because
+        // the ACK/timer that drove us to retransmit could have been a
+        // reordered event. It "should not" happen in current implementation
+        // because recovery deletes the recovered packet when retransmitting
+        // but a bug or implementation change could cause this to occur.
+        // And if it does, we'd stuck in a loop trying to write here and
+        // always throwing, so it is safer to guard against it.
+        let lengthWritten = try write(
+            into: &frame,
+            stats: &stats,
+            stream: &stream,
+            offset: retransmitStreamOffset,
+            length: retransmitStreamLength,
+            isFinal: retransmitStreamIsFinal
+        )
+        if lengthWritten < retransmitStreamLength {
+            // Incomplete write. Save what was transmitted, and record what is left.
+            let writtenStream = TransmittedItems.SentStream(
+                flowID: retransmitStreamFlowID,
+                streamID: retransmitStreamStreamID,
+                offset: retransmitStreamOffset,
+                length: UInt64(lengthWritten),
+                isFinal: false
+            )
+            pendingItems.transmittedStreams.append(writtenStream)
+            shorthandFrames?.append(
+                toShorthandLogEntry(
+                    id: retransmitStreamStreamID.value,
+                    fin: retransmitStreamIsFinal,
+                    offset: retransmitStreamOffset,
+                    length: retransmitStreamLength
                 )
-                continue
-            }
+            )
 
-            let lengthWritten = try FrameStreamSendMetadata.write(
-                into: &frame,
-                stats: &stats,
-                stream: stream,
+            let pendingStream = TransmittedItems.SentStream(
+                flowID: retransmitStreamFlowID,
+                streamID: retransmitStreamStreamID,
+                offset: retransmitStreamOffset + UInt64(lengthWritten),
+                length: retransmitStreamLength - UInt64(lengthWritten),
+                isFinal: retransmitStreamIsFinal
+            )
+            _ = pendingItems.retransmitStreams.popFirst()
+            pendingItems.retransmitStreams.prepend(pendingStream)
+        } else {
+            // Complete write. Save it to transmitted items for a record.
+            let streamItem = pendingItems.retransmitStreams.popFirst()!
+            shorthandFrames?.append(
+                toShorthandLogEntry(
+                    id: streamItem.streamID.value,
+                    fin: streamItem.isFinal,
+                    offset: streamItem.offset,
+                    length: streamItem.length
+                )
+            )
+            pendingItems.transmittedStreams.append(streamItem)
+        }
+        return true
+    }
+
+    // Writes new data for the borrowed stream, which is the first one waiting to be serviced.
+    // Returns whether a STREAM frame was written; when it was not, the stream has been taken off
+    // the list of streams to service.
+    private static func writeNewStreamData(
+        into frame: inout Frame,
+        pendingItems: inout PendingItems,
+        connection: QUICConnection,
+        stats: inout Statistics,
+        shorthandFrames: inout [QUICShorthandFrame]?,
+        stream: inout QUICStreamInstance
+    ) throws(QUICError) -> Bool {
+        // Already completely written, ignore
+        guard !stream.send.state.dataHasAlreadyBeenSent else {
+            pendingItems.popServicedStream()
+            stream.listMembership.remove(.sendable)
+            return false
+        }
+
+        let (offset, remainingStreamLength, hasLast) = stream.availableSendData()
+        let allowedFlowControlLength = stream.availableRemoteReceiveWindow(for: connection)
+        let lengthToSend = min(remainingStreamLength, allowedFlowControlLength)
+        let isFinal = hasLast && lengthToSend == remainingStreamLength
+
+        let shouldSend = remainingStreamLength > 0 || isFinal
+        guard shouldSend else {
+            pendingItems.popServicedStream()
+            stream.listMembership.remove(.sendable)
+            return false
+        }
+
+        if lengthToSend == 0 && remainingStreamLength > 0 {
+            // Has data to send, but cannot
+            // Remove the stream for now
+            pendingItems.popServicedStream()
+            stream.listMembership.remove(.sendable)
+            // And trigger sending blocked frames if necessary
+            stream.recordStreamDataSending(
+                writtenLength: 0,
+                isFinal: false,
+                hasMoreDataToService: true,
+                pendingItems: &pendingItems,
+                connection: connection
+            )
+            return false
+        }
+
+        let lengthWritten = try write(
+            into: &frame,
+            stats: &stats,
+            stream: &stream,
+            offset: offset,
+            length: lengthToSend,
+            isFinal: isFinal
+        )
+        let hasMoreDataToService = remainingStreamLength > UInt64(lengthWritten)
+
+        let streamFlowIdentifier = stream.flowIdentifier
+        let currentStreamID = stream.streamID!
+
+        if lengthWritten < lengthToSend {
+            // Incomplete write. Save what was transmitted, and record what is left.
+            let writtenStream = TransmittedItems.SentStream(
+                flowID: streamFlowIdentifier,
+                streamID: currentStreamID,
                 offset: offset,
-                length: lengthToSend,
+                length: UInt64(lengthWritten),
+                isFinal: false
+            )
+            shorthandFrames?.append(
+                toShorthandLogEntry(
+                    id: writtenStream.streamID.value,
+                    fin: writtenStream.isFinal,
+                    offset: writtenStream.offset,
+                    length: writtenStream.length
+                )
+            )
+            pendingItems.transmittedStreams.append(writtenStream)
+            stream.recordStreamDataSending(
+                writtenLength: UInt64(lengthWritten),
+                isFinal: false,
+                hasMoreDataToService: hasMoreDataToService,
+                pendingItems: &pendingItems,
+                connection: connection
+            )
+        } else {
+            // Complete write. Save it to transmitted items for a record.
+            let writtenStream = TransmittedItems.SentStream(
+                flowID: streamFlowIdentifier,
+                streamID: currentStreamID,
+                offset: offset,
+                length: UInt64(lengthWritten),
                 isFinal: isFinal
             )
-            let hasMoreDataToService = remainingStreamLength > UInt64(lengthWritten)
+            shorthandFrames?.append(
+                toShorthandLogEntry(
+                    id: writtenStream.streamID.value,
+                    fin: writtenStream.isFinal,
+                    offset: writtenStream.offset,
+                    length: writtenStream.length
+                )
+            )
+            pendingItems.transmittedStreams.append(writtenStream)
+            stream.recordStreamDataSending(
+                writtenLength: UInt64(lengthWritten),
+                isFinal: isFinal,
+                hasMoreDataToService: hasMoreDataToService,
+                pendingItems: &pendingItems,
+                connection: connection
+            )
 
-            let streamFlowIdentifier = stream.flowIdentifier
-            let currentStreamID = stream.streamID!
-
-            if lengthWritten < lengthToSend {
-                // Incomplete write. Save what was transmitted, and record what is left.
-                let writtenStream = TransmittedItems.SentStream(
-                    flowID: streamFlowIdentifier,
-                    streamID: currentStreamID,
-                    offset: offset,
-                    length: UInt64(lengthWritten),
-                    isFinal: false
-                )
-                shorthandFrames?.append(
-                    toShorthandLogEntry(
-                        id: writtenStream.streamID.value,
-                        fin: writtenStream.isFinal,
-                        offset: writtenStream.offset,
-                        length: writtenStream.length
-                    )
-                )
-                pendingItems.transmittedStreams.append(writtenStream)
-                stream.recordStreamDataSending(
-                    writtenLength: UInt64(lengthWritten),
-                    isFinal: false,
-                    hasMoreDataToService: hasMoreDataToService,
-                    pendingItems: &pendingItems,
-                    connection: connection
-                )
-            } else {
-                // Complete write. Save it to transmitted items for a record.
-                let writtenStream = TransmittedItems.SentStream(
-                    flowID: streamFlowIdentifier,
-                    streamID: currentStreamID,
-                    offset: offset,
-                    length: UInt64(lengthWritten),
-                    isFinal: isFinal
-                )
-                shorthandFrames?.append(
-                    toShorthandLogEntry(
-                        id: writtenStream.streamID.value,
-                        fin: writtenStream.isFinal,
-                        offset: writtenStream.offset,
-                        length: writtenStream.length
-                    )
-                )
-                pendingItems.transmittedStreams.append(writtenStream)
-                stream.recordStreamDataSending(
-                    writtenLength: UInt64(lengthWritten),
-                    isFinal: isFinal,
-                    hasMoreDataToService: hasMoreDataToService,
-                    pendingItems: &pendingItems,
-                    connection: connection
-                )
-
-                // Complete write, remove this stream from the list to service
-                pendingItems.popServicedStream()
-                stream.listMembership.remove(.sendable)
-            }
-            sentStream = true
+            // Complete write, remove this stream from the list to service
+            pendingItems.popServicedStream()
+            stream.listMembership.remove(.sendable)
         }
+        return true
     }
 }
 
 @available(Network 0.1.0, *)
 extension FrameDataBlocked: SendableItem {
+    static var frameType: FrameType { .dataBlocked }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.dataBlocked
     }
@@ -935,6 +992,8 @@ extension FrameDataBlocked: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameStreamDataBlocked: SendableItem {
+    static var frameType: FrameType { .streamDataBlocked }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -984,12 +1043,15 @@ extension FrameStreamDataBlocked: SendableItem {
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
         guard let firstFlowID = pendingItems.streamDataBlockedFlows.first,
-            let stream = connection.flow(for: firstFlowID),
-            let streamID = stream.streamID
+            let (streamIDValue, limit) = connection.withStreamBorrowed(
+                firstFlowID,
+                { (stream: inout QUICStreamInstance) -> (UInt64, UInt64)? in
+                    guard let streamID = stream.streamID else { return nil }
+                    return (streamID.value, stream.sendOffset)
+                }
+            ) ?? nil
         else { return }
 
-        let streamIDValue = streamID.value
-        let limit = stream.sendOffset
         try write(frame: &frame, id: streamIDValue, limit: limit, stats: &stats)
         shorthandFrames?.append(toShorthandLogEntry(id: streamIDValue, limit: limit))
     }
@@ -997,6 +1059,8 @@ extension FrameStreamDataBlocked: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameStreamsBlockedBidirectional: SendableItem {
+    static var frameType: FrameType { .streamsBlockedBidirectional }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.streamsBlockedBidirectional
     }
@@ -1034,6 +1098,8 @@ extension FrameStreamsBlockedBidirectional: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameStreamsBlockedUnidirectional: SendableItem {
+    static var frameType: FrameType { .streamsBlockedUnidirectional }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.streamsBlockedUnidirectional
     }
@@ -1071,6 +1137,8 @@ extension FrameStreamsBlockedUnidirectional: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameMaxData: SendableItem {
+    static var frameType: FrameType { .maxData }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool { pendingItems.maxData }
 
     static func addToTransmittedItems(
@@ -1104,6 +1172,8 @@ extension FrameMaxData: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameMaxStreamData: SendableItem {
+    static var frameType: FrameType { .maxStreamData }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -1155,12 +1225,15 @@ extension FrameMaxStreamData: SendableItem {
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
         guard let firstFlowID = pendingItems.maxStreamDataFlows.first,
-            let stream = connection.flow(for: firstFlowID),
-            let streamID = stream.streamID
+            let (streamIDValue, localMaxData) = connection.withStreamBorrowed(
+                firstFlowID,
+                { (stream: inout QUICStreamInstance) -> (UInt64, UInt64)? in
+                    guard let streamID = stream.streamID else { return nil }
+                    return (streamID.value, stream.flowControlState.inboundMaxData)
+                }
+            ) ?? nil
         else { return }
 
-        let streamIDValue = streamID.value
-        let localMaxData = stream.flowControlState.inboundMaxData
         try write(frame: &frame, id: streamIDValue, max: localMaxData)
         shorthandFrames?.append(toShorthandLogEntry(id: streamIDValue, max: localMaxData))
     }
@@ -1168,6 +1241,8 @@ extension FrameMaxStreamData: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameMaxStreamsBidirectional: SendableItem {
+    static var frameType: FrameType { .maxStreamsBidirectional }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.maxStreamsBidirectional
     }
@@ -1206,6 +1281,8 @@ extension FrameMaxStreamsBidirectional: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameMaxStreamsUnidirectional: SendableItem {
+    static var frameType: FrameType { .maxStreamsUnidirectional }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.maxStreamsUnidirectional
     }
@@ -1246,6 +1323,8 @@ extension FrameMaxStreamsUnidirectional: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameNewConnectionID: SendableItem {
+    static var frameType: FrameType { .newConnectionID }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -1306,6 +1385,8 @@ extension FrameNewConnectionID: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameRetireConnectionID: SendableItem {
+    static var frameType: FrameType { .retireConnectionID }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -1360,6 +1441,8 @@ extension FrameRetireConnectionID: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FramePathChallenge: SendableItem {
+    static var frameType: FrameType { .pathChallenge }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         #if DEBUG
         let flagValue = pendingItems.pathChallenge
@@ -1400,6 +1483,8 @@ extension FramePathChallenge: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FramePathResponse: SendableItem {
+    static var frameType: FrameType { .pathResponse }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         #if DEBUG
         let flagValue = pendingItems.pathResponse
@@ -1441,7 +1526,7 @@ extension FramePathResponse: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameConnectionClose: SendableItem {
-    static var isAckEliciting: Bool { false }
+    static var frameType: FrameType { .connectionClose }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.connectionClose
@@ -1493,7 +1578,7 @@ extension FrameConnectionClose: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameApplicationClose: SendableItem {
-    static var isAckEliciting: Bool { false }
+    static var frameType: FrameType { .applicationClose }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.applicationClose
@@ -1564,6 +1649,8 @@ extension FrameApplicationClose: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameHandshakeDone: SendableItem {
+    static var frameType: FrameType { .handshakeDone }
+
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         pendingItems.handshakeDone
     }
@@ -1598,6 +1685,8 @@ extension FrameHandshakeDone: SendableItem {
 
 @available(Network 0.1.0, *)
 extension FrameDatagram: SendableItem {
+    static var frameType: FrameType { .datagram() }
+
     static var isRepeatable: Bool { true }
 
     static func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
@@ -1638,74 +1727,90 @@ extension FrameDatagram: SendableItem {
         while !pendingItems.datagramFlowsToService.isEmpty, !sentDatagram {
             let firstFlowID = pendingItems.datagramFlowsToService.first!
 
-            guard let datagramFlow = connection.secondaryFlow(for: firstFlowID) else {
-                connection.log.error("Unable to access state for flow \(firstFlowID)")
-                pendingItems.datagramFlowsToService.removeFirst()
-                continue
-            }
             var datagramsListIsEmpty = false
             // Thrown once the closure has returned, because `accessDatagramsToSend` takes a
             // non-throwing closure. It tells the packet builder that this packet is full.
             var writeError: QUICError? = nil
-            connection.accessDatagramsToSend(flow: datagramFlow) { datagrams in
-                while !datagrams.isEmpty {
-                    let dataLength = datagrams.peekFirstFrame { $0.unclaimedLength }
-                    connection.log.datapath(
-                        "Handle output datagram for flow \(firstFlowID.debugDescription) (size \(dataLength))"
-                    )
-                    guard dataLength <= datagramFlow.usableDatagramSize else {
-                        connection.log.error(
-                            "Unable to send datagram frame, length \(dataLength) exceeds usable size \(datagramFlow.usableDatagramSize)"
+            // Frames the write is finished with. A frame's finalizer is a closure the sender supplied,
+            // and it can do anything, so it must not run while the flow is borrowed from the table.
+            // They are finalized once the borrow has ended.
+            var oversizedFrames = FrameArray()
+            var writtenFrame: Frame? = nil
+            // The flow is borrowed from the secondary flow table for the whole write, so nothing
+            // below may look the table up again.
+            let accessed: Void? = connection.withSecondaryFlow(firstFlowID) {
+                (datagramFlow: inout QUICDatagramFlow) in
+                let datagramFlowID = datagramFlow.flowID
+                let datagramContextID = datagramFlow.contextID
+                let usableDatagramSize = datagramFlow.usableDatagramSize
+                connection.accessDatagramsToSend(flow: &datagramFlow) { datagrams in
+                    while !datagrams.isEmpty {
+                        let dataLength = datagrams.peekFirstFrame { $0.unclaimedLength }
+                        connection.log.datapath(
+                            "Handle output datagram for flow \(firstFlowID.debugDescription) (size \(dataLength))"
                         )
-                        guard var oversized = datagrams.popFirst() else { break }
-                        oversized.finalize(success: false)
-                        continue
-                    }
-
-                    // Write from the queue and remove it only once it is written, so a datagram
-                    // that does not fit the rest of this packet stays queued for the next one.
-                    let roomBeforeWriting = frame.unclaimedLength
-                    writeError = datagrams.peekFirstFrame { datagramFrame in
-                        do throws(QUICError) {
-                            try FrameDatagram.write(
-                                frame: &frame,
-                                hasLength: true,
-                                flowID: datagramFlow.flowID,
-                                contextID: datagramFlow.contextID,
-                                data: datagramFrame,
-                                stats: &stats
-                            )
-                            return nil
-                        } catch {
-                            return error
-                        }
-                    }
-                    if let error = writeError {
-                        if case .frameWrite(.smallBuffer) = error {
-                            connection.log.datapath(
-                                "Datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
-                            )
-                        } else {
+                        guard dataLength <= usableDatagramSize else {
                             connection.log.error(
-                                "Unable to write datagram for flow \(firstFlowID.debugDescription): "
-                                    + "\(error.info.description), code \(error.info.code)"
+                                "Unable to send datagram frame, length \(dataLength) exceeds usable size \(usableDatagramSize)"
                             )
+                            guard let oversized = datagrams.popFirst() else { break }
+                            oversizedFrames.add(frame: oversized)
+                            continue
                         }
+
+                        // Write from the queue and remove it only once it is written, so a datagram
+                        // that does not fit the rest of this packet stays queued for the next one.
+                        let roomBeforeWriting = frame.unclaimedLength
+                        writeError = datagrams.peekFirstFrame { datagramFrame in
+                            do throws(QUICError) {
+                                try FrameDatagram.write(
+                                    frame: &frame,
+                                    hasLength: true,
+                                    flowID: datagramFlowID,
+                                    contextID: datagramContextID,
+                                    data: datagramFrame,
+                                    stats: &stats
+                                )
+                                return nil
+                            } catch {
+                                return error
+                            }
+                        }
+                        if let error = writeError {
+                            if case .frameWrite(.smallBuffer) = error {
+                                connection.log.datapath(
+                                    "Datagram for flow \(firstFlowID.debugDescription) does not fit \(roomBeforeWriting) free bytes; requeueing"
+                                )
+                            } else {
+                                connection.log.error(
+                                    "Unable to write datagram for flow \(firstFlowID.debugDescription): "
+                                        + "\(error.info.description), code \(error.info.code)"
+                                )
+                            }
+                            break
+                        }
+                        sentDatagram = true
+                        shorthandFrames?.append(
+                            toShorthandLogEntry(
+                                flowID: datagramFlowID,
+                                length: UInt64(dataLength)
+                            )
+                        )
+                        writtenFrame = datagrams.popFirst()
                         break
                     }
-                    sentDatagram = true
-                    shorthandFrames?.append(
-                        toShorthandLogEntry(
-                            flowID: datagramFlow.flowID,
-                            length: UInt64(dataLength)
-                        )
-                    )
-                    if var written = datagrams.popFirst() {
-                        written.finalize(success: true)
-                    }
-                    break
+                    datagramsListIsEmpty = datagrams.isEmpty
                 }
-                datagramsListIsEmpty = datagrams.isEmpty
+            }
+            // The borrow has ended, so the frames' finalizers can run
+            oversizedFrames.finalizeAllFramesAsFailed()
+            if var written = writtenFrame.take() {
+                written.finalize(success: true)
+            }
+            guard accessed != nil else {
+                connection.log.error("Unable to access state for flow \(firstFlowID)")
+                pendingItems.datagramFlowsToService.removeFirst()
+                continue
             }
             if let writeError {
                 // A write only fails before anything is dequeued, so nothing was written in this
@@ -1722,8 +1827,7 @@ extension FrameDatagram: SendableItem {
 
 // MARK: - Prioritized List of Sendable Items
 
-// This list the priority order in which to send frames
-// Note: This list may be updated after review
+// This list is the priority order in which to send frames.
 @available(Network 0.1.0, *)
 enum PrioritizedSendableItems: CaseIterable {
     // Control frames come first so that they fit in the earliest outgoing frame
@@ -1768,6 +1872,37 @@ enum PrioritizedSendableItems: CaseIterable {
     // Padding should be last and may consume rest of the outbound frame
     case padding
 
+    var frameType: FrameType {
+        switch self {
+        case .crypto: FrameCrypto.frameType
+        case .newToken: FrameNewToken.frameType
+        case .newConnectionID: FrameNewConnectionID.frameType
+        case .retireConnectionID: FrameRetireConnectionID.frameType
+        case .pathChallenge: FramePathChallenge.frameType
+        case .pathResponse: FramePathResponse.frameType
+        case .handshakeDone: FrameHandshakeDone.frameType
+        case .ack: FrameAck.frameType
+        case .ping: FramePing.frameType
+        case .datagram: FrameDatagram.frameType
+        case .dataBlocked: FrameDataBlocked.frameType
+        case .streamDataBlocked: FrameStreamDataBlocked.frameType
+        case .streamsBlockedBidirectional: FrameStreamsBlockedBidirectional.frameType
+        case .streamsBlockedUnidirectional: FrameStreamsBlockedUnidirectional.frameType
+        case .maxData: FrameMaxData.frameType
+        case .maxStreamData: FrameMaxStreamData.frameType
+        case .maxStreamsBidirectional: FrameMaxStreamsBidirectional.frameType
+        case .maxStreamsUnidirectional: FrameMaxStreamsUnidirectional.frameType
+        case .stream: FrameStreamSendMetadata.frameType
+        case .resetStream: FrameResetStream.frameType
+        case .stopSending: FrameStopSending.frameType
+        case .connectionClose: FrameConnectionClose.frameType
+        case .applicationClose: FrameApplicationClose.frameType
+        case .padding: FramePadding.frameType
+        }
+    }
+
+    // Inline for compilation with (-Osize)
+    @inline(always)
     func isPresent(in pendingItems: borrowing PendingItems) -> Bool {
         switch self {
         case .datagram:
@@ -2227,66 +2362,8 @@ enum PrioritizedSendableItems: CaseIterable {
         }
     }
 
-    var isAckEliciting: Bool {
-        switch self {
-        case .datagram: return FrameDatagram.isAckEliciting
-        case .crypto: return FrameCrypto.isAckEliciting
-        case .newToken: return FrameNewToken.isAckEliciting
-        case .newConnectionID: return FrameNewConnectionID.isAckEliciting
-        case .retireConnectionID: return FrameRetireConnectionID.isAckEliciting
-        case .pathChallenge: return FramePathChallenge.isAckEliciting
-        case .pathResponse: return FramePathResponse.isAckEliciting
-        case .handshakeDone: return FrameHandshakeDone.isAckEliciting
-        case .ack: return FrameAck.isAckEliciting
-        case .dataBlocked: return FrameDataBlocked.isAckEliciting
-        case .streamDataBlocked: return FrameStreamDataBlocked.isAckEliciting
-        case .streamsBlockedBidirectional: return FrameStreamsBlockedBidirectional.isAckEliciting
-        case .streamsBlockedUnidirectional: return FrameStreamsBlockedUnidirectional.isAckEliciting
-        case .maxData: return FrameMaxData.isAckEliciting
-        case .maxStreamData: return FrameMaxStreamData.isAckEliciting
-        case .maxStreamsBidirectional: return FrameMaxStreamsBidirectional.isAckEliciting
-        case .maxStreamsUnidirectional: return FrameMaxStreamsUnidirectional.isAckEliciting
-        case .ping: return FramePing.isAckEliciting
-        case .stream: return FrameStreamSendMetadata.isAckEliciting
-        case .resetStream: return FrameResetStream.isAckEliciting
-        case .stopSending: return FrameStopSending.isAckEliciting
-        case .connectionClose: return FrameConnectionClose.isAckEliciting
-        case .applicationClose: return FrameApplicationClose.isAckEliciting
-        case .padding: return FramePadding.isAckEliciting
-        }
-    }
-
-    // Packets are considered in flight when they are ack-eliciting or contain a PADDING frame
-    var isInFlightEligible: Bool {
-        switch self {
-        case .datagram: return FrameDatagram.isInFlightEligible
-        case .crypto: return FrameCrypto.isInFlightEligible
-        case .newToken: return FrameNewToken.isInFlightEligible
-        case .newConnectionID: return FrameNewConnectionID.isInFlightEligible
-        case .retireConnectionID: return FrameRetireConnectionID.isInFlightEligible
-        case .pathChallenge: return FramePathChallenge.isInFlightEligible
-        case .pathResponse: return FramePathResponse.isInFlightEligible
-        case .handshakeDone: return FrameHandshakeDone.isInFlightEligible
-        case .ack: return FrameAck.isInFlightEligible
-        case .dataBlocked: return FrameDataBlocked.isInFlightEligible
-        case .streamDataBlocked: return FrameStreamDataBlocked.isInFlightEligible
-        case .streamsBlockedBidirectional:
-            return FrameStreamsBlockedBidirectional.isInFlightEligible
-        case .streamsBlockedUnidirectional:
-            return FrameStreamsBlockedUnidirectional.isInFlightEligible
-        case .maxData: return FrameMaxData.isInFlightEligible
-        case .maxStreamData: return FrameMaxStreamData.isInFlightEligible
-        case .maxStreamsBidirectional: return FrameMaxStreamsBidirectional.isInFlightEligible
-        case .maxStreamsUnidirectional: return FrameMaxStreamsUnidirectional.isInFlightEligible
-        case .ping: return FramePing.isInFlightEligible
-        case .stream: return FrameStreamSendMetadata.isInFlightEligible
-        case .resetStream: return FrameResetStream.isInFlightEligible
-        case .stopSending: return FrameStopSending.isInFlightEligible
-        case .connectionClose: return FrameConnectionClose.isInFlightEligible
-        case .applicationClose: return FrameApplicationClose.isInFlightEligible
-        case .padding: return FramePadding.isInFlightEligible
-        }
-    }
+    var isAckEliciting: Bool { frameType.traits.isAckEliciting }
+    var isInFlightEligible: Bool { frameType.traits.isInFlightEligible }
 }
 
 // MARK: - PendingItems (State for pending send)
@@ -2646,13 +2723,13 @@ struct PendingItems: ~Copyable {
     // Temporary storage for written streams
     var transmittedStreams = NetworkUniqueDeque<TransmittedItems.SentStream>()
 
-    func canAddStreamToService(_ stream: QUICStreamInstance) -> Bool {
+    func canAddStreamToService(_ stream: borrowing QUICStreamInstance) -> Bool {
         canAddStreamToService(stream, connection: stream.parentProtocol)
     }
 
     // Callers that already hold the connection pass it in, which saves reading it back out of the
     // stream's parentProtocol.
-    func canAddStreamToService(_ stream: QUICStreamInstance, connection: QUICConnection) -> Bool {
+    func canAddStreamToService(_ stream: borrowing QUICStreamInstance, connection: QUICConnection) -> Bool {
         !stream.send.state.dataHasAlreadyBeenSent
             && ((stream.hasMoreSendDataToService && stream.availableRemoteReceiveWindow(for: connection) > 0)
                 || stream.send.buffer.hasLast)
@@ -2664,11 +2741,11 @@ struct PendingItems: ~Copyable {
         }
     }
 
-    mutating func appendStreamToService(_ newStream: QUICStreamInstance) {
-        appendStreamToService(newStream, connection: newStream.parentProtocol)
+    mutating func appendStreamToService(_ newStream: inout QUICStreamInstance) {
+        appendStreamToService(&newStream, connection: newStream.parentProtocol)
     }
 
-    mutating func appendStreamToService(_ newStream: QUICStreamInstance, connection: QUICConnection) {
+    mutating func appendStreamToService(_ newStream: inout QUICStreamInstance, connection: QUICConnection) {
         guard canAddStreamToService(newStream, connection: connection) else {
             // Nothing new to send
             return
@@ -2682,7 +2759,7 @@ struct PendingItems: ~Copyable {
         stream = true
     }
 
-    mutating func prependStreamToService(_ newStream: QUICStreamInstance) {
+    mutating func prependStreamToService(_ newStream: inout QUICStreamInstance) {
         guard canAddStreamToService(newStream) else {
             // Nothing new to send
             return
@@ -2913,7 +2990,7 @@ struct PendingItems: ~Copyable {
         if payloadLength < Constants.minimumPayloadLength {
             let extraPaddingSize = Constants.minimumPayloadLength - payloadLength
             paddingApproach = .fixedSize(extraPaddingSize)
-            if try FramePadding.write(
+            _ = try FramePadding.write(
                 into: &frame,
                 pendingItems: &self,
                 connection: connection,
@@ -2921,9 +2998,7 @@ struct PendingItems: ~Copyable {
                 stats: &stats,
                 transmittedItems: &transmittedItems,
                 shorthandFrames: &shorthandFrames
-            ) {
-                if FramePadding.isAckEliciting { isAckEliciting = true }
-            }
+            )
         }
     }
 
@@ -2945,7 +3020,6 @@ struct PendingItems: ~Copyable {
 
 @available(Network 0.1.0, *)
 struct TransmittedItems: ~Copyable {
-    var simpleSendableItems = SimpleSendableItemsFlags(rawValue: 0)
     var ping: Bool {
         get { simpleSendableItems.contains(.ping) }
         set {
@@ -3269,12 +3343,11 @@ struct TransmittedItems: ~Copyable {
             }
         }
     }
-    var sentStreams = SentStreams()
 
-    struct TransmittedAckFrame {
+    struct TransmittedAckFrame: ~Copyable {
         var largest = PacketNumber.none
         var delay: UInt64 = 0
-        var ranges: [FrameAckRange]
+        var ranges: SmallArray<FrameAckRange>
         var pendingGap: PacketNumber?
 
         init?(_ ackFrame: consuming FrameAck?) {
@@ -3285,15 +3358,16 @@ struct TransmittedItems: ~Copyable {
             pendingGap = ackFrame.pendingGap == .none ? nil : ackFrame.pendingGap
         }
     }
-    var ackFrame: TransmittedAckFrame?
-
+    // Fields are ordered in this manner to save padding
     var maxStreamDataFlows: Deque<MultiplexedFlowIdentifier>?
     var streamDataBlockedFlows: Deque<MultiplexedFlowIdentifier>?
     var streamResets: Deque<PendingItems.StreamReset>?
     var streamStopSendings: Deque<PendingItems.StreamStopSending>?
     var newConnectionIDs: Deque<FrameNewConnectionID>?
     var retireConnectionIDs: Deque<FrameRetireConnectionID>?
-
+    var sentStreams = SentStreams()
+    var simpleSendableItems = SimpleSendableItemsFlags(rawValue: 0)
+    var ackFrame: TransmittedAckFrame?
     var pmtudProbeMSS: Int?
 
     // Add new Frame support here, unless it's covered by flags.
@@ -3313,13 +3387,16 @@ struct TransmittedItems: ~Copyable {
         sentPath: QUICPath?,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if let ackFrame {
+        switch ackFrame {
+        case .some(let frame):
             connection.acknowledgedAck(
-                frame: ackFrame,
+                frame: frame,
                 packetNumber: packetNumber,
                 packetNumberSpace: packetNumberSpace,
                 sentPath: sentPath
             )
+        case .none:
+            break
         }
 
         for i in 0..<sentStreams.count {

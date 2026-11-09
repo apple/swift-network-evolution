@@ -404,6 +404,25 @@ public struct UDPProtocol: NetworkProtocol {
             return value + UDPProtocol.headerLength
         }
 
+        mutating func handleNetworkProtocolEvent(
+            _ event: NetworkProtocolEvent,
+            in eventContext: inout NetworkContext.EventContext
+        ) -> HandleNetworkEventResult {
+            guard let controlled = event.flowControlState else {
+                return .unconsumed
+            }
+            if controlled {
+                self.flags.insert(.flowControlled)
+            } else {
+                self.flags.remove(.flowControlled)
+                if self.flags.contains(.outputPending) {
+                    self.flags.remove(.outputPending)
+                    deliverOutboundRoomAvailableEvent(in: &eventContext)
+                }
+            }
+            return .consumed
+        }
+
         mutating func getDatagramsToSend(
             maximumDatagramCount: Int,
             minimumDatagramSize: Int,

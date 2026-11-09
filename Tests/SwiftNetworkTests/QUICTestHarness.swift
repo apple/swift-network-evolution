@@ -608,10 +608,13 @@ class QUICTestHarness {
         }
     }
 
+    /// `beforeOpening` runs on the context in the same turn that opens the stream, before it is
+    /// attached, so nothing the peer sends can arrive between the two.
     func createNewStream(
         identifier: String,
         quicOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
-        serverInitiated: Bool = false
+        serverInitiated: Bool = false,
+        beforeOpening: (() -> Void)? = nil
     ) -> StreamUpperHarness<TestStreamLinkageFamily>? {
         var handlerInstance: QUICConnection?
         var handlerListener: TestStreamListenerLinkage?
@@ -633,6 +636,7 @@ class QUICTestHarness {
         var newStreamFinished = false
         let options = quicOptions.deepCopy()
         context.async {
+            beforeOpening?()
             options.setLogID(
                 prefix: identifier,
                 parent: "",
@@ -2042,6 +2046,136 @@ class QUICTestHarness {
         stop()
     }
 
+    #if canImport(SwiftNetwork)
+    /// Sends `totalBytes` from a client stream in `chunkSize` writes, one per `interval`, as an
+    /// application that produces data at its own pace does.
+    ///
+    /// The interval must be long enough that acknowledgments keep up, since otherwise the
+    /// congestion window fills and the queue grows. With the queue kept to about one chunk however
+    /// much has been sent, its length says nothing about the size of the transfer. Returns the
+    /// maximum segment size the client's path started and ended with, or `nil` if the transfer
+    /// did not complete.
+    ///
+    /// With `startingSizeIsPathMaximum`, path MTU discovery is told that the path allows no more
+    /// than the starting size, which ends its first search. It then searches again only when its
+    /// timer fires, every `pmtudUpdateInterval`. With `idleTime`, the connection sits idle that
+    /// long after the transfer, so the timer fires with nothing to send.
+    func runPacedTransfer(
+        totalBytes: Int,
+        chunkSize: Int,
+        interval: NetworkDuration,
+        startingSizeIsPathMaximum: Bool = false,
+        pmtudUpdateInterval: NetworkDuration? = nil,
+        idleTime: NetworkDuration = .zero,
+        timeout: TimeInterval = 30.0
+    ) -> (initial: Int, final: Int)? {
+        // The client starts at the minimum packet size on a path that allows more, so only path
+        // MTU discovery can raise it.
+        do {
+            if startingSizeIsPathMaximum {
+                let clientOptions = QUICProtocol.options()
+                clientOptions.connectionOptions.initialPacketSize = 1252
+                clientOptions.connectionOptions.pmtudUpdateInterval = pmtudUpdateInterval
+                try quicHandshake(clientOptions: clientOptions)
+            } else {
+                try quicHandshake(clientMTU: 1200, clientInterfaceMTU: 1500)
+            }
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return nil
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1"), let clientConnection = state?.clientInstance else {
+            XCTFail("Failed to create client stream")
+            return nil
+        }
+
+        var initialMaximumSegmentSize = 0
+        onContext {
+            initialMaximumSegmentSize = clientConnection.currentPath?.mss ?? 0
+        }
+
+        if startingSizeIsPathMaximum {
+            onContext {
+                clientConnection.fromExternal { eventContext in
+                    guard let path = clientConnection.currentPath else {
+                        XCTFail("Client path missing")
+                        return
+                    }
+                    path.pmtudState.packetTooBigReceived(
+                        on: path,
+                        nextMTU: path.pmtudState.currentPathMTU,
+                        in: &eventContext
+                    )
+                }
+            }
+        }
+
+        var bytesReceived = 0
+        var serverReadHandler: ((inout NetworkContext.EventContext, Bool) -> Void)?
+        defer { serverReadHandler = nil }
+        context.async {
+            self.state?.serverHarness.waitForNewFlow { eventContext in
+                guard let serverStream = self.state?.serverHarness.upperHarnesses.last else {
+                    XCTFail("Server flow missing")
+                    return
+                }
+                serverReadHandler = { eventContext, _ in
+                    while true {
+                        let bytesRead = serverStream.readAndDrop(in: &eventContext)
+                        if bytesRead == 0 {
+                            break
+                        }
+                        bytesReceived += bytesRead
+                    }
+                    serverStream.waitForInboundDataAvailable(in: &eventContext) { eventContext, available in
+                        serverReadHandler?(&eventContext, available)
+                    }
+                }
+                serverReadHandler?(&eventContext, true)
+            }
+        }
+
+        var bytesWritten = 0
+        var pacingTimers: [TimerReference] = []
+        var writeNextChunk: (() -> Void)?
+        defer { writeNextChunk = nil }
+        writeNextChunk = {
+            let length = min(chunkSize, totalBytes - bytesWritten)
+            XCTAssertTrue(
+                clientStream.write(
+                    [UInt8](repeating: 0x5a, count: length),
+                    sendFIN: bytesWritten + length == totalBytes
+                )
+            )
+            bytesWritten += length
+            if bytesWritten < totalBytes {
+                pacingTimers.append(self.context.scheduleTimer(duration: interval) { writeNextChunk?() })
+            }
+        }
+        context.async {
+            writeNextChunk?()
+        }
+
+        wait(until: { bytesReceived == totalBytes }, timeout: timeout, "the server to receive every byte")
+
+        if idleTime > .zero {
+            var idleElapsed = false
+            context.async {
+                pacingTimers.append(self.context.scheduleTimer(duration: idleTime) { idleElapsed = true })
+            }
+            wait(until: { idleElapsed }, timeout: timeout, "the connection to sit idle")
+        }
+
+        var finalMaximumSegmentSize = 0
+        onContext {
+            finalMaximumSegmentSize = clientConnection.currentPath?.mss ?? 0
+        }
+        stop()
+        return (initialMaximumSegmentSize, finalMaximumSegmentSize)
+    }
+    #endif
+
     /// A clean close of a send side that never wrote any data must be encoded as a
     /// zero-length `STREAM` frame with the FIN bit set (RFC 9000 §3.1 / §19.8), not
     /// a `RESET_STREAM`.
@@ -2136,11 +2270,12 @@ class QUICTestHarness {
         // The server's send side must have finished via FIN, i.e. the state should be
         // in .dataSent, or .dataReceived.
         if let serverConnection = state?.serverInstance,
-            let serverFlow = serverConnection.multiplexedFlows.values.first
+            let serverFlowID = serverConnection.someFlowIdentifier,
+            let serverSendState = serverConnection.withFlow(serverFlowID, { $0.send.state })
         {
             XCTAssertTrue(
-                serverFlow.send.state == .dataSent || serverFlow.send.state == .dataReceived,
-                "Server send side must reach a clean FIN terminal state, got \(serverFlow.send.state)"
+                serverSendState == .dataSent || serverSendState == .dataReceived,
+                "Server send side must reach a clean FIN terminal state, got \(serverSendState)"
             )
         } else {
             XCTFail("Server stream flow missing; cannot verify send state")
@@ -2148,6 +2283,292 @@ class QUICTestHarness {
         #endif
 
         _ = serverStream  // silence unused-warning; harness keeps strong ref
+        stop()
+    }
+
+    /// A stream created on a connection that is already up must report a bounded room before the
+    /// application writes anything; otherwise the room stays unbounded until a write queues data.
+    func runOutboundRoomIsBoundedBeforeDataQueued() {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1") else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        var roomWithNothingQueued: Int?
+        onContext {
+            do {
+                roomWithNothingQueued = try clientStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+        }
+
+        XCTAssertNotNil(roomWithNothingQueued)
+        if let room = roomWithNothingQueued {
+            XCTAssertGreaterThan(room, 0, "A stream with nothing queued must have room to write")
+            XCTAssertLessThan(
+                room,
+                Int.max,
+                "The room must be computed before any write queues data; Int.max means it was not"
+            )
+        }
+        stop()
+    }
+
+    /// Fills the connection's send queue from one stream, then checks the room of other streams.
+    ///
+    /// A stream with little or nothing queued of its own has nothing whose sending would reopen a
+    /// zero room. It must keep room to write, whether it already existed or is opened afterwards;
+    /// otherwise it can never send.
+    func runOutboundRoomOfStreamWithNothingQueuedIgnoresOtherStreams(
+        chunkCount: Int = 4,
+        chunkSize: Int = 16 * 1024
+    ) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let busyStream = createNewStream(identifier: "C1"),
+            let quietStream = createNewStream(identifier: "C2")
+        else {
+            XCTFail("Failed to create client streams")
+            return
+        }
+
+        var busyStreamRoom: Int?
+        var quietStreamRoomAfterWriting: Int?
+        #if canImport(SwiftNetwork)
+        var filledPendingBytes: UInt64?
+        #endif
+        onContext {
+            for _ in 0..<chunkCount {
+                XCTAssertTrue(busyStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
+            }
+            // `flowControlState` is internal to the package. The internal Network build only sees
+            // the SPI surface, so it cannot read the connection's queue directly and falls back to
+            // the busy stream's own room below.
+            #if canImport(SwiftNetwork)
+            filledPendingBytes = self.state?.clientInstance.flowControlState.pendingOutboundBytesToSend
+            #endif
+            do {
+                busyStreamRoom = try busyStream.invokeGetOutboundStreamDataRoomAvailable()
+                XCTAssertTrue(quietStream.write([UInt8](repeating: 0x5a, count: 100)))
+                quietStreamRoomAfterWriting = try quietStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+        }
+
+        XCTAssertEqual(busyStreamRoom, 0, "The stream that filled the connection's queue must report no room")
+        XCTAssertGreaterThan(
+            quietStreamRoomAfterWriting ?? 0,
+            0,
+            "A stream with only a little queued must have room even when other streams fill the connection's queue"
+        )
+
+        // The peer ACKs immediately, so between turns the queued data goes out and the
+        // congestion window grows. Fill the queue again in the turn that opens the later stream,
+        // so that its room is set while the queue is as full as it was.
+        #if canImport(SwiftNetwork)
+        var pendingBytesWhenLaterStreamOpened: UInt64?
+        let refillQueue = {
+            guard let connection = self.state?.clientInstance, let filledPendingBytes else {
+                XCTFail("Client instance needs to be present to proceed")
+                return
+            }
+            var refills = 0
+            while connection.flowControlState.pendingOutboundBytesToSend < filledPendingBytes
+                && refills < 16 * chunkCount
+            {
+                XCTAssertTrue(busyStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
+                refills += 1
+            }
+            pendingBytesWhenLaterStreamOpened = connection.flowControlState.pendingOutboundBytesToSend
+        }
+        #else
+        var busyStreamRoomWhenLaterStreamOpened: Int?
+        let refillQueue = {
+            var refills = 0
+            while ((try? busyStream.invokeGetOutboundStreamDataRoomAvailable()) ?? 0) > 0
+                && refills < 16 * chunkCount
+            {
+                XCTAssertTrue(busyStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
+                refills += 1
+            }
+            do {
+                busyStreamRoomWhenLaterStreamOpened = try busyStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+        }
+        #endif
+        guard let laterStream = createNewStream(identifier: "C3", beforeOpening: refillQueue) else {
+            XCTFail("Failed to create a stream while the connection's queue is full")
+            return
+        }
+        #if canImport(SwiftNetwork)
+        XCTAssertGreaterThanOrEqual(
+            pendingBytesWhenLaterStreamOpened ?? 0,
+            filledPendingBytes ?? UInt64.max,
+            "The connection's queue must be full when the later stream opens"
+        )
+        #else
+        XCTAssertEqual(
+            busyStreamRoomWhenLaterStreamOpened,
+            0,
+            "The stream serving the connection's queue must still have no room when the later stream opens"
+        )
+        #endif
+        var laterStreamRoom: Int?
+        onContext {
+            do {
+                laterStreamRoom = try laterStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+        }
+        XCTAssertGreaterThan(
+            laterStreamRoom ?? 0,
+            0,
+            "A stream opened while other streams fill the connection's queue must have room to write"
+        )
+        stop()
+    }
+
+    /// Fills the connection's send queue from one stream while another has a little queued of its
+    /// own, then waits for the second stream's writer to be told it has room again.
+    ///
+    /// The second stream has no room because the connection is full, not because of its own queue,
+    /// so its writer must be woken when the room returns to the connection, whichever stream's
+    /// bytes were sent.
+    func runOutboundRoomReturnsToStreamWaitingBehindOtherStreams(
+        unidirectional: Bool = false,
+        chunkCount: Int = 4,
+        chunkSize: Int = 16 * 1024,
+        timeout: TimeInterval = 5.0
+    ) {
+        let clientOptions = QUICProtocol.options()
+        let serverOptions = QUICProtocol.options()
+        if unidirectional {
+            clientOptions.isUnidirectional = true
+            serverOptions.isUnidirectional = true
+        }
+        do {
+            try quicHandshake(clientOptions: clientOptions, serverOptions: serverOptions)
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let busyStream = createNewStream(identifier: "C1", quicOptions: clientOptions),
+            let waitingStream = createNewStream(identifier: "C2", quicOptions: clientOptions)
+        else {
+            XCTFail("Failed to create client streams")
+            return
+        }
+
+        var dataQueued = false
+        var roomReturned = false
+        var waitingStreamRoom: Int?
+        context.async {
+            for _ in 0..<chunkCount {
+                XCTAssertTrue(busyStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
+            }
+            // More than a packet, so the stream does not get the packet's worth a stream with
+            // nothing queued is left.
+            XCTAssertTrue(waitingStream.write([UInt8](repeating: 0x5a, count: 4000)))
+            do {
+                waitingStreamRoom = try waitingStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+            // Room announcements from the writes above are not the one this test waits for.
+            waitingStream.discardPendingOutboundRoomAvailable()
+            waitingStream.fromExternal { eventContext in
+                waitingStream.waitForOutboundRoomAvailable(in: &eventContext) { _ in
+                    roomReturned = true
+                }
+            }
+            dataQueued = true
+        }
+
+        wait(until: { dataQueued }, timeout: timeout, "the data to be queued and the room read")
+        XCTAssertEqual(
+            waitingStreamRoom,
+            0,
+            "A stream with a packet queued must have no room while other streams fill the connection"
+        )
+        if waitingStreamRoom == 0 {
+            wait(until: { roomReturned }, timeout: timeout, "the waiting stream's room to be announced")
+        }
+        stop()
+    }
+
+    /// Queues more data on a stream in one turn than the connection can send, then checks what the
+    /// stream tells the application about its room for more.
+    ///
+    /// No acknowledgment can arrive within the turn, so all but the first congestion window of
+    /// data is still waiting when the room is read. The stream must report no room then, and must
+    /// announce room again once acknowledgments let the waiting data go out.
+    func runOutboundRoomFollowsQueuedData(
+        chunkCount: Int = 4,
+        chunkSize: Int = 16 * 1024,
+        timeout: TimeInterval = 5.0
+    ) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1") else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        var dataQueued = false
+        var roomReopened = false
+        var roomWithDataWaiting: Int?
+
+        context.async {
+            for _ in 0..<chunkCount {
+                XCTAssertTrue(clientStream.write([UInt8](repeating: 0x5a, count: chunkSize)))
+            }
+            do {
+                roomWithDataWaiting = try clientStream.invokeGetOutboundStreamDataRoomAvailable()
+            } catch {
+                XCTFail("Reading the room failed: \(error)")
+            }
+            // Room announcements from the writes above are not the one this test waits for.
+            clientStream.discardPendingOutboundRoomAvailable()
+            clientStream.fromExternal { eventContext in
+                clientStream.waitForOutboundRoomAvailable(in: &eventContext) { _ in
+                    roomReopened = true
+                }
+            }
+            dataQueued = true
+        }
+
+        wait(until: { dataQueued }, timeout: timeout, "the data to be queued and the room read")
+        XCTAssertEqual(
+            roomWithDataWaiting,
+            0,
+            "A stream with more data waiting than the connection can send must report no room for more"
+        )
+        if roomWithDataWaiting == 0 {
+            wait(until: { roomReopened }, timeout: timeout, "the room to be announced again")
+        }
         stop()
     }
 
@@ -2175,7 +2596,7 @@ class QUICTestHarness {
         context.async {
             clientConnection.fromExternal { eventContext in
                 defer { attempted = true }
-                guard let flow = clientConnection.multiplexedFlows.values.first,
+                guard let flowID = clientConnection.someFlowIdentifier,
                     let path = clientConnection.currentPath
                 else {
                     return
@@ -2190,7 +2611,9 @@ class QUICTestHarness {
 
                 // Queue the announcement the way packet building does when space reopens, so the
                 // recovery send has an event to deliver.
-                clientConnection.queueOutboundRoomAvailableEvent(for: flow)
+                _ = clientConnection.withFlow(flowID) { (flow: inout QUICStreamInstance) in
+                    clientConnection.queueOutboundRoomAvailableEvent(for: &flow)
+                }
 
                 var discardInitialRecoveryState = false
                 clientConnection.sendFramesFromRecovery(
@@ -2209,6 +2632,59 @@ class QUICTestHarness {
         XCTAssertTrue(announced, "The recovery send did not deliver the queued room-available event")
 
         stop()
+    }
+
+    /// A probe, a send that ignores the congestion window (a PTO, a keepalive, a forced retransmit),
+    /// must send at most two packets even when much more is queued; otherwise each expiry puts a full
+    /// burst of bytes in flight that nothing will acknowledge.
+    ///
+    /// Returns the number of packets the probe sent, or `nil` if the test could not set up a probe.
+    func runProbeSendWithQueuedData(queuedByteCount: Int = 200_000, timeout: TimeInterval = 5.0) -> Int? {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return nil
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1"), let clientConnection = state?.clientInstance else {
+            XCTFail("Failed to create client stream")
+            return nil
+        }
+
+        var attempted = false
+        var probePacketCount: Int?
+
+        context.async {
+            clientStream.fromExternal { eventContext in
+                defer { attempted = true }
+
+                // Everything is queued and sent inside one event context, so the peer cannot acknowledge
+                // anything before the probe goes out.
+                let queued = clientStream.write(
+                    [UInt8](repeating: 0xAB, count: queuedByteCount),
+                    sendFIN: false,
+                    in: &eventContext
+                )
+                XCTAssertTrue(queued, "Failed to queue data on the client stream")
+
+                // Sending stops at the congestion window, so what remains queued is what a probe can burst.
+                XCTAssertTrue(
+                    clientConnection.applicationPendingItems.hasPendingItems,
+                    "The client has nothing left to send; the probe has nothing to burst"
+                )
+
+                let packetsBefore = clientConnection.stats.connectionStatistics[.txPackets] ?? 0
+                clientConnection.sendFrames(ignoreCongestionWindow: true, in: &eventContext)
+                let packetsAfter = clientConnection.stats.connectionStatistics[.txPackets] ?? 0
+                probePacketCount = packetsAfter - packetsBefore
+            }
+        }
+
+        wait(until: { attempted }, timeout: timeout, "the probe send")
+
+        stop()
+        return probePacketCount
     }
     #endif
 

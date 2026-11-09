@@ -26,6 +26,12 @@ import XCTest
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
+#if canImport(CryptoKit)
+import CryptoKit
+#elseif canImport(Crypto)
+import Crypto
+#endif
+
 @available(Network 0.1.0, *)
 final class QUICConnectionTests: XCTestCase {
     var connection: QUICConnection!
@@ -279,191 +285,6 @@ final class QUICConnectionTests: XCTestCase {
         }
     }
 
-    /// The parts of a stack that a handshake-completion test drives: a connection with a path and one
-    /// pending stream, plus the harness above that stream.
-    private struct AsynchronousHandshakeStack {
-        let storage: TestNetworkProtocolStorage
-        let connection: QUICConnection
-        let harness: StreamUpperHarness<TestStreamLinkageFamily>
-    }
-
-    /// Builds a connection as it stands while a handshake is still in flight: a path to send on, and
-    /// one stream that was opened early and so has no stream ID yet.
-    ///
-    /// The connection is a server, so the peer's transport parameters only have to carry the
-    /// connection ID of the path they arrived on; a client would also check the original destination
-    /// connection ID it generated, which it keeps to itself.
-    private func makeAsynchronousHandshakeStack() -> AsynchronousHandshakeStack? {
-        let storage = TestNetworkProtocolStorage(context: .implicitContext)
-        let (streamListener, _, _) = NetworkContext.implicitContext.onQueue {
-            storage.createTestQUICInstance()
-        }
-        guard let connection = storage.quicInstance(for: streamListener.base) else {
-            XCTFail("Failed to create a QUIC connection")
-            return nil
-        }
-
-        var parameters = Parameters()
-        let quicOptions = QUICStreamProtocol.options()
-        quicOptions.setProtocolInstance(streamListener.identifier)
-        parameters.defaultStack.prepend(applicationProtocol: .quic(quicOptions))
-        parameters.isServer = true
-        let path = PathProperties(parameters: parameters)
-        let local = Endpoint(hostname: "10.0.0.1", port: 4433)
-        let remote = Endpoint(hostname: "10.0.0.2", port: 1234)
-        let peerConnectionID = QUICConnectionID([0xC1, 0xC2, 0xC3, 0xC4])!
-
-        var upperHarness: StreamUpperHarness<TestStreamLinkageFamily>?
-        let setUp = XCTestExpectation(description: "connection set up with a pending stream")
-        connection.context.async {
-            do {
-                try connection.setup(remote: remote, local: local, parameters: parameters, path: path)
-            } catch {
-                XCTFail("Failed to set up the connection: \(error)")
-            }
-            // What `crypto.start` wires up, without starting a handshake: the events under test only
-            // need the parent reference, but closing the connection tears the TLS linkage down, so
-            // that has to be bound too.
-            let crypto = connection.crypto
-            crypto.parentConnection = connection
-            var tlsParameters = Parameters()
-            tlsParameters.isServer = true
-            let tlsOptions = SwiftTLSProtocol.options()
-            tlsOptions.setProtocolInstance(crypto.tlsInstance.identifier)
-            // The TLS instance's own setup insists on the transport parameters it would carry into
-            // the handshake, which is all it reads here.
-            var tlsPerProtocolOptions = SwiftTLSProtocol.Options()
-            tlsPerProtocolOptions.quicTransportParameters =
-                (try? connection.localTransportParameters.serialize()) ?? []
-            tlsOptions.replacePerProtocolOptions(tlsPerProtocolOptions)
-            tlsParameters.defaultStack.append(applicationProtocol: .swiftTLS(tlsOptions))
-            do {
-                try crypto.invokeAttachLowerProtocol(
-                    crypto.tlsInstance,
-                    remote: nil,
-                    local: nil,
-                    parameters: tlsParameters,
-                    path: nil
-                )
-            } catch {
-                XCTFail("Failed to attach the TLS instance below crypto: \(error)")
-            }
-
-            let (lower, lowerLinkage) = storage.createDatagramLowerHarness(
-                identifier: "Lower",
-                context: .implicitContext
-            )
-            lower.fromExternal { eventContext in
-                lower.connect(in: &eventContext)
-            }
-            var quicPath = QUICPath.makeFromExternalTest(parent: connection)
-            quicPath.set(interface: nil, priority: 1, isInitial: true)
-            connection.fromExternal { eventContext in
-                quicPath.assignDCID(peerConnectionID, in: &eventContext)
-            }
-            _ = try? quicPath.attachLowerProtocol(lowerLinkage.base)
-            try? lowerLinkage.base.invokeAttachUpperProtocol(
-                quicPath.asUpperLinkage(),
-                remote: remote,
-                local: local,
-                parameters: parameters,
-                path: path
-            )
-            connection.currentPath = quicPath
-            connection.multiplexingPaths[quicPath.pathIdentifier] = quicPath
-
-            // A stream opened while the handshake is in flight has no stream ID yet, so it is one
-            // of the pending streams that completion has to ready.
-            let (harness, harnessLinkage) = storage.createStreamUpperHarness(
-                identifier: "Client",
-                local: local,
-                remote: remote,
-                parameters: parameters,
-                path: path,
-                context: .implicitContext
-            )
-            upperHarness = harness
-            do {
-                try streamListener.invokeAttachUpperProtocolToNewFlow(
-                    harnessLinkage,
-                    remote: remote,
-                    local: local,
-                    parameters: parameters,
-                    path: path
-                )
-            } catch {
-                XCTFail("Failed to attach an upper harness to a new flow: \(error)")
-            }
-
-            // The peer's transport parameters arrive with its handshake data, so the connection
-            // has them before verification finishes.
-            var peerTransportParameters = TransportParameters(logPrefixer: LogPrefixer())
-            peerTransportParameters.append(.initialSCID(connectionID: peerConnectionID))
-            peerTransportParameters.append(.initialMaxStreamsBidirectional(value: 4))
-            peerTransportParameters.append(.initialMaxStreamsUnidirectional(value: 4))
-            peerTransportParameters.append(.initialMaxData(value: 1 << 20))
-            peerTransportParameters.append(.initialMaxStreamDataBidirectionalLocal(value: 1 << 16))
-            peerTransportParameters.append(.initialMaxStreamDataBidirectionalRemote(value: 1 << 16))
-            peerTransportParameters.append(.initialMaxStreamDataUnidirectional(value: 1 << 16))
-            connection.fromExternal { eventContext in
-                connection.setRemoteTransportParameters(
-                    peerTransportParameters,
-                    earlyData: false,
-                    in: &eventContext
-                )
-            }
-            setUp.fulfill()
-        }
-        wait(for: [setUp], timeout: 5.0)
-        guard let upperHarness else {
-            XCTFail("Failed to build an upper harness")
-            return nil
-        }
-        return .init(storage: storage, connection: connection, harness: upperHarness)
-    }
-
-    private func destroy(_ stack: AsynchronousHandshakeStack) {
-        let connection = stack.connection
-        connection.context.onQueue {
-            // Strictly top down, and the harness goes first: detaching it takes the stream flow with
-            // it, and a connection whose last upper protocol has gone tears itself down, paths and
-            // all. That cascade is what breaks the cycle between a connection and its flows — a
-            // connection torn down with flows still attached stays alive, because the closing side of
-            // that only finishes once a peer answers and a test has no peer.
-            stack.harness.teardown()
-            if !connection.identifier.isNone {
-                connection.destroyFromExternalTest()
-            }
-            connection.currentPath = nil
-            for path in connection.multiplexingPaths.values where !path.identifier.isNone {
-                path.destroyFromExternalTest()
-            }
-            connection.multiplexingPaths.removeAll()
-            stack.storage.releaseHeldInstances()
-        }
-    }
-
-    /// Runs `body` the way an asynchronous certificate verification completing does: on the TLS
-    /// instance's event state, a turn of its own, with the connection's own state idle. Returns once
-    /// the events that turn queued have been delivered.
-    private func onAsynchronousHandshakeTurn(
-        _ connection: QUICConnection,
-        _ body: @escaping (QUICCrypto, inout NetworkContext.EventContext) -> Void
-    ) {
-        let finished = XCTestExpectation(description: "handshake turn delivered")
-        connection.context.async {
-            let crypto = connection.crypto
-            crypto.tlsInstance.async { eventContext in
-                body(crypto, &eventContext)
-            }
-            // What that turn queued is delivered as it unwinds, so wait for a turn after it.
-            connection.context.async {
-                finished.fulfill()
-            }
-        }
-        wait(for: [finished], timeout: 5.0)
-    }
-
     /// A handshake that finishes from an asynchronous certificate verification reports ready on a
     /// turn of its own: the continuation runs on the TLS instance's event state, and crypto reaches
     /// the connection through a direct reference rather than a linkage, so the connection's own
@@ -572,6 +393,137 @@ final class QUICConnectionTests: XCTestCase {
                     storage.releaseHeldInstances()
                 }
             }
+        }
+    }
+
+    /// A packet whose header protection can be removed but whose payload fails authentication is
+    /// reported as undecryptable, carrying the last 16 bytes of the datagram as a candidate
+    /// Stateless Reset token (RFC 9000 Section 10.3.1).
+    func testParseUndecryptablePacketReturnsStatelessResetToken() {
+        let destinationConnectionID = QUICConnectionID([0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08])!
+        let statelessResetToken: [UInt8] = (0..<16).map { UInt8(0xA0 + $0) }
+        // Packet number, payload and what would be the AEAD tag. None of it is valid ciphertext.
+        let protectedPayload = [UInt8](repeating: 0x5A, count: 48) + statelessResetToken
+        let bytes: [UInt8] =
+            [
+                0xc0,  // Long header, Initial
+                0x00, 0x00, 0x00, 0x01,  // Version
+                UInt8(destinationConnectionID.length),
+            ] + destinationConnectionID.connectionID
+            + [
+                0x00,  // SCIL
+                0x00,  // Token length
+                0x40 | UInt8(protectedPayload.count >> 8), UInt8(protectedPayload.count & 0xff),  // Length
+            ] + protectedPayload
+
+        connection.context.onQueue {
+            // Initial keys derived from the DCID, so header protection can be removed.
+            self.connection.protector = Protector(
+                isClient: false,
+                destinationCID: destinationConnectionID,
+                logPrefixer: LogPrefixer("[QUICConnectionTests]")
+            )
+            var parser = PacketParser(logPrefixer: LogPrefixer("[QUICConnectionTests]"))
+            var frame = Frame(copyBuffer: bytes)
+            defer {
+                frame.finalize(success: true)
+            }
+            self.connection.fromExternal { eventContext in
+                let parsedPacket = self.connection.withPacketParsingState { ack, stats, protector in
+                    parser.parse(
+                        frame: &frame,
+                        connection: self.connection,
+                        ack: &ack,
+                        protector: &protector,
+                        stats: &stats,
+                        in: &eventContext
+                    )
+                }
+                guard let parsedPacket else {
+                    XCTFail("Expected an undecryptable packet, got nothing")
+                    return
+                }
+                switch consume parsedPacket {
+                case .failedDecryption(let token):
+                    XCTAssertEqual(token, QUICStatelessResetToken(statelessResetToken))
+                case .versionNegotiation:
+                    XCTFail("Expected an undecryptable packet, got a VN packet")
+                case .retry:
+                    XCTFail("Expected an undecryptable packet, got a RETRY packet")
+                case .protected:
+                    XCTFail("Expected an undecryptable packet, got a protected packet")
+                }
+            }
+            XCTAssertTrue(parser.framesReceived.isEmpty, "No frames must be parsed from an undecryptable packet")
+        }
+    }
+
+    /// A Stateless Reset is built to look like a short header packet (RFC 9000 Section 10.3). Once
+    /// 1-RTT keys are installed, the parser must get through header protection removal and report it
+    /// as undecryptable, carrying the token from the end of the datagram.
+    func testParseStatelessResetPacketReturnsToken() throws {
+        let statelessResetToken = QUICStatelessResetToken((0..<16).map { UInt8(0xB0 + $0) })!
+        // The reset's first byte and the header protection mask are both random, so the key phase
+        // bit and the packet number length the parser decodes vary between packets.
+        let resets = try (0..<64).map { _ in
+            try QUICConnectionUtilities.createStatelessResetPacket(
+                token: statelessResetToken,
+                triggeringPacketLength: 100
+            )
+        }
+
+        connection.context.onQueue {
+            self.connection.state = .connected
+            self.connection.localCIDLength = 8
+            self.connection.protector = Protector(
+                isClient: true,
+                destinationCID: QUICConnectionID(8),
+                logPrefixer: LogPrefixer("[QUICConnectionTests]")
+            )
+            self.connection.protector.keyUpdate(
+                for: .application,
+                cipherSuite: .aesGCM128SHA256,
+                secret: SymmetricKey(size: .bits256),
+                isWrite: false
+            )
+            defer {
+                // Teardown must not act on a connection that never finished a handshake.
+                self.connection.state = .invalid
+            }
+            var parser = PacketParser(logPrefixer: LogPrefixer("[QUICConnectionTests]"))
+            for reset in resets {
+                var frame = Frame(copyBuffer: reset)
+                defer {
+                    frame.finalize(success: true)
+                }
+                self.connection.fromExternal { eventContext in
+                    let parsedPacket = self.connection.withPacketParsingState { ack, stats, protector in
+                        parser.parse(
+                            frame: &frame,
+                            connection: self.connection,
+                            ack: &ack,
+                            protector: &protector,
+                            stats: &stats,
+                            in: &eventContext
+                        )
+                    }
+                    guard let parsedPacket else {
+                        XCTFail("Expected an undecryptable packet, got nothing (first byte \(reset[0]))")
+                        return
+                    }
+                    switch consume parsedPacket {
+                    case .failedDecryption(let token):
+                        XCTAssertEqual(token, statelessResetToken)
+                    case .versionNegotiation:
+                        XCTFail("Expected an undecryptable packet, got a VN packet")
+                    case .retry:
+                        XCTFail("Expected an undecryptable packet, got a RETRY packet")
+                    case .protected:
+                        XCTFail("Expected an undecryptable packet, got a protected packet")
+                    }
+                }
+            }
+            XCTAssertTrue(parser.framesReceived.isEmpty, "No frames must be parsed from a Stateless Reset")
         }
     }
 }

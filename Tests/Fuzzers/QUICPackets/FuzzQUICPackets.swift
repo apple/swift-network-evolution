@@ -135,19 +135,21 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
 
         connection.fromExternal { eventContext in
             connection.crypto.stop(in: &eventContext)
-            for (_, stream) in connection.multiplexedFlows {
+            connection.applyToAllFlows { stream in
                 stream.upperSendQueue.finalizeAllFramesAsFailed()
                 stream.upperReceiveQueue.finalizeAllFramesAsFailed()
-                stream.receive.reassemblyQueue.dequeueAll()
+                // Gives back the send buffer as well as the reassembly queue, since removing the
+                // stream from the table below would otherwise drop frames that were never finalized
+                stream.releaseResources()
                 stream.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
             }
-            for (_, secondaryFlow) in connection.multiplexedSecondaryFlows {
+            connection.applyToAllSecondaryFlows { secondaryFlow in
                 secondaryFlow.upperSendQueue.finalizeAllFramesAsFailed()
                 secondaryFlow.upperReceiveQueue.finalizeAllFramesAsFailed()
                 secondaryFlow.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
             }
-            connection.multiplexedFlows.removeAll()
-            connection.multiplexedSecondaryFlows.removeAll()
+            connection.withMultiplexedFlows { $0.removeAll() }
+            connection.withMultiplexedSecondaryFlows { $0.removeAll() }
             connection.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
         }
         path.destroyFromExternalTest()

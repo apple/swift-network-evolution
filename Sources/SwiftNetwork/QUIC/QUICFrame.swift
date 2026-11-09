@@ -61,89 +61,19 @@ enum QUICFrame: ~Copyable {
     case datagram(frame: FrameDatagram)
 
     @inline(always)
-    static func isAckEliciting(frame: borrowing QUICFrame) -> Bool {
-        switch frame {
-        case .padding:
-            return false
-        case .ack:
-            return false
-        case .connectionClose:
-            return false
-        case .applicationClose:
-            return false
-        default:
-            return true
-        }
-    }
-
-    // Packets are considered in flight when they are ack-eliciting or contain a PADDING frame.
-    // So isInFlightEligible is basically the same as isAckEliciting(), but also returns true for PADDING frames.
-    static func isInFlightEligible(frame: borrowing QUICFrame) -> Bool {
-        switch frame {
-        case .ack:
-            return false
-        case .connectionClose:
-            return false
-        case .applicationClose:
-            return false
-        default:
-            return true
-        }
-    }
+    var isAckEliciting: Bool { frameType.traits.isAckEliciting }
 
     @inline(always)
-    static func isProbing(frame: borrowing QUICFrame) -> Bool {
-        switch frame {
-        case .padding:
-            return true
-        case .pathChallenge:
-            return true
-        case .pathResponse:
-            return true
-        case .newConnectionID:
-            return true
-        default:
-            return false
-        }
-    }
+    var isInFlightEligible: Bool { frameType.traits.isInFlightEligible }
 
     @inline(always)
-    static func isAllowedDuringHandshake(frame: borrowing QUICFrame) -> Bool {
-        // N.B.: APPLICATION_CLOSE is NOT allowed during the handshake.
-        switch frame {
-        case .ack:
-            return true
-        case .crypto:
-            return true
-        case .ping:
-            return true
-        case .padding:
-            return true
-        case .connectionClose:
-            return true
-        default:
-            return false
-        }
-    }
+    var isProbing: Bool { frameType.traits.isProbing }
 
     @inline(always)
-    static func isValidInInitial(frame: borrowing QUICFrame) -> Bool {
-        // Returns true if the frame is valid in an INITIAL packet.
-        switch frame {
-        case .ack:
-            return true
-        case .crypto:
-            return true
-        case .ping:
-            return true
-        case .padding:
-            return true
-        case .connectionClose:
-            return true
-        default:
-            return false
-        }
-    }
+    var isAllowedInHandshake: Bool { frameType.traits.isAllowedInHandshake }
+
+    @inline(always)
+    var isAllowedIn0RTT: Bool { frameType.traits.isAllowedIn0RTT }
 
     // Some inbound QUIC frame kinds (CRYPTO, STREAM, DATAGRAM) hold an
     // embedded `Frame` that borrows into the packet's buffer, and MUST be
@@ -546,8 +476,8 @@ enum FrameType: RawRepresentable, CaseIterable, Equatable {
 }
 
 @available(Network 0.1.0, *)
-extension FrameType {
-    func description() -> String {
+extension FrameType: CustomStringConvertible {
+    var description: String {
         switch self {
         case .padding:
             return "PADDING"
@@ -597,6 +527,77 @@ extension FrameType {
             return "HANDSHAKE_DONE"
         case .datagram(let hasLength):
             return hasLength ? "DATAGRAM_LEN" : "DATAGRAM"
+        }
+    }
+}
+
+@available(Network 0.1.0, *)
+struct QUICFrameTraits: OptionSet {
+    let rawValue: UInt8
+    static let ackEliciting = QUICFrameTraits(rawValue: 1 << 0)
+    static let inFlight = QUICFrameTraits(rawValue: 1 << 1)
+    static let probing = QUICFrameTraits(rawValue: 1 << 2)
+    static let allowedInHandshake = QUICFrameTraits(rawValue: 1 << 3)  // Initial + Handshake
+    static let allowedIn0RTT = QUICFrameTraits(rawValue: 1 << 4)
+
+    @inline(always)
+    var isAckEliciting: Bool { self.contains(.ackEliciting) }
+
+    @inline(always)
+    var isInFlightEligible: Bool { self.contains(.inFlight) }
+
+    @inline(always)
+    var isProbing: Bool { self.contains(.probing) }
+
+    @inline(always)
+    var isAllowedInHandshake: Bool { self.contains(.allowedInHandshake) }
+
+    @inline(always)
+    var isAllowedIn0RTT: Bool { self.contains(.allowedIn0RTT) }
+}
+
+@available(Network 0.1.0, *)
+extension FrameType {
+    @inline(always)
+    var traits: QUICFrameTraits {
+        // From RFC 9000, 12.4, Table 3.
+        switch self {
+        case .padding:
+            [.inFlight, .probing, .allowedInHandshake, .allowedIn0RTT]
+        case .ping:
+            [.ackEliciting, .inFlight, .allowedInHandshake, .allowedIn0RTT]
+        case .ack, .ackECN:
+            [.allowedInHandshake]
+        case .resetStream, .stopSending:
+            [.ackEliciting, .inFlight, .allowedIn0RTT]
+        case .crypto:
+            [.ackEliciting, .inFlight, .allowedInHandshake]
+        case .newToken:
+            [.ackEliciting, .inFlight]
+        case .stream:
+            [.ackEliciting, .inFlight, .allowedIn0RTT]
+        case .maxData, .maxStreamData, .maxStreamsBidirectional, .maxStreamsUnidirectional:
+            [.ackEliciting, .inFlight, .allowedIn0RTT]
+        case .dataBlocked, .streamDataBlocked, .streamsBlockedBidirectional, .streamsBlockedUnidirectional:
+            [.ackEliciting, .inFlight, .allowedIn0RTT]
+        case .newConnectionID:
+            [.ackEliciting, .inFlight, .probing, .allowedIn0RTT]
+        case .retireConnectionID:
+            // Table 3 lists "__01", but Section 12.5 excludes it from 0-RTT (RFC 9000 erratum 7365).
+            [.ackEliciting, .inFlight]
+        case .pathChallenge:
+            [.ackEliciting, .inFlight, .probing, .allowedIn0RTT]
+        case .pathResponse:
+            [.ackEliciting, .inFlight, .probing]
+        case .connectionClose:
+            [.allowedInHandshake, .allowedIn0RTT]
+        case .applicationClose:
+            [.allowedIn0RTT]
+        case .handshakeDone:
+            [.ackEliciting, .inFlight]
+        case .datagram:
+            // RFC 9221, 4
+            [.ackEliciting, .inFlight, .allowedIn0RTT]
         }
     }
 }
@@ -890,7 +891,7 @@ struct FrameAckRange {
 @available(Network 0.1.0, *)
 struct FrameAck: ~Copyable, QUICFrameProtocol {
 
-    var ranges: [FrameAckRange]
+    var ranges: SmallArray<FrameAckRange>
     var largest = PacketNumber.none
     var pendingGap: PacketNumber = .none
     private var _ecnCounter: ECNCounter = ECNCounter(ect0: 0, ect1: 0, ce: 0)
@@ -946,7 +947,7 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
         ranges: [FrameAckRange]
     ) {
         self.init(packetNumberSpace: packetNumberSpace, largest: largest, delay: delay)
-        self.ranges = ranges
+        self.ranges = SmallArray(ranges)
     }
 
     private mutating func validateAckType(_ rawType: UInt64) throws(QUICError) {
@@ -976,21 +977,29 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
             )
         }
 
-        ranges = [FrameAckRange](
-            repeating: FrameAckRange(gap: 0, range: 0),
-            count: Int(rangeCount + 1)
-        )
+        ranges = .init()
 
         let rangeResult = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
-            try read.vle(&ranges[0].range.value)
-            if ranges.count > 1 {
-                for i in 1..<ranges.count {
-                    try read.vle(&ranges[i].gap.value)
-                    try read.vle(&ranges[i].range.value)
-                }
+            var firstRange = FrameAckRange(gap: 0, range: 0)
+            try read.vle(&firstRange.range.value)
+            ranges.append(firstRange)
+
+            for _ in 0..<rangeCount {
+                var range = FrameAckRange(gap: 0, range: 0)
+                try read.vle(&range.gap.value)
+                try read.vle(&range.range.value)
+                ranges.append(range)
             }
         }
         try validateDeserializationResult(rangeResult)
+
+        guard ranges.count == Int(rangeCount) + 1 else {
+            throw QUICError.frameParse(
+                FrameParseError.invalidValue(
+                    "ACK range count mismatch: \(ranges.count) vs \(rangeCount + 1)"
+                )
+            )
+        }
 
         if rawType == FrameType.ackECNCode {
             // Parse ECN-specific fields
@@ -1152,18 +1161,18 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
             return false
         }
 
-        let stream: QUICStreamInstance
+        let resetFlowID: MultiplexedFlowIdentifier
         if let flowID = connection.knownFlows[streamID] {
             // The stream id is known. The flow object may still be missing
             // if the stream was torn down without clearing `knownFlows`; in
             // that case there is no one to deliver the reset to, so drop it.
-            guard let existing = connection.flow(for: flowID) else {
+            guard connection.hasFlow(flowID) else {
                 Logger.proto.error(
                     "Stream \(streamID.value) has known flow but no QUICStreamInstance; dropping RESET_STREAM"
                 )
                 return true
             }
-            stream = existing
+            resetFlowID = flowID
 
         } else {
             // RESET_STREAM may be the first frame the peer sends on a stream
@@ -1184,20 +1193,33 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
                 return true
             }
             guard let flowID = connection.knownFlows[streamID],
-                let created = connection.flow(for: flowID)
+                connection.hasFlow(flowID)
             else {
                 Logger.proto.error(
                     "Stream \(streamID.value) is not a QUICStreamInstance after createInboundStreams"
                 )
                 return true
             }
-            stream = created
+            resetFlowID = flowID
         }
+        return connection.performOnStream(resetFlowID, in: &eventContext) {
+            (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) -> Bool in
+            self.process(stream: &stream, streamID: streamID, connection: connection, in: &ctx)
+        } ?? true
+    }
+
+    // The RESET_STREAM work that belongs to the stream, which is borrowed from the connection
+    private func process(
+        stream: inout QUICStreamInstance,
+        streamID: QUICStreamID,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> Bool {
         // Set the application error code
         stream.streamMetadata.applicationError = self.code
         stream.inboundApplicationError = self.code
         connection.deliverInboundAbortedEvent(
-            stream: stream,
+            stream: &stream,
             error: NetworkError(quicApplicationError: self.code),
             in: &eventContext
         )
@@ -1345,7 +1367,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         guard let flowID = connection.knownFlows[streamID] else {
             return true
         }
-        guard let stream = connection.flow(for: flowID) else {
+        guard connection.hasFlow(flowID) else {
             if connection.streamClosedAlready(streamID: streamID) {
                 return true
             }
@@ -1369,6 +1391,19 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
             }
             return false
         }
+        return connection.performOnStream(flowID, in: &eventContext) {
+            (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) -> Bool in
+            self.process(stream: &stream, streamID: streamID, connection: connection, in: &ctx)
+        } ?? true
+    }
+
+    // The STOP_SENDING work that belongs to the stream, which is borrowed from the connection
+    private func process(
+        stream: inout QUICStreamInstance,
+        streamID: QUICStreamID,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> Bool {
         Logger.proto.info("[S\(streamID.value)] received STOP_SENDING")
         stream.receivedStopSending = true
         stream.updateOutboundFlowControlCredit(connection: connection)
@@ -1387,7 +1422,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         // An endpoint that receives a STOP_SENDING frame MUST send a
         // RESET_STREAM frame if the stream is in the "Ready" or "Send" state.
         if stream.send.state == .ready || stream.send.state == .send {
-            let _ = connection.disconnect(flow: stream.flowIdentifier, direction: .outbound, in: &eventContext)
+            connection.disconnect(stream: &stream, direction: .outbound, in: &eventContext)
         }
         //
         // Immediately close the stream if we have received
@@ -1759,7 +1794,7 @@ struct FrameStreamSendMetadata: ~Copyable, QUICFrameProtocol {
     static func write(
         into frame: inout Frame,
         stats: inout Statistics,
-        stream: QUICStreamInstance,
+        stream: inout QUICStreamInstance,
         offset: UInt64,
         length: UInt64,
         isFinal: Bool
@@ -1869,7 +1904,7 @@ struct FrameStreamSendMetadata: ~Copyable, QUICFrameProtocol {
                 offset: offset,
                 length: lengthToWrite,
                 into: &frame,
-                log: stream.log
+                log: stream.base.log
             )
             // It is caller's responsibility to check that the sendBuffer has
             // the requested offset+length. This throw therefore is indistinguishable

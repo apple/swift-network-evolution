@@ -38,7 +38,16 @@ public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol whe
 
     var inboundFlowLinkage: UpperProtocol { get set }
 
-    var multiplexedFlows: [MultiplexedFlowIdentifier: Flow] { get set }
+    /// Lends out the table that holds this protocol's flows.
+    ///
+    /// Conformers implement this by passing their stored table to `body`. The table is exclusively
+    /// accessed while `body` runs.
+    func withMultiplexedFlows<R: ~Copyable, E: Error>(
+        _ body: (inout MultiplexedFlowTable<Flow>) throws(E) -> R
+    ) throws(E) -> R
+
+    /// Adds a flow to the table. Conformers implement this by inserting into their stored table.
+    func insertFlow(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier)
     var multiplexingPaths: [MultiplexingPathIdentifier: Path] { get set }
 
     // MARK: Connection-wide calls to implement
@@ -144,7 +153,16 @@ public protocol HomogeneousManyToManyProtocolHandler: ManyToManyProtocolHandler 
 @available(Network 0.1.0, *)
 public protocol HeterogeneousManyToManyProtocolHandler: HeterogeneousListenerHandler, ManyToManyProtocolHandler
 where SecondaryFlow: MultiplexedFlow {
-    var multiplexedSecondaryFlows: [MultiplexedFlowIdentifier: SecondaryFlow] { get set }
+    /// Lends out the table that holds this protocol's secondary flows.
+    ///
+    /// Conformers implement this by passing their stored table to `body`. The table is exclusively
+    /// accessed while `body` runs.
+    func withMultiplexedSecondaryFlows<R: ~Copyable, E: Error>(
+        _ body: (inout MultiplexedFlowTable<SecondaryFlow>) throws(E) -> R
+    ) throws(E) -> R
+
+    /// Adds a secondary flow to the table. Conformers implement this by inserting into their stored table.
+    func insertSecondaryFlow(_ flow: consuming SecondaryFlow, for flowID: MultiplexedFlowIdentifier)
     var secondaryInboundFlowLinkage: SecondaryUpperProtocol { get set }
 }
 
@@ -165,13 +183,27 @@ where Flow.UpperProtocol: InboundDataLinkage, Path.LowerProtocol: OutboundDataLi
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol ManyToManyApplicationStreamProtocol: ManyToManyDatapathProtocol {
+    /// Services the data a flow has queued to send, for a caller that only has its identifier.
     func serviceStreamDataToSend(flow: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext)
+
+    /// Services the data a flow has queued to send, for a flow that is already borrowed from the
+    /// protocol's flow table.
+    func serviceStreamDataToSend(stream: inout Flow, in eventContext: inout NetworkContext.EventContext)
 }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol ManyToManyApplicationDatagramProtocol: ManyToManyDatapathProtocol {
+    /// Services the datagrams a flow has queued to send, for a caller that only has its identifier.
     func serviceDatagramsToSend(flow: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext)
+
+    /// Services the datagrams a flow has queued to send, for a flow that is already borrowed from the
+    /// protocol's flow table.
+    func serviceDatagramsToSend(
+        borrowedFlow flow: MultiplexedFlowIdentifier,
+        sendQueue: inout FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    )
 }
 
 @_spi(ProtocolProvider)
@@ -186,6 +218,9 @@ where Path.LowerProtocol: OutboundDatagramLinkage {
 public struct MultiplexedFlowIdentifier: Hashable, Sendable, CustomDebugStringConvertible {
 
     fileprivate var identifier: UInt64
+
+    /// The raw value, which carries the flow's event state slot in its low 32 bits.
+    var rawValue: UInt64 { identifier }
 
     public static let allFlows = MultiplexedFlowIdentifier(0)
 
@@ -238,7 +273,7 @@ public struct MultiplexedFlowIdentifier: Hashable, Sendable, CustomDebugStringCo
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol MultiplexedFlow: LowerProtocolHandler, LoggableProtocol {
+public protocol MultiplexedFlow: ~Copyable, LowerProtocolHandler, LoggableProtocol {
     associatedtype ParentProtocol: ManyToManyProtocolHandler
     var upper: UpperProtocol { get set }
     var parentProtocol: ParentProtocol { get set }
@@ -252,7 +287,7 @@ public protocol MultiplexedFlow: LowerProtocolHandler, LoggableProtocol {
     /// Releases whatever this flow holds, as its upper protocol detaches.
     ///
     /// Empty by default.
-    func teardown(in eventContext: inout NetworkContext.EventContext)
+    mutating func teardown(in eventContext: inout NetworkContext.EventContext)
     /// Creates a flow using an event context the caller already holds.
     ///
     /// Prefer this over `init(parent:inbound:)` anywhere the state is already in scope, so
@@ -265,7 +300,7 @@ public protocol MultiplexedFlow: LowerProtocolHandler, LoggableProtocol {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol MultiplexedDatapathFlow<UpperProtocol>: MultiplexedFlow
+public protocol MultiplexedDatapathFlow<UpperProtocol>: ~Copyable, MultiplexedFlow
 where UpperProtocol: InboundDataLinkage, ParentProtocol: ManyToManyDatapathProtocol {}
 
 @_spi(ProtocolProvider)
@@ -473,7 +508,7 @@ extension ManyToManyProtocolHandler {
         return upperLinkage
     }
 
-    fileprivate func connectInternal(in eventContext: inout NetworkContext.EventContext) {
+    func connectInternal(in eventContext: inout NetworkContext.EventContext) {
         if somePathIsConnected(in: &eventContext) {
             if canCallConnect(requested: true, in: &eventContext) {
                 connect(in: &eventContext)
@@ -502,35 +537,64 @@ extension ManyToManyProtocolHandler {
         }
     }
 
-    public func flow(for flowID: MultiplexedFlowIdentifier) -> Flow? {
-        multiplexedFlows[flowID]
+    /// Lends out the flow with the given identifier, or returns `nil` if there is none.
+    ///
+    /// The flow table is exclusively accessed while `body` runs, so `body` must not reach the
+    /// table again.
+    public func withFlow<R: ~Copyable, E: Error>(
+        _ flowID: MultiplexedFlowIdentifier,
+        _ body: (inout Flow) throws(E) -> R
+    ) throws(E) -> R? {
+        try withMultiplexedFlows { (table: inout MultiplexedFlowTable<Flow>) throws(E) -> R? in
+            try table.withFlow(flowID, body)
+        }
     }
 
-    public var someFlow: Flow? {
-        multiplexedFlows.first?.value
+    /// The event identifier of the flow with the given identifier, if there is one.
+    public func instanceIdentifier(ofFlow flowID: MultiplexedFlowIdentifier) -> InstanceIdentifier? {
+        withFlow(flowID) { $0.identifier }
+    }
+
+    public func hasFlow(_ flowID: MultiplexedFlowIdentifier) -> Bool {
+        withMultiplexedFlows { $0.contains(flowID) }
+    }
+
+    public var hasNoFlows: Bool {
+        withMultiplexedFlows { $0.isEmpty }
+    }
+
+    public var flowCount: Int {
+        withMultiplexedFlows { $0.count }
+    }
+
+    /// Removes the flow from the table and hands it to the caller.
+    public func removeFlow(_ flowID: MultiplexedFlowIdentifier) -> Flow? {
+        withMultiplexedFlows { $0.remove(flowID) }
     }
 
     public var someFlowIdentifier: MultiplexedFlowIdentifier? {
-        multiplexedFlows.first?.value.flowIdentifier
+        withMultiplexedFlows { $0.firstFlowIdentifier }
     }
 
-    public func findFlow(where closure: (_ flow: Flow) -> Bool) -> MultiplexedFlowIdentifier? {
-        var returnFlowID: MultiplexedFlowIdentifier?
-        for (flowID, flow) in multiplexedFlows {
-            if closure(flow) {
-                returnFlowID = flowID
-                break
-            }
-        }
-        return returnFlowID
+    public var someFlowInstanceIdentifier: InstanceIdentifier? {
+        guard let flowID = someFlowIdentifier else { return nil }
+        return instanceIdentifier(ofFlow: flowID)
     }
 
+    /// Calls `closure` with the identifier of each flow in turn. The table is borrowed only to find the
+    /// next identifier, not while `closure` runs, so `closure` can look flows up or remove them. A flow
+    /// removed before it is reached is skipped.
     public func allFlowIdentifiers(_ closure: (MultiplexedFlowIdentifier) -> Void) {
-        multiplexedFlows.keys.forEach(closure)
+        var position = 0
+        while let flowID = withMultiplexedFlows({ $0.nextFlowIdentifier(from: &position) }) {
+            closure(flowID)
+        }
     }
 
-    public func applyToAllFlows(_ closure: (Flow) -> Void) {
-        multiplexedFlows.values.forEach(closure)
+    /// Lends out each flow in turn. The flow table is exclusively accessed for the whole walk, so
+    /// `closure` must not reach the table again.
+    public func applyToAllFlows(_ closure: (inout Flow) -> Void) {
+        withMultiplexedFlows { $0.forEachFlow(closure) }
     }
 
     public func path(for pathID: MultiplexingPathIdentifier) -> Path? {
@@ -586,6 +650,216 @@ extension ManyToManyProtocolHandler {
 }
 
 @available(Network 0.1.0, *)
+extension ManyToManyProtocolHandler where Flow: Copyable {
+    /// A copy of the flow with the given identifier. Only available for flows that can be copied,
+    /// which are references to the real flow.
+    public func flow(for flowID: MultiplexedFlowIdentifier) -> Flow? {
+        withFlow(flowID) { $0 }
+    }
+}
+
+// MARK: Operations a flow linkage calls on a protocol that stores its flows by value
+
+// A flow stored in the table can only be reached by borrowing it, and the table is exclusively
+// accessed for the whole borrow. The operations below each borrow the flow just long enough to
+// check the caller or touch the flow's own state, and do anything that looks at the table again
+// (connecting, disconnecting, removing the flow) before or after the borrow.
+@available(Network 0.1.0, *)
+extension ManyToManyProtocolHandler {
+    public func attachUpperProtocolToFlow(
+        _ flowID: MultiplexedFlowIdentifier,
+        _ upperProtocol: Flow.UpperProtocol,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {
+        // `attachUpperProtocolToNewFlow` already bound this upper when it created the flow, so
+        // seeing the same one again is the expected second leg of the attach, not a conflict.
+        // A *different* upper is still rejected.
+        let bound = withFlow(flowID) { (flow: inout Flow) -> Bool in
+            guard flow.upper.isDetached || flow.upper == upperProtocol else { return false }
+            flow.upper = upperProtocol
+            return true
+        }
+        guard let bound else { throw NetworkError.posix(ENOENT) }
+        guard bound else { throw NetworkError.posix(EALREADY) }
+
+        do {
+            try setup(flow: flowID, remote: remote, local: local, parameters: parameters, path: path)
+        } catch let error {
+            withFlow(flowID) { (flow: inout Flow) in
+                flow.upper = .init()
+            }
+            throw error
+        }
+    }
+
+    /// Whether `instance` is the upper protocol attached to the flow.
+    fileprivate func flowAcceptsCall(
+        _ flowID: MultiplexedFlowIdentifier,
+        from instance: InstanceIdentifier,
+        _ label: String
+    ) -> Bool {
+        withFlow(flowID) { (flow: inout Flow) -> Bool in
+            do throws(ProtocolInstanceError) {
+                try flow.validate(upper: instance, label)
+                return true
+            } catch {
+                return false
+            }
+        } ?? false
+    }
+
+    public func connectFlow(
+        _ flowID: MultiplexedFlowIdentifier,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        guard flowAcceptsCall(flowID, from: instance, "connect") else { return }
+        guard let flowInstance = instanceIdentifier(ofFlow: flowID) else { return }
+        if isConnected(in: &eventContext) {
+            if flowInstance.canCallConnect(requested: true, in: &eventContext) {
+                connect(flow: flowID, in: &eventContext)
+            }
+        } else {
+            flowInstance.connectRequested(in: &eventContext)
+            connectInternal(in: &eventContext)
+        }
+        // Hand over anything buffered while this flow had no upper protocol. This runs after
+        // connecting so the connected event is delivered first, matching the ordering the
+        // non-detached path in `deliverConnectedEvent` produces.
+        withFlow(flowID) { (flow: inout Flow) in
+            flow.drainQueuedEventsForUpperProtocol(in: &eventContext)
+        }
+    }
+
+    public func disconnectFlow(
+        _ flowID: MultiplexedFlowIdentifier,
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        guard flowAcceptsCall(flowID, from: instance, "disconnect") else { return }
+        guard let flowInstance = instanceIdentifier(ofFlow: flowID) else { return }
+        if flowInstance.canCallDisconnect(in: &eventContext) {
+            disconnect(flow: flowID, error: error, in: &eventContext)
+        }
+    }
+
+    public func handleApplicationEventForFlow(
+        _ flowID: MultiplexedFlowIdentifier,
+        event: ApplicationEvent,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        // Don't validate upper, can pass through
+        if handleApplicationEvent(flow: flowID, event: event, in: &eventContext) == .consumed { return }
+        applyToAllPaths { path in
+            path.lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
+        }
+    }
+
+    /// Detaches the upper protocol from a flow and releases the flow.
+    public func detachFlow(
+        _ flowID: MultiplexedFlowIdentifier,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
+        // First the flow itself: it checks the caller and releases whatever it holds.
+        let tornDown = withFlow(flowID) { (flow: inout Flow) -> Bool in
+            do throws(ProtocolInstanceError) {
+                try flow.validate(upper: instance, "detach")
+            } catch {
+                return false
+            }
+            flow.teardown(in: &eventContext)
+            return true
+        }
+        guard tornDown == true else { throw NetworkError.posix(EINVAL) }
+
+        // Then the protocol's view of the flow, which looks at the flow and so cannot happen
+        // while it is borrowed.
+        teardown(flow: flowID, in: &eventContext)
+
+        // Finally release the flow. Once it is out of the table nothing else can reach it.
+        if var flow = removeFlow(flowID) {
+            flow.upper = .init()
+            flow.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
+            flow.upperReceiveQueue.finalizeAllFramesAsFailed()
+            flow.upperSendQueue.finalizeAllFramesAsFailed()
+            flow.unregisterEventManager(in: &eventContext)
+        }
+        var parent = self
+        parent.teardownIfPossible(in: &eventContext)
+    }
+}
+
+@available(Network 0.1.0, *)
+extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagramProcessing {
+    public func receiveDatagrams(
+        flow flowID: MultiplexedFlowIdentifier,
+        maximumDatagramCount: Int,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
+        let result = try withFlow(flowID) { (flow: inout Flow) throws(NetworkError) -> FrameArray? in
+            try flow.receiveDatagrams(maximumDatagramCount: maximumDatagramCount, for: instance, in: &eventContext)
+        }
+        switch consume result {
+        case .some(let datagrams): return datagrams
+        case .none: return nil
+        }
+    }
+
+    public func getDatagramsToSend(
+        flow flowID: MultiplexedFlowIdentifier,
+        maximumDatagramCount: Int,
+        minimumDatagramSize: Int,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> FrameArray? {
+        let result = try withFlow(flowID) { (flow: inout Flow) throws(NetworkError) -> FrameArray? in
+            try flow.getDatagramsToSend(
+                maximumDatagramCount: maximumDatagramCount,
+                minimumDatagramSize: minimumDatagramSize,
+                for: instance,
+                in: &eventContext
+            )
+        }
+        switch consume result {
+        case .some(let datagrams): return datagrams
+        case .none: return nil
+        }
+    }
+
+    /// Queues datagrams from the upper protocol on a flow, then asks the protocol to service them.
+    ///
+    /// Servicing waits until the flow is no longer borrowed, because the protocol looks the flow up
+    /// again to take the datagrams.
+    public func sendDatagrams(
+        flow flowID: MultiplexedFlowIdentifier,
+        _ datagrams: consuming FrameArray,
+        from instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) {
+        var pendingData: FrameArray? = datagrams
+        do throws(NetworkError) {
+            let queued: Void? = try withFlow(flowID) { (flow: inout Flow) throws(NetworkError) in
+                do { try flow.validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
+                guard flow.isConnected(in: &eventContext) else { throw NetworkError.posix(ENOTCONN) }
+                flow.upperSendQueue.add(frames: pendingData.take()!)
+            }
+            guard queued != nil else { throw NetworkError.posix(ENOTCONN) }
+        } catch {
+            pendingData?.finalizeAllFramesAsFailed()
+            throw error
+        }
+        serviceDatagramsToSend(flow: flowID, in: &eventContext)
+    }
+}
+
+@available(Network 0.1.0, *)
 extension HomogeneousManyToManyProtocolHandler {
 
     public mutating func performInitialSetupIfNeeded(
@@ -636,9 +910,10 @@ extension HomogeneousManyToManyProtocolHandler {
         var newFlow = Flow(parent: self, inbound: false)
         newFlow.log.logPrefix = self.log.logPrefix
         newFlow.upper = upperProtocol
-        multiplexedFlows[newFlow.flowIdentifier] = newFlow
+        let lowerLinkage = newFlow.asLowerLinkage()
+        insertFlow(newFlow, for: newFlow.flowIdentifier)
 
-        return newFlow.asLowerLinkage()
+        return lowerLinkage
     }
 
     public mutating func attachUpperProtocolToExistingFlow(
@@ -646,11 +921,18 @@ extension HomogeneousManyToManyProtocolHandler {
         existingFlowInstance: InstanceIdentifier
     ) throws(NetworkError) -> Flow.UpperProtocol.PairedLowerLinkage {
         let flowID = MultiplexedFlowIdentifier(inboundInstance: existingFlowInstance)
-        guard var existingFlow = flow(for: flowID) else {
+        guard
+            let lowerLinkage = withFlow(
+                flowID,
+                { (existingFlow: inout Flow) in
+                    existingFlow.upper = upperProtocol
+                    return existingFlow.asLowerLinkage()
+                }
+            )
+        else {
             throw NetworkError.posix(ENOENT)
         }
-        existingFlow.upper = upperProtocol
-        return existingFlow.asLowerLinkage()
+        return lowerLinkage
     }
 
     public func validate(
@@ -666,7 +948,7 @@ extension HomogeneousManyToManyProtocolHandler {
     }
 
     fileprivate var hasNoUpperLinkages: Bool {
-        multiplexedFlows.isEmpty && inboundFlowLinkage.isDetached
+        hasNoFlows && inboundFlowLinkage.isDetached
     }
 
     public var isFullyDetached: Bool { hasNoUpperLinkages }
@@ -700,13 +982,13 @@ extension HomogeneousManyToManyProtocolHandler {
             if let options: ProtocolOptions<T> = parameters.protocolOptions(for: identifier) {
                 return options
             }
-            if let someFlow = someFlow {
-                return parameters.protocolOptions(for: someFlow.identifier)
+            if let someFlow = someFlowInstanceIdentifier {
+                return parameters.protocolOptions(for: someFlow)
             }
             return nil
         }
-        if let flow = flow(for: flowID) {
-            if let options: ProtocolOptions<T> = parameters.protocolOptions(for: flow.identifier) {
+        if let flowInstance = instanceIdentifier(ofFlow: flowID) {
+            if let options: ProtocolOptions<T> = parameters.protocolOptions(for: flowInstance) {
                 return options
             }
         }
@@ -720,13 +1002,13 @@ extension HomogeneousManyToManyProtocolHandler {
             if let options = parameters.protocolOptions(for: identifier) {
                 return options
             }
-            if let someFlow = someFlow {
-                return parameters.protocolOptions(for: someFlow.identifier)
+            if let someFlow = someFlowInstanceIdentifier {
+                return parameters.protocolOptions(for: someFlow)
             }
             return nil
         }
-        if let flow = flow(for: flowID) {
-            if let options = parameters.protocolOptions(for: flow.identifier) {
+        if let flowInstance = instanceIdentifier(ofFlow: flowID) {
+            if let options = parameters.protocolOptions(for: flowInstance) {
                 return options
             }
         }
@@ -738,7 +1020,7 @@ extension HomogeneousManyToManyProtocolHandler {
 @available(Network 0.1.0, *)
 extension HeterogeneousManyToManyProtocolHandler {
     fileprivate var hasNoUpperLinkages: Bool {
-        multiplexedFlows.isEmpty && multiplexedSecondaryFlows.isEmpty && inboundFlowLinkage.isDetached
+        hasNoFlows && hasNoSecondaryFlows && inboundFlowLinkage.isDetached
             && secondaryInboundFlowLinkage.isDetached
     }
 
@@ -852,9 +1134,10 @@ extension HeterogeneousManyToManyProtocolHandler {
         var newFlow = Flow(parent: self, inbound: false)
         newFlow.log.logPrefix = self.log.logPrefix
         newFlow.upper = upperProtocol
-        multiplexedFlows[newFlow.flowIdentifier] = newFlow
+        let lowerLinkage = newFlow.asLowerLinkage()
+        insertFlow(newFlow, for: newFlow.flowIdentifier)
 
-        return newFlow.asLowerLinkage()
+        return lowerLinkage
     }
 
     public mutating func attachUpperProtocolToNewFlow(
@@ -870,9 +1153,10 @@ extension HeterogeneousManyToManyProtocolHandler {
         var newFlow = SecondaryFlow(parent: self, inbound: false)
         newFlow.log.logPrefix = self.log.logPrefix
         newFlow.upper = upperProtocol
-        multiplexedSecondaryFlows[newFlow.flowIdentifier] = newFlow
+        let lowerLinkage = newFlow.asLowerLinkage()
+        insertSecondaryFlow(newFlow, for: newFlow.flowIdentifier)
 
-        return newFlow.asLowerLinkage()
+        return lowerLinkage
     }
 
     public mutating func attachUpperProtocolToExistingFlow(
@@ -880,11 +1164,18 @@ extension HeterogeneousManyToManyProtocolHandler {
         existingFlowInstance: InstanceIdentifier
     ) throws(NetworkError) -> Flow.UpperProtocol.PairedLowerLinkage {
         let flowID = MultiplexedFlowIdentifier(inboundInstance: existingFlowInstance)
-        guard var existingFlow = flow(for: flowID) else {
+        guard
+            let lowerLinkage = withFlow(
+                flowID,
+                { (existingFlow: inout Flow) in
+                    existingFlow.upper = upperProtocol
+                    return existingFlow.asLowerLinkage()
+                }
+            )
+        else {
             throw NetworkError.posix(ENOENT)
         }
-        existingFlow.upper = upperProtocol
-        return existingFlow.asLowerLinkage()
+        return lowerLinkage
     }
 
     public mutating func attachUpperProtocolToExistingFlow(
@@ -892,11 +1183,18 @@ extension HeterogeneousManyToManyProtocolHandler {
         existingFlowInstance: InstanceIdentifier
     ) throws(NetworkError) -> SecondaryFlow.UpperProtocol.PairedLowerLinkage {
         let flowID = MultiplexedFlowIdentifier(inboundInstance: existingFlowInstance)
-        guard var existingFlow = secondaryFlow(for: flowID) else {
+        guard
+            let lowerLinkage = withSecondaryFlow(
+                flowID,
+                { (existingFlow: inout SecondaryFlow) in
+                    existingFlow.upper = upperProtocol
+                    return existingFlow.asLowerLinkage()
+                }
+            )
+        else {
             throw NetworkError.posix(ENOENT)
         }
-        existingFlow.upper = upperProtocol
-        return existingFlow.asLowerLinkage()
+        return lowerLinkage
     }
 
     public mutating func addInboundSecondaryFlow(
@@ -909,10 +1207,12 @@ extension HeterogeneousManyToManyProtocolHandler {
     {
 
         let newFlow = SecondaryFlow(parent: self, inbound: true, in: &eventContext)
-        multiplexedSecondaryFlows[newFlow.flowIdentifier] = newFlow
-        deliverNewInboundFlowEvent(newFlow.identifier, flowMetadata: nil, in: &eventContext)
+        let newFlowIdentifier = newFlow.flowIdentifier
+        let newFlowInstance = newFlow.identifier
+        insertSecondaryFlow(newFlow, for: newFlowIdentifier)
+        deliverNewInboundFlowEvent(newFlowInstance, flowMetadata: nil, in: &eventContext)
 
-        return newFlow.flowIdentifier
+        return newFlowIdentifier
     }
 
     public func deliverNewInboundSecondaryFlowEvent(
@@ -927,35 +1227,64 @@ extension HeterogeneousManyToManyProtocolHandler {
         )
     }
 
-    public func secondaryFlow(for flowID: MultiplexedFlowIdentifier) -> SecondaryFlow? {
-        multiplexedSecondaryFlows[flowID]
+    /// Lends out the secondary flow with the given identifier, or returns `nil` if there is none.
+    ///
+    /// The secondary flow table is exclusively accessed while `body` runs, so `body` must not reach
+    /// the table again.
+    public func withSecondaryFlow<R: ~Copyable, E: Error>(
+        _ flowID: MultiplexedFlowIdentifier,
+        _ body: (inout SecondaryFlow) throws(E) -> R
+    ) throws(E) -> R? {
+        try withMultiplexedSecondaryFlows { (table: inout MultiplexedFlowTable<SecondaryFlow>) throws(E) -> R? in
+            try table.withFlow(flowID, body)
+        }
     }
 
-    public var someSecondaryFlow: SecondaryFlow? {
-        multiplexedSecondaryFlows.first?.value
+    public func hasSecondaryFlow(_ flowID: MultiplexedFlowIdentifier) -> Bool {
+        withMultiplexedSecondaryFlows { $0.contains(flowID) }
+    }
+
+    public var hasNoSecondaryFlows: Bool {
+        withMultiplexedSecondaryFlows { $0.isEmpty }
+    }
+
+    /// Removes the secondary flow from the table and hands it to the caller.
+    public func removeSecondaryFlow(_ flowID: MultiplexedFlowIdentifier) -> SecondaryFlow? {
+        withMultiplexedSecondaryFlows { $0.remove(flowID) }
+    }
+
+    /// The event identifier of the secondary flow with the given identifier, if there is one.
+    public func secondaryInstanceIdentifier(ofFlow flowID: MultiplexedFlowIdentifier) -> InstanceIdentifier? {
+        withSecondaryFlow(flowID) { $0.identifier }
     }
 
     public var someSecondaryFlowIdentifier: MultiplexedFlowIdentifier? {
-        multiplexedSecondaryFlows.first?.value.flowIdentifier
+        withMultiplexedSecondaryFlows { $0.firstFlowIdentifier }
     }
 
-    public func findSecondaryFlow(where closure: (_ flow: SecondaryFlow) -> Bool) -> MultiplexedFlowIdentifier? {
-        var returnFlowID: MultiplexedFlowIdentifier?
-        for (flowID, flow) in multiplexedSecondaryFlows {
-            if closure(flow) {
-                returnFlowID = flowID
-                break
-            }
-        }
-        return returnFlowID
+    public var someSecondaryFlowInstanceIdentifier: InstanceIdentifier? {
+        guard let flowID = someSecondaryFlowIdentifier else { return nil }
+        return secondaryInstanceIdentifier(ofFlow: flowID)
     }
 
+    /// The identifier of the first secondary flow `closure` accepts. The secondary flow table is
+    /// exclusively accessed for the whole search, so `closure` must not reach it again.
+    public func findSecondaryFlow(where closure: (_ flow: inout SecondaryFlow) -> Bool) -> MultiplexedFlowIdentifier? {
+        withMultiplexedSecondaryFlows { $0.firstFlowIdentifier(where: closure) }
+    }
+
+    /// The same for the secondary flows.
     public func allSecondaryFlowIdentifiers(_ closure: (MultiplexedFlowIdentifier) -> Void) {
-        multiplexedSecondaryFlows.keys.forEach(closure)
+        var position = 0
+        while let flowID = withMultiplexedSecondaryFlows({ $0.nextFlowIdentifier(from: &position) }) {
+            closure(flowID)
+        }
     }
 
-    public func applyToAllSecondaryFlows(_ closure: (SecondaryFlow) -> Void) {
-        multiplexedSecondaryFlows.values.forEach(closure)
+    /// Lends out each secondary flow in turn. The secondary flow table is exclusively accessed for
+    /// the whole walk, so `closure` must not reach it again.
+    public func applyToAllSecondaryFlows(_ closure: (inout SecondaryFlow) -> Void) {
+        withMultiplexedSecondaryFlows { $0.forEachFlow(closure) }
     }
 
     #if !NETWORK_NO_SWIFT_QUIC
@@ -967,21 +1296,21 @@ extension HeterogeneousManyToManyProtocolHandler {
             if let options = parameters.quicOptions(for: identifier) {
                 return options
             }
-            if let someFlow = someFlow {
-                return parameters.quicOptions(for: someFlow.identifier)
+            if let someFlow = someFlowInstanceIdentifier {
+                return parameters.quicOptions(for: someFlow)
             }
-            if let someFlow = someSecondaryFlow {
-                return parameters.quicOptions(for: someFlow.identifier)
+            if let someFlow = someSecondaryFlowInstanceIdentifier {
+                return parameters.quicOptions(for: someFlow)
             }
             return nil
         }
-        if let flow = flow(for: flowID) {
-            if let options = parameters.quicOptions(for: flow.identifier) {
+        if let flowInstance = instanceIdentifier(ofFlow: flowID) {
+            if let options = parameters.quicOptions(for: flowInstance) {
                 return options
             }
         }
-        if let flow = secondaryFlow(for: flowID) {
-            if let options = parameters.quicOptions(for: flow.identifier) {
+        if let flowInstance = secondaryInstanceIdentifier(ofFlow: flowID) {
+            if let options = parameters.quicOptions(for: flowInstance) {
                 return options
             }
         }
@@ -996,21 +1325,21 @@ extension HeterogeneousManyToManyProtocolHandler {
             if let options: ProtocolOptions<T> = parameters.protocolOptions(for: identifier) {
                 return options
             }
-            if let someFlow = someFlow {
-                return parameters.protocolOptions(for: someFlow.identifier)
+            if let someFlow = someFlowInstanceIdentifier {
+                return parameters.protocolOptions(for: someFlow)
             }
-            if let someFlow = someSecondaryFlow {
-                return parameters.protocolOptions(for: someFlow.identifier)
+            if let someFlow = someSecondaryFlowInstanceIdentifier {
+                return parameters.protocolOptions(for: someFlow)
             }
             return nil
         }
-        if let flow = flow(for: flowID) {
-            if let options: ProtocolOptions<T> = parameters.protocolOptions(for: flow.identifier) {
+        if let flowInstance = instanceIdentifier(ofFlow: flowID) {
+            if let options: ProtocolOptions<T> = parameters.protocolOptions(for: flowInstance) {
                 return options
             }
         }
-        if let flow = secondaryFlow(for: flowID) {
-            if let options: ProtocolOptions<T> = parameters.protocolOptions(for: flow.identifier) {
+        if let flowInstance = secondaryInstanceIdentifier(ofFlow: flowID) {
+            if let options: ProtocolOptions<T> = parameters.protocolOptions(for: flowInstance) {
                 return options
             }
         }
@@ -1024,21 +1353,21 @@ extension HeterogeneousManyToManyProtocolHandler {
             if let options = parameters.protocolOptions(for: identifier) {
                 return options
             }
-            if let someFlow = someFlow {
-                return parameters.protocolOptions(for: someFlow.identifier)
+            if let someFlow = someFlowInstanceIdentifier {
+                return parameters.protocolOptions(for: someFlow)
             }
-            if let someFlow = someSecondaryFlow {
-                return parameters.protocolOptions(for: someFlow.identifier)
+            if let someFlow = someSecondaryFlowInstanceIdentifier {
+                return parameters.protocolOptions(for: someFlow)
             }
             return nil
         }
-        if let flow = flow(for: flowID) {
-            if let options = parameters.protocolOptions(for: flow.identifier) {
+        if let flowInstance = instanceIdentifier(ofFlow: flowID) {
+            if let options = parameters.protocolOptions(for: flowInstance) {
                 return options
             }
         }
-        if let flow = secondaryFlow(for: flowID) {
-            if let options = parameters.protocolOptions(for: flow.identifier) {
+        if let flowInstance = secondaryInstanceIdentifier(ofFlow: flowID) {
+            if let options = parameters.protocolOptions(for: flowInstance) {
                 return options
             }
         }
@@ -1048,7 +1377,7 @@ extension HeterogeneousManyToManyProtocolHandler {
 }
 
 @available(Network 0.1.0, *)
-extension MultiplexedFlow {
+extension MultiplexedFlow where Self: ~Copyable {
     internal func validate(
         upper upperProtocol: InstanceIdentifier,
         _ label: String
@@ -1066,7 +1395,7 @@ extension MultiplexedFlow {
     public var context: NetworkContext { parentProtocol.context }
 
     /// Empty by default; a flow with per-flow cleanup overrides this.
-    public func teardown(in eventContext: inout NetworkContext.EventContext) {}
+    public mutating func teardown(in eventContext: inout NetworkContext.EventContext) {}
 
     public mutating func attachUpperProtocol(
         _ upperProtocol: UpperProtocol,
@@ -1101,15 +1430,11 @@ extension MultiplexedFlow {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
-        teardown(in: &eventContext)
-        parentProtocol.teardown(flow: flowIdentifier, in: &eventContext)
-        parentProtocol.multiplexedFlows.removeValue(forKey: flowIdentifier)
-        upper = UpperProtocol()
-        self.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
-        upperReceiveQueue.finalizeAllFramesAsFailed()
-        upperSendQueue.finalizeAllFramesAsFailed()
-        parentProtocol.teardownIfPossible(in: &eventContext)
+        // Only here to satisfy `LowerProtocolHandler`. A flow lives inside its protocol's flow table and is
+        // only reachable by borrowing it from there, so it cannot remove itself from that table. Detaching
+        // goes through the protocol, which holds the table: see `detachFlow(_:for:in:)`.
+        assertionFailure("Flows are detached through their protocol, not directly")
+        throw NetworkError.posix(EINVAL)
     }
 
     public func connect(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
@@ -1206,7 +1531,7 @@ extension MultiplexedFlow {
         )
     }
 
-    fileprivate func deliverConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
+    func deliverConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
         if upper.isDetached {
             // Enqueue pending event instead of delivering immediately.
             // Inbound multiplexed flows may get attached after creation.
@@ -1234,8 +1559,7 @@ extension MultiplexedFlow {
         }
     }
 
-    fileprivate func deliverDisconnectedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext)
-    {
+    func deliverDisconnectedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
         if upper.isDetached {
             // Enqueue pending event instead of delivering immediately.
             // Inbound multiplexed flows may get attached after creation.
@@ -1267,26 +1591,20 @@ extension MultiplexedFlow {
 }
 
 @available(Network 0.1.0, *)
-extension MultiplexedFlow where ParentProtocol: HeterogeneousManyToManyProtocolHandler {
+extension MultiplexedFlow where ParentProtocol: HeterogeneousManyToManyProtocolHandler, Self: ~Copyable {
     public mutating func detach(
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
-        teardown(in: &eventContext)
-        parentProtocol.teardown(flow: flowIdentifier, in: &eventContext)
-        parentProtocol.multiplexedFlows.removeValue(forKey: flowIdentifier)
-        parentProtocol.multiplexedSecondaryFlows.removeValue(forKey: flowIdentifier)
-        upper = UpperProtocol()
-        self.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
-        upperReceiveQueue.finalizeAllFramesAsFailed()
-        upperSendQueue.finalizeAllFramesAsFailed()
-        parentProtocol.teardownIfPossible(in: &eventContext)
+        // A flow lives inside its protocol's flow table and is only reachable by borrowing it from there.
+        // Detaching goes through the protocol, which holds the table: see `detachFlow(_:for:in:)`.
+        assertionFailure("Flows are detached through their protocol, not directly")
+        throw NetworkError.posix(EINVAL)
     }
 }
 
 @available(Network 0.1.0, *)
-extension MultiplexedDatapathFlow where Self: AutomaticUpperStreamProcessing {
+extension MultiplexedDatapathFlow where Self: AutomaticUpperStreamProcessing, Self: ~Copyable {
     public mutating func receiveStreamData(
         minimumBytes: Int,
         maximumBytes: Int,
@@ -1324,7 +1642,8 @@ extension MultiplexedDatapathFlow where Self: AutomaticUpperStreamProcessing {
 }
 
 @available(Network 0.1.0, *)
-extension MultiplexedDatapathFlow where Self: AutomaticUpperStreamProcessing, Self: OutboundStreamEarlyDataHandler {
+extension MultiplexedDatapathFlow
+where Self: AutomaticUpperStreamProcessing, Self: OutboundStreamEarlyDataHandler, Self: ~Copyable {
     public mutating func sendEarlyStreamData(
         _ streamData: consuming FrameArray,
         from instance: InstanceIdentifier,
@@ -1339,49 +1658,69 @@ extension MultiplexedDatapathFlow where Self: AutomaticUpperStreamProcessing, Se
 }
 
 @available(Network 0.1.0, *)
-extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamProcessing {
-    public func accessStreamDataToSend(flow flowID: MultiplexedFlowIdentifier, _ body: (inout FrameArray) -> Void) {
-        guard var flow = self.flow(for: flowID) else { return }
-        body(&flow.upperSendQueue)
-    }
-
-    // Access the upperSendQueue directly from the flow
+extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamProcessing, Flow: Copyable {
+    // Access the upperSendQueue directly from a flow that is a reference
     public func accessStreamDataToSend(stream: Flow, _ body: (inout FrameArray) -> Void) {
         var flow = stream
         body(&flow.upperSendQueue)
     }
+}
+
+@available(Network 0.1.0, *)
+extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamProcessing {
+    public func accessStreamDataToSend(flow flowID: MultiplexedFlowIdentifier, _ body: (inout FrameArray) -> Void) {
+        withFlow(flowID) { (flow: inout Flow) in
+            body(&flow.upperSendQueue)
+        }
+    }
+
+    // Access the upperSendQueue directly from the flow
+    public func accessStreamDataToSend(stream: inout Flow, _ body: (inout FrameArray) -> Void) {
+        body(&stream.upperSendQueue)
+    }
 
     public func blockSending(flow flowID: MultiplexedFlowIdentifier) {
-        guard var flow = self.flow(for: flowID) else { return }
-        flow.blockUpperSendQueue = true
+        withFlow(flowID) { (flow: inout Flow) in
+            flow.blockUpperSendQueue = true
+        }
     }
 
     public func unblockSending(
         flow flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard var flow = self.flow(for: flowID) else { return }
-        flow.blockUpperSendQueue = false
-        flow.upper.deliverOutboundRoomAvailableEvent(from: flow.identifier, in: &eventContext)
+        withFlow(flowID) { (flow: inout Flow) in
+            flow.blockUpperSendQueue = false
+            flow.upper.deliverOutboundRoomAvailableEvent(from: flow.identifier, in: &eventContext)
+        }
     }
 
     public func enqueueInboundStreamData(
         flow flowID: MultiplexedFlowIdentifier,
         streamData: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else {
+        guard hasFlow(flowID) else {
             streamData.finalizeAllFramesAsFailed()
             throw NetworkError.posix(EINVAL)
         }
-        return try flow.addToUpperReceiveQueue(streamData)
+        var pendingData: FrameArray? = streamData
+        try withFlow(flowID) { (flow: inout Flow) throws(NetworkError) in
+            try flow.addToUpperReceiveQueue(pendingData.take()!)
+        }
     }
 
     public func deliverEnqueuedInboundStreamData(
         flow flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        guard let flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
-        flow.serviceUpperReceiveQueue(in: &eventContext)
+        guard
+            withFlow(
+                flowID,
+                { (flow: inout Flow) in
+                    flow.serviceUpperReceiveQueue(in: &eventContext)
+                }
+            ) != nil
+        else { throw NetworkError.posix(EINVAL) }
     }
     // Enqueue and delivery the stream data all in one shot
     public func deliverInboundStreamData(
@@ -1389,11 +1728,14 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
         streamData: consuming FrameArray,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else {
+        guard hasFlow(flowID) else {
             streamData.finalizeAllFramesAsFailed()
             throw NetworkError.posix(EINVAL)
         }
-        try deliverInboundStreamData(flow: &flow, streamData: streamData, in: &eventContext)
+        var pendingData: FrameArray? = streamData
+        try withFlow(flowID) { (flow: inout Flow) throws(NetworkError) in
+            try deliverInboundStreamData(flow: &flow, streamData: pendingData.take()!, in: &eventContext)
+        }
     }
 
     // Enqueue and deliver the stream data directly to the flow
@@ -1409,12 +1751,10 @@ extension ManyToManyApplicationStreamProtocol where Flow: AutomaticUpperStreamPr
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-open class MultiplexedStreamFlow<
+public struct MultiplexedStreamFlow<
     ParentProtocol: ManyToManyApplicationStreamProtocol,
     LinkageType: InboundStreamLinkage
->: MultiplexedDatapathFlow,
-    AutomaticUpperStreamProcessing
-{
+>: ~Copyable, MultiplexedDatapathFlow {
     public typealias ParentProtocol = ParentProtocol
     public typealias UpperProtocol = LinkageType
 
@@ -1434,11 +1774,7 @@ open class MultiplexedStreamFlow<
 
     public var blockUpperSendQueue: Bool = false
 
-    public func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext) {
-        parentProtocol.serviceStreamDataToSend(flow: flowIdentifier, in: &eventContext)
-    }
-
-    public required init(parent: ParentProtocol, inbound: Bool) {
+    public init(parent: ParentProtocol, inbound: Bool) {
         self.parentProtocol = parent
         identifier = .init(context: parent.context, eventManager: &self.eventManager)
         identifier.setParentInstance(parent.identifier)
@@ -1450,7 +1786,7 @@ open class MultiplexedStreamFlow<
         }
     }
 
-    public required init(parent: ParentProtocol, inbound: Bool, in eventContext: inout NetworkContext.EventContext) {
+    public init(parent: ParentProtocol, inbound: Bool, in eventContext: inout NetworkContext.EventContext) {
         self.parentProtocol = parent
         identifier = .init(eventManager: &self.eventManager, in: &eventContext)
         identifier.setParentInstance(parent.identifier)
@@ -1462,12 +1798,15 @@ open class MultiplexedStreamFlow<
         }
     }
 
-    public func upperReceiveQueueDrainedBytes(_ bytes: Int, in eventContext: inout NetworkContext.EventContext) {
+    public mutating func upperReceiveQueueDrainedBytes(_ bytes: Int, in eventContext: inout NetworkContext.EventContext)
+    {
         // No-op by default
     }
 
     /// Also routes the unidirectional abort events, which only a stream linkage can handle.
     public func drainQueuedEventsForUpperProtocol(in eventContext: inout NetworkContext.EventContext) {
+        // Building the delivery blocks allocates, so skip them when nothing is waiting
+        guard self.identifier.hasQueuedEventsForUpperProtocol(in: &eventContext) else { return }
         let upperProtocol = upper
         self.identifier.reassignQueuedPendingEventsForUpperProtocol(
             to: upperProtocol.identifier,
@@ -1491,21 +1830,25 @@ open class MultiplexedStreamFlow<
         )
     }
 
-    /// To be overridden by subclasses
-    open func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {
+    /// Builds the linkage that reaches this flow from its upper protocol.
+    ///
+    /// Empty here; a protocol that wraps this flow supplies its own.
+    public func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {
         .init()
     }
 }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol UnidirectionalAbortingStreamFlow: MultiplexedDatapathFlow, OutboundStreamUnidirectionalAbortHandler {
-    func abortInbound(error: NetworkError?, in eventContext: inout NetworkContext.EventContext)
-    func abortOutbound(error: NetworkError?, in eventContext: inout NetworkContext.EventContext)
+public protocol UnidirectionalAbortingStreamFlow: ~Copyable, MultiplexedDatapathFlow,
+    OutboundStreamUnidirectionalAbortHandler
+{
+    mutating func abortInbound(error: NetworkError?, in eventContext: inout NetworkContext.EventContext)
+    mutating func abortOutbound(error: NetworkError?, in eventContext: inout NetworkContext.EventContext)
 }
 
 @available(Network 0.1.0, *)
-extension UnidirectionalAbortingStreamFlow {
+extension UnidirectionalAbortingStreamFlow where Self: ~Copyable {
     public func deliverInboundAbortedEvent(error: NetworkError?, in eventContext: inout NetworkContext.EventContext) {
         if upper.isDetached {
             // Enqueue pending event instead of delivering immediately.
@@ -1548,7 +1891,7 @@ extension UnidirectionalAbortingStreamFlow {
         }
     }
 
-    public func abortInbound(
+    public mutating func abortInbound(
         error: NetworkError?,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
@@ -1558,7 +1901,7 @@ extension UnidirectionalAbortingStreamFlow {
         abortInbound(error: error, in: &eventContext)
     }
 
-    public func abortOutbound(
+    public mutating func abortOutbound(
         error: NetworkError?,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
@@ -1571,10 +1914,10 @@ extension UnidirectionalAbortingStreamFlow {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol EarlyDataStreamFlow: MultiplexedDatapathFlow, OutboundStreamEarlyDataHandler {}
+public protocol EarlyDataStreamFlow: ~Copyable, MultiplexedDatapathFlow, OutboundStreamEarlyDataHandler {}
 
 @available(Network 0.1.0, *)
-extension MultiplexedDatapathFlow where Self: AutomaticUpperDatagramProcessing {
+extension MultiplexedDatapathFlow where Self: AutomaticUpperDatagramProcessing, Self: ~Copyable {
     public mutating func receiveDatagrams(
         maximumDatagramCount: Int,
         for instance: InstanceIdentifier,
@@ -1620,47 +1963,58 @@ extension MultiplexedDatapathFlow where Self: AutomaticUpperDatagramProcessing {
 @available(Network 0.1.0, *)
 extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagramProcessing {
     public func accessDatagramsToSend(flow flowID: MultiplexedFlowIdentifier, _ body: (inout FrameArray) -> Void) {
-        guard var flow = self.flow(for: flowID) else { return }
-        body(&flow.upperSendQueue)
+        withFlow(flowID) { (flow: inout Flow) in
+            body(&flow.upperSendQueue)
+        }
     }
 
     // Access the upperSendQueue directly from the flow
-    public func accessDatagramsToSend(flow: Flow, _ body: (inout FrameArray) -> Void) {
-        var flow = flow
+    public func accessDatagramsToSend(flow: inout Flow, _ body: (inout FrameArray) -> Void) {
         body(&flow.upperSendQueue)
     }
 
     public func blockSending(flow flowID: MultiplexedFlowIdentifier) {
-        guard var flow = self.flow(for: flowID) else { return }
-        flow.blockUpperSendQueue = true
+        withFlow(flowID) { (flow: inout Flow) in
+            flow.blockUpperSendQueue = true
+        }
     }
 
     public func unblockSending(
         flow flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard var flow = self.flow(for: flowID) else { return }
-        flow.blockUpperSendQueue = false
-        flow.upper.deliverOutboundRoomAvailableEvent(from: flow.identifier, in: &eventContext)
+        withFlow(flowID) { (flow: inout Flow) in
+            flow.blockUpperSendQueue = false
+            flow.upper.deliverOutboundRoomAvailableEvent(from: flow.identifier, in: &eventContext)
+        }
     }
 
     public func enqueueInboundDatagrams(
         flow flowID: MultiplexedFlowIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else {
+        guard hasFlow(flowID) else {
             datagrams.finalizeAllFramesAsFailed()
             throw NetworkError.posix(EINVAL)
         }
-        return try flow.addToUpperReceiveQueue(datagrams)
+        var pendingData: FrameArray? = datagrams
+        try withFlow(flowID) { (flow: inout Flow) throws(NetworkError) in
+            try flow.addToUpperReceiveQueue(pendingData.take()!)
+        }
     }
 
     public func deliverEnqueuedInboundDatagrams(
         flow flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        guard let flow = self.flow(for: flowID) else { throw NetworkError.posix(EINVAL) }
-        flow.serviceUpperReceiveQueue(in: &eventContext)
+        guard
+            withFlow(
+                flowID,
+                { (flow: inout Flow) in
+                    flow.serviceUpperReceiveQueue(in: &eventContext)
+                }
+            ) != nil
+        else { throw NetworkError.posix(EINVAL) }
     }
 
     // Enqueue and delivery the datagrams all in one shot
@@ -1669,59 +2023,73 @@ extension ManyToManyApplicationDatagramProtocol where Flow: AutomaticUpperDatagr
         datagrams: consuming FrameArray,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        guard var flow = self.flow(for: flowID) else {
+        guard hasFlow(flowID) else {
             datagrams.finalizeAllFramesAsFailed()
             throw NetworkError.posix(EINVAL)
         }
-        try flow.addToUpperReceiveQueue(datagrams)
-        flow.serviceUpperReceiveQueue(in: &eventContext)
+        var pendingData: FrameArray? = datagrams
+        try withFlow(flowID) { (flow: inout Flow) throws(NetworkError) in
+            try flow.addToUpperReceiveQueue(pendingData.take()!)
+            flow.serviceUpperReceiveQueue(in: &eventContext)
+        }
     }
 }
 
 @available(Network 0.1.0, *)
 extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticUpperDatagramProcessing {
     public func accessDatagramsToSend(flow flowID: MultiplexedFlowIdentifier, _ body: (inout FrameArray) -> Void) {
-        guard var flow = self.secondaryFlow(for: flowID) else { return }
-        body(&flow.upperSendQueue)
+        withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
+            body(&flow.upperSendQueue)
+        }
     }
 
     // Access the upperSendQueue directly from the flow
-    public func accessDatagramsToSend(flow: SecondaryFlow, _ body: (inout FrameArray) -> Void) {
-        var flow = flow
+    public func accessDatagramsToSend(flow: inout SecondaryFlow, _ body: (inout FrameArray) -> Void) {
         body(&flow.upperSendQueue)
     }
 
     public func blockSending(flow flowID: MultiplexedFlowIdentifier) {
-        guard var flow = self.secondaryFlow(for: flowID) else { return }
-        flow.blockUpperSendQueue = true
+        withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
+            flow.blockUpperSendQueue = true
+        }
     }
 
     public func unblockSending(
         flow flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard var flow = self.secondaryFlow(for: flowID) else { return }
-        flow.blockUpperSendQueue = false
-        flow.upper.deliverOutboundRoomAvailableEvent(from: flow.identifier, in: &eventContext)
+        withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
+            flow.blockUpperSendQueue = false
+            flow.upper.deliverOutboundRoomAvailableEvent(from: flow.identifier, in: &eventContext)
+        }
     }
 
     public func enqueueInboundDatagrams(
         flow flowID: MultiplexedFlowIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var flow = self.secondaryFlow(for: flowID) else {
+        guard hasSecondaryFlow(flowID) else {
             datagrams.finalizeAllFramesAsFailed()
             throw NetworkError.posix(EINVAL)
         }
-        return try flow.addToUpperReceiveQueue(datagrams)
+        var pendingData: FrameArray? = datagrams
+        try withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) throws(NetworkError) in
+            try flow.addToUpperReceiveQueue(pendingData.take()!)
+        }
     }
 
     public func deliverEnqueuedInboundDatagrams(
         flow flowID: MultiplexedFlowIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        guard let flow = self.secondaryFlow(for: flowID) else { throw NetworkError.posix(EINVAL) }
-        flow.serviceUpperReceiveQueue(in: &eventContext)
+        guard
+            withSecondaryFlow(
+                flowID,
+                { (flow: inout SecondaryFlow) in
+                    flow.serviceUpperReceiveQueue(in: &eventContext)
+                }
+            ) != nil
+        else { throw NetworkError.posix(EINVAL) }
     }
 
     // Enqueue and delivery the datagrams all in one shot
@@ -1730,11 +2098,14 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
         datagrams: consuming FrameArray,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        guard var flow = self.secondaryFlow(for: flowID) else {
+        guard hasSecondaryFlow(flowID) else {
             datagrams.finalizeAllFramesAsFailed()
             throw NetworkError.posix(EINVAL)
         }
-        try deliverInboundDatagrams(flow: &flow, datagrams: datagrams, in: &eventContext)
+        var pendingData: FrameArray? = datagrams
+        try withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) throws(NetworkError) in
+            try deliverInboundDatagrams(flow: &flow, datagrams: pendingData.take()!, in: &eventContext)
+        }
     }
 
     // Enqueue and deliver the datagrams directly to the flow
@@ -1750,12 +2121,10 @@ extension HeterogeneousManyToManyProtocolHandler where SecondaryFlow: AutomaticU
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-open class MultiplexedDatagramFlow<
+public struct MultiplexedDatagramFlow<
     ParentProtocol: ManyToManyApplicationDatagramProtocol,
     LinkageType: InboundDatagramLinkage
->: MultiplexedDatapathFlow,
-    AutomaticUpperDatagramProcessing
-{
+>: ~Copyable, MultiplexedDatapathFlow {
     public typealias ParentProtocol = ParentProtocol
     public typealias UpperProtocol = LinkageType
 
@@ -1770,15 +2139,11 @@ open class MultiplexedDatagramFlow<
 
     public var log = NetworkLoggerState()
 
-    public var flowIdentifier: MultiplexedFlowIdentifier
+    public let flowIdentifier: MultiplexedFlowIdentifier
 
     public var identifier: InstanceIdentifier
 
-    public func serviceUpperSendQueue(in eventContext: inout NetworkContext.EventContext) {
-        parentProtocol.serviceDatagramsToSend(flow: flowIdentifier, in: &eventContext)
-    }
-
-    public required init(parent: ParentProtocol, inbound: Bool) {
+    public init(parent: ParentProtocol, inbound: Bool) {
         self.parentProtocol = parent
         identifier = .init(context: parent.context, eventManager: &self.eventManager)
         identifier.setParentInstance(parent.identifier)
@@ -1789,7 +2154,7 @@ open class MultiplexedDatagramFlow<
         }
     }
 
-    public required init(parent: ParentProtocol, inbound: Bool, in eventContext: inout NetworkContext.EventContext) {
+    public init(parent: ParentProtocol, inbound: Bool, in eventContext: inout NetworkContext.EventContext) {
         self.parentProtocol = parent
         identifier = .init(eventManager: &self.eventManager, in: &eventContext)
         identifier.setParentInstance(parent.identifier)
@@ -1800,8 +2165,10 @@ open class MultiplexedDatagramFlow<
         }
     }
 
-    /// To be overridden by subclasses
-    open func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {
+    /// Builds the linkage that reaches this flow from its upper protocol.
+    ///
+    /// Empty here; a protocol that wraps this flow supplies its own.
+    public func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage {
         .init()
     }
 }
@@ -1971,14 +2338,20 @@ extension ManyToManyProtocolHandler {
         switch flowID {
         case .allFlows:
             inboundFlowLinkage.deliverConnectedEvent(from: identifier, in: &eventContext)
-            applyToAllFlows { flow in
-                if flow.canCallConnect(requested: false, in: &eventContext) {
-                    connect(flow: flow.flowIdentifier, in: &eventContext)
+            // `connect(flow:)` looks at the flow again, so it cannot run while the flows are being
+            // walked; `allFlowIdentifiers` borrows the table only to find each next identifier.
+            allFlowIdentifiers { flowID in
+                let canConnect = withFlow(flowID) { (flow: inout Flow) in
+                    flow.canCallConnect(requested: false, in: &eventContext)
+                }
+                if canConnect == true {
+                    connect(flow: flowID, in: &eventContext)
                 }
             }
         default:
-            guard let flow = self.flow(for: flowID) else { return }
-            flow.deliverConnectedEvent(in: &eventContext)
+            withFlow(flowID) { (flow: inout Flow) in
+                flow.deliverConnectedEvent(in: &eventContext)
+            }
         }
     }
 
@@ -1994,8 +2367,9 @@ extension ManyToManyProtocolHandler {
                 flow.deliverDisconnectedEvent(error: error, in: &eventContext)
             }
         default:
-            guard let flow = self.flow(for: flowID) else { return }
-            flow.deliverDisconnectedEvent(error: error, in: &eventContext)
+            withFlow(flowID) { (flow: inout Flow) in
+                flow.deliverDisconnectedEvent(error: error, in: &eventContext)
+            }
         }
     }
 
@@ -2022,14 +2396,15 @@ extension ManyToManyProtocolHandler {
                 )
             }
         default:
-            guard let flow = self.flow(for: flowID) else { return }
-            let flowInstance = flow.identifier
-            flow.upper.deliverNetworkProtocolEvent(
-                originalInstance: flowInstance,
-                selfInstance: flowInstance,
-                event: event,
-                in: &eventContext
-            )
+            withFlow(flowID) { (flow: inout Flow) in
+                let flowInstance = flow.identifier
+                flow.upper.deliverNetworkProtocolEvent(
+                    originalInstance: flowInstance,
+                    selfInstance: flowInstance,
+                    event: event,
+                    in: &eventContext
+                )
+            }
         }
     }
 }
@@ -2043,21 +2418,29 @@ extension HeterogeneousManyToManyProtocolHandler {
         switch flowID {
         case .allFlows:
             inboundFlowLinkage.deliverConnectedEvent(from: identifier, in: &eventContext)
-            applyToAllFlows { flow in
-                if flow.canCallConnect(requested: false, in: &eventContext) {
-                    connect(flow: flow.flowIdentifier, in: &eventContext)
+            // `connect(flow:)` looks at the flow again, so it cannot run while the flows are being
+            // walked; `allFlowIdentifiers` borrows the table only to find each next identifier.
+            allFlowIdentifiers { flowID in
+                let canConnect = withFlow(flowID) { (flow: inout Flow) in
+                    flow.canCallConnect(requested: false, in: &eventContext)
+                }
+                if canConnect == true {
+                    connect(flow: flowID, in: &eventContext)
                 }
             }
-            applyToAllSecondaryFlows { flow in
-                if flow.canCallConnect(requested: false, in: &eventContext) {
-                    connect(flow: flow.flowIdentifier, in: &eventContext)
+            allSecondaryFlowIdentifiers { flowID in
+                let canConnect = withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
+                    flow.canCallConnect(requested: false, in: &eventContext)
+                }
+                if canConnect == true {
+                    connect(flow: flowID, in: &eventContext)
                 }
             }
         default:
-            if let flow = self.flow(for: flowID) {
+            withFlow(flowID) { (flow: inout Flow) in
                 flow.deliverConnectedEvent(in: &eventContext)
             }
-            if let flow = self.secondaryFlow(for: flowID) {
+            withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
                 flow.deliverConnectedEvent(in: &eventContext)
             }
         }
@@ -2074,10 +2457,10 @@ extension HeterogeneousManyToManyProtocolHandler {
                 flow.deliverDisconnectedEvent(error: error)
             }
         default:
-            if let flow = self.flow(for: flowID) {
+            withFlow(flowID) { (flow: inout Flow) in
                 flow.deliverDisconnectedEvent(error: error)
             }
-            if let flow = self.secondaryFlow(for: flowID) {
+            withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
                 flow.deliverDisconnectedEvent(error: error)
             }
         }
@@ -2098,10 +2481,10 @@ extension HeterogeneousManyToManyProtocolHandler {
                 flow.deliverDisconnectedEvent(error: error, in: &eventContext)
             }
         default:
-            if let flow = self.flow(for: flowID) {
+            withFlow(flowID) { (flow: inout Flow) in
                 flow.deliverDisconnectedEvent(error: error, in: &eventContext)
             }
-            if let flow = self.secondaryFlow(for: flowID) {
+            withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
                 flow.deliverDisconnectedEvent(error: error, in: &eventContext)
             }
         }
@@ -2139,7 +2522,7 @@ extension HeterogeneousManyToManyProtocolHandler {
                 )
             }
         default:
-            if let flow = self.flow(for: flowID) {
+            withFlow(flowID) { (flow: inout Flow) in
                 let flowInstance = flow.identifier
                 flow.upper.deliverNetworkProtocolEvent(
                     originalInstance: flowInstance,
@@ -2148,7 +2531,7 @@ extension HeterogeneousManyToManyProtocolHandler {
                     in: &eventContext
                 )
             }
-            if let flow = self.secondaryFlow(for: flowID) {
+            withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
                 let flowInstance = flow.identifier
                 flow.upper.deliverNetworkProtocolEvent(
                     originalInstance: flowInstance,

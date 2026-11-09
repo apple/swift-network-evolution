@@ -29,50 +29,38 @@ import XCTest
 @available(Network 0.1.0, *)
 final class QUICLayoutTests: XCTestCase {
 
-    var stream: QUICStreamInstance!
     var connection = NetworkContext.implicitContext.onQueue {
         QUICConnection(context: NetworkContext.implicitContext)
     }
 
-    override func setUp() {
-        stream = NetworkContext.implicitContext.onQueue {
-            QUICStreamInstance(parent: connection, inbound: false)
-        }
-        stream.setup(
-            streamID: QUICStreamID(0),
-            logPrefixer: quicStreamTestsLogPrefixer
-        )
-    }
-
     override func tearDown() {
-        // The stream and the connection were both built outside a protocol stack, so nothing
-        // else hands their event states back. The stream's `deinit` is an external entry point
-        // that acquires the event context, so release it on the queue too.
+        // The connection was built outside a protocol stack, so nothing else hands its event state back.
         connection.context.onQueue {
-            self.stream.destroyFromExternalTest()
-            self.stream = nil
             self.connection.destroyFromExternalTest()
         }
     }
 
     func testLayoutPacket() {
-        let packetSize = 156
-        let packetRecordSize = 209
+        let packetSize = 131
+        let packetRecordSize = 232
         XCTAssertEqual(packetSize, MemoryLayout<Packet>.size)
-        XCTAssertEqual(packetRecordSize, MemoryLayout<SentPacketRecord>.size)
+        XCTAssertEqual(MemoryLayout<SentPacketRecord>.size, packetRecordSize)
     }
 
     func testlayoutFrameAck() {
-        let frameAckSize = 56
+        let frameAckSize = 88
         XCTAssertEqual(frameAckSize, MemoryLayout<FrameAck>.size)
     }
 
     func testStreamLayout() {
         // Note that stream size can have a major impact memory usage in server use cases
-        #if !os(Android) && !os(Linux)
-        let streamSize = malloc_size(Unmanaged.passUnretained(stream as AnyObject).toOpaque())
-        XCTAssertEqual(streamSize, 512, "QUICStreamInstance's allocated size regressed back 512")
-        #endif
+        // Streams are stored inline in the connection's flow table rather than allocated one by one,
+        // so the size of the type is what each stream costs.
+        XCTAssertLessThanOrEqual(
+            MemoryLayout<QUICStreamInstance>.stride,
+            496,
+            "QUICStreamInstance's size regressed past 496"
+        )
         XCTAssertEqual(MemoryLayout<QUICSendState>.size, 81)
         XCTAssertEqual(MemoryLayout<QUICReceiveState>.size, 90)
         XCTAssertEqual(MemoryLayout<StreamSendBuffer>.size, 80)
