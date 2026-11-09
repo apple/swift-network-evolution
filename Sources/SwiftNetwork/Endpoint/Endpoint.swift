@@ -178,11 +178,13 @@ public struct Endpoint: EndpointProtocol, Hashable, Sendable {
             self.type = .address(endpoint)
         case AddressFamily.unix.rawValue:
             guard length > 2 else { return nil }
-            var path: String = ""
+            var paddedPath = ""
             result = Deserializer.deserialize(&serializedData) { read throws(DeserializationError) in
-                try read.fixedLengthUTF8(&path, byteCount: Int(length - 2))
+                try read.fixedLengthUTF8(&paddedPath, byteCount: Int(length - 2))
             }
             guard result.isValid else { return nil }
+            // The path ends at the first zero byte, whether that is the terminator or sun_path padding
+            let path = paddedPath.utf8.firstIndex(of: 0).map { String(paddedPath[..<$0]) } ?? paddedPath
             guard let endpoint = AddressEndpoint(path) else { return nil }
             self.type = .address(endpoint)
         case AddressFamily.unspecified.rawValue:
