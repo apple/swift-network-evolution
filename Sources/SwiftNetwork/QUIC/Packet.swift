@@ -644,17 +644,16 @@ extension InPlaceSerializer where Factory: ~Escapable, Factory: ~Copyable {
     @_optimize(speed)
     mutating func connectionIDBytes(_ value: QUICConnectionID) throws(SerializationError) {
         let length = value.length
-        guard hasRoom(length) else {
-            try self.span(value.connectionIDStorage.span.bytes.extracting(unchecked: 0..<length))
-            return
-        }
-        // Write exactly the length of the bytes to the storage
-        currentSpan.copyUnchecked(
+        // Write exactly the length of the bytes to the storage when both ranges are in bounds
+        if currentSpan.copyIfInBounds(
             from: value.connectionIDStorage.span.bytes,
             toByteOffset: cursor,
             count: length
-        )
-        moveCursorUnchecked(length)
+        ) {
+            moveCursorUnchecked(length)
+            return
+        }
+        try self.span(value.connectionIDStorage.span.bytes.extracting(unchecked: 0..<length))
     }
 
     @_optimize(speed)

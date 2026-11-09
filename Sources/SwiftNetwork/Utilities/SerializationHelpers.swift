@@ -163,9 +163,10 @@ extension MutableRawSpan {
     /// Copies `count` bytes from `source` into this span using unaligned loads and stores of 8, 4, 2 and 1 bytes,
     /// avoiding a variable-length memmove for small copies such as connection IDs.
     ///
-    /// The caller must guarantee that `count` bytes are available at both offsets.
+    /// Only reachable through `copyIfInBounds`, which has already validated that `count` bytes are available at
+    /// both offsets.
     @inline(always)
-    mutating func copyUnchecked(
+    private mutating func copyUnchecked(
         from source: RawSpan,
         sourceOffset: Int = 0,
         toByteOffset destinationOffset: Int = 0,
@@ -209,5 +210,27 @@ extension MutableRawSpan {
                 as: UInt8.self
             )
         }
+    }
+
+    /// Takes the fast `copyUnchecked` path only when `count` bytes are available at both offsets.
+    /// Returns `false` without copying anything otherwise, so the caller can fall back to its general path.
+    @inline(always)
+    @discardableResult
+    mutating func copyIfInBounds(
+        from source: RawSpan,
+        sourceOffset: Int = 0,
+        toByteOffset destinationOffset: Int = 0,
+        count: Int
+    ) -> Bool {
+        // Offsets are checked as non-negative first, so the subtractions below cannot overflow.
+        guard count >= 0, sourceOffset >= 0, destinationOffset >= 0,
+            sourceOffset <= source.byteCount, destinationOffset <= byteCount,
+            count <= source.byteCount &- sourceOffset,
+            count <= byteCount &- destinationOffset
+        else {
+            return false
+        }
+        copyUnchecked(from: source, sourceOffset: sourceOffset, toByteOffset: destinationOffset, count: count)
+        return true
     }
 }

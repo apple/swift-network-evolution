@@ -857,10 +857,10 @@ extension Deserializer where Factory: ~Escapable {
         }
         var mutableBytes = value.mutableSpan
         // Connection IDs are at most 20 bytes, and the default length is 8 bytes. Copy with unaligned 8/4/2/1 byte
-        // loads and stores to avoid a variable-length memmove for every packet received.
-        if hasRoom(length) {
-            var destination = mutableBytes.mutableBytes
-            destination.copyUnchecked(from: currentSpan, sourceOffset: cursor, count: length)
+        // loads and stores to avoid a variable-length memmove for every packet received. The fast path is only
+        // taken when both ranges are in bounds.
+        var destination = mutableBytes.mutableBytes
+        if destination.copyIfInBounds(from: currentSpan, sourceOffset: cursor, count: length) {
             moveCursorUnchecked(length)
             return
         }
