@@ -228,6 +228,7 @@ extension MutableRawSpan {
             count <= source.byteCount &- sourceOffset,
             count <= byteCount &- destinationOffset
         else {
+            assert(false, "mutable span failed to fit within bounds")
             return false
         }
         copyUnchecked(from: source, sourceOffset: sourceOffset, toByteOffset: destinationOffset, count: count)
