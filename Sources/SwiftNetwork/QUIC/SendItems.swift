@@ -3380,7 +3380,6 @@ struct TransmittedItems: ~Copyable {
         // ackFrame is never retransmitted
     }
 
-    @_optimize(none)
     func allAcknowledged(
         connection: QUICConnection,
         packetNumber: PacketNumber,
@@ -3388,14 +3387,16 @@ struct TransmittedItems: ~Copyable {
         sentPath: QUICPath,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if ackFrame != nil {
-            // Using a force unwrap here is fine because ackFrame was checked directly above
+        switch ackFrame {
+        case .some(let frame):
             connection.acknowledgedAck(
-                frame: ackFrame!,
+                frame: frame,
                 packetNumber: packetNumber,
                 packetNumberSpace: packetNumberSpace,
                 sentPath: sentPath
             )
+        case .none:
+            break
         }
 
         for i in 0..<sentStreams.count {
