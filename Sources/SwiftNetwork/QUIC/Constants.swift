@@ -69,6 +69,7 @@ enum Constants {
     static let preferredAddressCIDSequenceNumber: UInt64 = 1
     static let defaultIdleTimeout: NetworkDuration = .seconds(30)
     static let defaultMaxPTODuration: NetworkDuration = .minutes(2)
+    static let defaultPathRecoveryTimeout: NetworkDuration = .minutes(2)
     static let defaultMaxConnectionIDs = 8
     // Don't delay more than 10ms between two bursts
     static let maxBurstIntervalKernelPacing: NetworkDuration = .milliseconds(10)

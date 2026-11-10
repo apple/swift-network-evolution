@@ -105,7 +105,13 @@ struct Migration: ~Copyable {
             }
         }
 
-        guard let firstChallengeTime else {
+        var nextWakeup = firstChallengeTime
+        if let deadline = connection.pathRecoveryDeadline {
+            let wakeup = max(deadline, now.advanced(by: Timer.timerThreshold))
+            nextWakeup = min(nextWakeup ?? wakeup, wakeup)
+        }
+
+        guard let nextWakeup else {
             // Disable the migration timer in place rather than remove() it: the entry
             // is inserted once at connection setup and reused, so a later resetTimer()
             // re-arms it via reschedule(fromNow: duration) below. remove() would orphan
@@ -119,7 +125,7 @@ struct Migration: ~Copyable {
             return
         }
 
-        let duration = now.duration(to: firstChallengeTime)
+        let duration = now.duration(to: nextWakeup)
         guard duration >= .zero else {
             connection.log.fault("Unexpectedly negative duration (\(duration)) for migration timer")
             return
@@ -400,6 +406,7 @@ extension QUICConnection {
         if currentPath != nil, !state.isTerminal {
             tearDownUnusablePaths(in: &eventContext)
         }
+        evaluatePathRecoveryTimer(in: &eventContext)
     }
 
     // Called once a packet's frames have been handled.
@@ -540,6 +547,22 @@ extension QUICConnection {
             events.append(.pathChanged(pathID))
         }
         runMigrationStrategy(events: events, in: &eventContext)
+    }
+
+    // Arms the path recovery deadline once a client has application data queued and no usable current path,
+    // and clears it when the current path is usable again.
+    func evaluatePathRecoveryTimer(in eventContext: inout NetworkContext.EventContext) {
+        guard !isServer, state == .connected else { return }
+        if currentPath?.state.isUnusable ?? true {
+            guard pathRecoveryDeadline == nil, applicationPendingItems.hasUnsentApplicationData else { return }
+            let timeout = Constants.defaultPathRecoveryTimeout
+            pathRecoveryDeadline = now + timeout
+            log.notice("Unsent data and no usable path, arming path recovery timer for \(timeout)")
+        } else {
+            guard pathRecoveryDeadline != nil else { return }
+            pathRecoveryDeadline = nil
+        }
+        migration.resetTimer(now: now, connection: self, in: &eventContext)
     }
 }
 #endif
