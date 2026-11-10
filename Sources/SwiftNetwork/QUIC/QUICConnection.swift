@@ -276,6 +276,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var isHandlingPacket = false
     var pendingMigrationEvents: [MigrationEvent] = []
 
+    var isPathRecoveryTimerArmed = false
+
     // RETIRE_CONNECTION_ID frames for CIDs that paths gave up, waiting for the next send.
     var queuedRetireConnectionIDSequences: [UInt64] = []
     private(set) var crypto: QUICCrypto
@@ -312,6 +314,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var unackedKeepaliveCount = 0
 
     var maxPTODuration: NetworkDuration = Constants.defaultMaxPTODuration
+    var pathRecoveryTimeout: NetworkDuration = Constants.defaultPathRecoveryTimeout
 
     /// A continuous and an absolute reading of the clock, taken back to back.
     struct ClockSample {
@@ -612,6 +615,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             ) { firedAt, timerState in
                 self.migration.timerFired(at: firedAt, connection: self, in: &timerState)
             }
+
+            migration.pathRecoveryTimerID = timer.insert(
+                description: "Path recovery",
+                timerNow: self.now,
+                in: &eventContext
+            ) { _, timerState in
+                self.isPathRecoveryTimerArmed = false
+                if !self.state.isTerminal {
+                    self.log.error("No usable path within the path recovery timeout, closing connection")
+                    self.errorToReport = .posix(ETIMEDOUT)
+                    self.close(with: .noError, "path recovery timeout", in: &timerState)
+                }
+            }
         }
 
         if let remote, case .address(let remoteAddress) = remote.type,
@@ -674,6 +690,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 maxKeepaliveCount = Int(quicConnectionOptions.keepaliveCount)
             }
             maxPTODuration = quicConnectionOptions.maxPTODuration
+            pathRecoveryTimeout = quicConnectionOptions.pathRecoveryTimeout
 
             allowPMTUD = quicConnectionOptions.pmtud
             pmtudIgnoreCost = quicConnectionOptions.pmtudIgnoreCost
@@ -2938,6 +2955,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 return
             }
             sendFrames(in: &eventContext)
+            migration.evaluatePathRecoveryTimer(connection: self, in: &eventContext)
         }
 
     }
@@ -7018,6 +7036,7 @@ extension QUICConnection {
         if !sendFrames(in: &eventContext) {
             log.datapath("Failed to send DATAGRAM frames")
         }
+        migration.evaluatePathRecoveryTimer(connection: self, in: &eventContext)
     }
 
     func setupNewDatagramFlow(

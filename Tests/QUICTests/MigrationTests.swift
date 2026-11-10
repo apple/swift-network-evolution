@@ -1222,6 +1222,103 @@ final class MigrationTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
+    // MARK: - Path recovery
+
+    private func queueApplicationData() {
+        connection.applicationPendingItems.prependDatagramFlowToService(MultiplexedFlowIdentifier(testValue: 1))
+    }
+
+    private func firePathRecoveryTimer(after timeout: NetworkDuration) {
+        connection.fromExternal { eventContext in
+            self.connection.timer.timerFired(at: self.connection.now.advanced(by: timeout), in: &eventContext)
+        }
+    }
+
+    func testPathRecoveryTimerIsCancelledWhenAPathComesBack() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let lostPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
+            self.connection.currentPath = lostPath
+            self.connection.multiplexingPaths[lostPath.pathIdentifier] = lostPath
+            self.queueApplicationData()
+
+            self.sendPathEvent(.unavailable, on: lostPath)
+            XCTAssertTrue(self.connection.isPathRecoveryTimerArmed, "Path recovery timer not armed")
+
+            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+            newPath.pathIsPrimary = true
+            self.sendPathEvent(.established, on: newPath)
+            XCTAssertTrue(self.connection.currentPath === newPath, "Did not migrate to the new path")
+            XCTAssertFalse(self.connection.isPathRecoveryTimerArmed, "Path recovery timer not cancelled")
+
+            self.firePathRecoveryTimer(after: Constants.defaultPathRecoveryTimeout)
+            XCTAssertEqual(self.connection.state, .connected, "Connection closed by a cancelled timer")
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    func testPathRecoveryTimerWaitsForQueuedData() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            self.connection.currentPath = path
+            self.connection.multiplexingPaths[path.pathIdentifier] = path
+
+            self.sendPathEvent(.unavailable, on: path)
+            XCTAssertFalse(self.connection.isPathRecoveryTimerArmed, "Armed with nothing queued")
+
+            self.queueApplicationData()
+            self.connection.fromExternal { eventContext in
+                self.connection.migration.evaluatePathRecoveryTimer(connection: self.connection, in: &eventContext)
+            }
+            XCTAssertTrue(self.connection.isPathRecoveryTimerArmed, "Not armed once data was queued")
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    func testPathRecoveryTimerUsesTheConfiguredTimeout() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            self.connection.pathRecoveryTimeout = .seconds(5)
+            let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            self.connection.currentPath = path
+            self.connection.multiplexingPaths[path.pathIdentifier] = path
+            self.queueApplicationData()
+
+            self.sendPathEvent(.unavailable, on: path)
+            XCTAssertTrue(self.connection.isPathRecoveryTimerArmed, "Path recovery timer not armed")
+
+            self.firePathRecoveryTimer(after: .seconds(5))
+            XCTAssertEqual(self.connection.state, .closing, "Connection not closed at the configured timeout")
+            XCTAssertEqual(self.connection.errorToReport, .posix(ETIMEDOUT))
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    func testDisabledPathRecoveryTimerIsNeverArmed() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            self.connection.pathRecoveryTimeout = .zero
+            let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            self.connection.currentPath = path
+            self.connection.multiplexingPaths[path.pathIdentifier] = path
+            self.queueApplicationData()
+
+            self.sendPathEvent(.unavailable, on: path)
+            XCTAssertFalse(self.connection.isPathRecoveryTimerArmed, "Disabled path recovery timer armed")
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
     // MARK: - Connection IDs
 
     static func cid(_ value: UInt8) -> QUICConnectionID {

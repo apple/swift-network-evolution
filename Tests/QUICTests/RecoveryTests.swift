@@ -1214,7 +1214,7 @@ final class RecoveryTests: XCTestCase {
         XCTAssertGreaterThan(path.recoveryState.PTOPeriod, .milliseconds(7900))
     }
 
-    // Once the connection has been in PTO recovery for two minutes, the next PTO sends no probe and
+    // Once the connection has been in PTO recovery for the default limit, the next PTO sends no probe and
     // flags the connection to be closed.
     func testPTOLimitReached() {
         connection.context.onQueue {
@@ -1238,13 +1238,16 @@ final class RecoveryTests: XCTestCase {
                 XCTAssertEqual(self.path.recoveryState.PTOCount, 1)
 
                 // Still inside the limit, so it probes as usual.
-                self.connection.recovery.timerFired(at: start.advanced(by: .minutes(1)), in: &eventContext)
+                self.connection.recovery.timerFired(at: start.advanced(by: .seconds(10)), in: &eventContext)
                 XCTAssertFalse(self.connection.recovery.ptoLimitReached)
                 XCTAssertEqual(self.path.recoveryState.PTOCount, 2)
                 let inFlight = self.connection.recovery.totalAckElicitingPacketsInFlight
 
-                // Two minutes after the first PTO: stop probing and flag the connection to close.
-                self.connection.recovery.timerFired(at: start.advanced(by: .minutes(2)), in: &eventContext)
+                // The default limit after the first PTO: stop probing and flag the connection to close.
+                self.connection.recovery.timerFired(
+                    at: start.advanced(by: Constants.defaultMaxPTODuration),
+                    in: &eventContext
+                )
                 XCTAssertTrue(self.connection.recovery.ptoLimitReached)
                 XCTAssertEqual(self.path.recoveryState.PTOCount, 2, "PTO counted after the limit")
                 XCTAssertEqual(
@@ -1258,9 +1261,9 @@ final class RecoveryTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
-    // The limit is per connection, so a connection can be given a shorter one than the two-minute default.
+    // The limit is per connection, so a connection can be given a longer one than the default.
     func testPTOLimitIsConfigurable() {
-        XCTAssertEqual(connection.maxPTODuration, .minutes(2), "Unexpected default PTO limit")
+        XCTAssertEqual(connection.maxPTODuration, Constants.defaultMaxPTODuration, "Unexpected default PTO limit")
         connection.maxPTODuration = .seconds(30)
 
         connection.context.onQueue {
@@ -1281,15 +1284,52 @@ final class RecoveryTests: XCTestCase {
                 self.connection.recovery.timerFired(at: start, in: &eventContext)
                 XCTAssertEqual(self.connection.recovery.firstPTOTimestamp, start)
 
-                // Just inside the configured limit, so it still probes.
+                // Past the default but inside the configured limit, so it still probes.
                 self.connection.recovery.timerFired(at: start.advanced(by: .seconds(29)), in: &eventContext)
                 XCTAssertFalse(self.connection.recovery.ptoLimitReached)
                 XCTAssertEqual(self.path.recoveryState.PTOCount, 2)
 
-                // The configured limit, well short of the two-minute default.
+                // The configured limit.
                 self.connection.recovery.timerFired(at: start.advanced(by: .seconds(30)), in: &eventContext)
                 XCTAssertTrue(self.connection.recovery.ptoLimitReached)
                 XCTAssertEqual(self.path.recoveryState.PTOCount, 2, "PTO counted after the limit")
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // A limit of zero disables it, so the connection keeps probing past the default.
+    func testPTOLimitCanBeDisabled() {
+        connection.maxPTODuration = .zero
+
+        connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .initial, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.transmittedItems.ping = true
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            sentPacket(packet, connection: connection)
+        }
+
+        let start = NetworkClock.Instant.systemNow
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.fromExternal { eventContext in
+                self.connection.recovery.timerFired(at: start, in: &eventContext)
+                XCTAssertEqual(self.path.recoveryState.PTOCount, 1)
+                XCTAssertGreaterThan(
+                    self.connection.recovery.computedTimeout,
+                    Recovery.timerGranularity,
+                    "Timer clamped to a disabled limit"
+                )
+
+                // Well past the default, and still probing.
+                self.connection.recovery.timerFired(at: start.advanced(by: .minutes(10)), in: &eventContext)
+                XCTAssertFalse(self.connection.recovery.ptoLimitReached)
+                XCTAssertEqual(self.path.recoveryState.PTOCount, 2)
             }
             expectation.fulfill()
         }
