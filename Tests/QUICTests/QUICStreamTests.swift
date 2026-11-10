@@ -103,6 +103,21 @@ final class QUICStreamTests: XCTestCase {
         }
     }
 
+    func testStreamMetadataTypeIsKnownBeforeTheStreamHasAnID() {
+        connection.context.onQueue {
+            var pending = QUICStreamInstance(parent: self.connection, inbound: false)
+            pending.unidirectional = true
+            let metadata = pending.streamMetadata
+            XCTAssertEqual(metadata.streamID, 0)
+            XCTAssertEqual(metadata.streamType, .unidirectional, "a pending stream reports the type it will have")
+
+            pending.setup(streamID: QUICStreamID(2), logPrefixer: quicStreamTestsLogPrefixer)
+            XCTAssertEqual(metadata.streamID, 2, "the metadata made earlier follows the stream's ID")
+            XCTAssertEqual(metadata.streamType, .unidirectional)
+            pending.destroyFromExternalTest()
+        }
+    }
+
     func testFinalSizeDefaultsToNil() {
         XCTAssertNil(holder.stream.finalSize)
     }
