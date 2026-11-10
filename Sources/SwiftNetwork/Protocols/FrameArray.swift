@@ -76,12 +76,29 @@ public struct FrameArray: ~Copyable {
         frames.capacity
     }
 
-    #if !NETWORK_EMBEDDED
+#if !NETWORK_EMBEDDED
     @_lifetime(borrow self)
     func bytes(at index: Int) -> RawSpan? {
-        frames[index].bytes
+        // The Lifetimes feature can't propagate dependence out of UniqueDeque's borrow
+        // subscript, so extract the frame's heap pointer inside a single borrow expression
+        // and rebuild the span unchecked. The frame storage is heap-allocated and owned by
+        // self, so the pointer stays valid for the borrow of self.
+        var buffer: UnsafeRawBufferPointer?
+        peekFrame(at: index) { frame in
+            frame.span?.withUnsafeBufferPointer { bytes in
+                buffer = UnsafeRawBufferPointer(bytes)
+            }
+        }
+        if let buffer {
+            return _overrideLifetime(unsafe RawSpan(_unsafeBytes: buffer), borrowing: self)
+        }
+        return nil
     }
     #endif
+
+    func peekFrame<R>(at index: Int, _ access: (borrowing Frame) -> R) -> R {
+        access(frames[index])
+    }
 
     @_optimize(speed)
     public mutating func popFirst() -> Frame? {
