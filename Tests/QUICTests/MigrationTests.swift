@@ -44,6 +44,7 @@ final class MigrationTests: XCTestCase {
 
     static let oldCID = QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!
     static let newCID = QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!
+    static let probeCID = QUICConnectionID([0xC1, 0xC2, 0xC3, 0xC4])!
 
     override func setUp() {
         let expectation = XCTestExpectation()
@@ -240,6 +241,69 @@ final class MigrationTests: XCTestCase {
                 "Migration timer left disarmed after an early fire"
             )
 
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // A probe path that never gets a PATH_RESPONSE is marked unreachable by the migration timer, and its
+    // DCID is retired so the peer can issue a replacement.
+    func testUnansweredProbePathIsMarkedUnreachableByTheMigrationTimer() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            let probePath = self.makePath(dcid: Self.probeCID, sequenceNumber: 3, validated: false)
+            self.connection.currentPath = currentPath
+            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
+            self.connection.multiplexingPaths[probePath.pathIdentifier] = probePath
+
+            defer { self.connection.pinnedClock = nil }
+            func fire(at instant: NetworkClock.Instant) {
+                self.connection.pinnedClock = .init(continuous: instant, absolute: instant)
+                self.connection.fromExternal { eventContext in
+                    self.connection.timer.timerFired(at: instant, in: &eventContext)
+                }
+            }
+            let start = NetworkClock.Instant.testBase
+            self.connection.pinnedClock = .init(continuous: start, absolute: start)
+
+            // The first challenge is sent when probing starts. The timer sends the rest.
+            self.connection.fromExternal { eventContext in
+                probePath.beginValidation(in: &eventContext)
+                self.connection.sendFrames(on: probePath, in: &eventContext)
+            }
+            XCTAssertEqual(probePath.challengesSent, 1)
+            for sent in 2...QUICPath.maximumPendingChallenges {
+                fire(at: probePath.nextChallengeTime!)
+                XCTAssertEqual(probePath.challengesSent, sent)
+                XCTAssertTrue(probePath.state == .probing, "Probe path given up on too early")
+            }
+
+            XCTAssertEqual(
+                self.connection.timer.nextDeadline,
+                probePath.nextChallengeTime,
+                "Timer not armed for giving up"
+            )
+
+            // Another event can re-arm the timer once the give-up is due but before the timer fires. That
+            // must not leave the timer disarmed.
+            let giveUpTime = probePath.nextChallengeTime!
+            self.connection.pinnedClock = .init(continuous: giveUpTime, absolute: giveUpTime)
+            self.connection.fromExternal { eventContext in
+                self.connection.migration.resetTimer(now: giveUpTime, connection: self.connection, in: &eventContext)
+            }
+            fire(at: giveUpTime)
+
+            XCTAssertTrue(probePath.state == .unreachable, "Probe path not marked unreachable")
+            XCTAssertNil(
+                self.connection.remoteCIDs.find(connectionID: Self.probeCID),
+                "Probe path DCID still held in remoteCIDs"
+            )
+            XCTAssertEqual(
+                self.connection.applicationPendingItems.retireConnectionIDs.map(\.sequence),
+                [3],
+                "RETIRE_CONNECTION_ID not queued on the connection"
+            )
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)

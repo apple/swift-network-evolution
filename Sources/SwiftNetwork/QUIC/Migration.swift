@@ -54,7 +54,11 @@ struct Migration: ~Copyable {
 
         var firstChallengeTime: NetworkClock.Instant?
         connection.applyToAllPaths { path in
-            if let nextChallengeTime = path.nextChallengeTime {
+            if var nextChallengeTime = path.nextChallengeTime {
+                if path.shouldMarkUnreachable(now: now) {
+                    // Time to give up on this path. Wake the timer so `timerFired` does it.
+                    nextChallengeTime = now.advanced(by: Timer.timerThreshold)
+                }
                 guard now < nextChallengeTime else {
                     return
                 }
@@ -95,12 +99,43 @@ struct Migration: ~Copyable {
         )
     }
 
+    private func pathUnreachable(
+        _ path: QUICPath,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        connection.retireOutboundCID(forPathGoingAway: path)
+        path.changeState(to: .unreachable)
+        if let localEndpoint = path.localEndpoint, let remoteEndpoint = path.remoteEndpoint,
+            case .address(let localAddress) = localEndpoint.type,
+            case .address(let remoteAddress) = remoteEndpoint.type
+        {
+            let pathInfo = QUICPathInfo(
+                isValidated: path.isValidated,
+                remote: remoteAddress,
+                local: localAddress
+            )
+            connection.deliverNetworkProtocolEvent(
+                flow: .allFlows,
+                event: .init(quicEvent: .pathUnreachable(pathInfo)),
+                in: &eventContext
+            )
+        }
+        connection.sendFrames(in: &eventContext)
+    }
+
     func timerFired(
         at firedAt: NetworkClock.Instant,
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
     ) {
         connection.log.debug("Migration timer fired")
+
+        connection.applyToAllPaths { path in
+            if path.shouldMarkUnreachable(now: firedAt) {
+                pathUnreachable(path, connection: connection, in: &eventContext)
+            }
+        }
 
         // The timer must be re-armed even when no challenge is due: `Timer` fires up to
         // `Timer.timerThreshold` early and has already disabled the entry, so an early wakeup would
