@@ -209,13 +209,16 @@ public struct QUICConnectionProtocol: NetworkProtocol {
             set { self._idleTimeout = newValue }
         }
 
-        internal var _maxPTODuration: NetworkDuration = .minutes(2)
+        internal var _maxPTODuration: NetworkDuration = .seconds(20)
         /// How long the connection may stay in PTO recovery
         /// before it is closed with ETIMEDOUT.
+        /// The default is 20 seconds; `.zero` disables the limit.
         public var maxPTODuration: NetworkDuration {
             get { self._maxPTODuration }
             set { self._maxPTODuration = newValue }
         }
+
+        public var pathRecoveryTimeout: NetworkDuration?
 
         #if !NETWORK_EMBEDDED
         internal var _trafficAnalysisDefenses = TrafficAnalysisDefenses()
@@ -605,6 +608,7 @@ public struct QUICConnectionProtocol: NetworkProtocol {
                 && lhs.probeSimultaneously == rhs.probeSimultaneously
                 && lhs.phoneCallRelayOptimization == rhs.phoneCallRelayOptimization
                 && lhs.ignorePathErrors == rhs.ignorePathErrors && lhs.setupPlaceholder == rhs.setupPlaceholder
+                && lhs.pathRecoveryTimeout == rhs.pathRecoveryTimeout
                 && lhs.disableAutomaticNewConnectionIDs == rhs.disableAutomaticNewConnectionIDs
                 && lhs.testSendingShortPackets == rhs.testSendingShortPackets
                 && lhs.supportWebTransport == rhs.supportWebTransport
