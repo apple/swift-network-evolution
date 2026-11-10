@@ -74,13 +74,13 @@ extension QUICConnection {
     /// Borrows nest: only the outermost one performs the deferred work.
     @inline(always)
     func withFlowBorrowed<R: ~Copyable, E: Error>(
-        of table: QUICConnectionStateMachine.Table,
+        of table: QUICDeferredWorkState.Table,
         in eventContext: inout NetworkContext.EventContext,
         _ body: (inout NetworkContext.EventContext) throws(E) -> R
     ) throws(E) -> R {
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: table)
+        let wasFlowBorrowed = deferredWork.beginFlowBorrow(of: table)
         defer {
-            if let work = stateMachine.endFlowBorrow(of: table, wasFlowBorrowed: wasFlowBorrowed) {
+            if let work = deferredWork.endFlowBorrow(of: table, wasFlowBorrowed: wasFlowBorrowed) {
                 runDeferredStreamWork(work, in: &eventContext)
             }
         }
@@ -89,12 +89,12 @@ extension QUICConnection {
 
     /// The same, from outside the protocol stack, where no event context is held.
     func withFlowBorrowed<R: ~Copyable, E: Error>(
-        of table: QUICConnectionStateMachine.Table,
+        of table: QUICDeferredWorkState.Table,
         _ body: () throws(E) -> R
     ) throws(E) -> R {
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: table)
+        let wasFlowBorrowed = deferredWork.beginFlowBorrow(of: table)
         defer {
-            if let work = stateMachine.endFlowBorrow(of: table, wasFlowBorrowed: wasFlowBorrowed) {
+            if let work = deferredWork.endFlowBorrow(of: table, wasFlowBorrowed: wasFlowBorrowed) {
                 performDeferredStreamWorkFromExternal(work)
             }
         }
@@ -109,9 +109,9 @@ extension QUICConnection {
         _ flowID: MultiplexedFlowIdentifier,
         _ body: (inout QUICStreamInstance) throws(E) -> R
     ) throws(E) -> R? {
-        assert(stateMachine.isSendActive, "A stream is borrowed for sending without the send path claimed")
-        stateMachine.beginTableBorrow(.streams)
-        defer { stateMachine.endTableBorrow(.streams) }
+        assert(deferredWork.isSendActive, "A stream is borrowed for sending without the send path claimed")
+        deferredWork.beginTableBorrow(.streams)
+        defer { deferredWork.endTableBorrow(.streams) }
         return try multiplexedFlows.withFlow(flowID, body)
     }
 
@@ -141,7 +141,7 @@ extension QUICConnection {
 
     @inline(never)
     func runDeferredStreamWork(
-        _ work: QUICConnectionStateMachine.DeferredWork,
+        _ work: QUICDeferredWorkState.ReadyWork,
         in eventContext: inout NetworkContext.EventContext
     ) {
         if let sendCloseFrame = work.close {
@@ -151,7 +151,7 @@ extension QUICConnection {
             // whether it is idle. A close that did not reach its own send (the connection was already
             // closing, or never started) would leave those sends, and the paths they hold, to fire on
             // some later release, so drop them here.
-            _ = stateMachine.takePlainSend()
+            _ = deferredWork.takePlainSend()
             _ = takePathSends()
             return
         }
@@ -164,7 +164,7 @@ extension QUICConnection {
         }
     }
 
-    func performDeferredStreamWorkFromExternal(_ work: QUICConnectionStateMachine.DeferredWork) {
+    func performDeferredStreamWorkFromExternal(_ work: QUICDeferredWorkState.ReadyWork) {
         fromExternal { eventContext in
             runDeferredStreamWork(work, in: &eventContext)
         }
