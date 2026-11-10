@@ -7092,6 +7092,10 @@ extension QUICConnection {
 
         let logIDString = self.logIDString
         performOnStream(flowID, in: &eventContext) { (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
+            guard stream.send.state != .resetReceived else {
+                stream.log.debug("[S\(stream.streamID?.value ?? 0)] duplicate RESET_STREAM ACK ignored")
+                return
+            }
             if stream.send.state == .send {
                 stream.log.error(
                     "[S\(stream.streamID?.value ?? 0)] in state send (resetSent? \(stream.resetSent))"
