@@ -373,6 +373,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private var disableAutomaticNewConnectionIDs = false
     private var resendRejectedEarlyDataAutomatically = false
 
+    /// The message identifier of every inbound stream's metadata on this connection. A stream's metadata
+    /// is not a message, so the streams of a connection share one identifier, which saves the locked
+    /// counter a fresh insecure identifier takes for each stream. It is not unique per stream, and does
+    /// not identify a stream (the stream ID does).
+    private let inboundStreamMessageIdentifier = SystemUUID(insecure: true)
+
     private(set) var allowPMTUD = false
     private(set) var pmtudIgnoreCost = false
     private(set) var pmtudInterval: NetworkDuration? = nil
@@ -2980,7 +2986,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             streamID = nil
         }
 
-        stream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
         stream.setup(streamID: streamID, logPrefixer: logPrefixer)
 
         if let remoteTransportParameters {
@@ -6054,8 +6059,7 @@ extension QUICConnection {
                     return false
                 }
                 // To inform QUICStreamMetadata
-                stream.streamMetadata.streamID = stream.streamID?.value ?? 0  // Default for QUICStreamMetadata is 0
-                stream.streamMetadata.streamType = streamType
+                stream.updateStreamMetadataID()
                 return true
             }
             guard readied == true else {
@@ -6719,7 +6723,6 @@ extension QUICConnection {
                 inbound: true,
                 in: &eventContext
             )
-            newStream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
 
             let newFlowIdentifier = newStream.flowIdentifier
             knownFlows[newStreamID] = newFlowIdentifier
@@ -6743,10 +6746,12 @@ extension QUICConnection {
             let newStreamMetadata = newStream.streamMetadata
             insertFlow(newStream, for: newFlowIdentifier)
 
+            // The message identifier names a message; a stream's metadata is not one, so inbound
+            // streams share one, which saves the locked counter a fresh insecure identifier takes.
             let abstractMetadata: AbstractProtocolMetadata = ProtocolMetadata<QUICStreamProtocol>(
                 protocolIdentifier: QUICStreamProtocol.identifier,
                 perProtocolMetadata: newStreamMetadata,
-                messageIdentifier: SystemUUID(insecure: true)
+                messageIdentifier: inboundStreamMessageIdentifier
             )
             deliverNewInboundFlowEvent(
                 newStreamInstance,
@@ -7029,7 +7034,7 @@ extension QUICConnection {
         _ packet: borrowing SentPacketRecord,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
-        sentPath: QUICPath,
+        sentPath: QUICPath?,
         in eventContext: inout NetworkContext.EventContext
     ) {
         packet.transmittedItems.allAcknowledged(
@@ -7045,7 +7050,7 @@ extension QUICConnection {
         frame: borrowing TransmittedItems.TransmittedAckFrame,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
-        sentPath: QUICPath
+        sentPath: QUICPath?
     ) {
         Ack.withBlocks(frame: frame) { block in
             ack.acknowledged(
