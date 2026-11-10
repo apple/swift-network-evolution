@@ -2714,9 +2714,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 let shouldCloseStream =
                     receiveIsDataRead
                     && (stream.receivedStopSending
-                        || (!stream.closed && stream.send.state == .dataReceived))
+                        || (!stream.closed && stream.send.state.isTerminal))
                 if shouldCloseStream {
-                    stream.close(errorCode: nil, in: &ctx)
+                    stream.close(errorCode: stream.closeError, in: &ctx)
                 }
             }
         }
@@ -7092,6 +7092,10 @@ extension QUICConnection {
 
         let logIDString = self.logIDString
         performOnStream(flowID, in: &eventContext) { (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
+            guard stream.send.state != .resetReceived else {
+                stream.log.debug("[S\(stream.streamID?.value ?? 0)] duplicate RESET_STREAM ACK ignored")
+                return
+            }
             if stream.send.state == .send {
                 stream.log.error(
                     "[S\(stream.streamID?.value ?? 0)] in state send (resetSent? \(stream.resetSent))"
@@ -7144,9 +7148,9 @@ extension QUICConnection {
             }
             if streamFinished, stream.peerAcknowledgedFIN, stream.send.state != .dataReceived {
                 stream.send.state.change(logIDString: stream.log.logPrefix, to: .dataReceived)
-                if !stream.closed, stream.receive.state == .dataRead {
+                if !stream.closed, stream.receive.state.isTerminal {
                     // If both directions are closed, and all data is read, close the stream
-                    stream.close(errorCode: nil, in: &ctx)
+                    stream.close(errorCode: stream.closeError, in: &ctx)
                 }
             }
         }

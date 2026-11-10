@@ -1769,6 +1769,261 @@ class QUICTestHarness {
         stop()
     }
 
+    /// The client sends a request without FIN and resets its send side. The server reads the
+    /// request, and responds with data + FIN only after the client has the `RESET_STREAM` ACKed.
+    ///
+    /// Both streams then have one part in "resetReceived" and the other done: the client reads the
+    /// response to "dataRead", the server gets its FIN ACKed to "dataReceived". Both are closed
+    /// so both must see the disconnected event.
+    func runQUICResetStreamBeforeResponse(
+        applicationError: UInt64 = 42,
+        timeout: TimeInterval = 4.0
+    ) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1") else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        let request = Array("GET /foo".utf8)
+        let response = Array("<b>Success</b>".utf8)
+        var serverStream: StreamUpperHarness<TestStreamLinkageFamily>?
+        var serverAbortFinished = false
+        var clientResponse: [UInt8] = []
+        var clientDisconnected = false
+        var serverDisconnected = false
+        var serverCloseError: NetworkError?
+        var clientCloseError: NetworkError?
+
+        context.async {
+            clientStream.waitForDisconnected {
+                clientDisconnected = true
+            }
+            clientStream.waitForError { error in
+                clientCloseError = error
+            }
+            self.state?.serverHarness.waitForNewFlow { state in
+                guard let stream = self.state?.serverHarness.upperHarnesses.last else {
+                    XCTFail("Server flow missing")
+                    return
+                }
+                XCTAssertEqual(stream.read(in: &state), request, "Server should read the request")
+                stream.waitForInboundAborted { _ in
+                    serverAbortFinished = true
+                }
+                stream.waitForDisconnected {
+                    serverDisconnected = true
+                }
+                stream.waitForError { error in
+                    serverCloseError = error
+                }
+                serverStream = stream
+            }
+            XCTAssertTrue(clientStream.write(request), "Client failed to write the request")
+        }
+        wait(until: { serverStream != nil }, timeout: timeout, "server sees new flow")
+
+        context.async {
+            clientStream.abortOutbound(error: .init(quicApplicationError: applicationError))
+        }
+        wait(until: { serverAbortFinished }, timeout: timeout, "server sees RESET_STREAM")
+        // Let the server's ACK of the RESET_STREAM reach the client before the response goes out.
+        self.allow(.milliseconds(100))
+
+        #if canImport(SwiftNetwork)
+        onContext {
+            let client = self.state?.clientInstance
+            let sendState = client?.someFlowIdentifier.flatMap { flowID in
+                client?.withFlow(flowID) { $0.send.state }
+            }
+            XCTAssertEqual(sendState, .resetReceived, "RESET_STREAM must be ACKed before the response")
+        }
+        #endif
+
+        context.async {
+            clientStream.waitForInboundDataAvailable { state, _ in
+                clientResponse += clientStream.read(in: &state) ?? []
+            }
+            let wrote = serverStream?.write(response, sendFIN: true) ?? false
+            XCTAssertTrue(wrote, "Server failed to write the response")
+        }
+        wait(until: { clientStream.receivedFIN }, timeout: timeout, "client reads the response")
+        XCTAssertEqual(clientResponse, response)
+
+        wait(until: { clientDisconnected }, timeout: timeout, "client stream to close")
+        wait(until: { serverDisconnected }, timeout: timeout, "server stream to close")
+        // The server's receive side was reset by the peer, so its close must report that.
+        XCTAssertEqual(serverCloseError, NetworkError.posix(ECONNRESET), "Server close should report the peer reset")
+        // The client's own send side was reset, which is reported the same way whichever event closes it.
+        XCTAssertEqual(clientCloseError, NetworkError.posix(ECONNRESET), "Client close should report its reset")
+        Logger.test.debug("Test phase: Termination")
+        stop()
+    }
+
+    /// The mirror of `runQUICResetStreamBeforeResponse`. The client sends a request with FIN, and the
+    /// server resets its send side instead of responding.
+    ///
+    /// The client's stream has "dataReceived" on the send side and "resetReceived" on the receive side;
+    /// the server's has "dataRead" and "resetReceived". Both are closed, so both must
+    /// see the disconnected event.
+    func runQUICResetStreamInsteadOfResponse(
+        applicationError: UInt64 = 42,
+        timeout: TimeInterval = 4.0
+    ) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1") else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        let request = Array("GET /foo".utf8)
+        var serverStream: StreamUpperHarness<TestStreamLinkageFamily>?
+        var clientAbortFinished = false
+        var clientDisconnected = false
+        var serverDisconnected = false
+        var clientCloseError: NetworkError?
+
+        context.async {
+            clientStream.waitForInboundAborted { _ in
+                clientAbortFinished = true
+            }
+            clientStream.waitForDisconnected {
+                clientDisconnected = true
+            }
+            clientStream.waitForError { error in
+                clientCloseError = error
+            }
+            self.state?.serverHarness.waitForNewFlow { state in
+                guard let stream = self.state?.serverHarness.upperHarnesses.last else {
+                    XCTFail("Server flow missing")
+                    return
+                }
+                XCTAssertEqual(stream.read(in: &state), request, "Server should read the request")
+                stream.waitForDisconnected {
+                    serverDisconnected = true
+                }
+                serverStream = stream
+            }
+            XCTAssertTrue(clientStream.write(request, sendFIN: true), "Client failed to write the request")
+        }
+        wait(until: { serverStream != nil }, timeout: timeout, "server sees new flow")
+
+        context.async {
+            serverStream?.abortOutbound(error: .init(quicApplicationError: applicationError))
+        }
+        wait(until: { clientAbortFinished }, timeout: timeout, "client sees RESET_STREAM")
+
+        wait(until: { clientDisconnected }, timeout: timeout, "client stream to close")
+        wait(until: { serverDisconnected }, timeout: timeout, "server stream to close")
+        // The client's receive side was reset by the peer, so its close must report that.
+        XCTAssertEqual(clientCloseError, NetworkError.posix(ECONNRESET), "Client close should report the peer reset")
+        Logger.test.debug("Test phase: Termination")
+        stop()
+    }
+
+    /// Both sides reset their send side. The client's `RESET_STREAM` is ACKed before the server resets
+    /// its own, so the client's send side is "resetReceived" when the peer's reset arrives.
+    ///
+    /// Both directions of both streams are then reset, so both streams are closed and must see the
+    /// disconnected event.
+    func runQUICResetStreamFromBothSides(
+        applicationError: UInt64 = 42,
+        timeout: TimeInterval = 4.0
+    ) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1") else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        let request = Array("GET /foo".utf8)
+        var serverStream: StreamUpperHarness<TestStreamLinkageFamily>?
+        var serverAbortFinished = false
+        var clientAbortFinished = false
+        var clientDisconnected = false
+        var serverDisconnected = false
+        var clientCloseError: NetworkError?
+        var serverCloseError: NetworkError?
+
+        context.async {
+            clientStream.waitForInboundAborted { _ in
+                clientAbortFinished = true
+            }
+            clientStream.waitForDisconnected {
+                clientDisconnected = true
+            }
+            clientStream.waitForError { error in
+                clientCloseError = error
+            }
+            self.state?.serverHarness.waitForNewFlow { state in
+                guard let stream = self.state?.serverHarness.upperHarnesses.last else {
+                    XCTFail("Server flow missing")
+                    return
+                }
+                XCTAssertEqual(stream.read(in: &state), request, "Server should read the request")
+                stream.waitForInboundAborted { _ in
+                    serverAbortFinished = true
+                }
+                stream.waitForDisconnected {
+                    serverDisconnected = true
+                }
+                stream.waitForError { error in
+                    serverCloseError = error
+                }
+                serverStream = stream
+            }
+            XCTAssertTrue(clientStream.write(request), "Client failed to write the request")
+        }
+        wait(until: { serverStream != nil }, timeout: timeout, "server sees new flow")
+
+        context.async {
+            clientStream.abortOutbound(error: .init(quicApplicationError: applicationError))
+        }
+        wait(until: { serverAbortFinished }, timeout: timeout, "server sees RESET_STREAM")
+        // Let the server's ACK of the RESET_STREAM reach the client before the server resets.
+        self.allow(.milliseconds(100))
+
+        #if canImport(SwiftNetwork)
+        onContext {
+            let client = self.state?.clientInstance
+            let sendState = client?.someFlowIdentifier.flatMap { flowID in
+                client?.withFlow(flowID) { $0.send.state }
+            }
+            XCTAssertEqual(sendState, .resetReceived, "RESET_STREAM must be ACKed before the peer resets")
+        }
+        #endif
+
+        context.async {
+            serverStream?.abortOutbound(error: .init(quicApplicationError: applicationError))
+        }
+        wait(until: { clientAbortFinished }, timeout: timeout, "client sees RESET_STREAM")
+
+        wait(until: { clientDisconnected }, timeout: timeout, "client stream to close")
+        wait(until: { serverDisconnected }, timeout: timeout, "server stream to close")
+        XCTAssertEqual(clientCloseError, NetworkError.posix(ECONNRESET), "Client close should report the reset")
+        XCTAssertEqual(serverCloseError, NetworkError.posix(ECONNRESET), "Server close should report the reset")
+        Logger.test.debug("Test phase: Termination")
+        stop()
+    }
+
     /// Closes a stream that still has unread inbound bytes using `stop()`, which
     /// tears down both directions at once and so emits a `RESET_STREAM`.
     ///
