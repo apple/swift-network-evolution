@@ -76,7 +76,7 @@ public struct FrameArray: ~Copyable {
         frames.capacity
     }
 
-#if !NETWORK_EMBEDDED
+    #if !NETWORK_EMBEDDED
     @_lifetime(borrow self)
     func bytes(at index: Int) -> RawSpan? {
         // The Lifetimes feature can't propagate dependence out of UniqueDeque's borrow
