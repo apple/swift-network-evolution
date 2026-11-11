@@ -52,7 +52,22 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     private var pendingOutputFrames = FrameArray()
     var localEndpoint: Endpoint?
     var remoteEndpoint: Endpoint?
-    private(set) var maximumOutputSize = 1500
+    // setup fills this from Endpoint.sourceInterfaceIndex(parameters:), and connect passes it to
+    // connectx.
+    private var sourceInterfaceIndex = 0
+    private var isUnixDomain = false
+
+    private var counts = SocketTransferCounts()
+    // configuredDSCP is the DSCP from the IP options. lastTypeOfService holds the ECN and DSCP bits
+    // that IP_TOS or IPV6_TCLASS last set. A frame that carries no DSCP of its own keeps the
+    // configured one, so a protocol that marks only ECN, such as QUIC, doesn't clear it.
+    private var configuredDSCP: UInt8 = 0
+    private var lastTypeOfService: UInt8 = 0
+
+    // This is the kernel's default maximum datagram size. It sizes both input and output frames,
+    // whatever the path MTU, and IP fragments a datagram larger than the MTU. A smaller read buffer
+    // truncates the datagram.
+    private static let maximumDatagramSize = 9216
 
     init(context: NetworkContext) {
         self.context = context
@@ -77,15 +92,29 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
 
         self.localEndpoint = local
         self.remoteEndpoint = remote
+        self.sourceInterfaceIndex = remote.sourceInterfaceIndex(parameters: parameters)
 
         guard case .address(let address) = remote.type else {
             throw NetworkError.posix(EINVAL)
         }
-        socket = try createSocket(for: address)
+        guard let family = address.addressFamily else {
+            throw NetworkError.posix(EAFNOSUPPORT)
+        }
+        let socket = try SystemSocket(
+            protocolFamily: family,
+            sockType: .datagram,
+            protocolSubType: 0,
+            nonBlocking: true
+        )
+        self.socket = socket
+        // Reset what belongs to the previous socket, in case setup runs again.
+        isUnixDomain = family == .unix
+        configuredDSCP = 0
+        lastTypeOfService = 0
 
-        // Use the path MTU if available
-        if let path, path.maximumPacketSize > 0 {
-            maximumOutputSize = path.maximumPacketSize
+        applyDefaultSocketOptions(socket: socket)
+        if let parameters {
+            applyParameterOptions(socket: socket, parameters: parameters)
         }
 
         setupReadSource()
@@ -93,16 +122,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     }
 
     public func teardown() {
-        // Resume suspended sources before cancelling
-        if inputSourceSuspended {
-            dispatchReadSource?.resume()
-            inputSourceSuspended = false
-        }
-        inputUnacknowledged = false
-        dispatchReadSource?.setEventHandler(handler: nil)
-        // The cancel handler releases the shared source fd once libdispatch is done.
-        dispatchReadSource?.cancel()
-        dispatchReadSource = nil
+        cancelReadSource()
         cancelWriteSource()
         socket = nil
         incomingFrames.finalizeAllFramesAsFailed()
@@ -119,29 +139,90 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
         }
 
         do {
-            // Bind to local address and port before connecting
-            if let localEndpoint, case .address(let localAddress) = localEndpoint.type {
-                try bindSocket(to: localAddress, port: localEndpoint.port)
+            // A Unix-domain socket has no local IP address to bind.
+            if !isUnixDomain, let localEndpoint, case .address(let localAddress) = localEndpoint.type {
+                try socket.bind(to: localAddress, port: localEndpoint.port)
             }
-
-            let ip: any IPAddress
-            switch address.type {
-            case .v4(let addr, _): ip = addr
-            case .v6(let addr, _): ip = addr
-            default:
-                log.error("Unsupported address family for connect")
-                deliverDisconnectedEvent(error: .posix(EAFNOSUPPORT), in: &eventContext)
-                return
-            }
-
-            _ = try socket.connectSocket(to: ip, port: remoteEndpoint.port)
+            _ = try socket.connect(to: remoteEndpoint, address: address, sourceInterfaceIndex: sourceInterfaceIndex)
         } catch {
             log.error("Failed to connect: \(error)")
-            deliverDisconnectedEvent(error: .posix(ECONNREFUSED), in: &eventContext)
+            deliverDisconnectedEvent(error: error, in: &eventContext)
             return
         }
 
         deliverConnectedEvent(in: &eventContext)
+    }
+
+    // MARK: - Socket options
+
+    private func applyDefaultSocketOptions(socket: SystemSocket) {
+        #if canImport(Darwin)
+        do { try socket.setNoSigPipe(true) } catch { log.info("Failed to set SO_NOSIGPIPE: \(error)") }
+        #endif
+    }
+
+    // This applies the options from the parameters to a datagram socket. It logs a failure and
+    // goes on.
+    private func applyParameterOptions(socket: SystemSocket, parameters: Parameters) {
+        socket.applySocketOptions(from: parameters, log)
+
+        let stack = parameters.defaultStack
+        let ipOptions = stack.internetOptionsAsIPOptions(mutable: false)?.perProtocolOptions
+        let isQUIC =
+            switch stack.transport {
+            case .quic, .quicConnection: true
+            default: false
+            }
+        if let isIPv6 = remoteEndpoint?.isIPv6Address, ipOptions != nil || isQUIC {
+            var options = ipOptions ?? IPProtocol.Options()
+            if isQUIC {
+                // QUIC discovers the path MTU itself, so its datagrams must not be fragmented.
+                options.fragmentationEnabled = false
+            }
+            socket.applyIPOptions(options, isIPv6: isIPv6, log)
+            if let dscpValue = options.dscpValue {
+                configuredDSCP = dscpValue
+                lastTypeOfService = dscpValue << 2
+            }
+        }
+
+        #if canImport(Darwin)
+        if let isIPv6 = remoteEndpoint?.isIPv6Address {
+            // Always receive the ECN bits, and receive the hop limit when the IP options ask for
+            // it.
+            let wantsHopLimit = ipOptions?.receiveHopLimit == true
+            var receiveOptions: [(level: CInt, name: CInt, label: String)]
+            if isIPv6 {
+                receiveOptions = [(CInt(IPPROTO_IPV6), IPV6_RECVTCLASS, "IPV6_RECVTCLASS")]
+                if wantsHopLimit {
+                    let name = SystemSocket.socketOptionIPV6ReceiveHopLimit
+                    receiveOptions.append((CInt(IPPROTO_IPV6), name, "IPV6_RECVHOPLIMIT"))
+                }
+            } else {
+                receiveOptions = [(CInt(IPPROTO_IP), IP_RECVTOS, "IP_RECVTOS")]
+                if wantsHopLimit {
+                    receiveOptions.append((CInt(IPPROTO_IP), IP_RECVTTL, "IP_RECVTTL"))
+                }
+            }
+            for option in receiveOptions {
+                do {
+                    try socket.setSocketOption(level: option.level, name: option.name, value: CInt(1))
+                } catch {
+                    log.info("Failed to set \(option.label): \(error)")
+                }
+            }
+        }
+
+        if case .udp(let options) = stack.transport, let udpOptions = options.perProtocolOptions,
+            udpOptions.contains(.preferNoChecksum)
+        {
+            do {
+                try socket.setSocketOption(level: CInt(IPPROTO_UDP), name: UDP_NOCKSUM, value: CInt(1))
+            } catch {
+                log.info("Failed to set UDP_NOCKSUM: \(error)")
+            }
+        }
+        #endif
     }
 
     // MARK: - BottomDatagramProtocol
@@ -166,7 +247,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     ) throws(NetworkError) -> FrameArray? {
         // If prior writes are still pending, return nil to apply backpressure
         guard pendingOutputFrames.isEmpty else { return nil }
-        let frameSize = min(minimumDatagramSize, maximumOutputSize)
+        let frameSize = min(minimumDatagramSize, SocketDatagramProtocol.maximumDatagramSize)
         var frameArray = FrameArray(capacity: maximumDatagramCount)
         for _ in 0..<maximumDatagramCount {
             frameArray.add(frame: Frame(count: frameSize))
@@ -186,42 +267,10 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     public var metadata: AbstractProtocolMetadata? { nil }
     #endif
 
-    // MARK: - Private helpers
+    // MARK: - Metrics
 
-    private func createSocket(for address: AddressEndpoint) throws(NetworkError) -> SystemSocket {
-        switch address.type {
-        case .v4:
-            return try SystemSocket(
-                protocolFamily: .ipv4,
-                sockType: .datagram,
-                protocolSubType: 0,
-                nonBlocking: true
-            )
-        case .v6:
-            return try SystemSocket(
-                protocolFamily: .ipv6,
-                sockType: .datagram,
-                protocolSubType: 0,
-                nonBlocking: true
-            )
-        default:
-            throw NetworkError.posix(EAFNOSUPPORT)
-        }
-    }
-
-    private func bindSocket(to address: AddressEndpoint, port: UInt16) throws(NetworkError) {
-        do {
-            switch address.type {
-            case .v4(let ip, _):
-                try socket?.bindSocket(address: ip, port: port)
-            case .v6(let ip, _):
-                try socket?.bindSocket(address: ip, port: port)
-            default:
-                break
-            }
-        } catch {
-            throw NetworkError.posix(EADDRNOTAVAIL)
-        }
+    public func updateDataTransferSnapshot(_ snapshot: inout DataTransferSnapshot) {
+        counts.fill(&snapshot, includingPackets: true)
     }
 
     // MARK: - Read source
@@ -267,18 +316,40 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     }
 
     private func handleSocketReadEvent() {
-        withUnsafeTemporaryAllocation(byteCount: maximumOutputSize, alignment: 1) { buffer in
+        let readSize = SocketDatagramProtocol.maximumDatagramSize
+        withUnsafeTemporaryAllocation(byteCount: readSize, alignment: 1) { buffer in
             let readBuffer = buffer.baseAddress!
             var receivedAny = false
+            var readError: NetworkError? = nil
             repeat {
-                guard let result = try? socket?.readIOResult(buffer: readBuffer, size: maximumOutputSize) else {
+                guard let socket else { break }
+                let result: IOResult<Int>
+                let packetInfo: ReceivedPacketInfo
+                do throws(NetworkError) {
+                    #if canImport(Darwin)
+                    (result, packetInfo) = try receiveDatagram(on: socket, into: readBuffer, size: readSize)
+                    #else
+                    result = try socket.readIOResult(buffer: readBuffer, size: readSize)
+                    packetInfo = ReceivedPacketInfo()
+                    #endif
+                } catch {
+                    readError = error
                     break
                 }
                 guard case .processed(let bytesRead) = result else {
                     break
                 }
-                let frame = Frame(copyBuffer: UnsafeRawBufferPointer(start: readBuffer, count: bytesRead))
+                var frame = Frame(copyBuffer: UnsafeRawBufferPointer(start: readBuffer, count: bytesRead))
+                // Set only the values the kernel reported.
+                if let ecn = packetInfo.ecn, ecn != .nonECT {
+                    frame.ecnFlag = ecn
+                }
+                if let hopLimit = packetInfo.hopLimit, hopLimit != 0 {
+                    frame.hopLimit = hopLimit
+                }
                 incomingFrames.add(frame: frame)
+                counts.receivedBytes += bytesRead
+                counts.receivedDatagrams += 1
                 receivedAny = true
             } while true
 
@@ -295,7 +366,30 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
                     dispatchReadSource?.suspend()
                 }
             }
+
+            if let readError {
+                // A connected UDP socket reports an ICMP error, such as ECONNREFUSED after a port
+                // unreachable, on its next read. The read consumes the error, so the source doesn't
+                // fire again for it. The flow and its input source stay up, because UDP can recover
+                // once the peer comes back. Bottom protocols have no event for an error that doesn't
+                // disconnect, so this only logs.
+                log.error("Datagram read failed: \(readError)")
+            }
         }
+    }
+
+    private func cancelReadSource() {
+        guard let dispatchReadSource else { return }
+        // A suspended source must be resumed before it is cancelled.
+        if inputSourceSuspended {
+            dispatchReadSource.resume()
+            inputSourceSuspended = false
+        }
+        inputUnacknowledged = false
+        dispatchReadSource.setEventHandler(handler: nil)
+        // The cancel handler releases the shared source fd once libdispatch is done.
+        dispatchReadSource.cancel()
+        self.dispatchReadSource = nil
     }
 
     //
@@ -360,69 +454,176 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     }
 
     private func serviceWrites(in eventContext: inout NetworkContext.EventContext) {
-        var needsWriteSource = false
         var fatalError: NetworkError? = nil
+        var remaining = FrameArray()
 
-        pendingOutputFrames.iterateMutableFrames { frame in
+        while var frame = pendingOutputFrames.popFirst() {
+            if fatalError != nil {
+                frame.finalize(success: false)
+                continue
+            }
+
             let length = frame.unclaimedLength
-
-            let bytesWritten = writeFrameToSocket(&frame, length: length)
-
-            if bytesWritten == length {
+            switch writeFrameToSocket(&frame) {
+            case .written:
+                counts.sentBytes += length
+                counts.sentDatagrams += 1
                 frame.finalize(success: true)
-                return true
-            }
-
-            // Datagram writes are atomic — partial writes can't happen.
-            // Any failure (bytesWritten < 0 or != length) is an error.
-            let err = bytesWritten < 0 ? errno : EIO
-            switch err {
-            case EAGAIN, EWOULDBLOCK, ENOBUFS:
+            case .wouldBlock:
+                // Keep this datagram and every one after it, in order, for the next writable
+                // event.
                 self.log.datapath("Send buffer full, waiting for writable event")
-                needsWriteSource = true
-            case EPIPE:
-                self.log.info("Socket has been closed")
-                fatalError = .posix(EPIPE)
-            default:
-                self.log.datapath("sendmsg failed: \(err)")
-                fatalError = .posix(err)
+                remaining.add(frame: frame)
+                while let next = pendingOutputFrames.popFirst() {
+                    remaining.add(frame: next)
+                }
+            case .failed(let error) where error == .posix(EMSGSIZE):
+                // The socket can't send a datagram this large, for example one larger than its
+                // send buffer. Drop it and keep the flow. The peer never receives it.
+                self.log.info("Datagram too large to send, dropping it: \(error)")
+                frame.finalize(success: false)
+            case .failed(let error):
+                self.log.datapath("Datagram write failed: \(error)")
+                fatalError = error
+                frame.finalize(success: false)
             }
-            frame.finalize(success: false)
-            return false
         }
 
-        if needsWriteSource {
+        pendingOutputFrames = remaining
+
+        if !pendingOutputFrames.isEmpty {
             if !waitingForWritable {
                 waitingForWritable = true
                 dispatchWriteSource?.resume()
             }
-        } else {
-            pendingOutputFrames = FrameArray()
-            if waitingForWritable {
-                waitingForWritable = false
-                dispatchWriteSource?.suspend()
+            return
+        }
+
+        if waitingForWritable {
+            waitingForWritable = false
+            dispatchWriteSource?.suspend()
+        }
+        if let fatalError {
+            deliverDisconnectedEvent(error: fatalError, in: &eventContext)
+        }
+    }
+
+    private enum DatagramWriteResult {
+        case written
+        case wouldBlock
+        case failed(NetworkError)
+    }
+
+    // A datagram write is atomic, so it sends the whole datagram or nothing.
+    private func writeFrameToSocket(_ frame: inout Frame) -> DatagramWriteResult {
+        guard let socket else { return .failed(.posix(ENOTCONN)) }
+        let length = frame.unclaimedLength
+        var send: (UnsafeRawPointer) throws(NetworkError) -> IOResult<Int> = { buffer throws(NetworkError) in
+            try socket.writeIOResult(buffer: buffer, size: length)
+        }
+        #if canImport(Darwin)
+        updateTypeOfService(on: socket, for: frame)
+        if let serviceType = frame.serviceClass.networkServiceType {
+            // A datagram that isn't best effort carries its service type in a control message.
+            send = { buffer throws(NetworkError) in
+                try self.sendDatagram(on: socket, from: buffer, size: length, serviceType: serviceType)
             }
-            if let fatalError {
-                deliverDisconnectedEvent(error: fatalError, in: &eventContext)
+        }
+        #endif
+
+        var result: Result<IOResult<Int>, NetworkError> = .failure(.posix(EINVAL))
+        if length == 0 {
+            // Writing a zero-length datagram is a valid operation.
+            var empty: UInt8 = 0
+            result = Result { () throws(NetworkError) in try send(&empty) }
+        } else if let bytes = frame.bytes {
+            bytes.withUnsafeBytes { rawBytes in
+                guard let baseAddress = rawBytes.baseAddress else { return }
+                result = Result { () throws(NetworkError) in try send(baseAddress) }
+            }
+        }
+
+        switch result {
+        case .success(.wouldBlock):
+            return .wouldBlock
+        case .success(.processed(let written)):
+            if written == length {
+                return .written
+            }
+            // A short write means something is badly wrong. Report EIO, which fails the flow.
+            // EMSGSIZE would make serviceWrites drop the datagram and go on.
+            log.error("Datagram write sent \(written) of \(length) bytes")
+            return .failed(.posix(EIO))
+        case .failure(let error):
+            if error == .posix(ENOBUFS) {
+                // The interface queue is full. Wait for room, as for EAGAIN.
+                return .wouldBlock
+            }
+            return .failed(error)
+        }
+    }
+
+    // MARK: - Per-packet metadata
+
+    #if canImport(Darwin)
+    // This sets IP_TOS or IPV6_TCLASS to the frame's ECN and DSCP bits when they differ from the
+    // bits it last set. It logs a failure, and the next frame tries again.
+    private func updateTypeOfService(on socket: SystemSocket, for frame: borrowing Frame) {
+        let typeOfService = frame.ecnFlag.rawValue | ((frame.dscpValue ?? configuredDSCP) << 2)
+        guard typeOfService != lastTypeOfService, let isIPv6 = remoteEndpoint?.isIPv6Address else { return }
+        do {
+            try socket.setIPOption(isIPv6: isIPv6, v4: IP_TOS, v6: IPV6_TCLASS, value: CInt(typeOfService))
+            lastTypeOfService = typeOfService
+        } catch {
+            log.info("Failed to set \(isIPv6 ? "IPV6_TCLASS" : "IP_TOS") to \(typeOfService): \(error)")
+        }
+    }
+
+    private func sendDatagram(
+        on socket: SystemSocket,
+        from buffer: UnsafeRawPointer,
+        size: Int,
+        serviceType: CInt
+    ) throws(NetworkError) -> IOResult<Int> {
+        var iov = iovec(iov_base: UnsafeMutableRawPointer(mutating: buffer), iov_len: size)
+        return try ControlMessages.withServiceType(serviceType) { control, controlLength throws(NetworkError) in
+            try withUnsafeMutablePointer(to: &iov) { iovPointer throws(NetworkError) in
+                var message = msghdr()
+                message.msg_iov = iovPointer
+                message.msg_iovlen = 1
+                message.msg_control = control
+                message.msg_controllen = controlLength
+                return try socket.sendmsgIOResult(msgHdr: &message)
             }
         }
     }
 
-    private func writeFrameToSocket(_ frame: inout Frame, length: Int) -> Int {
-        guard let socket else { return -1 }
-        // Writing a zero-length datagram is a valid operation.
-        if length == 0 {
-            var empty: UInt8 = 0
-            return (try? socket.write(buffer: &empty, size: 0)) ?? -1
+    // Reads one datagram with recvmsg, and reads the ECN bits and hop limit from its control
+    // messages.
+    private func receiveDatagram(
+        on socket: SystemSocket,
+        into buffer: UnsafeMutableRawPointer,
+        size: Int
+    ) throws(NetworkError) -> (IOResult<Int>, ReceivedPacketInfo) {
+        var iov = iovec(iov_base: buffer, iov_len: size)
+        let controlSize = 128
+        return try withUnsafeTemporaryAllocation(byteCount: controlSize, alignment: 8) {
+            control throws(NetworkError) -> (IOResult<Int>, ReceivedPacketInfo) in
+            try withUnsafeMutablePointer(to: &iov) {
+                iovPointer throws(NetworkError) -> (IOResult<Int>, ReceivedPacketInfo) in
+                var message = msghdr()
+                message.msg_iov = iovPointer
+                message.msg_iovlen = 1
+                message.msg_control = control.baseAddress
+                message.msg_controllen = socklen_t(controlSize)
+                let result = try socket.recvmsgIOResult(msgHdr: &message)
+                guard case .processed = result else { return (result, ReceivedPacketInfo()) }
+                let control = UnsafeRawBufferPointer(start: control.baseAddress, count: Int(message.msg_controllen))
+                return (result, ControlMessages.packetInfo(control))
+            }
         }
-        guard let bytes = frame.bytes else { return -1 }
-        var result: Int = -1
-        bytes.withUnsafeBytes { rawBytes in
-            guard let baseAddress = rawBytes.baseAddress else { return }
-            result = (try? socket.write(buffer: baseAddress, size: length)) ?? -1
-        }
-        return result
     }
+    #endif
 }
 
 // MARK: - SocketStreamProtocol
@@ -440,12 +641,6 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     var log = NetworkLoggerState()
 
     private var socket: SystemSocket? = nil
-    #if canImport(Darwin)
-    // Socket option constants that the Swift Darwin overlay does not surface.
-    // Values match <netinet6/in6.h> and the Darwin xnu socket headers.
-    private static let socketOptionIPV6UseMinMTU: CInt = 42  // IPV6_USE_MIN_MTU
-    private static let socketOptionIPV6DontFrag: CInt = 62  // IPV6_DONTFRAG
-    #endif
     private var dispatchReadSource: (any DispatchSourceRead)? = nil
     private var dispatchWriteSource: (any DispatchSourceWrite)? = nil
     private var waitingForWritable = false
@@ -458,6 +653,23 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     private var pendingOutputFrames = FrameArray()
     var localEndpoint: Endpoint?
     var remoteEndpoint: Endpoint?
+    // setup fills this from Endpoint.sourceInterfaceIndex(parameters:), and connect passes it to
+    // connectx.
+    private var sourceInterfaceIndex = 0
+    private var isUnixDomain = false
+
+    // updateDataTransferSnapshot reports these when the kernel's TCP statistics aren't available.
+    private var counts = SocketTransferCounts()
+    // connectStartTime records when the connect started, and handshakeDuration records how long it
+    // took. The establishment report gives that duration as both the handshake duration and the
+    // handshake RTT.
+    private var connectStartTime: NetworkClock.Instant? = nil
+    private var handshakeDuration: NetworkDuration? = nil
+    // isConnected stays set until teardown, even after an error.
+    private var isConnected = false
+    private var isDisconnectRequested = false
+    // sendLowWaterMark tracks the socket's SO_SNDLOWAT. See setSendLowWaterMark(_:).
+    private var sendLowWaterMark: UInt32 = 1
 
     private let maximumInputSize = 65536
     private let maximumOutputSize = 65536
@@ -495,20 +707,37 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
 
         self.localEndpoint = local
         self.remoteEndpoint = remote
+        self.sourceInterfaceIndex = remote.sourceInterfaceIndex(parameters: parameters)
 
         guard case .address(let address) = remote.type else {
             throw NetworkError.posix(EINVAL)
         }
-        let socket = try createSocket(for: address)
+        guard let family = address.addressFamily else {
+            throw NetworkError.posix(EAFNOSUPPORT)
+        }
+        let socket = try SystemSocket(
+            protocolFamily: family,
+            sockType: .stream,
+            protocolSubType: 0,
+            nonBlocking: true
+        )
         self.socket = socket
+        isUnixDomain = family == .unix
+        sendLowWaterMark = 1
 
         applyDefaultSocketOptions(socket: socket)
+        if let parameters {
+            socket.applySocketOptions(from: parameters, log)
+        }
 
         if let stack = parameters?.defaultStack {
-            if let ipOptions = stack.internetOptionsAsIPOptions(mutable: false)?.perProtocolOptions {
-                applyIPOptions(socket: socket, opts: ipOptions)
+            if let ipOptions = stack.internetOptionsAsIPOptions(mutable: false)?.perProtocolOptions,
+                let isIPv6 = remote.isIPv6Address
+            {
+                socket.applyIPOptions(ipOptions, isIPv6: isIPv6, log)
             }
-            if let tcpOptions = stack.transport?.options as? TCPProtocol.Options {
+            // A Unix-domain socket skips the TCP options. Setting them would fail on it.
+            if !isUnixDomain, case .tcp(let options) = stack.transport, let tcpOptions = options.perProtocolOptions {
                 applyTCPOptions(socket: socket, opts: tcpOptions)
             }
         }
@@ -520,6 +749,15 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     }
 
     public func teardown() {
+        if isConnected && !isDisconnectRequested, let socket {
+            // Nothing asked for a graceful disconnect, so this is a forced cancel. Linger 0 makes
+            // the close discard any unsent data and send an RST.
+            do {
+                try socket.setSocketOption(level: SOL_SOCKET, name: SO_LINGER, value: linger(l_onoff: 1, l_linger: 0))
+            } catch {
+                log.info("Failed to set SO_LINGER: \(error)")
+            }
+        }
         cancelReadSource()
         cancelWriteSource()
         releaseSocketHandle()
@@ -537,15 +775,13 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             return
         }
 
+        connectStartTime = context.now
         do {
-            let isIPv6Dst = {
-                if case .v6 = address.type { return true }
-                return false
-            }()
-            if let localEndpoint, case .address(let localAddress) = localEndpoint.type,
+            let isIPv6Dst = address.addressFamily == .ipv6
+            if !isUnixDomain, let localEndpoint, case .address(let localAddress) = localEndpoint.type,
                 !isIPv6Dst || localAddress.addressFamily == .ipv6
             {
-                try bindSocket(to: localAddress, port: localEndpoint.port)
+                try socket.bind(to: localAddress, port: localEndpoint.port)
             }
             if case .v6 = address.type {
                 // connectx(2) on Darwin requires the socket to be bound before
@@ -553,20 +789,15 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
                 try socket.bindSocket(address: IPv6Address.any, port: 0)
             }
 
-            let ip: any IPAddress
-            switch address.type {
-            case .v4(let addr, _): ip = addr
-            case .v6(let addr, _): ip = addr
-            default:
-                log.error("Unsupported address family for connect")
-                deliverDisconnectedEvent(error: .posix(EAFNOSUPPORT), in: &eventContext)
-                return
-            }
-
-            // For non-blocking TCP, connectSocket returns false on EINPROGRESS.
-            // Wait for the socket to become writable, then treat as connected.
-            let connectedNow = try socket.connectSocket(to: ip, port: remoteEndpoint.port)
+            // A non-blocking connect returns false on EINPROGRESS. Wait for the socket to
+            // become writable, then treat it as connected.
+            let connectedNow = try socket.connect(
+                to: remoteEndpoint,
+                address: address,
+                sourceInterfaceIndex: sourceInterfaceIndex
+            )
             if connectedNow {
+                markConnected()
                 deliverConnectedEvent(in: &eventContext)
                 startReadSource()
             } else {
@@ -578,11 +809,14 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             }
         } catch let error {
             log.error("Failed to connect: \(error)")
-            deliverDisconnectedEvent(error: .posix(ECONNREFUSED), in: &eventContext)
+            // SystemSocket.bindSocket throws an untyped error, but every error it throws is a
+            // NetworkError.
+            deliverDisconnectedEvent(error: (error as? NetworkError) ?? .posix(EINVAL), in: &eventContext)
         }
     }
 
     public func disconnect(in eventContext: inout NetworkContext.EventContext) {
+        isDisconnectRequested = true
         if pendingOutputFrames.isEmpty {
             shutdownWrites()
             deliverDisconnectedEvent(error: nil, in: &eventContext)
@@ -640,40 +874,66 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     public var metadata: AbstractProtocolMetadata? { protocolMetadata }
     #endif
 
-    private func createSocket(for address: AddressEndpoint) throws(NetworkError) -> SystemSocket {
-        switch address.type {
-        case .v4:
-            return try SystemSocket(
-                protocolFamily: .ipv4,
-                sockType: .stream,
-                protocolSubType: 0,
-                nonBlocking: true
-            )
-        case .v6:
-            return try SystemSocket(
-                protocolFamily: .ipv6,
-                sockType: .stream,
-                protocolSubType: 0,
-                nonBlocking: true
-            )
-        default:
-            throw NetworkError.posix(EAFNOSUPPORT)
+    // MARK: - Metrics
+
+    private func markConnected() {
+        isConnected = true
+        if let connectStartTime {
+            handshakeDuration = connectStartTime.duration(to: context.now)
         }
     }
 
-    private func bindSocket(to address: AddressEndpoint, port: UInt16) throws(NetworkError) {
-        do {
-            switch address.type {
-            case .v4(let ip, _):
-                try socket?.bindSocket(address: ip, port: port)
-            case .v6(let ip, _):
-                try socket?.bindSocket(address: ip, port: port)
-            default:
-                break
+    // On Darwin, TCP_CONNECTION_INFO fills the snapshot, because TCP_INFO is private there. It has
+    // no minimum RTT, duplicate byte count or ECN packet counts, so those stay at zero. On Linux
+    // and Android, TCP_INFO fills it. When the call fails, the snapshot has the byte counts this
+    // protocol keeps.
+    public func updateDataTransferSnapshot(_ snapshot: inout DataTransferSnapshot) {
+        #if canImport(Darwin)
+        if let socket, !isUnixDomain {
+            do {
+                let info = try socket.getSocketOption(
+                    level: CInt(IPPROTO_TCP),
+                    name: TCP_CONNECTION_INFO,
+                    defaultValue: tcp_connection_info()
+                )
+                snapshot.receivedTransportByteCount = info.tcpi_rxbytes
+                snapshot.sentTransportByteCount = info.tcpi_txbytes
+                snapshot.receivedTransportOutOfOrderByteCount = info.tcpi_rxoutoforderbytes
+                snapshot.sentTransportRetransmittedByteCount = info.tcpi_txretransmitbytes
+                snapshot.receivedIPPacketCount = info.tcpi_rxpackets
+                snapshot.sentIPPacketCount = info.tcpi_txpackets
+                snapshot.transportSmoothedRTT = .milliseconds(info.tcpi_srtt)
+                snapshot.transportCurrentRTT = .milliseconds(info.tcpi_rttcur)
+                snapshot.transportRTTVariance = .milliseconds(info.tcpi_rttvar)
+                snapshot.transportCongestionWindow = UInt64(info.tcpi_snd_cwnd)
+                snapshot.transportSlowStartThreshold = UInt64(info.tcpi_snd_ssthresh)
+                return
+            } catch {
+                log.info("Failed to get TCP_CONNECTION_INFO: \(error)")
             }
-        } catch {
-            throw NetworkError.posix(EADDRNOTAVAIL)
         }
+        #endif
+        counts.fill(&snapshot, includingPackets: false)
+        #if os(Linux) || os(Android)
+        if let socket, !isUnixDomain {
+            do {
+                try LinuxTCPInfo(socket: socket).fill(&snapshot)
+            } catch {
+                log.info("Failed to get TCP_INFO: \(error)")
+            }
+        }
+        #endif
+    }
+
+    // The time the connect took stands in for both the handshake duration and the handshake RTT.
+    // TCP_CONNECTION_INFO has no accurate ECN states, so this report leaves them unset.
+    public var protocolEstablishmentReport: ProtocolEstablishmentReport? {
+        guard let handshakeDuration else { return nil }
+        return ProtocolEstablishmentReport(
+            handshakeDuration: handshakeDuration,
+            handshakeRTT: handshakeDuration,
+            protocolIdentifier: TCPProtocol.identifier
+        )
     }
 
     // MARK: - Read source
@@ -794,6 +1054,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
                     } else {
                         let frame = Frame(copyBuffer: UnsafeRawBufferPointer(start: readBuffer, count: bytesRead))
                         incomingFrames.add(frame: frame)
+                        counts.receivedBytes += bytesRead
                         receivedAny = true
                     }
                 case .wouldBlock:
@@ -818,6 +1079,10 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             }
 
             if let fatalError {
+                // A read error finishes the input and stops the read source. A reset socket stays
+                // readable and returns EOF next, which would deliver input after the disconnect.
+                inputFinished = true
+                cancelReadSource()
                 deliverDisconnectedEvent(error: fatalError)
                 return
             }
@@ -842,6 +1107,38 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     }
 
     // MARK: - Write source
+
+    // A stalled write raises SO_SNDLOWAT to the bytes still to send, so the writable event waits
+    // until they fit. The mark is capped at a third of SO_SNDBUF, so the event can still fire. The
+    // next full write lowers it to 1. SO_SNDLOWAT can only be set on Darwin, so elsewhere this does
+    // nothing.
+    private func setSendLowWaterMark(_ lowWater: UInt32) {
+        #if canImport(Darwin)
+        guard let socket else { return }
+        var mark = max(lowWater, 1)
+        guard mark != sendLowWaterMark else { return }
+        if mark > sendLowWaterMark {
+            do {
+                let sendBufferSize = try socket.getSocketOption(
+                    level: SOL_SOCKET,
+                    name: SO_SNDBUF,
+                    defaultValue: CInt(0)
+                )
+                if sendBufferSize > 0 {
+                    mark = min(mark, max(UInt32(sendBufferSize) / 3, 1))
+                }
+            } catch {
+                log.info("Failed to get SO_SNDBUF: \(error)")
+            }
+        }
+        do {
+            try socket.setSocketOption(level: SOL_SOCKET, name: SO_SNDLOWAT, value: CInt(clamping: mark))
+            sendLowWaterMark = mark
+        } catch {
+            log.info("Failed to set SO_SNDLOWAT to \(mark): \(error)")
+        }
+        #endif
+    }
 
     // Shares the read source's dup'd fd (see note above).
     private func setupWriteSource() {
@@ -872,6 +1169,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
                 deliverDisconnectedEvent(error: .posix(connectError))
                 return
             }
+            markConnected()
             deliverConnectedEvent()
 
             // Connected now — arm the read source (deferred to avoid the spurious
@@ -943,6 +1241,9 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             while frame.unclaimedLength > 0 {
                 let length = frame.unclaimedLength
                 let bytesWritten = writeFrameToSocket(&frame, length: length)
+                if bytesWritten > 0 {
+                    counts.sentBytes += bytesWritten
+                }
                 if bytesWritten == length {
                     break
                 }
@@ -985,6 +1286,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             }
 
             if !madeProgress {
+                // Wait until the socket has room for the rest of this frame.
+                setSendLowWaterMark(UInt32(clamping: frame.unclaimedLength))
                 // Keep this frame (and any still-queued frames) for a later attempt.
                 remaining.add(frame: frame)
                 while let next = pendingOutputFrames.popFirst() {
@@ -996,6 +1299,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             if frame.connectionComplete {
                 shouldShutdownWrite = true
             }
+            // The frame went out in full, so lower the mark if a stall raised it.
+            setSendLowWaterMark(1)
             frame.finalize(success: true)
         }
 
@@ -1083,10 +1388,14 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     //
     // SO_SNDLOWAT is Darwin-only: on Linux it is read-only (fixed at 1, which is
     // already the value we want), and attempting to set it fails with ENOPROTOOPT.
+    //
+    // SO_NOSIGPIPE makes a write to a closed peer fail with EPIPE instead of raising
+    // SIGPIPE, which terminates the process by default.
     private func applyDefaultSocketOptions(socket: SystemSocket) {
         do { try socket.setReceiveLowWatermark(1) } catch { log.info("Failed to set SO_RCVLOWAT: \(error)") }
         #if canImport(Darwin)
         do { try socket.setSendLowWatermark(1) } catch { log.info("Failed to set SO_SNDLOWAT: \(error)") }
+        do { try socket.setNoSigPipe(true) } catch { log.info("Failed to set SO_NOSIGPIPE: \(error)") }
         #endif
     }
 
@@ -1133,114 +1442,24 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         if opts.retransmitFinDrop {
             do { try socket.setRetransmitFinDrop(true) } catch { log.info("Failed to set TCP_RXT_FINDROP: \(error)") }
         }
+        #if NETWORK_PRIVATE
+        socket.applyPrivateTCPOptions(from: opts, log)
         #endif
-    }
-
-    private func applyIPOptions(socket: SystemSocket, opts: IPProtocol.Options) {
-        guard let remoteEndpoint, case .address(let address) = remoteEndpoint.type else {
-            return
-        }
-        let isIPv6: Bool
-        switch address.type {
-        case .v6: isIPv6 = true
-        case .v4: isIPv6 = false
-        default: return
-        }
-
-        if let hopLimit = opts.hopLimit {
-            do {
-                if isIPv6 {
-                    try socket.setSocketOption(
-                        level: CInt(IPPROTO_IPV6),
-                        name: IPV6_UNICAST_HOPS,
-                        value: CInt(hopLimit)
-                    )
-                } else {
-                    try socket.setSocketOption(
-                        level: CInt(IPPROTO_IP),
-                        name: IP_TTL,
-                        value: CInt(hopLimit)
-                    )
-                }
-            } catch {
-                log.info("Failed to set hop limit: \(error)")
-            }
-        }
-
-        if let dscpValue = opts.dscpValue {
-            // DSCP occupies the upper 6 bits of the IPv4 ToS / IPv6 Traffic Class byte.
-            let tos = CInt(dscpValue) << 2
-            do {
-                if isIPv6 {
-                    try socket.setSocketOption(
-                        level: CInt(IPPROTO_IPV6),
-                        name: IPV6_TCLASS,
-                        value: tos
-                    )
-                } else {
-                    try socket.setSocketOption(
-                        level: CInt(IPPROTO_IP),
-                        name: IP_TOS,
-                        value: tos
-                    )
-                }
-            } catch {
-                log.info("Failed to set DSCP: \(error)")
-            }
-        }
-
-        #if canImport(Darwin)
-        if isIPv6 && opts.flags.contains(.useMinimumMTU) {
+        // Zero means the option isn't set, so the kernel default applies.
+        let timeouts: [(name: CInt, label: String, seconds: UInt32)] = [
+            (TCP_CONNECTIONTIMEOUT, "TCP_CONNECTIONTIMEOUT", opts.connectionTimeout),
+            (TCP_RXT_CONNDROPTIME, "TCP_RXT_CONNDROPTIME", opts.retransmitConnectionDropTime),
+            (PERSIST_TIMEOUT, "PERSIST_TIMEOUT", opts.persistTimeout),
+        ]
+        for timeout in timeouts where timeout.seconds != 0 {
             do {
                 try socket.setSocketOption(
-                    level: CInt(IPPROTO_IPV6),
-                    name: SocketStreamProtocol.socketOptionIPV6UseMinMTU,
-                    value: CInt(1)
+                    level: CInt(IPPROTO_TCP),
+                    name: timeout.name,
+                    value: CInt(clamping: timeout.seconds)
                 )
             } catch {
-                log.info("Failed to set IPV6_USE_MIN_MTU: \(error)")
-            }
-        }
-
-        if let fragmentationEnabled = opts.fragmentationEnabled {
-            let dontFragment: CInt = fragmentationEnabled ? 0 : 1
-            do {
-                if isIPv6 {
-                    try socket.setSocketOption(
-                        level: CInt(IPPROTO_IPV6),
-                        name: SocketStreamProtocol.socketOptionIPV6DontFrag,
-                        value: dontFragment
-                    )
-                } else {
-                    try socket.setSocketOption(
-                        level: CInt(IPPROTO_IP),
-                        name: IP_DONTFRAG,
-                        value: dontFragment
-                    )
-                }
-            } catch {
-                log.info("Failed to set DONTFRAG: \(error)")
-            }
-        }
-        #elseif canImport(Glibc) || canImport(Musl) || canImport(Android)
-        if let fragmentationEnabled = opts.fragmentationEnabled {
-            let disc: CInt = fragmentationEnabled ? CInt(IP_PMTUDISC_DONT) : CInt(IP_PMTUDISC_DO)
-            do {
-                if isIPv6 {
-                    try socket.setSocketOption(
-                        level: CInt(IPPROTO_IPV6),
-                        name: IPV6_MTU_DISCOVER,
-                        value: disc
-                    )
-                } else {
-                    try socket.setSocketOption(
-                        level: CInt(IPPROTO_IP),
-                        name: IP_MTU_DISCOVER,
-                        value: disc
-                    )
-                }
-            } catch {
-                log.info("Failed to set MTU_DISCOVER: \(error)")
+                log.info("Failed to set \(timeout.label): \(error)")
             }
         }
         #endif
@@ -1257,8 +1476,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         let metadata = TCPProtocol.TCPMetadata()
         metadata.handle = handle
         metadata.callbacks = TCPProtocol.TCPMetadata.TCPOptionCallbacks(
-            get_receive_buffer_size: socketGetReceiveBufferSize,
-            get_send_buffer_size: socketGetSendBufferSize,
+            get_receive_buffer_size: socketGetUnreadByteCount,
+            get_send_buffer_size: socketGetUnsentByteCount,
             reset_keepalives: socketResetKeepalives,
             set_no_delay: socketSetNoDelay,
             set_no_push: socketSetNoPush,
@@ -1285,6 +1504,375 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     }
 }
 
+// MARK: - Per-packet metadata
+
+/// ReceivedPacketInfo holds what the kernel reported about one received datagram in its control
+/// messages.
+@available(Network 0.1.0, *)
+struct ReceivedPacketInfo {
+    var ecn: IPProtocol.ECN?
+    var hopLimit: UInt8?
+}
+
+#if canImport(Darwin)
+@available(Network 0.1.0, *)
+extension Parameters.ServiceClass {
+    /// This is the SO_NET_SERVICE_TYPE value to send for the class. It's nil for best effort,
+    /// which needs no control message.
+    var networkServiceType: CInt? {
+        switch self {
+        case .bestEffort: return nil
+        case .background: return NET_SERVICE_TYPE_BK
+        case .interactiveVideo: return NET_SERVICE_TYPE_VI
+        case .interactiveVoice: return NET_SERVICE_TYPE_VO
+        case .responsiveData: return NET_SERVICE_TYPE_RD
+        case .signaling: return NET_SERVICE_TYPE_SIG
+        }
+    }
+}
+
+/// ControlMessages builds and reads Darwin control messages. Swift can't use the CMSG_* macros, so
+/// this follows their layout: each header and its data start on a 4-byte boundary
+/// (__DARWIN_ALIGN32).
+@available(Network 0.1.0, *)
+enum ControlMessages {
+    private static func aligned(_ length: Int) -> Int { (length + 3) & ~3 }
+    private static let headerLength = aligned(MemoryLayout<cmsghdr>.size)
+
+    /// Calls `body` with one SOL_SOCKET/SO_NET_SERVICE_TYPE control message.
+    static func withServiceType<R, E: Error>(
+        _ serviceType: CInt,
+        _ body: (UnsafeMutableRawPointer, socklen_t) throws(E) -> R
+    ) throws(E) -> R {
+        let dataLength = MemoryLayout<CInt>.size
+        let space = headerLength + aligned(dataLength)
+        return try withUnsafeTemporaryAllocation(byteCount: space, alignment: 8) { buffer throws(E) -> R in
+            let base = buffer.baseAddress!
+            buffer.initializeMemory(as: UInt8.self, repeating: 0)
+            var header = cmsghdr()
+            header.cmsg_len = socklen_t(headerLength + dataLength)
+            header.cmsg_level = SOL_SOCKET
+            header.cmsg_type = SO_NET_SERVICE_TYPE
+            base.storeBytes(of: header, as: cmsghdr.self)
+            base.storeBytes(of: serviceType, toByteOffset: headerLength, as: CInt.self)
+            return try body(base, socklen_t(space))
+        }
+    }
+
+    /// Reads the ECN bits and hop limit from the control messages recvmsg returned. It reads every
+    /// message, so a hop limit that follows the traffic class isn't lost. It keeps only the two ECN
+    /// bits of the traffic class.
+    static func packetInfo(_ control: UnsafeRawBufferPointer) -> ReceivedPacketInfo {
+        var info = ReceivedPacketInfo()
+        guard let base = control.baseAddress else { return info }
+        var offset = 0
+        while offset + MemoryLayout<cmsghdr>.size <= control.count {
+            let header = base.loadUnaligned(fromByteOffset: offset, as: cmsghdr.self)
+            let length = Int(header.cmsg_len)
+            guard length >= headerLength, offset + length <= control.count else { break }
+            let dataOffset = offset + headerLength
+            let dataLength = length - headerLength
+            // IP_RECVTOS and IP_RECVTTL carry one byte. IPV6_TCLASS and IPV6_HOPLIMIT carry an int.
+            func value() -> Int? {
+                switch dataLength {
+                case MemoryLayout<UInt8>.size:
+                    return Int(base.load(fromByteOffset: dataOffset, as: UInt8.self))
+                case MemoryLayout<CInt>.size:
+                    return Int(base.loadUnaligned(fromByteOffset: dataOffset, as: CInt.self))
+                default:
+                    return nil
+                }
+            }
+            switch (header.cmsg_level, header.cmsg_type) {
+            case (CInt(IPPROTO_IP), IP_RECVTOS), (CInt(IPPROTO_IPV6), IPV6_TCLASS):
+                if let typeOfService = value() { info.ecn = IPProtocol.ECN(rawValue: UInt8(typeOfService & 0x3)) }
+            case (CInt(IPPROTO_IP), IP_RECVTTL), (CInt(IPPROTO_IPV6), SystemSocket.socketOptionIPV6HopLimit):
+                if let hopLimit = value() { info.hopLimit = UInt8(truncatingIfNeeded: hopLimit) }
+            default:
+                break
+            }
+            offset += aligned(length)
+        }
+        return info
+    }
+}
+#endif
+
+#if os(Linux) || os(Android)
+// MARK: - Linux TCP statistics
+
+/// LinuxTCPInfo reads the kernel's struct tcp_info. The C libraries declare different subsets of
+/// it, so this reads the fields at their offsets in the kernel's layout, which only grows. It
+/// reads a field only when the kernel returned that much of the struct.
+@available(Network 0.1.0, *)
+struct LinuxTCPInfo {
+    // TCP_INFO from the kernel's linux/tcp.h. It's 11 in every Linux and Android ABI.
+    private static let option: CInt = 11
+    // This is larger than any kernel's struct so far. The kernel copies no more than the struct.
+    private static let capacity = 512
+
+    private let bytes: [UInt8]
+
+    init(socket: SystemSocket) throws(NetworkError) {
+        var buffer = [UInt8](repeating: 0, count: Self.capacity)
+        var length = socklen_t(Self.capacity)
+        let result = socket.withFileDescriptor { descriptor in
+            buffer.withUnsafeMutableBytes {
+                getsockopt(descriptor, CInt(IPPROTO_TCP), Self.option, $0.baseAddress, &length)
+            }
+        }
+        if result != 0 {
+            throw NetworkError.posix(errno)
+        }
+        bytes = Array(buffer.prefix(Int(length)))
+    }
+
+    private func value<T: FixedWidthInteger>(at offset: Int, as type: T.Type) -> T? {
+        guard offset + MemoryLayout<T>.size <= bytes.count else { return nil }
+        return bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) }
+    }
+
+    /// Fills the snapshot with the fields the kernel reported. Linux gives RTTs in microseconds,
+    /// and the congestion window and slow-start threshold in segments.
+    func fill(_ snapshot: inout DataTransferSnapshot) {
+        let segmentSize = UInt64(value(at: 16, as: UInt32.self) ?? 0)
+        if let rtt = value(at: 68, as: UInt32.self) {
+            snapshot.transportSmoothedRTT = .microseconds(rtt)
+        }
+        if let rttVariance = value(at: 72, as: UInt32.self) {
+            snapshot.transportRTTVariance = .microseconds(rttVariance)
+        }
+        // The threshold is TCP_INFINITE_SSTHRESH until the first loss, and that has no size.
+        if let threshold = value(at: 76, as: UInt32.self), threshold < 0x7fff_ffff {
+            snapshot.transportSlowStartThreshold = UInt64(threshold) * segmentSize
+        }
+        if let window = value(at: 80, as: UInt32.self) {
+            snapshot.transportCongestionWindow = UInt64(window) * segmentSize
+        }
+        if let received = value(at: 128, as: UInt64.self) {
+            snapshot.receivedTransportByteCount = received
+        }
+        if let segmentsOut = value(at: 136, as: UInt32.self), let segmentsIn = value(at: 140, as: UInt32.self) {
+            snapshot.sentIPPacketCount = UInt64(segmentsOut)
+            snapshot.receivedIPPacketCount = UInt64(segmentsIn)
+        }
+        // The kernel reports UINT32_MAX until it has an RTT sample.
+        if let minimumRTT = value(at: 148, as: UInt32.self), minimumRTT != .max {
+            snapshot.transportMinimumRTT = .microseconds(minimumRTT)
+        }
+        if let sent = value(at: 200, as: UInt64.self) {
+            snapshot.sentTransportByteCount = sent
+        }
+        if let retransmitted = value(at: 208, as: UInt64.self) {
+            snapshot.sentTransportRetransmittedByteCount = retransmitted
+        }
+    }
+}
+#endif
+
+// MARK: - Transfer counts
+
+/// SocketTransferCounts counts what a socket protocol sends and receives, for the data transfer
+/// snapshot.
+@available(Network 0.1.0, *)
+struct SocketTransferCounts {
+    var receivedBytes = 0
+    var sentBytes = 0
+    var receivedDatagrams = 0
+    var sentDatagrams = 0
+
+    /// Fills the snapshot's byte counts, and its packet counts when the socket counts datagrams.
+    func fill(_ snapshot: inout DataTransferSnapshot, includingPackets: Bool) {
+        snapshot.receivedTransportByteCount = UInt64(receivedBytes)
+        snapshot.sentTransportByteCount = UInt64(sentBytes)
+        if includingPackets {
+            snapshot.receivedIPPacketCount = UInt64(receivedDatagrams)
+            snapshot.sentIPPacketCount = UInt64(sentDatagrams)
+        }
+    }
+}
+
+// MARK: - Connect addressing
+
+@available(Network 0.1.0, *)
+extension Endpoint {
+    /// Returns the source interface to pass to connectx, or 0 for any interface. It's the required
+    /// interface, or else this endpoint's interface.
+    fileprivate func sourceInterfaceIndex(parameters: Parameters?) -> Int {
+        if let interface = parameters?.requiredInterface ?? self.interface {
+            return interface.index
+        }
+        return 0
+    }
+
+    /// This is the IPv6 scope ID for the endpoint's address. It's the index of the endpoint's
+    /// interface when the address is link-local or interface-local, and 0 otherwise. Without it, a
+    /// link-local destination is unreachable.
+    fileprivate var socketScopeID: UInt32 {
+        guard case .address(let address) = self.type, case .v6(let v6Address, _) = address.type,
+            v6Address.isScopeEmbedded, let interface = self.interface
+        else { return 0 }
+        return UInt32(clamping: interface.index)
+    }
+
+    /// This is true for an IPv6 address, false for an IPv4 address, and nil for any other endpoint.
+    fileprivate var isIPv6Address: Bool? {
+        guard case .address(let address) = self.type else { return nil }
+        switch address.type {
+        case .v6: return true
+        case .v4: return false
+        default: return nil
+        }
+    }
+}
+
+// MARK: - Socket helpers shared by both protocols
+
+/// SocketOption describes one integer socket option to set. The label names the option in the
+/// log.
+typealias SocketOption = (level: CInt, name: CInt, value: CInt, label: String)
+
+@available(Network 0.1.0, *)
+extension SystemSocket {
+    #if canImport(Darwin)
+    // The Swift Darwin overlay doesn't surface these options. Their values match <netinet6/in6.h>
+    // and the xnu socket headers.
+    fileprivate static let socketOptionIPV6UseMinMTU: CInt = 42  // IPV6_USE_MIN_MTU
+    fileprivate static let socketOptionIPV6DontFrag: CInt = 62  // IPV6_DONTFRAG
+    // <netinet6/in6.h> defines these two only with __APPLE_USE_RFC_3542.
+    fileprivate static let socketOptionIPV6ReceiveHopLimit: CInt = 37  // IPV6_RECVHOPLIMIT
+    fileprivate static let socketOptionIPV6HopLimit: CInt = 47  // IPV6_HOPLIMIT (IPV6_3542HOPLIMIT)
+    #endif
+
+    /// Connects to `address`, which belongs to `remote`. Returns false when the connect is still
+    /// in progress.
+    fileprivate func connect(
+        to remote: Endpoint,
+        address: AddressEndpoint,
+        sourceInterfaceIndex: Int
+    ) throws(NetworkError) -> Bool {
+        switch address.type {
+        case .v4(let ip, _):
+            return try connectSocket(to: ip, port: remote.port, interfaceIndex: sourceInterfaceIndex, scopeID: 0)
+        case .v6(let ip, _):
+            return try connectSocket(
+                to: ip,
+                port: remote.port,
+                interfaceIndex: sourceInterfaceIndex,
+                scopeID: remote.socketScopeID
+            )
+        case .unix(let path):
+            return try connectSocket(toPath: path)
+        default:
+            throw NetworkError.posix(EAFNOSUPPORT)
+        }
+    }
+
+    /// Binds to a local IP address and port. Any other kind of address is left unbound.
+    fileprivate func bind(to address: AddressEndpoint, port: UInt16) throws(NetworkError) {
+        do {
+            switch address.type {
+            case .v4(let ip, _):
+                try bindSocket(address: ip, port: port)
+            case .v6(let ip, _):
+                try bindSocket(address: ip, port: port)
+            default:
+                break
+            }
+        } catch {
+            // Report what bind returned, such as EADDRINUSE.
+            throw (error as? NetworkError) ?? .posix(EADDRNOTAVAIL)
+        }
+    }
+
+    /// Sets the socket-level options from the parameters, and logs each one it couldn't set.
+    fileprivate func applySocketOptions(from parameters: Parameters, _ log: borrowing NetworkLoggerState) {
+        var options: [SocketOption] = []
+        if parameters.reuseLocalAddress {
+            options.append((SOL_SOCKET, SO_REUSEADDR, 1, "SO_REUSEADDR"))
+            options.append((SOL_SOCKET, SO_REUSEPORT, 1, "SO_REUSEPORT"))
+        }
+        apply(options, log)
+        #if NETWORK_PRIVATE
+        // SocketProtocol_C.swift supplies this helper on the internal side of the mirror.
+        applyPrivateSocketOptions(from: parameters, log)
+        #endif
+    }
+
+    /// Sets each option, and logs each one it couldn't set.
+    func apply(_ options: [SocketOption], _ log: borrowing NetworkLoggerState) {
+        for option in options {
+            do {
+                try setSocketOption(level: option.level, name: option.name, value: option.value)
+            } catch {
+                log.info("Failed to set \(option.label): \(error)")
+            }
+        }
+    }
+
+    /// Sets an IP-level option to `value`, at the IPv6 level with `v6` or the IPv4 level with
+    /// `v4`.
+    fileprivate func setIPOption(isIPv6: Bool, v4: CInt, v6: CInt, value: CInt) throws(NetworkError) {
+        try setSocketOption(level: CInt(isIPv6 ? IPPROTO_IPV6 : IPPROTO_IP), name: isIPv6 ? v6 : v4, value: value)
+    }
+
+    /// Applies the IP options to the socket, and logs each option it couldn't set.
+    fileprivate func applyIPOptions(_ opts: IPProtocol.Options, isIPv6: Bool, _ log: borrowing NetworkLoggerState) {
+        if let hopLimit = opts.hopLimit {
+            do {
+                try setIPOption(isIPv6: isIPv6, v4: IP_TTL, v6: IPV6_UNICAST_HOPS, value: CInt(hopLimit))
+            } catch {
+                log.info("Failed to set hop limit: \(error)")
+            }
+        }
+
+        if let dscpValue = opts.dscpValue {
+            // DSCP occupies the upper 6 bits of the IPv4 ToS / IPv6 Traffic Class byte.
+            do {
+                try setIPOption(isIPv6: isIPv6, v4: IP_TOS, v6: IPV6_TCLASS, value: CInt(dscpValue) << 2)
+            } catch {
+                log.info("Failed to set DSCP: \(error)")
+            }
+        }
+
+        #if canImport(Darwin)
+        if isIPv6 && opts.flags.contains(.useMinimumMTU) {
+            do {
+                try setSocketOption(
+                    level: CInt(IPPROTO_IPV6),
+                    name: SystemSocket.socketOptionIPV6UseMinMTU,
+                    value: CInt(1)
+                )
+            } catch {
+                log.info("Failed to set IPV6_USE_MIN_MTU: \(error)")
+            }
+        }
+
+        if let fragmentationEnabled = opts.fragmentationEnabled {
+            do {
+                try setIPOption(
+                    isIPv6: isIPv6,
+                    v4: IP_DONTFRAG,
+                    v6: SystemSocket.socketOptionIPV6DontFrag,
+                    value: fragmentationEnabled ? 0 : 1
+                )
+            } catch {
+                log.info("Failed to set DONTFRAG: \(error)")
+            }
+        }
+        #elseif canImport(Glibc) || canImport(Musl) || canImport(Android)
+        if let fragmentationEnabled = opts.fragmentationEnabled {
+            let discovery = CInt(fragmentationEnabled ? IP_PMTUDISC_DONT : IP_PMTUDISC_DO)
+            do {
+                try setIPOption(isIPv6: isIPv6, v4: IP_MTU_DISCOVER, v6: IPV6_MTU_DISCOVER, value: discovery)
+            } catch {
+                log.info("Failed to set MTU_DISCOVER: \(error)")
+            }
+        }
+        #endif
+    }
+}
+
 // MARK: - SocketHandleBox (private helpers for TCPMetadata callbacks)
 
 // Strong-reference holder bridged through an opaque pointer so the C-convention
@@ -1296,18 +1884,30 @@ private final class SocketHandleBox {
     init(socket: SystemSocket) { self.socket = socket }
 }
 
+// These report the bytes waiting to be read (SO_NREAD) and the bytes still in the send buffer
+// (SO_NWRITE). Linux has neither option, so there they report the buffer sizes. This protocol
+// reads data as soon as it arrives, into incomingFrames, so SO_NREAD leaves out the bytes it
+// holds. The callbacks run off the context queue and can't read incomingFrames safely.
 @available(Network 0.1.0, *)
-private let socketGetReceiveBufferSize: @convention(c) (UnsafeMutableRawPointer?) -> UInt32 = { handle in
+private let socketGetUnreadByteCount: @convention(c) (UnsafeMutableRawPointer?) -> UInt32 = { handle in
     guard let handle else { return 0 }
     let box = Unmanaged<SocketHandleBox>.fromOpaque(handle).takeUnretainedValue()
+    #if canImport(Darwin)
+    return (try? box.socket.getSocketOption(level: SOL_SOCKET, name: SO_NREAD, defaultValue: UInt32(0))) ?? 0
+    #else
     return UInt32(max(0, Int(box.socket.getReceiveBufferSize())))
+    #endif
 }
 
 @available(Network 0.1.0, *)
-private let socketGetSendBufferSize: @convention(c) (UnsafeMutableRawPointer?) -> UInt32 = { handle in
+private let socketGetUnsentByteCount: @convention(c) (UnsafeMutableRawPointer?) -> UInt32 = { handle in
     guard let handle else { return 0 }
     let box = Unmanaged<SocketHandleBox>.fromOpaque(handle).takeUnretainedValue()
+    #if canImport(Darwin)
+    return (try? box.socket.getSocketOption(level: SOL_SOCKET, name: SO_NWRITE, defaultValue: UInt32(0))) ?? 0
+    #else
     return UInt32(max(0, Int(box.socket.getSendBufferSize())))
+    #endif
 }
 
 @available(Network 0.1.0, *)
