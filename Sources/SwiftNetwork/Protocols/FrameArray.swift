@@ -95,9 +95,6 @@ public struct FrameArray: ~Copyable {
         }
         return nil
     }
-    func peekFrame<R>(at index: Int, _ access: (borrowing Frame) -> R) -> R {
-        access(frames[index])
-    }
     #else
     @_lifetime(borrow self)
     func bytes(at index: Int) -> RawSpan? {
