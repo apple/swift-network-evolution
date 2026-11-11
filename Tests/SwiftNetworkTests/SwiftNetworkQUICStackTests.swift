@@ -448,6 +448,28 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             clientUpperHarness?.invokeConnectionIdleEvent()
             clientUpperHarness?.invokeConnectionReusedEvent()
             pairedPathsArray.first?.client.deliverViableEvent()
+
+            // The handshake validated the path it ran on, on both sides, once it was confirmed.
+            // The server confirms it on completing it; the client on HANDSHAKE_DONE, which a
+            // further exchange delivers.
+            let clientConnection = storage.quicInstance(for: clientQUICMultipathLinkage.base)
+            for _ in 0..<10 where clientConnection?.isHandshakeConfirmed == false {
+                if pairedPathsArray.first?.transferPackets() == 0 {
+                    break
+                }
+            }
+            for (side, linkage) in [("Client", clientQUICMultipathLinkage), ("Server", serverQUICMultipathLinkage)] {
+                guard let connection = storage.quicInstance(for: linkage.base) else {
+                    XCTFail("\(side) QUIC connection not found")
+                    continue
+                }
+                XCTAssertTrue(connection.isHandshakeConfirmed, "\(side) handshake not confirmed")
+                XCTAssertEqual(
+                    connection.currentPath?.state,
+                    .validated,
+                    "\(side) handshake path not validated"
+                )
+            }
             eventExpectation.fulfill()
         }
         wait(for: [eventExpectation], timeout: 5.0)
@@ -521,15 +543,22 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                     }
                 }
 
-                // Currently we only keep the current path object and remove all the
-                // other path objects we are migrating away from, so the number of
-                // multiplexing paths should be one.
+                // The client keeps the paths it migrated away from, so it can go back to them
+                // without probing again. Each was validated, the handshake path by the handshake
+                // and the rest by probing.
                 if let clientConnection = storage.quicInstance(for: clientQUICMultipathLinkage.base) {
                     XCTAssertEqual(
                         clientConnection.multiplexingPaths.count,
-                        1,
-                        "Path leaked after migration \(pathIndex)"
+                        pathIndex,
+                        "Unexpected path count after migration \(pathIndex)"
                     )
+                    for path in clientConnection.multiplexingPaths.values
+                    where path !== clientConnection.currentPath {
+                        XCTAssertTrue(
+                            path.isValidated,
+                            "Path \(path.pathIdentifier) left in \(path.state) after migration \(pathIndex)"
+                        )
+                    }
                 }
 
                 if let dataToSend {
@@ -885,9 +914,15 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         }
 
         wait(for: [migrationExpectation], timeout: 10.0)
-        wait(for: [pathChangedExpectation, pathValidatedExpectation, pathCurrentExpectation], timeout: 10.0)
+        wait(
+            for: [
+                pathChangedExpectation, pathCIDAssignedExpectation, pathValidatedExpectation, pathCurrentExpectation,
+            ],
+            timeout: 10.0
+        )
 
         XCTAssertNotNil(receivedPathChangedInfo, "Expected pathChanged event")
+        XCTAssertNotNil(receivedpathCIDAssignedInfo, "Expected pathCIDAssigned event")
         XCTAssertNotNil(receivedPathValidatedInfo, "Expected pathValidated event")
 
         // This validations are for the server side so the remote should change here
@@ -1041,8 +1076,251 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
 
                 harness.onContext {
                     server.fromExternal { eventContext in
-                        server.tearDownMigratedPath(newPath, in: &eventContext)
+                        server.tearDownPath(newPath, in: &eventContext)
                     }
+                }
+            }
+        )
+    }
+
+    // Every QUIC path event the server delivers to the stack above, in order.
+    final class PathEventRecorder {
+        struct Event: Equatable, CustomStringConvertible {
+            enum Kind: String {
+                case changed, cidAssigned, validated, unreachable, current
+            }
+            let kind: Kind
+            let info: QUICPathInfo
+
+            var description: String {
+                "\(kind.rawValue)(\(info.local) -> \(info.remote), validated: \(info.isValidated))"
+            }
+        }
+
+        private(set) var events: [Event] = []
+
+        func record(_ harness: NewStreamFlowHarness<TestStreamLinkageFamily>) {
+            harness.completions.pathChanged = { self.events.append(Event(kind: .changed, info: $0)) }
+            harness.completions.pathCIDAssigned = { self.events.append(Event(kind: .cidAssigned, info: $0)) }
+            harness.completions.pathValidated = { self.events.append(Event(kind: .validated, info: $0)) }
+            harness.completions.pathUnreachable = { self.events.append(Event(kind: .unreachable, info: $0)) }
+            harness.completions.pathCurrent = { self.events.append(Event(kind: .current, info: $0)) }
+        }
+    }
+
+    // The server paths `followPeerOntoNewPath` sets up, and the path information the server
+    // reports for each.
+    struct FollowedPaths {
+        let server: QUICConnection
+        let firstPath: QUICPath
+        let newPath: QUICPath
+        let firstPathInfo: QUICPathInfo
+        let newPathInfo: QUICPathInfo
+    }
+
+    // Attaches a second path to the server after the handshake, as an embedder does when a
+    // datagram arrives from a new address, and has the peer send its highest-numbered non-probing
+    // packet there. The server follows it straight away, and starts validating the path, which
+    // the peer never answers. Every path event from then on goes to `recorder`. Returns nil, having
+    // failed the test, if any of that does not happen.
+    private func followPeerOntoNewPath(
+        _ harness: QUICTestHarness,
+        recorder: PathEventRecorder
+    ) -> FollowedPaths? {
+        guard let server = harness.state?.serverInstance, let serverHarness = harness.state?.serverHarness else {
+            XCTFail("Server instance missing after handshake")
+            return nil
+        }
+
+        // The server needs a spare CID from the client before it can send on a new path.
+        var hasSpareCID = false
+        for _ in 0..<20 {
+            harness.onContext { hasSpareCID = server.remoteCIDs.contains { !$0.used } }
+            if hasSpareCID { break }
+            _ = XCTWaiter.wait(for: [XCTestExpectation(description: "Wait for a spare CID")], timeout: 0.1)
+        }
+        guard hasSpareCID else {
+            XCTFail("Server never received a spare CID from the client")
+            return nil
+        }
+
+        let serverAddress = IPv4Address(QUICTestHarness.serverIPv4Address)!
+        let newPort = BridgeDatagramProtocol.BridgeInstance.nextGeneratedPort
+        let newRemoteAddress = IPv4Address([192, 0, 2, 1])!
+        let newRemotePort: UInt16 = 4433
+        var firstPath: QUICPath?
+        var newPath: QUICPath?
+        harness.onContext {
+            recorder.record(serverHarness)
+            firstPath = server.currentPath
+
+            let bridge = harness.storage.createTestBridgeDatagramInstance()
+            let bridgeOptions = BridgeDatagramProtocol.options()
+            bridgeOptions.setProtocolInstance(bridge.identifier)
+            var parameters = Parameters()
+            parameters.context = harness.context
+            parameters.isServer = true
+            parameters.defaultStack.link = .custom(bridgeOptions)
+            var pathProperties = PathProperties(parameters: parameters)
+            pathProperties.effectiveMTU = 1500
+            var instance = server
+            do {
+                _ = try instance.fromExternal { eventContext throws(NetworkError) in
+                    try instance.attachLowerProtocolForNewPath(
+                        bridge.base,
+                        remote: Endpoint(address: newRemoteAddress, port: newRemotePort),
+                        local: Endpoint(address: serverAddress, port: newPort),
+                        parameters: parameters,
+                        path: pathProperties,
+                        in: &eventContext
+                    )
+                }
+            } catch {
+                XCTFail("Failed to attach the new path: \(error)")
+                return
+            }
+            newPath = server.multiplexingPaths.values.first { $0.localEndpoint?.port == newPort }
+        }
+        guard let firstPath, let newPath else {
+            XCTFail("Server paths not found")
+            return nil
+        }
+        guard harness.reached({ newPath.isRouteEstablished }, within: 1.0) else {
+            XCTFail("New server path never came up")
+            return nil
+        }
+
+        // Well above any packet number the client has used.
+        var followed = false
+        harness.onContext {
+            server.fromExternal { eventContext in
+                server.peerSentPacket(number: 1_000_000, isNonProbing: true, on: newPath, in: &eventContext)
+            }
+            followed = server.currentPath === newPath && newPath.isProbing
+        }
+        guard followed else {
+            XCTFail("Server did not follow the peer onto the new path, or validated it already")
+            return nil
+        }
+
+        return FollowedPaths(
+            server: server,
+            firstPath: firstPath,
+            newPath: newPath,
+            firstPathInfo: QUICPathInfo(
+                isValidated: true,
+                remote: AddressEndpoint(
+                    address: IPv4Address(QUICTestHarness.clientIPv4Address)!,
+                    port: harness.clientPort
+                ),
+                local: AddressEndpoint(address: serverAddress, port: harness.serverPort)
+            ),
+            newPathInfo: QUICPathInfo(
+                isValidated: false,
+                remote: AddressEndpoint(address: newRemoteAddress, port: newRemotePort),
+                local: AddressEndpoint(address: serverAddress, port: newPort)
+            )
+        )
+    }
+
+    // The peer moves to a new path and comes back before the server has validated it. The server
+    // follows it both ways (RFC 9000 9.3), and the stack above has to hear about every step: it
+    // tracks the peer's address from them. The way back is to the first path, which is attached
+    // differently from the paths after it.
+    func testServerReportsFollowingThePeerBackToTheFirstPath() {
+        let clientOptions = QUICProtocol.options()
+        clientOptions.connectionOptions.initialSourceConnectionID = QUICConnectionID(8)
+
+        let harness = QUICTestHarness()
+        harness.runQUICTest(
+            clientOptions: clientOptions,
+            afterHandshake: { harness in
+                let recorder = PathEventRecorder()
+                guard let paths = self.followPeerOntoNewPath(harness, recorder: recorder) else {
+                    return
+                }
+
+                harness.onContext {
+                    paths.server.fromExternal { eventContext in
+                        paths.server.peerSentPacket(
+                            number: 1_000_001,
+                            isNonProbing: true,
+                            on: paths.firstPath,
+                            in: &eventContext
+                        )
+                    }
+                    XCTAssertTrue(paths.server.currentPath === paths.firstPath, "Server did not follow the peer back")
+                    XCTAssertNil(
+                        paths.server.multiplexingPaths[paths.newPath.pathIdentifier],
+                        "Server kept the path the peer left"
+                    )
+                }
+
+                harness.onContext {
+                    XCTAssertEqual(
+                        recorder.events,
+                        [
+                            .init(kind: .changed, info: paths.newPathInfo),
+                            .init(kind: .cidAssigned, info: paths.newPathInfo),
+                            .init(kind: .current, info: paths.newPathInfo),
+                            .init(kind: .current, info: paths.firstPathInfo),
+                        ]
+                    )
+                }
+            }
+        )
+    }
+
+    // The path the server followed the peer onto runs out of probes. The server reports that,
+    // then goes back to the path the handshake ran on (RFC 9000 9.3.2) and reports that too.
+    func testServerReportsFallingBackToTheFirstPath() {
+        let clientOptions = QUICProtocol.options()
+        clientOptions.connectionOptions.initialSourceConnectionID = QUICConnectionID(8)
+
+        let harness = QUICTestHarness()
+        harness.runQUICTest(
+            clientOptions: clientOptions,
+            afterHandshake: { harness in
+                let recorder = PathEventRecorder()
+                guard let paths = self.followPeerOntoNewPath(harness, recorder: recorder) else {
+                    return
+                }
+
+                // Use up the challenges, then build one more packet, which marks the path
+                // unreachable. That happens while a packet is being built, so it is the migration
+                // timer that moves the server off it.
+                harness.onContext {
+                    let server = paths.server
+                    var now = server.now
+                    for _ in 0...QUICPath.maximumPendingChallenges {
+                        now = now.advanced(by: .seconds(60))
+                        var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+                        server.fromExternal { eventContext in
+                            paths.newPath.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                        }
+                    }
+                    XCTAssertEqual(paths.newPath.state, .unreachable)
+                    server.fromExternal { eventContext in
+                        server.migration.timerFired(at: now, connection: server, in: &eventContext)
+                    }
+                    XCTAssertTrue(server.currentPath === paths.firstPath, "Server did not fall back to the first path")
+                    XCTAssertNil(
+                        server.multiplexingPaths[paths.newPath.pathIdentifier],
+                        "Server kept the path that failed validation"
+                    )
+                }
+
+                harness.onContext {
+                    XCTAssertEqual(
+                        recorder.events,
+                        [
+                            .init(kind: .changed, info: paths.newPathInfo),
+                            .init(kind: .cidAssigned, info: paths.newPathInfo),
+                            .init(kind: .current, info: paths.newPathInfo),
+                            .init(kind: .unreachable, info: paths.newPathInfo),
+                            .init(kind: .current, info: paths.firstPathInfo),
+                        ]
+                    )
                 }
             }
         )
