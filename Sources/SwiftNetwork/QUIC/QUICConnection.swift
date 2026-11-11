@@ -175,8 +175,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public func withMultiplexedFlows<R: ~Copyable, E: Error>(
         _ body: (inout MultiplexedFlowTable<Flow>) throws(E) -> R
     ) throws(E) -> R {
-        stateMachine.beginTableBorrow(.streams)
-        defer { stateMachine.endTableBorrow(.streams) }
+        deferredWork.beginTableBorrow(.streams)
+        defer { deferredWork.endTableBorrow(.streams) }
         return try body(&multiplexedFlows)
     }
 
@@ -189,8 +189,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public func withMultiplexedSecondaryFlows<R: ~Copyable, E: Error>(
         _ body: (inout MultiplexedFlowTable<SecondaryFlow>) throws(E) -> R
     ) throws(E) -> R {
-        stateMachine.beginTableBorrow(.secondary)
-        defer { stateMachine.endTableBorrow(.secondary) }
+        deferredWork.beginTableBorrow(.secondary)
+        defer { deferredWork.endTableBorrow(.secondary) }
         return try body(&multiplexedSecondaryFlows)
     }
 
@@ -363,7 +363,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var streamsAwaitingOutboundRoom = QUICStreamList.awaitingOutboundRoomList()
 
     // Keeps track of flow table and sendFrame work on the connection
-    var stateMachine = QUICConnectionStateMachine()
+    var deferredWork = QUICDeferredWorkState()
 
     private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
 
@@ -3060,7 +3060,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         _ reason: String? = nil,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if !stateMachine.isCloseDeferred {
+        if !deferredWork.isCloseDeferred {
             // A close already waiting for a borrowed flow keeps its error to make sure the correct error is sent
             closeError = QUICTransportError(cryptoError: error, reason)
         }
@@ -3075,7 +3075,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         sendCloseFrame: Bool = true,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if !stateMachine.isCloseDeferred {
+        if !deferredWork.isCloseDeferred {
             // A close already waiting for a borrowed flow keeps its error to make sure the correct error is sent
             closeError = QUICTransportError(error, reason)
         }
@@ -3102,8 +3102,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Closing all flows, i.e. streams, and the connection itself
     func close(sendCloseFrame: Bool = true, in eventContext: inout NetworkContext.EventContext) {
         // Closing tears down every stream, so it cannot happen while one is borrowed
-        guard !stateMachine.isFlowBorrowed else {
-            stateMachine.deferClose(sendCloseFrame: sendCloseFrame)
+        guard !deferredWork.isFlowBorrowed else {
+            deferredWork.deferClose(sendCloseFrame: sendCloseFrame)
             return
         }
         if state.isTerminal || drainingScheduled {
@@ -3446,7 +3446,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // MARK: - Send Frames logic
 
     // Performs the sends that had to wait for the send path while a send or a borrowed flow was active.
-    // Only call this once the state machine reports sends ready: replaying claims the send path.
+    // Only call this once the deferred-work state reports sends ready: replaying claims the send path.
     func replayDeferredSends(
         recoveryIsFree: Bool = true,
         in eventContext: inout NetworkContext.EventContext
@@ -3461,7 +3461,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return
         }
         repeat {
-            if let plain = stateMachine.takePlainSend() {
+            if let plain = deferredWork.takePlainSend() {
                 // Anything this send defers is replayed when it finishes
                 sendFrames(
                     ignoreCongestionWindow: plain.ignoreCongestionWindow,
@@ -3476,16 +3476,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Replaying a path send does not record its packets with Recovery, so do that now. It
             // can also have deferred more sends, which the next time round handles.
             flushPendingRecoverySentPackets(in: &eventContext)
-        } while stateMachine.hasDeferredSends
+        } while deferredWork.hasDeferredSends
     }
 
     // Runs a deferred sendFrames on path
     private func replayDeferredPathSend(
-        _ pathSend: QUICConnectionStateMachine.PathSend,
+        _ pathSend: QUICDeferredWorkState.PathSend,
         in eventContext: inout NetworkContext.EventContext
     ) {
         let path = pathSend.path
-        stateMachine.claimSendPath()
+        deferredWork.claimSendPath()
         self.sentPackets.reserveCapacity(
             capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
         )
@@ -3506,7 +3506,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             recovery.resetPTOCount(path: path)
         }
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
-        stateMachine.releaseSendPath(wasActive: false)
+        deferredWork.releaseSendPath(wasActive: false)
     }
 
     // Makes sure that Recovery always records the sentPackets records for PTO bookkeeping
@@ -3521,12 +3521,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         at firedAt: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        let wasActive = stateMachine.claimSendPath()
+        let wasActive = deferredWork.claimSendPath()
         // Ack timer has a sendFrames nested inside of it.
         ack.timerFired(at: firedAt, in: &eventContext)
-        guard stateMachine.releaseSendPath(wasActive: wasActive) else { return }
+        guard deferredWork.releaseSendPath(wasActive: wasActive) else { return }
 
-        if let plain = stateMachine.takePlainSend() {
+        if let plain = deferredWork.takePlainSend() {
             sendFrames(ignoreCongestionWindow: plain.ignoreCongestionWindow, delayedACK: true, in: &eventContext)
 
             // `timerFired`'s own idle check ran before this deferred flush, while the ACK
@@ -3543,10 +3543,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         at firedAt: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        let wasActive = stateMachine.claimSendPath()
+        let wasActive = deferredWork.claimSendPath()
         flushPendingRecoverySentPackets(in: &eventContext)
         recovery.timerFired(at: firedAt, in: &eventContext)
-        if stateMachine.releaseSendPath(wasActive: wasActive) {
+        if deferredWork.releaseSendPath(wasActive: wasActive) {
             replayDeferredSends(in: &eventContext)
         }
     }
@@ -3560,10 +3560,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         // Any send waits while an existing send active, and while a flow is borrowed, since sending
-        // looks at the flow tables. The state machine keeps track of this state and reports ready once released.
+        // looks at the flow tables. The deferred-work state keeps track of this and reports ready once released.
         // If any future work is deferred, that will be replayed at the bottom of this function.
-        guard stateMachine.claimSendPathIfFree() else {
-            stateMachine.deferSend(ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK)
+        guard deferredWork.claimSendPathIfFree() else {
+            deferredWork.deferSend(ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK)
             return false
         }
         let result = sendFrames(
@@ -3576,7 +3576,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             applicationPendingItems: &applicationPendingItems,
             in: &eventContext
         )
-        if stateMachine.releaseSendPath(wasActive: false) {
+        if deferredWork.releaseSendPath(wasActive: false) {
             replayDeferredSends(in: &eventContext)
         }
         return result
@@ -3668,7 +3668,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         // Waits for the send path and for any borrowed flow, like sendFrames
-        guard stateMachine.claimSendPathIfFree() else {
+        guard deferredWork.claimSendPathIfFree() else {
             deferPathSend(
                 path,
                 ignoreCongestionWindow: ignoreCongestionWindow,
@@ -3698,7 +3698,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             recovery.resetPTOCount(path: path)
         }
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
-        if stateMachine.releaseSendPath(wasActive: false) {
+        if deferredWork.releaseSendPath(wasActive: false) {
             replayDeferredSends(in: &eventContext)
         }
         return success
@@ -3714,7 +3714,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) -> NetworkUniqueDeque<SentPacketRecord> {
         // sendFramesFromRecovery should always claim the send path so anything that
         // comes in for sendFrames while this is active should drain afterwards
-        let wasActive = stateMachine.claimSendPath()
+        let wasActive = deferredWork.claimSendPath()
         let result = sendFramesFromRecovery(
             on: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
@@ -3726,7 +3726,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             in: &eventContext
         )
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
-        if stateMachine.releaseSendPath(wasActive: wasActive) {
+        if deferredWork.releaseSendPath(wasActive: wasActive) {
             replayDeferredSends(recoveryIsFree: false, in: &eventContext)
         }
         return result
@@ -6181,7 +6181,7 @@ extension QUICConnection {
         // to flush frames. Suppress those nested flushes for the duration of the
         // `recovery` borrow below, then perform one flush afterwards if any were
         // requested.
-        let wasActive = stateMachine.claimSendPath()
+        let wasActive = deferredWork.claimSendPath()
         recovery.receivedAck(
             ack: frame,
             ackedPath: path,
@@ -6195,7 +6195,7 @@ extension QUICConnection {
         recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
 
         // The borrow of `recovery` has ended, so it is safe to flush again.
-        if stateMachine.releaseSendPath(wasActive: wasActive) {
+        if deferredWork.releaseSendPath(wasActive: wasActive) {
             replayDeferredSends(in: &eventContext)
         }
         return true
@@ -7252,8 +7252,8 @@ extension QUICConnection {
             return
         }
         // Looking at every stream cannot happen while one is borrowed
-        guard !stateMachine.isFlowBorrowed else {
-            stateMachine.deferIdleCheck()
+        guard !deferredWork.isFlowBorrowed else {
+            deferredWork.deferIdleCheck()
             return
         }
         let isIdle = connectionIsIdleForAllStreams(unackedPacketCount: unackedPacketCount)
