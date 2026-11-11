@@ -114,8 +114,12 @@ extension SendableItem where Self: ~Copyable {
                     availableCongestionWindow = 0
                 }
 
-                wroteFrame = true
                 addToTransmittedItems(&transmittedItems, from: &pendingItems)
+                // An item can drop what it had queued without writing a frame, such as a stream with
+                // no flow control credit. That adds nothing to the packet's ack-eliciting accounting.
+                if availableRoom - amountClaimedFromEndForCongestionWindow > availableRoomAfterWriting {
+                    wroteFrame = true
+                }
                 if !isRepeatable { break }
                 // With no room left the next write can only throw `smallBuffer`.
                 // Stop here, with the same result and without the throw.
@@ -640,10 +644,15 @@ extension FrameStreamSendMetadata: SendableItem {
         _ transmittedItems: inout TransmittedItems,
         from pendingItems: inout PendingItems
     ) {
+        var recordedStream = false
         while let sentStream = pendingItems.transmittedStreams.popFirst() {
             transmittedItems.sentStreams.append(sentStream)
+            recordedStream = true
         }
-        transmittedItems.stream = pendingItems.stream
+        // A write can drop everything queued without sending, and that packet carries no stream data
+        if recordedStream {
+            transmittedItems.stream = true
+        }
         if pendingItems.streamsToService.isEmpty && pendingItems.retransmitStreams.isEmpty {
             pendingItems.stream = false
         }
@@ -688,17 +697,12 @@ extension FrameStreamSendMetadata: SendableItem {
         stats: inout Statistics,
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
-
-        if connection.hasSentDataBlocked {
-            connection.log.debug("Connection is blocked")
-            // Throw this error to exit building
-            throw QUICError.frameWrite(.smallBuffer)
-        }
-
         // Try to send exactly one stream frame at a time, and clean up the sources
         var sentStream = false
 
-        // First try to send any pending retransmissions
+        // First try to send any pending retransmissions. These do not raise the highest offset sent,
+        // so connection flow control does not hold them back: the peer may need this data before it
+        // can read enough to send MAX_DATA.
         while !sentStream, !pendingItems.retransmitStreams.isEmpty {
             let retransmitStreamFlowID = pendingItems.retransmitStreams[0].flowID
 
@@ -723,7 +727,8 @@ extension FrameStreamSendMetadata: SendableItem {
             sentStream = wroteRetransmission
         }
 
-        // Then, try to send new stream data
+        // Then, try to send new stream data. A stream with no flow control credit is taken off the
+        // list here and queued again when the peer sends more.
         while !sentStream, !pendingItems.streamsToService.isEmpty {
             let streamToService = pendingItems.streamsToService.first!
 
