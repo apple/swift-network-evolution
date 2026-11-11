@@ -201,8 +201,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         }
         var rawValue: UInt16
         static let pacePackets = Flags(rawValue: 1 << 0)
-        static let isInitialPath = Flags(rawValue: 1 << 1)
-        static let isPrimaryPath = Flags(rawValue: 1 << 2)
+        static let isInitial = Flags(rawValue: 1 << 1)
         static let spinValue = Flags(rawValue: 1 << 3)
         static let useSlowProbeInterval = Flags(rawValue: 1 << 4)
         static let isPreferredAddress = Flags(rawValue: 1 << 5)
@@ -218,13 +217,9 @@ public final class QUICPath: MultiplexingDatagramPath<
         get { flags.contains(.pacePackets) }
         set { if newValue { flags.insert(.pacePackets) } else { flags.remove(.pacePackets) } }
     }
-    var isInitialPath: Bool {
-        get { flags.contains(.isInitialPath) }
-        set { if newValue { flags.insert(.isInitialPath) } else { flags.remove(.isInitialPath) } }
-    }
-    var isPrimaryPath: Bool {
-        get { flags.contains(.isPrimaryPath) }
-        set { if newValue { flags.insert(.isPrimaryPath) } else { flags.remove(.isPrimaryPath) } }
+    var isInitial: Bool {
+        get { flags.contains(.isInitial) }
+        set { if newValue { flags.insert(.isInitial) } else { flags.remove(.isInitial) } }
     }
     var spinValue: Bool {
         get { flags.contains(.spinValue) }
@@ -238,7 +233,6 @@ public final class QUICPath: MultiplexingDatagramPath<
         get { flags.contains(.isPreferredAddress) }
         set { if newValue { flags.insert(.isPreferredAddress) } else { flags.remove(.isPreferredAddress) } }
     }
-
     var isLossy: Bool {
         get { flags.contains(.isLossy) }
         set { if newValue { flags.insert(.isLossy) } else { flags.remove(.isLossy) } }
@@ -305,7 +299,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         priority: Int,
         isInitial: Bool,
     ) {
-        self.isInitialPath = isInitial
+        self.isInitial = isInitial
         self.priority = priority
         self.interface = interface
 
@@ -384,7 +378,7 @@ public final class QUICPath: MultiplexingDatagramPath<
             PMTUDState.minimumMTU - (IPProtocol.ipv6HeaderLength + UDPProtocol.headerLength)
 
         self.mss = parentProtocol.initialMSS
-        if !self.isInitialPath, let interface {
+        if !self.isInitial, let interface {
             // Search for other paths that share the same interface that have calculated another MSS
             var foundMSS = false
             parentProtocol.applyToAllPaths { otherPath in

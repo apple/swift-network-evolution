@@ -120,7 +120,7 @@ public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol whe
     func handlePathChanged(
         path pathID: MultiplexingPathIdentifier,
         event: MultiplexingPathEvent,
-        isPrimary: Bool,
+        pathProperties: MultiplexingPathProperties,
         in eventContext: inout NetworkContext.EventContext
     )
     func handleNetworkProtocolEvent(
@@ -329,6 +329,19 @@ extension MultiplexingPathIdentifier {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
+public struct MultiplexingPathProperties: Equatable, Sendable {
+    public let isPrimary: Bool
+    // Injected paths are added to the protocol explicitly rather than coming from the system.
+    public let isInjected: Bool
+
+    public init(isPrimary: Bool, isInjected: Bool) {
+        self.isPrimary = isPrimary
+        self.isInjected = isInjected
+    }
+}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
 @frozen public enum MultiplexingPathEvent: CustomStringConvertible {
     // During bringup of the path it is possible that the endpoints may have changed
     case available(local: Endpoint?, remote: Endpoint?, path: PathProperties?, parameters: Parameters?)
@@ -353,6 +366,7 @@ public protocol MultiplexingPath: UpperProtocolHandler {
     var pathIdentifier: MultiplexingPathIdentifier { get }
     init(parent: ParentProtocol, in eventContext: inout NetworkContext.EventContext)
     var pathIsPrimary: Bool { get set }
+    var pathIsInjected: Bool { get set }
     var pathHasMigrationInfo: Bool { get set }
     func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage
 }
@@ -475,7 +489,7 @@ extension ManyToManyProtocolHandler {
     public func handlePathChanged(
         path pathID: MultiplexingPathIdentifier,
         event: MultiplexingPathEvent,
-        isPrimary: Bool,
+        pathProperties: MultiplexingPathProperties,
         in eventContext: inout NetworkContext.EventContext
     ) {}
     public func handleNetworkProtocolEvent(
@@ -525,7 +539,7 @@ extension ManyToManyProtocolHandler {
             handlePathChanged(
                 path: newPath.pathIdentifier,
                 event: .available(local: local, remote: remote, path: path, parameters: parameters),
-                isPrimary: newPath.pathIsPrimary,
+                pathProperties: newPath.pathProperties,
                 in: &eventContext
             )
         }
@@ -2234,6 +2248,10 @@ extension MultiplexingPath {
 
     public var context: NetworkContext { parentProtocol.context }
 
+    public var pathProperties: MultiplexingPathProperties {
+        MultiplexingPathProperties(isPrimary: pathIsPrimary, isInjected: pathIsInjected)
+    }
+
     public mutating func attachLowerProtocol(
         _ lowerProtocol: LowerProtocol,
     ) throws(NetworkError) -> LowerProtocol.PairedUpperLinkage? {
@@ -2286,7 +2304,7 @@ extension MultiplexingPath {
         parentProtocol.handlePathChanged(
             path: pathIdentifier,
             event: .established,
-            isPrimary: pathIsPrimary,
+            pathProperties: pathProperties,
             in: &eventContext
         )
     }
@@ -2297,7 +2315,12 @@ extension MultiplexingPath {
         in eventContext: inout NetworkContext.EventContext
     ) {
         do { try validate(lower: instance, #function) } catch { return }
-        parentProtocol.handlePathChanged(path: pathIdentifier, event: .unavailable, isPrimary: false, in: &eventContext)
+        parentProtocol.handlePathChanged(
+            path: pathIdentifier,
+            event: .unavailable,
+            pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: pathIsInjected),
+            in: &eventContext
+        )
         parentProtocol.handleDisconnectedEvent(path: pathIdentifier, error: error, in: &eventContext)
     }
 
@@ -2320,7 +2343,7 @@ extension MultiplexingPath {
             parentProtocol.handlePathChanged(
                 path: pathIdentifier,
                 event: pathEvent,
-                isPrimary: pathIsPrimary,
+                pathProperties: pathProperties,
                 in: &eventContext
             )
             return
@@ -2732,8 +2755,9 @@ open class MultiplexingDatagramPath<
     public var lowerSendQueue = FrameArray(capacity: 10)
     public var lowerReceiveQueue = FrameArray()
 
-    public var pathIsPrimary: Bool = false
-    public var pathHasMigrationInfo: Bool = false
+    public var pathIsPrimary = false
+    public var pathIsInjected = false
+    public var pathHasMigrationInfo = false
 
     public var identifier: InstanceIdentifier
 
