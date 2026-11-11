@@ -145,8 +145,8 @@ final class MigrationTests: XCTestCase {
             }
         }
         if validated {
-            path.changeState(to: .probing)
-            path.changeState(to: .validated)
+            path.state = .probing
+            path.state = .validated
         }
         // The path is a framework protocol, so it is bound through the base form of the
         // harness's linkage.
@@ -228,7 +228,7 @@ final class MigrationTests: XCTestCase {
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
             let probedPath = self.makePath(dcid: Self.otherCID, sequenceNumber: 3, validated: false)
-            probedPath.changeState(to: .probing)
+            probedPath.state = .probing
             self.connection.currentPath = oldPath
             for path in [oldPath, newPath, probedPath] {
                 self.connection.multiplexingPaths[path.pathIdentifier] = path
@@ -563,7 +563,7 @@ final class MigrationTests: XCTestCase {
         let expectation = XCTestExpectation()
         connection.context.async {
             let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
-            path.changeState(to: .probing)
+            path.state = .probing
             self.connection.currentPath = path
             self.connection.multiplexingPaths[path.pathIdentifier] = path
             XCTAssertNil(self.connection.currentPathAmplificationBudget(on: path, alreadySent: 0))
@@ -704,7 +704,7 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            newPath.changeState(to: .probing)
+            newPath.state = .probing
             self.connection.currentPath = oldPath
             self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
             self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
@@ -798,8 +798,8 @@ final class MigrationTests: XCTestCase {
             self.becomeServer()
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let failedPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            failedPath.changeState(to: .probing)
-            failedPath.changeState(to: .unreachable)
+            failedPath.state = .probing
+            failedPath.state = .unreachable
             self.connection.currentPath = currentPath
             self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
             self.connection.multiplexingPaths[failedPath.pathIdentifier] = failedPath
@@ -1045,7 +1045,7 @@ final class MigrationTests: XCTestCase {
             let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
             self.connection.currentPath = path
             self.connection.multiplexingPaths[path.pathIdentifier] = path
-            path.changeState(to: .probing)
+            path.state = .probing
 
             // Send the first challenge, which sets the next challenge deadline and arms the timer.
             let base = NetworkClock.Instant.testBase
@@ -1133,24 +1133,22 @@ final class MigrationTests: XCTestCase {
                 let cid = Self.cid(UInt8(sequence))
                 let path = self.makePath(dcid: cid, sequenceNumber: sequence, validated: false)
                 if transition.from != .cidAssigned {
-                    path.changeState(to: .probing)
+                    path.state = .probing
                 }
                 if transition.from == .validated {
-                    path.changeState(to: .validated)
+                    path.state = .validated
                 }
                 XCTAssertEqual(path.state, transition.from)
                 XCTAssertTrue(self.queuedRetirements.isEmpty, "Retired a CID while holding it")
 
-                path.changeState(to: transition.to)
+                path.state = transition.to
                 let label = "\(transition.from) -> \(transition.to)"
                 XCTAssertEqual(self.queuedRetirements, [sequence], label)
                 XCTAssertNil(path.dcid, label)
                 XCTAssertNil(self.connection.remoteCIDs.find(connectionID: cid), label)
 
                 // The CID is gone, so leaving the next state retires nothing more.
-                if transition.to.isValidStateChange(to: .routeUnavailable) {
-                    path.changeState(to: .routeUnavailable)
-                }
+                path.state = .routeUnavailable
                 XCTAssertEqual(self.queuedRetirements, [sequence], label)
 
                 self.connection.queuedRetireConnectionIDSequences.removeAll()
@@ -1171,7 +1169,7 @@ final class MigrationTests: XCTestCase {
             self.connection.currentPath = currentPath
             self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
             self.connection.multiplexingPaths[path.pathIdentifier] = path
-            path.changeState(to: .probing)
+            path.state = .probing
 
             var now = self.connection.now
             for _ in 0...QUICPath.maximumPendingChallenges {

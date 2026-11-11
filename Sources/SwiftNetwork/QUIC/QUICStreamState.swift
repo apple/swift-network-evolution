@@ -54,33 +54,30 @@ enum QUICSendStreamState: UInt8, CaseIterable, CustomStringConvertible {
         }
     }
 
-    func isValidStateChange(logIDString: String, to newState: QUICSendStreamState) -> Bool {
+    // Valid transitions per RFC 9000, Figure 2.
+    func canTransition(to newState: QUICSendStreamState) -> Bool {
         switch (self, newState) {
-        case (.invalid, .ready),
-            (.ready, .send),
-            (.ready, .resetSent),
-            (.send, .dataSent),
-            (.send, .resetSent),
-            (.dataSent, .resetSent),
-            (.dataSent, .dataReceived),
-            (.resetSent, .resetReceived),
-            (.dataReceived, .resetSent):
+        // Sending.
+        case (.invalid, .ready),  // stream created
+            (.ready, .send),  // snd STREAM
+            (.send, .dataSent),  // snd STREAM with FIN
+            (.dataSent, .dataReceived):  // rcv all ACKs
             return true
+
+        // Reset.
+        case (.ready, .resetSent),  // snd RESET_STREAM
+            (.send, .resetSent),  // snd RESET_STREAM
+            (.dataSent, .resetSent),  // snd RESET_STREAM
+            (.resetSent, .resetReceived):  // rcv ACK of RESET_STREAM
+            return true
+
+        // Not in Figure 2: a reset requested after all data was acknowledged.
+        case (.dataReceived, .resetSent):
+            return true
+
         default:
-            Logger.proto.fault(
-                "\(logIDString) Invalid send stream transition : \(self) -> \(newState)"
-            )
             return false
         }
-    }
-
-    mutating func change(logIDString: String, to newState: QUICSendStreamState) {
-        #if !DisableDebugLogging
-        let loggableSelf = self
-        Logger.proto.debug("\(logIDString) send stream transition: \(loggableSelf) -> \(newState)")
-        #endif
-        _ = isValidStateChange(logIDString: logIDString, to: newState)
-        self = newState
     }
 
     var dataHasAlreadyBeenSent: Bool {
@@ -109,31 +106,15 @@ enum QUICSendStreamState: UInt8, CaseIterable, CustomStringConvertible {
 @available(Network 0.1.0, *)
 struct QUICSendState: ~Copyable {
     var buffer = StreamSendBuffer()
-    var state = QUICSendStreamState()
+    // Set through QUICStreamInstance.sendState, which logs the transition with the stream's log prefix.
+    fileprivate(set) var state = QUICSendStreamState()
 
     /// Queues `frame` for sending. Returns true for the first write on the stream, which still
-    /// has to move the state out of `.ready` with `startSending(logIDString:)`
+    /// has to move the state out of `.ready`
     mutating func enqueue(_ frame: consuming Frame, isLast: Bool) -> Bool {
         let isFirstWrite = state == .ready
         buffer.addSendData(frame, isLast: isLast)
         return isFirstWrite
-    }
-
-    mutating func startSending(logIDString: String) {
-        state.change(logIDString: logIDString, to: .send)
-    }
-
-    mutating func recordSent(isFinal: Bool, logPrefix: String) {
-        if isFinal, state == .send {
-            state.change(logIDString: logPrefix, to: .dataSent)
-        }
-    }
-
-    // To be called when 0-RTT sending is rejected.
-    mutating func reset() {
-        state = .ready
-        buffer.empty()
-        buffer = StreamSendBuffer()
     }
 }
 
@@ -164,35 +145,30 @@ enum QUICReceiveStreamState: CaseIterable, CustomStringConvertible {
         }
     }
 
-    func isValidStateChange(logIDString: String, to newState: QUICReceiveStreamState) -> Bool {
+    // Valid transitions per RFC 9000, Figure 3.
+    func canTransition(to newState: QUICReceiveStreamState) -> Bool {
         switch (self, newState) {
-        case (.invalid, .receive),
-            (.receive, .sizeKnown),
-            (.receive, .resetReceived),
-            (.sizeKnown, .dataReceived),
-            (.sizeKnown, .resetReceived),
-            (.dataReceived, .dataRead),
-            (.dataReceived, .resetReceived),
-            (.resetReceived, .dataReceived),
-            (.resetReceived, .resetRead):
+        // Receiving.
+        case (.invalid, .receive),  // stream created
+            (.receive, .sizeKnown),  // rcv STREAM with FIN
+            (.sizeKnown, .dataReceived),  // rcv all data
+            (.dataReceived, .dataRead):  // app read all data
             return true
+
+        // Reset.
+        case (.receive, .resetReceived),  // rcv RESET_STREAM
+            (.sizeKnown, .resetReceived),  // rcv RESET_STREAM
+            (.dataReceived, .resetReceived),  // rcv RESET_STREAM
+            (.resetReceived, .resetRead):  // app read reset
+            return true
+
+        // Not in Figure 3: the remaining data arrives after a RESET_STREAM.
+        case (.resetReceived, .dataReceived):
+            return true
+
         default:
-            Logger.proto.fault(
-                "\(logIDString) Invalid receive stream transition : \(self) -> \(newState)"
-            )
             return false
         }
-    }
-
-    mutating func change(logIDString: String, to newState: QUICReceiveStreamState) {
-        #if !DisableDebugLogging
-        let loggableSelf = self
-        Logger.proto.debug(
-            "\(logIDString) receive stream transition: \(loggableSelf) -> \(newState)"
-        )
-        #endif
-        _ = isValidStateChange(logIDString: logIDString, to: newState)
-        self = newState
     }
 
     var dataHasAlreadyBeenReceived: Bool {
@@ -239,7 +215,9 @@ enum QUICReceiveStreamState: CaseIterable, CustomStringConvertible {
 @available(Network 0.1.0, *)
 struct QUICReceiveState: ~Copyable {
     var reassemblyQueue = ReassemblyQueue()
-    var state = QUICReceiveStreamState()
+    // Set through QUICStreamInstance.receiveState, which logs the transition with the stream's log
+    // prefix.
+    fileprivate(set) var state = QUICReceiveStreamState()
 
     mutating func tryAppend(
         frame: consuming Frame,
@@ -253,20 +231,6 @@ struct QUICReceiveState: ~Copyable {
             return nil
         }
         return reassemblyQueue.append(frame: frame, offset: offset, fin: fin)
-    }
-
-    mutating func markSizeKnownIfNeeded(logPrefix: String) {
-        if state != .sizeKnown {
-            state.change(logIDString: logPrefix, to: .sizeKnown)
-        }
-    }
-
-    // Returns true if newOffset is past finOffset, a protocol violation the caller must close on.
-    mutating func markDataReceivedIfReached(newOffset: Int, finOffset: Int, logPrefix: String) -> Bool {
-        if newOffset == finOffset {
-            state.change(logIDString: logPrefix, to: .dataReceived)
-        }
-        return newOffset > finOffset
     }
 
     mutating func dequeueReassembled(
@@ -330,4 +294,34 @@ struct QUICReceiveState: ~Copyable {
         return frameArray
     }
 }
+
+// The stream's send and receive states are set here rather than on QUICSendState and
+// QUICReceiveState, which have no logger, so the transition logs carry the stream's log prefix.
+@available(Network 0.1.0, *)
+extension QUICStreamInstance {
+    var sendState: QUICSendStreamState {
+        get { send.state }
+        set {
+            let oldState = send.state
+            log.debug("Send stream transition: \(oldState) -> \(newValue)")
+            if !oldState.canTransition(to: newValue) {
+                log.fault("Invalid send stream transition: \(oldState) -> \(newValue)")
+            }
+            send.state = newValue
+        }
+    }
+
+    var receiveState: QUICReceiveStreamState {
+        get { receive.state }
+        set {
+            let oldState = receive.state
+            log.debug("Receive stream transition: \(oldState) -> \(newValue)")
+            if !oldState.canTransition(to: newValue) {
+                log.fault("Invalid receive stream transition: \(oldState) -> \(newValue)")
+            }
+            receive.state = newValue
+        }
+    }
+}
+
 #endif
