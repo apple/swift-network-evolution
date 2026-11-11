@@ -148,7 +148,7 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
                         connection.handlePathChanged(
                             path: newPath.pathIdentifier,
                             event: .available(local: nil, remote: nil, path: nil, parameters: nil),
-                            isPrimary: false,
+                            pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: false),
                             in: &eventContext
                         )
                     }

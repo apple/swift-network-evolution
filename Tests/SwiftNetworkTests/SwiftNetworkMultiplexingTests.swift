@@ -229,6 +229,8 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
                 "Failed to generate expected multiplexed output packet, second flow"
             )
 
+            self.checkPathChangesCarryPathProperties(instance: instance, lowerHarness: lowerHarness)
+
             upperHarness1.stop()
             upperHarness2.stop()
             upperHarness3.stop()
@@ -242,6 +244,40 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
         }
 
         wait(for: [dataExpectation], timeout: 5.0)
+    }
+
+    // The path reports its own primary and injected state with every change.
+    private func checkPathChangesCarryPathProperties(
+        instance: TestMultiplexingProtocol,
+        lowerHarness: DatagramLowerHarness<TestDatagramLinkageFamily>
+    ) {
+        guard let path = instance.multiplexingPaths.values.first else {
+            XCTFail("Multiplexing protocol has no path")
+            return
+        }
+        guard let established = instance.pathChanges.last else {
+            XCTFail("Connecting the path reported no change")
+            return
+        }
+        XCTAssertEqual(established.path, path.pathIdentifier)
+        guard case .established = established.event else {
+            XCTFail("Connecting the path reported \(established.event)")
+            return
+        }
+        // The first path is primary.
+        XCTAssertEqual(established.properties, MultiplexingPathProperties(isPrimary: true, isInjected: false))
+
+        path.pathIsInjected = true
+        lowerHarness.deliverPathIsNotPrimary()
+        XCTAssertEqual(
+            instance.pathChanges.last?.properties,
+            MultiplexingPathProperties(isPrimary: false, isInjected: true)
+        )
+        lowerHarness.deliverPathIsPrimary()
+        XCTAssertEqual(
+            instance.pathChanges.last?.properties,
+            MultiplexingPathProperties(isPrimary: true, isInjected: true)
+        )
     }
 
     func testMultiplexingProtocolPendingStreams() {

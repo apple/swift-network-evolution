@@ -285,6 +285,20 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
         log.debug("Multiplexing protocol disconnected connected for path \(path.description)")
     }
 
+    // Every path change reported to the protocol, in order.
+    public var pathChanges:
+        [(path: MultiplexingPathIdentifier, event: MultiplexingPathEvent, properties: MultiplexingPathProperties)] = []
+
+    public func handlePathChanged(
+        path pathID: MultiplexingPathIdentifier,
+        event: MultiplexingPathEvent,
+        pathProperties: MultiplexingPathProperties,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        log.debug("Multiplexing protocol path \(pathID.description) changed to \(event)")
+        pathChanges.append((pathID, event, pathProperties))
+    }
+
     public func triggerNewFlowCreation() {
         log.debug("Multiplexing protocol creating a new inbound flow")
         fromExternal { eventContext in
