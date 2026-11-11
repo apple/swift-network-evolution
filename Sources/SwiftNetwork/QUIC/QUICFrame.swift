@@ -1277,7 +1277,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
             // A receiver of RESET_STREAM can discard any data
             // that it already received on that stream.
             if streamID.isReceiveOnly(server: connection.isServer) || stream.receivedStopSending
-                || stream.send.state == .dataSent || stream.send.state == .dataReceived
+                || stream.send.state == .dataSent || stream.send.state.isTerminal
             {
                 let error = NetworkError.posix(ECONNRESET)
                 stream.close(errorCode: error, in: &eventContext)
@@ -3034,7 +3034,7 @@ struct FrameHandshakeDone: ~Copyable, QUICFrameProtocol {
             return false
         }
 
-        connection.confirmHandshake()
+        connection.confirmHandshake(in: &eventContext)
         return true
     }
 }
