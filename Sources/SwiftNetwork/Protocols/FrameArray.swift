@@ -77,6 +77,7 @@ public struct FrameArray: ~Copyable {
     }
 
     #if !NETWORK_EMBEDDED
+    #if compiler(<6.5)
     @_lifetime(borrow self)
     func bytes(at index: Int) -> RawSpan? {
         // The Lifetimes feature can't propagate dependence out of UniqueDeque's borrow
@@ -94,6 +95,15 @@ public struct FrameArray: ~Copyable {
         }
         return nil
     }
+    func peekFrame<R>(at index: Int, _ access: (borrowing Frame) -> R) -> R {
+        access(frames[index])
+    }
+    #else
+    @_lifetime(borrow self)
+    func bytes(at index: Int) -> RawSpan? {
+        frames[index].bytes
+    }
+    #endif
     #endif
 
     func peekFrame<R>(at index: Int, _ access: (borrowing Frame) -> R) -> R {
