@@ -42,7 +42,7 @@ internal import os
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public enum QUICConnectionState: CustomStringConvertible {
+public enum QUICConnectionState: CaseIterable, CustomStringConvertible {
     case invalid
 
     // Server only when parsing
@@ -85,60 +85,49 @@ public enum QUICConnectionState: CustomStringConvertible {
         }
     }
 
-    func isValidStateChange(to newState: QUICConnectionState, logIDString: String) -> Bool {
+    func canTransition(to newState: QUICConnectionState) -> Bool {
         switch (self, newState) {
-        case (.invalid, .idle),
-            (.idle, .initialReceived),
-            (.idle, .initialSent),
-            (.idle, .retrySent),
-            (.idle, .versionSent),
-            (.versionSent, .retrySent),
-            (.versionSent, .closing),
-            (.versionSent, .draining),
-            (.versionSent, .initialReceived),
-            (.versionReceived, .closing),
-            (.versionReceived, .initialSent),
-            (.versionReceived, .draining),
-            (.initialSent, .versionReceived),
-            (.initialSent, .retryReceived),
-            (.initialSent, .handshake),
-            (.initialSent, .closing),
-            (.initialSent, .draining),
-            (.initialReceived, .initialProcessed),
-            (.initialReceived, .handshake),
-            (.initialReceived, .closing),
-            (.initialReceived, .draining),
-            (.initialProcessed, .handshake),
-            (.initialProcessed, .closing),
-            (.initialProcessed, .draining),
-            (.retryReceived, .initialSent),
-            (.retryReceived, .draining),
-            (.retrySent, .initialReceived),
-            (.retrySent, .draining),
-            (.handshake, .connected),
-            (.handshake, .closing),
-            (.handshake, .draining),
-            (.connected, .closing),
-            (.connected, .draining),
-            (.closing, .draining):
+        // Setup.
+        case (.invalid, .idle):
             return true
+
+        // Client handshake.
+        case (.idle, .initialSent),  // send first Initial
+            (.initialSent, .versionReceived),  // rcv Version Negotiation (RFC 9000 §6.2)
+            (.versionReceived, .initialSent),  // resend Initial with the negotiated version
+            (.initialSent, .retryReceived),  // rcv Retry (RFC 9000 §17.2.5.2)
+            (.retryReceived, .initialSent),  // resend Initial with the Retry token
+            (.initialSent, .handshake):  // rcv server Initial
+            return true
+
+        // Server handshake.
+        case (.idle, .versionSent),  // rcv Initial with an unsupported version, snd Version Negotiation
+            (.retrySent, .versionSent),  // the same, after a Retry
+            (.idle, .retrySent),  // rcv Initial, snd Retry (RFC 9000 §8.1.2)
+            (.versionSent, .retrySent),  // rcv Initial with a supported version, snd Retry
+            (.idle, .initialReceived),  // rcv client Initial
+            (.versionSent, .initialReceived),  // rcv client Initial after Version Negotiation
+            (.retrySent, .initialReceived),  // rcv client Initial carrying the Retry token
+            (.initialReceived, .initialProcessed),  // connection IDs set, TLS started
+            (.initialReceived, .handshake),  // handshake keys installed
+            (.initialProcessed, .handshake):  // handshake keys installed
+            return true
+
+        // Handshake complete, client and server.
+        case (.handshake, .connected):
+            return true
+
+        // Termination (RFC 9000 §10.2): snd CONNECTION_CLOSE enters closing, rcv CONNECTION_CLOSE
+        // enters draining, and closing ends in draining. A connection that never left idle has
+        // nothing to close, and one already closing or draining does not close again.
+        case (.closing, .draining):
+            return true
+        case (_, .closing), (_, .draining):
+            return self != .invalid && self != .idle && !isTerminal
+
         default:
-            Logger.proto.fault(
-                "\(logIDString) Invalid connection state transition: \(self) -> \(newState)"
-            )
             return false
         }
-    }
-
-    mutating func change(to newState: QUICConnectionState, logIDString: String) {
-        #if !DisableDebugLogging
-        let loggableSelf = self
-        Logger.proto.debug(
-            "\(logIDString) connection state transition: \(loggableSelf) -> \(newState)"
-        )
-        #endif
-        _ = isValidStateChange(to: newState, logIDString: logIDString)
-        self = newState
     }
 
     @inline(always)
@@ -154,6 +143,26 @@ public enum QUICConnectionState: CustomStringConvertible {
     var isConnected: Bool {
         switch self {
         case .connected, .closing, .draining:
+            return true
+        default:
+            return false
+        }
+    }
+
+    // On a server, no client Initial has been accepted yet.
+    var isAwaitingClientInitial: Bool {
+        switch self {
+        case .idle, .versionSent, .retrySent:
+            return true
+        default:
+            return false
+        }
+    }
+
+    // On a server, the client Initial has been accepted and the handshake keys are not installed yet.
+    var isProcessingClientInitial: Bool {
+        switch self {
+        case .initialReceived, .initialProcessed:
             return true
         default:
             return false
@@ -220,7 +229,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public var eventManager = ProtocolEventManager()
     public let timerReference = TimerReference()
 
-    public var state: QUICConnectionState = .invalid
+    public var state: QUICConnectionState = .invalid {
+        didSet {
+            log.debug("Connection state transition: \(oldValue) -> \(state)")
+            if !oldValue.canTransition(to: state) {
+                log.fault("Invalid connection state transition: \(oldValue) -> \(state)")
+            }
+        }
+    }
     var flowControlState = FlowControlState(isStream: false)
 
     // All the CIDs advertised to the peer
@@ -544,7 +560,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.initialInterface = path?.directInterface ?? nil
         self.logPrefixer.logIDString = ""
 
-        state.change(to: .idle, logIDString: logPrefixer.logIDString)
+        state = .idle
 
         // Setup metadata callbacks
         self.setMetadataHandlers()
@@ -1522,7 +1538,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
                 // Clients will go from .idle to .initialSent when the crypto has started and
                 // sends the first packet
-                state.change(to: .initialSent, logIDString: logPrefixer.logIDString)
+                state = .initialSent
             }
         }
         // Note: any sendFrames(in: &eventContext) is triggered from crypto, if necessary
@@ -1913,9 +1929,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let unvalidatedPath = isServerConnection && !path.isValidated && path != currentPath
 
         // If we haven't derived the INITIAL keys, try to do that now.
-        if isServerConnection, !inConnectedState,
-            state == .idle || state == .versionSent || state == .retrySent
-        {
+        if isServerConnection, !inConnectedState, state.isAwaitingClientInitial {
             if state == .retrySent {
                 // If the retry has been sent, preflight if this is an initial packet with a token.
                 // If so, allow it to proceed through the normal handshake / parsing process
@@ -1943,7 +1957,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     // The token was validated and is no longer needed.
                     self.initialToken = nil
                 }
-                state.change(to: .initialReceived, logIDString: logPrefixer.logIDString)
+                state = .initialReceived
                 keyState = .handshake
                 handshakeStartTime = self.now
                 #if SignpostOutput
@@ -2262,7 +2276,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         // At this point, it is safe to say that client has received
         // a valid VN and will act on it
-        state.change(to: .versionReceived, logIDString: logPrefixer.logIDString)
+        state = .versionReceived
         versionReceived = true
         guard let version = matchedVersion else {
             close(with: .internalError, "unsupported version", in: &eventContext)
@@ -2285,7 +2299,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             log.error("Failed to start TLS")
             return
         }
-        state.change(to: .initialSent, logIDString: logPrefixer.logIDString)
+        state = .initialSent
     }
 
     private func handleInboundRetry(
@@ -2335,7 +2349,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             log.error("RETRY with invalid DCID: \(retryPacket.destinationConnectionID) != \(pathSCID)")
             return
         }
-        state.change(to: .retryReceived, logIDString: logIDString)
+        state = .retryReceived
         retryReceived = true
         retrySCID = retryPacket.sourceConnectionID
         path.assignDCID(retryPacket.sourceConnectionID, in: &eventContext)
@@ -2361,7 +2375,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             log.error("Failed to start TLS")
             return
         }
-        state.change(to: .initialSent, logIDString: logPrefixer.logIDString)
+        state = .initialSent
     }
 
     private func handleInboundLongHeader(
@@ -2398,7 +2412,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Server must set the negotiated version to the version that
             // it accepts on INITIAL packet
             negotiatedVersion = packet.version
-            state.change(to: .initialReceived, logIDString: logPrefixer.logIDString)
+            state = .initialReceived
             keyState = .handshake
             break
 
@@ -2456,7 +2470,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 }
             }
 
-            state.change(to: .initialProcessed, logIDString: logPrefixer.logIDString)
+            state = .initialProcessed
             break
 
         case .versionSent:
@@ -2479,7 +2493,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     return false
                 }
                 negotiatedVersion = packet.version
-                state.change(to: .initialReceived, logIDString: logPrefixer.logIDString)
+                state = .initialReceived
                 keyState = .handshake
 
                 log.info("New SCID: \(scid)")
@@ -2502,7 +2516,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 )
                 return false
             }
-            self.state.change(to: .handshake, logIDString: logPrefixer.logIDString)
+            self.state = .handshake
             self.keyState = .handshake
 
             // Peer's DCID will be saved to the array once we are
@@ -2786,11 +2800,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 // it should be closed when we receive STOP_SENDING, so we
                 // only need to handle the `dataRead` state here. Otherwise,
                 // close once both directions are closed and all data is read.
-                let receiveIsDataRead = stream.receive.state == .dataRead
+                let receiveIsDataRead = stream.receiveState == .dataRead
                 let shouldCloseStream =
                     receiveIsDataRead
                     && (stream.receivedStopSending
-                        || (!stream.closed && stream.send.state.isTerminal))
+                        || (!stream.closed && stream.sendState.isTerminal))
                 if shouldCloseStream {
                     stream.close(errorCode: stream.closeError, in: &ctx)
                 }
@@ -3234,7 +3248,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // from the lower stack (due to defunct, for example)
             // so switch to closing state before sending packets.
             // Note: sendFrames(in: &eventContext) before closing TLS based on this external event
-            state.change(to: .closing, logIDString: logPrefixer.logIDString)
+            state = .closing
             sendFrames(in: &eventContext)
         }
         closeTLSFlow(in: &eventContext)
@@ -3287,7 +3301,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         // End in draining
         QUICSignpost.draining(id: signpostID)
-        state.change(to: .draining, logIDString: logPrefixer.logIDString)
+        state = .draining
         cleanupAndLogFinalData(in: &eventContext)
     }
 
@@ -4979,10 +4993,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     // Only the first write on a client connection takes this, so it is kept out of line to
-    // keep the String copy for the log id out of processOutbound.
+    // keep the state transition logging out of processOutbound.
     @inline(never)
     private func markInitialSent() {
-        state.change(to: .initialSent, logIDString: logPrefixer.logIDString)
+        state = .initialSent
     }
 
     @inline(never)
@@ -5005,7 +5019,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
         }
 
-        if stream.receive.state == .receive && !state.isTerminal {
+        if stream.receiveState == .receive && !state.isTerminal {
             sendStopSending(stream: &stream)
             stream.stopSendRequested = true
 
@@ -5058,17 +5072,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // RESET_STREAM when an application error is set (e.g. a received
             // STOP_SENDING) or a partially buffered stream is aborted.
             if stream.outboundApplicationError == nil
-                && (stream.send.state == .send || stream.send.state == .ready)
+                && (stream.sendState == .send || stream.sendState == .ready)
             {
-                if stream.send.state == .ready {
-                    stream.send.state.change(logIDString: stream.log.logPrefix, to: .send)
+                if stream.sendState == .ready {
+                    stream.sendState = .send
                     // Keep the write side open until the zero-length FIN has been
                     // serviced (and ACKed); closing now would drop the queued FIN.
                     closeWrite = false
                 }
                 markStreamFinished(stream: &stream)
-            } else if stream.send.state == .ready
-                || (stream.send.state == .send && !stream.send.buffer.hasLast
+            } else if stream.sendState == .ready
+                || (stream.sendState == .send && !stream.send.buffer.hasLast
                     && stream.outboundApplicationError != nil)
             {
                 // Drop all the pending data.
@@ -5103,9 +5117,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         //
         // Only proceed if we are a server, the packet has a long header of type=keyState == .initial,
         // and connection state is idle, retrySent or versionSent
-        guard isServer, packet.longHeader, packet.keyState == .initial,
-            state == .idle || state == .retrySent || state == .versionSent
-        else {
+        guard isServer, packet.longHeader, packet.keyState == .initial, state.isAwaitingClientInitial else {
             return false
         }
 
@@ -5114,7 +5126,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             self.negotiatedVersion = self.initialVersion
             sendVersionNegotiation(packet: packet, path: path, in: &eventContext)
             if state != .versionSent {
-                state.change(to: .versionSent, logIDString: logPrefixer.logIDString)
+                state = .versionSent
             }
             return false
         }
@@ -5160,7 +5172,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             log.notice("New SCID: \(scid)")
             initialDCID = dcid
             log.info("Server setting initial to \(dcid)")
-            state.change(to: .retrySent, logIDString: logIDString)
+            state = .retrySent
             return false
         }
 
@@ -5326,10 +5338,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     func updateSecretForHandshakeLevel() {
         if !isServer && state != .handshake {
-            state.change(to: .handshake, logIDString: logPrefixer.logIDString)
+            state = .handshake
         }
-        if isServer && (state == .initialReceived || state == .initialProcessed) {
-            state.change(to: .handshake, logIDString: logPrefixer.logIDString)
+        if isServer && state.isProcessingClientInitial {
+            state = .handshake
         }
     }
 
@@ -5381,7 +5393,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             migrationSupported = true
         }
 
-        state.change(to: .connected, logIDString: logPrefixer.logIDString)
+        state = .connected
         if let signpostConnectInterval {
             QUICSignpost.connectEnd(signpostConnectInterval)
         }
@@ -6379,7 +6391,7 @@ extension QUICConnection {
         )
         stream.log.notice("Sending RESET_STREAM, error: \(errorCode)")
         stream.resetSent = true
-        stream.send.state.change(logIDString: stream.log.logPrefix, to: .resetSent)
+        stream.sendState = .resetSent
     }
 
     private func sendConnectionClose(packetNumberSpace: PacketNumberSpace) {
@@ -6592,11 +6604,11 @@ extension QUICConnection {
         knownFlows[streamID] = flowID
         if !stream.unidirectional {
             self.bidirectionalStreams.incrementActiveStreams()
-            stream.receive.state.change(logIDString: stream.log.logPrefix, to: .receive)
+            stream.receiveState = .receive
         } else {
             self.unidirectionalStreams.incrementActiveStreams()
         }
-        stream.send.state.change(logIDString: stream.log.logPrefix, to: .ready)
+        stream.sendState = .ready
         startOutboundStream(stream: &stream, for: flowID, in: &eventContext)
         // Deliver the connected event for the newly start flow
         stream.deliverConnectedEvent(in: &eventContext)
@@ -6608,7 +6620,7 @@ extension QUICConnection {
     func readyAllOutboundStreams(in eventContext: inout NetworkContext.EventContext) {
         applyToAllStreams(in: &eventContext) { (stream: inout Flow, eventContext: inout NetworkContext.EventContext) in
             let flowID = stream.flowIdentifier
-            if stream.send.state == .invalid && stream.receive.state == .invalid {
+            if stream.sendState == .invalid && stream.receiveState == .invalid {
                 if !readyPendingStream(&stream, flowID: flowID, in: &eventContext) {
                     log.error("Could not ready pending stream")
                 }
@@ -6636,7 +6648,7 @@ extension QUICConnection {
             localTransportParameters: localTransportParameters
         )
 
-        if stream.send.state == .ready {
+        if stream.sendState == .ready {
             if stream.unidirectional {
                 self.unidirectionalStreams.removePending(&stream)
             } else {
@@ -7173,21 +7185,20 @@ extension QUICConnection {
             return
         }
 
-        let logIDString = self.logIDString
         performOnStream(flowID, in: &eventContext) { (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
-            guard stream.send.state != .resetReceived else {
+            guard stream.sendState != .resetReceived else {
                 stream.log.debug("[S\(stream.streamID?.value ?? 0)] duplicate RESET_STREAM ACK ignored")
                 return
             }
-            if stream.send.state == .send {
+            if stream.sendState == .send {
                 stream.log.error(
                     "[S\(stream.streamID?.value ?? 0)] in state send (resetSent? \(stream.resetSent))"
                 )
             }
-            stream.send.state.change(logIDString: logIDString, to: .resetReceived)
+            stream.sendState = .resetReceived
 
             // Only close the stream when the receive side is also in a terminal state.
-            if stream.receive.state.dataHasAlreadyBeenReceived {
+            if stream.receiveState.dataHasAlreadyBeenReceived {
                 let error = NetworkError.posix(ECONNRESET)
                 stream.close(errorCode: error, in: &ctx)
             }
@@ -7229,9 +7240,9 @@ extension QUICConnection {
             if isFinal {
                 stream.peerAcknowledgedFIN = true
             }
-            if streamFinished, stream.peerAcknowledgedFIN, stream.send.state != .dataReceived {
-                stream.send.state.change(logIDString: stream.log.logPrefix, to: .dataReceived)
-                if !stream.closed, stream.receive.state.isTerminal {
+            if streamFinished, stream.peerAcknowledgedFIN, stream.sendState != .dataReceived {
+                stream.sendState = .dataReceived
+                if !stream.closed, stream.receiveState.isTerminal {
                     // If both directions are closed, and all data is read, close the stream
                     stream.close(errorCode: stream.closeError, in: &ctx)
                 }
@@ -7712,7 +7723,7 @@ extension QUICConnection {
         }
         for path in paths where !assignNewDCID(to: path, in: &eventContext) {
             log.info("No CID to replace the one retired on path \(path.pathIdentifier)")
-            path.changeState(to: .routeEstablished)
+            path.state = .routeEstablished
         }
     }
 

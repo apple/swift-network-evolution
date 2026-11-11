@@ -91,8 +91,8 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
             path.assignDCID(dcid, in: &eventContext)  // -> .cidAssigned (open for sending)
         }
         if validated {
-            path.changeState(to: .probing)
-            path.changeState(to: .validated)
+            path.state = .probing
+            path.state = .validated
         }
         _ = try? path.attachLowerProtocol(lowerLinkage.base)
         try? lowerLinkage.base.invokeAttachUpperProtocol(

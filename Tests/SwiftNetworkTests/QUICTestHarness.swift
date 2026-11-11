@@ -1840,7 +1840,7 @@ class QUICTestHarness {
         onContext {
             let client = self.state?.clientInstance
             let sendState = client?.someFlowIdentifier.flatMap { flowID in
-                client?.withFlow(flowID) { $0.send.state }
+                client?.withFlow(flowID) { $0.sendState }
             }
             XCTAssertEqual(sendState, .resetReceived, "RESET_STREAM must be ACKed before the response")
         }
@@ -2005,7 +2005,7 @@ class QUICTestHarness {
         onContext {
             let client = self.state?.clientInstance
             let sendState = client?.someFlowIdentifier.flatMap { flowID in
-                client?.withFlow(flowID) { $0.send.state }
+                client?.withFlow(flowID) { $0.sendState }
             }
             XCTAssertEqual(sendState, .resetReceived, "RESET_STREAM must be ACKed before the peer resets")
         }
@@ -2526,7 +2526,7 @@ class QUICTestHarness {
         // in .dataSent, or .dataReceived.
         if let serverConnection = state?.serverInstance,
             let serverFlowID = serverConnection.someFlowIdentifier,
-            let serverSendState = serverConnection.withFlow(serverFlowID, { $0.send.state })
+            let serverSendState = serverConnection.withFlow(serverFlowID, { $0.sendState })
         {
             XCTAssertTrue(
                 serverSendState == .dataSent || serverSendState == .dataReceived,

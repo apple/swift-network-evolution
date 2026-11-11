@@ -282,16 +282,14 @@ extension QUICConnection {
                 path.pacePackets = pacingEnabled
                 path.set(interface: nil, priority: 0, isInitial: false)
                 setupL4S(on: path)
-                path.changeState(to: .routeAvailable)
+                path.state = .routeAvailable
             }
         case .established:
             if !path.isRouteEstablished {
-                path.changeState(to: .routeEstablished)
+                path.state = .routeEstablished
             }
         case .unavailable:
-            if path.state.isValidStateChange(to: .routeUnavailable) {
-                path.changeState(to: .routeUnavailable)
-            }
+            path.state = .routeUnavailable
         }
 
         logExistingPaths()
@@ -519,9 +517,7 @@ extension QUICConnection {
             return
         }
         log.notice("Tearing down path \(path.pathIdentifier) (\(path.state))")
-        if path.state.isValidStateChange(to: .routeUnavailable) {
-            path.changeState(to: .routeUnavailable)
-        }
+        path.state = .routeUnavailable
         path.destroy(in: &eventContext)
         multiplexingPaths.removeValue(forKey: path.pathIdentifier)
         sendFrames(in: &eventContext)

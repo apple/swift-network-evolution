@@ -26,6 +26,22 @@ import XCTest
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
+/// Runs `body` with a stream that has been set up, on a connection built outside a protocol stack.
+@available(Network 0.1.0, *)
+func withTestStream(_ body: (inout QUICStreamInstance) -> Void) {
+    let connection = NetworkContext.implicitContext.onQueue {
+        QUICConnection(context: NetworkContext.implicitContext)
+    }
+    connection.context.onQueue {
+        var stream = QUICStreamInstance(parent: connection, inbound: false)
+        stream.setup(streamID: QUICStreamID(0), logPrefixer: LogPrefixer("[QUICStreamStateTests]"))
+        body(&stream)
+        // Nothing else hands the stream's and the connection's event states back.
+        stream.destroyFromExternalTest()
+        connection.destroyFromExternalTest()
+    }
+}
+
 @available(Network 0.1.0, *)
 final class QUICSendStreamStateTests: XCTestCase {
     func testDefaultInitializedState() {
@@ -59,7 +75,7 @@ final class QUICSendStreamStateTests: XCTestCase {
         for startState in QUICSendStreamState.allCases {
             for destinationState in QUICSendStreamState.allCases {
                 let state = QUICSendStreamState(state: startState)
-                let result = state.isValidStateChange(logIDString: "stream", to: destinationState)
+                let result = state.canTransition(to: destinationState)
                 let expected = checkAllowedStateTransitions(from: startState, to: destinationState)
 
                 XCTAssertEqual(
@@ -72,12 +88,13 @@ final class QUICSendStreamStateTests: XCTestCase {
     }
 
     func testChangingState() {
-        var state = QUICSendStreamState()
-        for newState in QUICSendStreamState.allCases {
-            // Currently there are not restrictions for how states can change
-            // The disallowed state changes only cause log messages
-            state.change(logIDString: "stream", to: newState)
-            XCTAssertEqual(state, newState)
+        withTestStream { stream in
+            for newState in QUICSendStreamState.allCases {
+                // Currently there are not restrictions for how states can change
+                // The disallowed state changes only cause log messages
+                stream.sendState = newState
+                XCTAssertEqual(stream.sendState, newState)
+            }
         }
     }
 }
@@ -117,7 +134,7 @@ final class QUICReceiveStreamStateTests: XCTestCase {
         for startState in QUICReceiveStreamState.allCases {
             for destinationState in QUICReceiveStreamState.allCases {
                 let state = QUICReceiveStreamState(state: startState)
-                let result = state.isValidStateChange(logIDString: "stream", to: destinationState)
+                let result = state.canTransition(to: destinationState)
                 let expected = checkAllowedStateTransitions(from: startState, to: destinationState)
 
                 XCTAssertEqual(
@@ -130,12 +147,13 @@ final class QUICReceiveStreamStateTests: XCTestCase {
     }
 
     func testChangingState() {
-        var state = QUICReceiveStreamState()
-        for newState in QUICReceiveStreamState.allCases {
-            // Currently there are not restrictions for how states can change
-            // The disallowed state changes only cause log messages
-            state.change(logIDString: "stream", to: newState)
-            XCTAssertEqual(state, newState)
+        withTestStream { stream in
+            for newState in QUICReceiveStreamState.allCases {
+                // Currently there are not restrictions for how states can change
+                // The disallowed state changes only cause log messages
+                stream.receiveState = newState
+                XCTAssertEqual(stream.receiveState, newState)
+            }
         }
     }
 }

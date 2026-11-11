@@ -850,7 +850,7 @@ extension FrameStreamSendMetadata: SendableItem {
         stream: inout QUICStreamInstance
     ) throws(QUICError) -> Bool {
         // Already completely written, ignore
-        guard !stream.send.state.dataHasAlreadyBeenSent else {
+        guard !stream.sendState.dataHasAlreadyBeenSent else {
             pendingItems.popServicedStream()
             stream.listMembership.remove(.sendable)
             return false
@@ -2793,7 +2793,7 @@ struct PendingItems: ~Copyable {
     // Callers that already hold the connection pass it in, which saves reading it back out of the
     // stream's parentProtocol.
     func canAddStreamToService(_ stream: borrowing QUICStreamInstance, connection: QUICConnection) -> Bool {
-        !stream.send.state.dataHasAlreadyBeenSent
+        !stream.sendState.dataHasAlreadyBeenSent
             && ((stream.hasMoreSendDataToService && stream.availableRemoteReceiveWindow(for: connection) > 0)
                 || stream.send.buffer.hasLast)
     }

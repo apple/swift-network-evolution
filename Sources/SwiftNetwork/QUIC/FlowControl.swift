@@ -559,7 +559,7 @@ extension QUICStreamInstance {
     var shouldSendInboundFlowControlCredit: Bool {
         // We only need to send flow control updates before we receive
         // the FIN bit and before we receive a RESET_STREAM.
-        guard self.receive.state == .receive else {
+        guard self.receiveState == .receive else {
             return false
         }
 
@@ -588,7 +588,7 @@ extension QUICStreamInstance {
     mutating func sendInboundFlowControlCreditForStreamDataBlocked(connection: QUICConnection) {
         // Ignore STREAM_DATA_BLOCKED once we have received a FIN
         // or a RESET_STREAM.
-        guard !receive.state.isSizeKnown else {
+        guard !receiveState.isSizeKnown else {
             return
         }
 
@@ -795,7 +795,7 @@ extension QUICStreamInstance {
         var connectionOnly = connectionOnly
         if !connectionOnly {
             // Check for the conditions in which stream flow control can be skipped
-            if self.receive.state.isSizeKnown {
+            if self.receiveState.isSizeKnown {
                 connectionOnly = true
             }
         }
