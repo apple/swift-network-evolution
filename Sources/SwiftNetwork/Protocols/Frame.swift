@@ -265,7 +265,7 @@ public struct Frame: ~Copyable {
     @inlinable
     @inline(always)
     var nextByteIsZero: Bool {
-        guard unclaimedLength > 0 else { return false }
+        guard isValid, unclaimedLength > 0 else { return false }
         switch buffer {
         case .empty:
             return false
