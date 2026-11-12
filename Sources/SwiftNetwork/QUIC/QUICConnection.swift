@@ -1911,6 +1911,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return
         }
 
+        // RFC 9000, Section 14.1: an Initial packet must arrive in a datagram of at least 1200 bytes.
+        // The limit is on the datagram, since a client may reach it by coalescing packets, so it is
+        // measured here. The first packet is checked before the server replies or derives keys, and
+        // each later Initial in the datagram once it has been decrypted.
+        let undersizedForInitial = isServerConnection && dataLength < Constants.minimumInitialDatagramSize
+
         #if DatapathLogging
         // Avoid accessing log as a instance property to avoid per-packet being / end access
         log.datapath("Handling inbound packet (length: \(dataLength))")
@@ -1944,6 +1950,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 log.error("Dropping RETRY from a client")
                 return
             case .protected(let packet):
+                // Drop it before anything is set up for it: no Version Negotiation, RETRY or keys.
+                if undersizedForInitial, packet.keyState == .initial {
+                    log.error("Dropping Initial packet in a \(dataLength) byte datagram")
+                    return
+                }
                 if !preDecryption(frame: &frame, path: path, packet: packet, in: &eventContext) {
                     return
                 }
@@ -1980,6 +1991,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 unvalidatedPath: unvalidatedPath,
                 coalesced: coalesced,
                 isServerConnection: isServerConnection,
+                undersizedForInitial: undersizedForInitial,
                 packetParser: &packetParser,
                 in: &eventContext
             )
@@ -2034,6 +2046,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         unvalidatedPath: Bool,
         coalesced: Bool,
         isServerConnection: Bool,
+        undersizedForInitial: Bool,
         packetParser: inout PacketParser,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
@@ -2073,6 +2086,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     continueProcessing = handleInboundLongHeader(
                         packet,
                         isServerConnection: isServerConnection,
+                        undersizedForInitial: undersizedForInitial,
                         ack: &ack,
                         protector: &protector,
                         in: &eventContext
@@ -2375,10 +2389,22 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private func handleInboundLongHeader(
         _ packet: borrowing Packet,
         isServerConnection: Bool,
+        undersizedForInitial: Bool,
         ack: inout Ack,
         protector: inout Protector,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        // RFC 9000, Section 14.1: a server MUST discard an Initial packet carried in a datagram smaller
+        // than 1200 bytes. It does not close the connection, which it MAY do: Initial keys are derived from
+        // a connection ID sent in the clear, so anyone on the path could then end a handshake in progress.
+        // This runs before the state machine, so the packet sets nothing up and its frames are not processed.
+        if isServerConnection, undersizedForInitial, packet.keyState == .initial {
+            log.error(
+                "Dropping Initial packet in a datagram smaller than \(Constants.minimumInitialDatagramSize) bytes"
+            )
+            return false
+        }
+
         switch state {
         case .idle:
             if !isServerConnection {
@@ -2389,16 +2415,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             if packet.keyState != .initial {
                 let error = "first packet received from the client was not INITIAL"
-                log.error(error)
-                close(with: .protocolViolation, error, in: &eventContext)
-                return false
-            }
-            // NOTE: A server MAY send a CONNECTION_CLOSE frame with error
-            // code PROTOCOL_VIOLATION in response to the first Initial
-            // packet it receives from a client if the UDP datagram is
-            // smaller than 1200 octets.
-            if isServerConnection && packet.keyState == .initial && packet.totalLength < 1200 {
-                let error = "first packet received from the client was smaller than 1200 octets"
                 log.error(error)
                 close(with: .protocolViolation, error, in: &eventContext)
                 return false
@@ -3349,6 +3365,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Keepalive packets ignore the congestion window.
             sendFrames(ignoreCongestionWindow: true, in: &eventContext)
             migration.checkForKeepaliveLoss(outstandingCount: unackedKeepaliveCount)
+        } else if let keepaliveTimerID = keepaliveTimerID {
+            // A packet arrived within the interval, e.g. the delayed ACK of the previous PING, so
+            // the next keep-alive still due.
+            timer.reschedule(
+                identifier: keepaliveTimerID,
+                fromNow: keepaliveDuration - timeSinceLastReceived,
+                timerNow: now,
+                in: &eventContext
+            )
         }
     }
 
@@ -4533,8 +4558,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return false
         }
 
-        if keyState == .initial {
-            // Initial packets are always fully padded, only allow if the congestion window has room
+        if keyState == .initial, pendingItems.padsInitialPacket(isServer: isServer) {
+            // Padded Initial packets fill the datagram, only allow if the congestion window has room
             guard availableCongestionWindow >= path.mss else {
                 log.datapath("Path is congestion controlled, cannot fit a full initial packet")
                 return false
@@ -4811,8 +4836,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 break
             }
 
-            // Allow sending a padding-only packet for a second packet
-            if !pendingItems.hasPendingItems && !pendingItems.hasPadding {
+            // Stop once nothing is left to send. Padding goes in the packet that needs it, never in a
+            // packet of its own.
+            if !pendingItems.hasPendingItems {
                 break
             }
         } while testSendingShortPackets
