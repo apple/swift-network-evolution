@@ -3358,6 +3358,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Keepalive packets ignore the congestion window.
             sendFrames(ignoreCongestionWindow: true, in: &eventContext)
             migration.checkForKeepaliveLoss(outstandingCount: unackedKeepaliveCount)
+        } else if let keepaliveTimerID = keepaliveTimerID {
+            // A packet arrived within the interval, e.g. the delayed ACK of the previous PING, so
+            // the next keep-alive still due.
+            timer.reschedule(
+                identifier: keepaliveTimerID,
+                fromNow: keepaliveDuration - timeSinceLastReceived,
+                timerNow: now,
+                in: &eventContext
+            )
         }
     }
 
