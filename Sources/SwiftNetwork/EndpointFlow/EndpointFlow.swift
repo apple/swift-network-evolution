@@ -511,7 +511,7 @@ struct EndpointFlow: ~Copyable {
         let completion = writeRequest.completion
         let success = flow.write(writeRequest.frame, in: &eventContext)
         deliverToApplication(in: &eventContext) {
-            WriteRequest.runCompletion(completion, success: success)
+            WriteRequest.runCompletion(completion, error: success ? nil : .posix(ENOBUFS))
         }
     }
 
@@ -569,7 +569,7 @@ struct EndpointFlow: ~Copyable {
         }
         deliverToApplication(in: &eventContext) {
             for completion in completions {
-                WriteRequest.runCompletion(completion.run, success: success)
+                WriteRequest.runCompletion(completion.run, error: success ? nil : .posix(ENOBUFS))
             }
         }
     }
@@ -733,14 +733,16 @@ struct EndpointFlow: ~Copyable {
             if var takenRequest = writeRequest.take() {
                 let completion = takenRequest.completion
                 takenRequest.frame.finalize(success: false)
-                WriteRequest.runCompletion(completion, success: false)
+                WriteRequest.runCompletion(completion, error: .posix(ENOBUFS))
             }
             return
         }
         if let takenRequest = writeRequest.take() {
             writeRequests.append(takenRequest)
         }
-        if state == .ready {
+        if self.cancelRequested {
+            self.failPendingRequests()
+        } else if state == .ready {
             scheduleWriteFlush(parent)
         }
         self.drainPendingEvents(parent)
@@ -797,9 +799,11 @@ struct EndpointFlow: ~Copyable {
         if let takenRequest = readRequest.take() {
             readRequests.append(takenRequest)
         }
-        // If state is ready and this is the first read request, then try to start reading.
-        // Otherwise, wait for an `inboundDataAvailable` event to bring us back through the drain.
-        if state == .ready && readRequests.count == 1 {
+        if self.cancelRequested {
+            self.failPendingRequests()
+        } else if state == .ready && readRequests.count == 1 {
+            // If state is ready and this is the first read request, then try to start reading.
+            // Otherwise, wait for an `inboundDataAvailable` event to bring us back through the drain.
             read()
         }
         self.drainPendingEvents(parent)
@@ -1046,7 +1050,7 @@ struct EndpointFlow: ~Copyable {
         while var writeRequest = self.writeRequests.popFirst() {
             let completion = writeRequest.completion
             writeRequest.frame.finalize(success: false)
-            WriteRequest.runCompletion(completion, success: false)
+            WriteRequest.runCompletion(completion, error: .posix(ECANCELED))
         }
         while !self.readRequests.isEmpty {
             let readRequest = self.readRequests.removeFirst()
