@@ -995,6 +995,82 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         )
     }
 
+    /// The first byte of a long header packet with its low nibble masked off: the header form, the
+    /// fixed bit and the packet type.
+    private enum LongHeaderPacketType: UInt8 {
+        case initial = 0xc0
+        case handshake = 0xe0
+    }
+
+    /// Runs a handshake and checks that the client's PTO probe was a Handshake packet. The client must
+    /// send a Handshake packet after its last Initial; otherwise it sends nothing the server can use to
+    /// validate its address, and the server stays blocked by the anti-amplification limit. When
+    /// `initialPacketsBeforeHandshake` is given, the client must send exactly that many Initial packets
+    /// before its first Handshake packet; an extra Initial means the probe went in the wrong space.
+    private func assertClientProbesInHandshakeSpace(
+        clientDrops: DatagramDrops? = nil,
+        serverDrops: DatagramDrops?,
+        initialPacketsBeforeHandshake: Int? = nil,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let clientPacketTypes = Mutex<[LongHeaderPacketType?]>([])
+        XCTAssertNoThrow(
+            try QUICTestHarness().quicHandshake(
+                clientLinkDelay: .milliseconds(10),
+                serverLinkDelay: .milliseconds(10),
+                clientDrops: clientDrops,
+                serverDrops: serverDrops,
+                timeout: 10,
+                clientBridgeObserveFirstByteHandler: { firstByte in
+                    clientPacketTypes.withLock { $0.append(LongHeaderPacketType(rawValue: firstByte & 0xf0)) }
+                }
+            ),
+            file: file,
+            line: line
+        )
+        let packetTypes = clientPacketTypes.withLock { $0 }
+        guard let firstHandshake = packetTypes.firstIndex(of: .handshake) else {
+            XCTFail("the client never sent a Handshake packet", file: file, line: line)
+            return
+        }
+        XCTAssertFalse(
+            packetTypes[firstHandshake...].contains(.initial),
+            "the client sent an Initial after its first Handshake packet",
+            file: file,
+            line: line
+        )
+        if let initialPacketsBeforeHandshake {
+            XCTAssertEqual(
+                packetTypes[..<firstHandshake].filter { $0 == .initial }.count,
+                initialPacketsBeforeHandshake,
+                "the client's PTO probe must be a Handshake packet, not another Initial",
+                file: file,
+                line: line
+            )
+        }
+    }
+
+    // The server's first flight is lost, so the client receives only a late Handshake packet. It then
+    // holds Handshake keys but no 1-RTT keys, and has nothing in flight. Its probe must be a Handshake
+    // packet; otherwise it sends nothing, the server stays blocked by the anti-amplification limit, and
+    // the handshake never completes.
+    func testQUICDropClientProbesInHandshakeSpaceWithoutOneRTTKeys() {
+        assertClientProbesInHandshakeSpace(
+            clientDrops: .init(1...10),
+            serverDrops: .init(1...5)
+        )
+    }
+
+    // The server's Initial arrives but its Handshake flight is lost, so the client holds Handshake keys
+    // without having received a Handshake packet, and has nothing in flight. Its PTO probe must be a
+    // Handshake packet; otherwise it sends another Initial, which RFC 9002 Section 6.2.2.1 allows only
+    // for a client without Handshake keys. The client sends its Initial and an Initial acknowledging the
+    // server's Initial before the probe.
+    func testQUICDropClientProbesInHandshakeSpaceWithHandshakeKeysButNoHandshakePacket() {
+        assertClientProbesInHandshakeSpace(serverDrops: .init(1...3), initialPacketsBeforeHandshake: 2)
+    }
+
     func testQUICDropScenario3() {
         QUICTestHarness().runQUICTest(
             blockSize: 5000,

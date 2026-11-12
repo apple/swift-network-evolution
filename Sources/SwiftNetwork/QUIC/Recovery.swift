@@ -1279,7 +1279,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     func getEarliestTime(
         earliestTimeType: EarliestTimeType,
         connection: QUICConnection
-    ) -> (NetworkClock.Instant, PacketNumberSpace) {
+    ) -> (time: NetworkClock.Instant, space: PacketNumberSpace) {
         var earliestTime: NetworkClock.Instant = .zero
         var pnSpace: PacketNumberSpace = .initial
         let handshakeCompleted = connection.state == .connected
@@ -1428,9 +1428,20 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             // requires an anti-deadlock packet to unblock the server.
             // The PING is padded when it goes out in an initial packet.
             connection.log.datapath("Sending a PING as PTO")
-            let packetNumberSpace =
-                !connection.receivedHandshakePacket
-                ? PacketNumberSpace.initial : PacketNumberSpace.applicationData
+            // With packets in flight the probe goes in the space with the earliest ack-eliciting send time.
+            // With none in flight (RFC 9002 Section 6.2.2.1) a client sends a Handshake packet if it has
+            // Handshake keys, and otherwise a padded Initial packet.
+            let packetNumberSpace: PacketNumberSpace
+            if totalAckElicitingPacketsInFlight > 0 {
+                packetNumberSpace = getEarliestTime(
+                    earliestTimeType: .lastSentAckElicitingTime,
+                    connection: connection
+                ).space
+            } else if connection.protector.sealKeyReady(for: .handshake) {
+                packetNumberSpace = .handshake
+            } else {
+                packetNumberSpace = .initial
+            }
             connection.withPendingItems(for: packetNumberSpace) { item in
                 item.ping = true
             }
