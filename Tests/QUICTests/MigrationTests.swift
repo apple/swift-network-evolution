@@ -75,25 +75,30 @@ final class MigrationTests: XCTestCase {
         }
     }
 
+    // Replaces the connection `setUp` made with a fresh one. The old connection holds itself through
+    // its metadata handlers and its recovery, and only closing it breaks those cycles, so it is torn
+    // down here. `tearDown` does the same for whichever connection the test ends with.
+    private func replaceConnection(parameters: Parameters?, handshakeConfirmed: Bool) {
+        connection.destroyFromExternalTest()
+        connection = QUICConnection(context: .implicitContext)
+        setUpConnection(parameters: parameters, handshakeConfirmed: handshakeConfirmed)
+    }
+
     // Replaces the client connection `setUp` made with a server one. Must be called before any
     // path is made.
     private func becomeServer(handshakeConfirmed: Bool = true) {
-        connection = QUICConnection(context: .implicitContext)
         var parameters = Parameters(context: .implicitContext)
         parameters.isServer = true
-        setUpConnection(parameters: parameters, handshakeConfirmed: handshakeConfirmed)
+        replaceConnection(parameters: parameters, handshakeConfirmed: handshakeConfirmed)
     }
 
     override func tearDown() {
         self.connection.currentPath = nil
         // The paths built by `makePath` outlive the test body, and migration only destroys the
-        // one it migrated away from, so release whatever is left.
+        // one it migrated away from. Destroying the connection releases whatever is left.
         self.connection.context.onQueue {
-            for path in self.connection.multiplexingPaths.values {
-                path.destroyFromExternalTest()
-            }
+            self.connection.destroyFromExternalTest()
         }
-        self.connection.multiplexingPaths.removeAll()
     }
 
     // Builds a path that is open for sending, backed by a lower harness, with its DCID
@@ -434,8 +439,7 @@ final class MigrationTests: XCTestCase {
             if isServer {
                 self.becomeServer(handshakeConfirmed: false)
             } else {
-                self.connection = QUICConnection(context: .implicitContext)
-                self.setUpConnection(parameters: nil, handshakeConfirmed: false)
+                self.replaceConnection(parameters: nil, handshakeConfirmed: false)
             }
             let handshakePath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
             let otherPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
@@ -642,8 +646,7 @@ final class MigrationTests: XCTestCase {
     func testClientWaitsForHandshakeConfirmationBeforeMigrating() {
         let expectation = XCTestExpectation()
         connection.context.async {
-            self.connection = QUICConnection(context: .implicitContext)
-            self.setUpConnection(parameters: nil, handshakeConfirmed: false)
+            self.replaceConnection(parameters: nil, handshakeConfirmed: false)
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
             self.connection.currentPath = oldPath
@@ -672,8 +675,7 @@ final class MigrationTests: XCTestCase {
     func testHandshakeConfirmedInAPacketRunsTheStrategyAfterThePacket() {
         let expectation = XCTestExpectation()
         connection.context.async {
-            self.connection = QUICConnection(context: .implicitContext)
-            self.setUpConnection(parameters: nil, handshakeConfirmed: false)
+            self.replaceConnection(parameters: nil, handshakeConfirmed: false)
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
             self.connection.currentPath = oldPath
