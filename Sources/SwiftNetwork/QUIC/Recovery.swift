@@ -893,6 +893,12 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         inBatch = true
         shouldResetTimer = false
     }
+
+    // Asks for the timer to be set again when the current batch ends.
+    mutating func requestTimerReset() {
+        shouldResetTimer = true
+    }
+
     mutating func endBatch(
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
@@ -1610,6 +1616,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 timeout = .microseconds(1000)
             }
             setTimer(delay: timeout, now: now, connection: connection, in: &eventContext)
+        } else if connection.isAtAntiAmplificationLimit {
+            // A PTO sends nothing while the server is at the limit, and packets sent on PTO count against
+            // it, so the timer stays unarmed until the client's datagrams raise the budget.
+            log.datapath("Server is at the anti-amplification limit, cancelling timer")
+            setTimer(delay: .zero, now: now, connection: connection, in: &eventContext)
         } else {
             // Arm PTO
             let (sentTime, pnSpace) = getEarliestTime(

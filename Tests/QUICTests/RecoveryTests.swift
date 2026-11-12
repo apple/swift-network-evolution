@@ -1586,6 +1586,81 @@ final class RecoveryTests: XCTestCase {
         }
     }
 
+    /// Makes the connection a server, which also gives it a recovery timer registered with the connection's
+    /// timer, and records one ack-eliciting Initial packet in flight after it has received `receivedBytes`.
+    private func makeServerWithInitialPacketInFlight(receivedBytes: Int = 0) {
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            var parameters = Parameters(context: .implicitContext)
+            parameters.isServer = true
+            do {
+                try self.connection.setup(remote: nil, local: nil, parameters: parameters, path: nil)
+            } catch {
+                XCTFail("Failed to make the connection a server: \(error)")
+            }
+            self.connection.stats.increment(.rxBytes, by: receivedBytes)
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+        XCTAssertTrue(connection.isServer)
+        XCTAssertFalse(connection.receivedHandshakePacket)
+        XCTAssertEqual(connection.timer.nextDeadline, .zero, "A timer was armed before anything was sent")
+
+        connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .initial, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            sentPacket(packet, connection: connection)
+        }
+        XCTAssertEqual(connection.recovery.totalAckElicitingPacketsInFlight, 1)
+    }
+
+    // A server that has received nothing from an unvalidated client cannot send, and packets sent on PTO
+    // count against that limit; its PTO timer must not be armed (RFC 9002 Section 6.2.2.1). Otherwise
+    // each firing sends nothing yet backs the timer off.
+    func testServerAtAntiAmplificationLimitDoesNotArmTimer() {
+        makeServerWithInitialPacketInFlight()
+
+        XCTAssertTrue(connection.isAtAntiAmplificationLimit)
+        XCTAssertEqual(connection.timer.nextDeadline, .zero, "The timer was armed for a server that cannot send")
+    }
+
+    // Receiving a datagram raises the server's budget; the timer must then be set, otherwise a server that
+    // waits on the client's reply is never woken to probe.
+    func testServerArmsTimerOnceReceivedBytesRaiseTheBudget() {
+        makeServerWithInitialPacketInFlight()
+        XCTAssertEqual(connection.timer.nextDeadline, .zero)
+
+        connection.context.onQueue {
+            guard let pathIdentifier = self.connection.currentPath?.pathIdentifier else {
+                XCTFail("The server has no path to receive on")
+                return
+            }
+            // The datagram is not a valid packet; the connection counts its bytes before parsing it.
+            self.connection.accessReceivedDatagrams(path: pathIdentifier) { receiveQueue in
+                receiveQueue.add(frame: Frame(copyBuffer: [UInt8](repeating: 0, count: 1200)))
+            }
+            self.connection.fromExternal { eventContext in
+                self.connection.serviceReceivedDatagrams(path: pathIdentifier, in: &eventContext)
+            }
+        }
+
+        XCTAssertFalse(connection.isAtAntiAmplificationLimit)
+        XCTAssertNotEqual(connection.timer.nextDeadline, .zero, "The timer was not armed after the budget rose")
+    }
+
+    // A server with budget left can send a probe, so its timer must be armed; otherwise a lost flight is
+    // never retransmitted.
+    func testServerBelowAntiAmplificationLimitArmsTimer() {
+        makeServerWithInitialPacketInFlight(receivedBytes: 1200)
+
+        XCTAssertFalse(connection.isAtAntiAmplificationLimit)
+        XCTAssertNotEqual(connection.timer.nextDeadline, .zero, "The timer was not armed for a server that can send")
+    }
+
     // MARK: - Packet index hints
 
     /// Records a sparse ascending run of packets in the application data space.

@@ -1799,6 +1799,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 log.fault("Pending Reassembly Dequeue is not empty")
             }
 
+            // The PTO timer is not armed while the server cannot send, and receiving bytes raises the
+            // budget; the timer must be set again once they are counted.
+            let wasLimitedByAntiAmplification = isAtAntiAmplificationLimit
             receivingPathID = pathID
             accessReceivedDatagrams(path: pathID) { (datagrams, path) in
                 let isServerConnection: Bool = isServer
@@ -1835,6 +1838,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     connectionStatistics: &stats
                 )
             }
+            if wasLimitedByAntiAmplification {
+                recovery.requestTimerReset()
+            }
             finishReceiving(in: &eventContext)
 
             // Note: inboundStopping() triggers any sendFrames*() as necessary due
@@ -1854,6 +1860,30 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let sendLimit = path.pathStatistics[.rxBytes] * Constants.antiAmplificationFactor
         let alreadySent = path.pathStatistics[.txBytes]
         return max(sendLimit - alreadySent, 0)
+    }
+
+    // Until a server has received a Handshake packet it has not validated the client's address, and the
+    // connection as a whole may send at most three times the bytes it has received. This is the number of
+    // bytes it may still send, or nil when no such limit applies.
+    var antiAmplificationBudget: Int? {
+        antiAmplificationBudget(connectionStatistics: stats)
+    }
+
+    // The same limit, for callers that already hold the connection's statistics exclusively and so
+    // cannot read them through `self`.
+    func antiAmplificationBudget(connectionStatistics: borrowing Statistics) -> Int? {
+        if isServer, !receivedHandshakePacket {
+            return max(
+                connectionStatistics[.rxBytes] * Constants.antiAmplificationFactor - connectionStatistics[.txBytes],
+                0
+            )
+        }
+        return nil
+    }
+
+    // Whether a server is unable to send anything because of the anti-amplification limit.
+    var isAtAntiAmplificationLimit: Bool {
+        antiAmplificationBudget == 0
     }
 
     // A server that follows the peer onto a new path sends everything there, not only path
@@ -4507,15 +4537,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Server must not send more than 3x the number of bytes received, until
         // the client's address has been validated by receiving a handshake
         // packet. To enforce this constraint limit the congestion window to not send more 3x received.
-        if isServer, !receivedHandshakePacket {
-            let totalReceivedBytes = stats[.rxBytes] * Constants.antiAmplificationFactor
-            let totalSentBytes = stats[.txBytes]
-            // Make sure totalReceivedBytes is greater
-            if totalReceivedBytes >= totalSentBytes {
-                availableCongestionWindow = UInt64(totalReceivedBytes - totalSentBytes)
-            } else {
-                availableCongestionWindow = 0
-            }
+        if let budget = antiAmplificationBudget(connectionStatistics: stats) {
+            availableCongestionWindow = UInt64(budget)
             log.debug(
                 "Setting available congestion window: \(availableCongestionWindow) until the client is validated"
             )
