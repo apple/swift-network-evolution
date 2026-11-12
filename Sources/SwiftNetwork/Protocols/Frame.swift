@@ -261,7 +261,8 @@ public struct Frame: ~Copyable {
         }
     }
 
-    /// Whether the first unclaimed byte is zero.
+    /// Whether the first unclaimed byte is zero. Use this to fast-track calling frame.bytes
+    /// Until Span getter performance is fixed.
     @inlinable
     @inline(always)
     var firstUnclaimedByteIsZero: Bool {
