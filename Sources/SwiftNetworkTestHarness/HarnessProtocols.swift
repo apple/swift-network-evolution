@@ -211,7 +211,7 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
         }
     }
 
-    public private(set) var outboundRoomAvailableCount = 0
+    private(set) var outboundRoomAvailableCount = 0
 
     public func handleOutboundRoomAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
         outboundRoomAvailableCount += 1
