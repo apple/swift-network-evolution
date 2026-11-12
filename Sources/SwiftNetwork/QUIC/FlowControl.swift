@@ -274,6 +274,57 @@ struct FlowControlState: ~Copyable {
         totalOutboundBytesSent += bytes
     }
 
+    /// The number of pending bytes at which no more should be queued.
+    ///
+    /// The target is the bytes the peer's limit and the congestion window let this level send, plus
+    /// `headroom` so that a writer is not held back for less than that. It never exceeds
+    /// `queueLimit` and never falls below `guaranteedQueueLength`, which therefore must not exceed
+    /// `queueLimit`.
+    static func outboundTarget(
+        allowedBytes: UInt64,
+        headroom: UInt64,
+        guaranteedQueueLength: UInt64,
+        queueLimit: UInt64
+    ) -> UInt64 {
+        assert(queueLimit >= guaranteedQueueLength)
+        // Capping the allowance first keeps the sum from overflowing when nothing limits it.
+        let target = min(allowedBytes, queueLimit) + headroom
+        return min(max(target, guaranteedQueueLength), queueLimit)
+    }
+
+    /// How many more bytes can be queued before the pending bytes reach the target.
+    ///
+    /// `congestionWindow` is `nil` for a level the congestion window does not limit. There is no
+    /// room while the peer's limit is below the bytes already sent.
+    ///
+    /// `guaranteedQueueLength` is how much a writer can always queue, and `configuredQueueLimit` is
+    /// the most that is allowed to be queued. The limit comes from configuration and the guarantee
+    /// from the path, so the limit can be the smaller; the guarantee then wins, as otherwise a
+    /// writer could be held back for less than a few packets.
+    func outboundRoomAvailable(
+        congestionWindow: UInt64?,
+        headroom: UInt64,
+        guaranteedQueueLength: UInt64,
+        configuredQueueLimit: UInt64
+    ) -> UInt64 {
+        if self.outboundMaxData < self.totalOutboundBytesSent {
+            return 0
+        }
+
+        let queueLimit = max(configuredQueueLimit, guaranteedQueueLength)
+        let peerAllowance = self.outboundMaxData - self.totalOutboundBytesSent
+        let target = Self.outboundTarget(
+            allowedBytes: min(peerAllowance, congestionWindow ?? .max),
+            headroom: headroom,
+            guaranteedQueueLength: guaranteedQueueLength,
+            queueLimit: queueLimit
+        )
+        if self.pendingOutboundBytesToSend >= target {
+            return 0
+        }
+        return target - self.pendingOutboundBytesToSend
+    }
+
     // Pass false for connection-wide values
     init(isStream: Bool) {
         if isStream {
@@ -439,9 +490,6 @@ extension QUICStreamInstance {
     mutating func updateFlowControlWithEnqueuedBytesToSend(_ bytes: UInt64, connection: QUICConnection) {
         flowControlState.pendingOutboundBytesToSend += bytes
         connection.flowControlState.pendingOutboundBytesToSend += bytes
-        // The room reported to the application is derived from the pending bytes, so recompute it
-        // when they change; otherwise it stays at its value from stream setup.
-        updateOutboundFlowControlCredit(connection: connection)
     }
 
     mutating func updateFlowControlWithSentBytes(_ bytes: UInt64, connection: QUICConnection) {
@@ -450,16 +498,6 @@ extension QUICStreamInstance {
 
         flowControlState.recordSent(bytes)
         connection.flowControlState.recordSent(bytes)
-
-        // Draining can reopen a permit that transient backpressure latched to 0
-        if self.maximumStreamDataSize == 0 {
-            updateOutboundFlowControlCredit(connection: connection)
-            if self.maximumStreamDataSize > 0 {
-                // The packet-building path does not carry the event context, so the notification
-                // is queued and delivered once the send that reopened the permit completes.
-                connection.queueOutboundRoomAvailableEvent(for: self)
-            }
-        }
     }
 
     mutating func removePendingOutboundBytesFromFlowControl(connection: QUICConnection) {
@@ -600,33 +638,45 @@ extension QUICStreamInstance {
         return true
     }
 
+    /// Records in `maximumStreamDataSize` how much more stream data the application may hand to
+    /// this stream. A stream that has received STOP_SENDING has none.
     mutating func updateOutboundFlowControlCredit(connection: QUICConnection) {
-        let credit: Int
-        if receivedStopSending {
-            credit = 0
-        } else {
-            guard let calculatedCredit = maximumUnreadOutboundBytesAllowed(connection: connection)
-            else {
-                return
-            }
-            credit = Int(calculatedCredit)
+        if self.receivedStopSending {
+            self.log.datapath("Updating the send limit to 0")
+            self.maximumStreamDataSize = 0
+            return
         }
-        log.datapath("Updating the send limit to \(credit)")
-        self.maximumStreamDataSize = Int(credit)
+        let calculatedCredit = self.maximumUnreadOutboundBytesAllowed(connection: connection)
+        self.log.datapath("Updating the send limit to \(calculatedCredit)")
+        self.maximumStreamDataSize = Int(calculatedCredit)
     }
 
-    fileprivate func maximumUnreadOutboundBytesAllowed(connection: QUICConnection) -> UInt64? {
-        guard
-            connection.flowControlState.outboundMaxData
-                >= connection.flowControlState.totalOutboundBytesSent
-        else {
-            return nil
+    /// The room the application has for more stream data, computed now because it depends on
+    /// state that changes without this stream being involved. A stream reporting no room is
+    /// remembered by the connection until room returns.
+    public mutating func getOutboundStreamDataRoomAvailable(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) throws(NetworkError) -> Int {
+        do { try validate(upper: instance, #function) } catch { throw NetworkError.posix(EINVAL) }
+        guard isConnected(in: &eventContext) else { throw NetworkError.posix(ENOTCONN) }
+        let connection = self.parentProtocol
+        self.updateOutboundFlowControlCredit(connection: connection)
+        let room = try self.getOutboundStreamDataRoomAvailable(in: &eventContext)
+        if room == 0 {
+            connection.awaitOutboundRoom(of: &self)
         }
+        return room
+    }
 
-        guard flowControlState.outboundMaxData >= flowControlState.totalOutboundBytesSent else {
-            return nil
-        }
-
+    /// The bytes the stream and its connection can still accept from the application: the
+    /// smaller of their rooms, each their target minus their pending bytes.
+    ///
+    /// A target is what the peer allows (and, for the connection, the congestion window), plus
+    /// `sendQueueFactor` packets so that a write is never held back for less than that, capped by
+    /// the send high water mark. A full connection still leaves one packet's worth to a stream
+    /// with less than a packet queued, so such a stream can always send.
+    fileprivate func maximumUnreadOutboundBytesAllowed(connection: QUICConnection) -> UInt64 {
         var minMSS: UInt64 = UInt64(Constants.initialMSS)
         var allowedCCWindow: UInt64 = 0
         connection.withCurrentPath { path in
@@ -639,33 +689,30 @@ extension QUICStreamInstance {
             return
         }
 
-        let maxPendingBytes = FlowControlGlobals.sendQueueFactor * minMSS
-        // Only this stream's own queue can report no room: the room reopens when its bytes are
-        // sent, so a stream with nothing queued would stay at zero while other streams fill the
-        // connection.
-        guard flowControlState.pendingOutboundBytesToSend < maxPendingBytes else {
-            return 0
+        let guaranteedQueueLength = FlowControlGlobals.sendQueueFactor * minMSS
+        let connectionRoom = connection.flowControlState.outboundRoomAvailable(
+            congestionWindow: allowedCCWindow,
+            headroom: guaranteedQueueLength,
+            guaranteedQueueLength: guaranteedQueueLength,
+            configuredQueueLimit: UInt64(clamping: FlowControlGlobals.shared.connectionSendHighWaterMarkMax)
+        )
+        let streamRoom = self.flowControlState.outboundRoomAvailable(
+            congestionWindow: nil,
+            headroom: guaranteedQueueLength,
+            guaranteedQueueLength: guaranteedQueueLength,
+            configuredQueueLimit: UInt64(clamping: FlowControlGlobals.shared.streamSendHighWaterMarkMax)
+        )
+
+        // Sending its own bytes is what reopens a stream's room, so a stream with nothing queued
+        // would never send if a full connection left it no room.
+        let hasQueuedPacket = self.flowControlState.pendingOutboundBytesToSend >= minMSS
+        let connectionRoomForThisStream: UInt64
+        if connectionRoom == 0 && !hasQueuedPacket {
+            connectionRoomForThisStream = minMSS
+        } else {
+            connectionRoomForThisStream = connectionRoom
         }
-
-        // Avoid trickling of data by using these values
-        let connectionPendingBytes = connection.flowControlState.pendingOutboundBytesToSend
-        let connectionMin = connectionPendingBytes < maxPendingBytes ? maxPendingBytes - connectionPendingBytes : 0
-        let streamMin = maxPendingBytes - flowControlState.pendingOutboundBytesToSend
-
-        let connectionMax = min(
-            connection.flowControlState.outboundMaxData
-                - connection.flowControlState.totalOutboundBytesSent,
-            allowedCCWindow
-        )
-        // A full connection limits the room but leaves one packet's worth.
-        let connectionCredit = max(connectionMax, connectionMin, minMSS)
-
-        let streamCredit = max(
-            flowControlState.outboundMaxData - flowControlState.totalOutboundBytesSent,
-            streamMin
-        )
-
-        return min(connectionCredit, streamCredit)
+        return min(connectionRoomForThisStream, streamRoom)
     }
 
     @inline(always)

@@ -310,6 +310,8 @@ struct StreamListMembership: OptionSet {
     static let pendingReassemblyDequeue = StreamListMembership(rawValue: 1 << 1)
     static let sendable = StreamListMembership(rawValue: 1 << 2)
     static let unblockedSend = StreamListMembership(rawValue: 1 << 3)
+    static let awaitingOutboundRoom = StreamListMembership(rawValue: 1 << 4)
+    static let reopenedOutboundRoom = StreamListMembership(rawValue: 1 << 5)
 
     var description: String {
         switch self {
@@ -317,6 +319,8 @@ struct StreamListMembership: OptionSet {
         case .pendingReassemblyDequeue: return "pendingReassemblyDequeue"
         case .sendable: return "sendable"
         case .unblockedSend: return "unblockedSend"
+        case .awaitingOutboundRoom: return "awaitingOutboundRoom"
+        case .reopenedOutboundRoom: return "reopenedOutboundRoom"
         default: return "none"
         }
     }
@@ -348,6 +352,13 @@ struct QUICStreamList: ~Copyable {
     static func unblockedSendStreamList() -> QUICStreamList {
         QUICStreamList(
             listType: .unblockedSend,
+            name: #function
+        )
+    }
+
+    static func awaitingOutboundRoomList() -> QUICStreamList {
+        QUICStreamList(
+            listType: .awaitingOutboundRoom,
             name: #function
         )
     }
@@ -458,7 +469,32 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
     }
     private var flags = Flags()
 
-    var streamMetadata = QUICStreamProtocol.QUICStreamMetadata()
+    // The metadata object is made when something asks for it: most streams are never asked, and it is
+    // a class, so making one for every stream costs an allocation and a free.
+    private var streamMetadataStorage: QUICStreamProtocol.QUICStreamMetadata?
+
+    var streamMetadata: QUICStreamProtocol.QUICStreamMetadata {
+        mutating get {
+            if let made = self.streamMetadataStorage { return made }
+            let made = QUICStreamProtocol.QUICStreamMetadata()
+            self.fillStreamMetadataID(made)
+            made.quicConnectionMetadata = self.parentProtocol.connectionMetadata
+            self.streamMetadataStorage = made
+            return made
+        }
+    }
+
+    /// Brings the metadata, if one was made, up to date with the stream's ID.
+    mutating func updateStreamMetadataID() {
+        guard let made = self.streamMetadataStorage else { return }
+        self.fillStreamMetadataID(made)
+    }
+
+    /// A stream without an ID yet (one waiting to start) reports 0 and the type it will have.
+    private func fillStreamMetadataID(_ metadata: QUICStreamProtocol.QUICStreamMetadata) {
+        metadata.streamID = self.streamID?.value ?? 0
+        metadata.streamType = self.streamID?.quicStreamType ?? (self.unidirectional ? .unidirectional : .bidirectional)
+    }
 
     var flowControlState = FlowControlState(isStream: true)
     var flowControlStreamState = FlowControlStreamState()
@@ -594,6 +630,14 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         get { flags.contains(.closed) }
         set { if newValue { flags.insert(.closed) } else { flags.remove(.closed) } }
     }
+    /// The error to report when the stream closes after both directions are done. A reset in either
+    /// direction is reported as `ECONNRESET`, so the app sees the same result regardless of whether
+    /// the RESET_STREAM ACK or the final read closes the stream.
+    var closeError: NetworkError? {
+        let wasReset =
+            send.state == .resetReceived || receive.state == .resetReceived || receive.state == .resetRead
+        return wasReset ? NetworkError.posix(ECONNRESET) : nil
+    }
     var unidirectional: Bool {
         get { flags.contains(.unidirectional) }
         set { if newValue { flags.insert(.unidirectional) } else { flags.remove(.unidirectional) } }
@@ -678,10 +722,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         let streamIDString = if let streamID { streamID.description } else { "?" }
         self.log.logPrefix = "[S\(streamIDString)]"
         #endif
-        if let _streamID = self.streamID {
-            self.streamMetadata.streamID = _streamID.value
-            self.streamMetadata.streamType = _streamID.quicStreamType
-        }
+        self.updateStreamMetadataID()
         self.receive.reassemblyQueue.log = NetworkLoggerState(logPrefixer.logIDString)
     }
 
@@ -694,8 +735,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
             self.unidirectional = true
         }
 
-        self.streamMetadata.streamID = streamID.value
-        self.streamMetadata.streamType = streamID.quicStreamType
+        self.updateStreamMetadataID()
     }
 
     deinit {
@@ -1077,9 +1117,9 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         // If all data has now been read, move to the data read state
         if receive.state != .dataRead, upperReceiveQueue.isEmpty, markedInboundFINOnFrame {
             receive.state.change(logIDString: log.logPrefix, to: .dataRead)
-            if !self.closed, self.send.state == .dataReceived {
+            if !self.closed, (self.unidirectional && self.send.state == .invalid) || self.send.state.isTerminal {
                 // If both directions are closed, and all data is read, close the stream
-                self.close(errorCode: nil, in: &eventContext)
+                self.close(errorCode: self.closeError, in: &eventContext)
             }
         }
     }

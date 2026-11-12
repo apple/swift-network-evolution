@@ -42,9 +42,11 @@ final class QUICPathStateTests: XCTestCase {
             (from: .routeEstablished, to: .cidAssigned),
 
             (from: .cidAssigned, to: .probing),
+            (from: .cidAssigned, to: .routeEstablished),  // CID retirement
 
             (from: .probing, to: .validated),
             (from: .probing, to: .unreachable),
+            (from: .probing, to: .routeEstablished),  // CID retirement
 
             (from: .validated, to: .routeEstablished),  // CID retirement
             (from: .validated, to: .probing),  //  endpoint can re-probe at path at any time RFC9000:8.2:p4

@@ -156,3 +156,82 @@ public struct FrameArraySpanFactory: ~Copyable, ~Escapable, DeserializerSpanFact
 }
 
 #endif
+
+// MARK: - Small fixed-size copies
+
+extension MutableRawSpan {
+    /// Copies `count` bytes from `source` into this span using unaligned loads and stores of 8, 4, 2 and 1 bytes,
+    /// avoiding a variable-length memmove for small copies such as connection IDs.
+    ///
+    /// Only reachable through `copyIfInBounds`, which has already validated that `count` bytes are available at
+    /// both offsets.
+    @inline(always)
+    private mutating func copyUnchecked(
+        from source: RawSpan,
+        sourceOffset: Int = 0,
+        toByteOffset destinationOffset: Int = 0,
+        count: Int
+    ) {
+        assert(
+            count >= 0 && sourceOffset >= 0 && destinationOffset >= 0
+                && sourceOffset &+ count <= source.byteCount
+                && destinationOffset &+ count <= byteCount,
+            "copyUnchecked requires `count` bytes to be available at both offsets"
+        )
+        var offset = 0
+        while count &- offset >= 8 {
+            storeBytes(
+                of: source.unsafeLoadUnaligned(fromUncheckedByteOffset: sourceOffset &+ offset, as: UInt64.self),
+                toUncheckedByteOffset: destinationOffset &+ offset,
+                as: UInt64.self
+            )
+            offset &+= 8
+        }
+        if count & 4 != 0 {
+            storeBytes(
+                of: source.unsafeLoadUnaligned(fromUncheckedByteOffset: sourceOffset &+ offset, as: UInt32.self),
+                toUncheckedByteOffset: destinationOffset &+ offset,
+                as: UInt32.self
+            )
+            offset &+= 4
+        }
+        if count & 2 != 0 {
+            storeBytes(
+                of: source.unsafeLoadUnaligned(fromUncheckedByteOffset: sourceOffset &+ offset, as: UInt16.self),
+                toUncheckedByteOffset: destinationOffset &+ offset,
+                as: UInt16.self
+            )
+            offset &+= 2
+        }
+        if count & 1 != 0 {
+            storeBytes(
+                of: source.unsafeLoadUnaligned(fromUncheckedByteOffset: sourceOffset &+ offset, as: UInt8.self),
+                toUncheckedByteOffset: destinationOffset &+ offset,
+                as: UInt8.self
+            )
+        }
+    }
+
+    /// Takes the fast `copyUnchecked` path only when `count` bytes are available at both offsets.
+    /// Returns `false` without copying anything otherwise, so the caller can fall back to its general path.
+    @inline(always)
+    @discardableResult
+    mutating func copyIfInBounds(
+        from source: RawSpan,
+        sourceOffset: Int = 0,
+        toByteOffset destinationOffset: Int = 0,
+        count: Int
+    ) -> Bool {
+        // Offsets are checked as non-negative first, so the subtractions below cannot overflow.
+        guard count >= 0, sourceOffset >= 0, destinationOffset >= 0,
+            sourceOffset <= source.byteCount, destinationOffset <= byteCount,
+            count <= source.byteCount &- sourceOffset,
+            count <= byteCount &- destinationOffset
+        else {
+            assert(false, "mutable span failed to fit within bounds")
+            return false
+        }
+        copyUnchecked(from: source, sourceOffset: sourceOffset, toByteOffset: destinationOffset, count: count)
+        return true
+    }
+}

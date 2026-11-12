@@ -470,6 +470,14 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runOutboundRoomOfStreamWithNothingQueuedIgnoresOtherStreams()
     }
 
+    func testQUICOutboundRoomReturnsToStreamWaitingBehindOtherStreams() {
+        QUICTestHarness().runOutboundRoomReturnsToStreamWaitingBehindOtherStreams()
+    }
+
+    func testQUICOutboundRoomReturnsToUnidirectionalStreamWaitingBehindOtherStreams() {
+        QUICTestHarness().runOutboundRoomReturnsToStreamWaitingBehindOtherStreams(unidirectional: true)
+    }
+
     #if canImport(SwiftNetwork)
     func testQUICRecoverySendAnnouncesReopenedRoom() {
         QUICTestHarness().runRecoverySendAnnouncesReopenedRoom()
@@ -596,6 +604,21 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
             sendStreamResetError: true,
             verifyResetStreamHalfClosure: true
         )
+    }
+
+    // A RESET_STREAM ACKed before the peer's response ends must not keep either stream open.
+    func testQUICResetStreamBeforeResponseClosesBothStreams() {
+        QUICTestHarness().runQUICResetStreamBeforeResponse()
+    }
+
+    // The server resetting its send side instead of responding must also close both streams.
+    func testQUICResetStreamInsteadOfResponseClosesBothStreams() {
+        QUICTestHarness().runQUICResetStreamInsteadOfResponse()
+    }
+
+    // Both sides resetting, with the first RESET_STREAM ACKed before the second, must close both streams.
+    func testQUICResetStreamFromBothSidesClosesBothStreams() {
+        QUICTestHarness().runQUICResetStreamFromBothSides()
     }
 
     // MARK: Flow control credit for unread inbound bytes
