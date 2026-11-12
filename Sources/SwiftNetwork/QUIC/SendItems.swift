@@ -2974,6 +2974,13 @@ struct PendingItems: ~Copyable {
         return false
     }
 
+    // Whether an Initial packet built from these items is padded to fill its datagram. A client pads
+    // every datagram that carries an Initial packet, but a server only those carrying an ack-eliciting
+    // one (RFC 9000 Section 14.1).
+    func padsInitialPacket(isServer: Bool) -> Bool {
+        !isServer || hasAckElicitingPendingItems
+    }
+
     var hasNonInFlightEligiblePendingItems: Bool {
         for item in PrioritizedSendableItems.allCases {
             if !item.isInFlightEligible && item.isPresent(in: self) { return true }
@@ -2993,9 +3000,9 @@ struct PendingItems: ~Copyable {
         maximumFrameCount: Int? = nil,
         shorthandFrames: inout [QUICShorthandFrame]?,
     ) throws(QUICError) {
-        if keyState == .initial {
-            // Always add PADDING in Initial key state, but only if there
-            // is other send items.
+        if keyState == .initial, padsInitialPacket(isServer: connection.isServer) {
+            // Add PADDING in Initial key state, but only if there
+            // are other send items.
             paddingApproach = .padToEnd
         }
 
@@ -3062,7 +3069,9 @@ struct PendingItems: ~Copyable {
                 }
             }
             if let maximumFrameCount, frameCount >= maximumFrameCount {
-                break
+                // PADDING does not count towards the limit, so a packet that must be padded, such as
+                // an Initial, is still padded: skip to it, as it comes last.
+                nextPriority = max(nextPriority, PrioritizedSendableItems.padding.rawValue)
             }
         }
 
