@@ -1093,7 +1093,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
                     protocolSubType: 0,
                     nonBlocking: true
                 )
-            } catch where error == .posix(EPROTONOSUPPORT) {
+            } catch let error where error == .posix(EPROTONOSUPPORT) {
                 // This kernel has no MPTCP, so the flow runs over TCP.
                 log.info("Multipath sockets aren't supported, using TCP")
             }
