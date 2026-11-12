@@ -1965,6 +1965,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         var coalesced = false
         while frame.unclaimedLength > 0 {
+            // Check for the rest of the datagram to be trailing padding
+            if frame.nextByteIsZero, packetParser.isTrailingPadding(frame) {
+                log.debug("Discarding \(frame.unclaimedLength) bytes of trailing zero padding")
+                frame.finalize(success: true)
+                return
+            }
             let continueProcessing = handleInboundPacket(
                 frame: &frame,
                 path: path,
