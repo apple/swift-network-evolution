@@ -178,6 +178,47 @@ final class SendItemsTests: XCTestCase {
         XCTAssertTrue(isInFlightEligible)
     }
 
+    // A frame limit, as `testSendingShortPackets` sets for long header packets, does not count PADDING:
+    // an Initial packet holds its one frame and is still padded to fill the datagram (RFC 9000 14.1),
+    // rather than leaving the padding for a packet of its own.
+    func testPendingItems_frameLimitStillPadsInitial() {
+        var pendingItems = PendingItems(packetNumberSpace: .initial)
+        pendingItems.setAckFrame(.ack(frame: FrameAck(packetNumberSpace: .initial, largest: 7, delay: 0)), ping: false)
+        pendingItems.ping = true
+        var transmittedItems = TransmittedItems()
+        var isAckEliciting = false
+        var isInFlightEligible = false
+
+        var frame = Frame(count: 1200)
+        defer { frame.finalize(success: true) }
+        let clock = TestClockContext("SendItemsTests")
+        let connection = clock.onQueue {
+            QUICConnection(context: clock.context)
+        }
+        defer { clock.onQueue { connection.destroyFromExternalTest() } }
+        var shorthandFrames: [QUICShorthandFrame]? = nil
+        XCTAssertNoThrow(
+            try pendingItems.write(
+                into: &frame,
+                connection: connection,
+                stats: &connection.stats,
+                keyState: .initial,
+                transmittedItems: &transmittedItems,
+                availableCongestionWindow: 10000,
+                isAckEliciting: &isAckEliciting,
+                isInFlightEligible: &isInFlightEligible,
+                maximumFrameCount: 1,
+                shorthandFrames: &shorthandFrames
+            )
+        )
+
+        XCTAssertTrue(transmittedItems.ackFrame != nil, "The ACK, first in priority, fills the one frame")
+        XCTAssertFalse(transmittedItems.ping, "The PING must wait for the next packet")
+        XCTAssertTrue(pendingItems.ping, "The PING must still be pending")
+        XCTAssertEqual(frame.unclaimedLength, 0, "PADDING must fill the rest of the packet")
+        XCTAssertFalse(pendingItems.hasPadding, "No PADDING may be left for a packet of its own")
+    }
+
     func testPendingItems_PING() {
         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
         pendingItems.ping = true
