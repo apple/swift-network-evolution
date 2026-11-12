@@ -264,7 +264,7 @@ public struct Frame: ~Copyable {
     /// Whether the first unclaimed byte is zero.
     @inlinable
     @inline(always)
-    var nextByteIsZero: Bool {
+    var firstUnclaimedByteIsZero: Bool {
         guard isValid, unclaimedLength > 0 else { return false }
         switch buffer {
         case .empty:
