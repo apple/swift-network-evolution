@@ -92,12 +92,15 @@ struct WriteRequest: ~Copyable {
         self.init(frame: Frame(customBuffer: buffer, owner: owner), isComplete: isComplete, completion: completion)
     }
 
-    internal static func runCompletion(_ completion: (@Sendable (Result<Void, NetworkError>) -> Void)?, success: Bool) {
+    internal static func runCompletion(
+        _ completion: (@Sendable (Result<Void, NetworkError>) -> Void)?,
+        error: NetworkError?
+    ) {
         if let completion {
-            if success {
-                completion(Result.success(()))
+            if let error {
+                completion(Result.failure(error))
             } else {
-                completion(Result.failure(NetworkError.posix(ENOBUFS)))
+                completion(Result.success(()))
             }
         }
     }
