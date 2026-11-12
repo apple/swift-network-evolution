@@ -11,6 +11,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 //===----------------------------------------------------------------------===//
+import Synchronization
 import XCTest
 
 #if !targetEnvironment(simulator) && (os(iOS) || os(macOS) || os(Linux) || os(Android))
@@ -112,13 +113,212 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
             "the server to receive the injected datagram"
         )
 
-        // A malformed Initial must be discarded without closing the connection: the long header parses
-        // far enough to reach `.initialReceived`, and the remainder is dropped.
+        // A malformed Initial must be discarded without closing the connection. At 21 bytes it is also
+        // below the minimum datagram size for an Initial, so it is dropped before it is parsed.
+        XCTAssertNil(server.instance.closeError)
         XCTAssertEqual(
             server.instance.state,
-            .initialReceived,
+            .idle,
             "Server connection must survive a malformed Initial"
         )
+    }
+
+    // RFC 9000, Section 14.1: a server MUST discard an Initial packet carried in a datagram smaller than
+    // 1200 bytes. It neither replies nor leaves the idle state.
+    func testUndersizedInitialIsDropped() throws {
+        try assertUndersizedInitialIsDropped(retry: false)
+    }
+
+    // A server that validates addresses does not answer a small datagram with a RETRY either.
+    func testUndersizedInitialIsNotAnsweredWithRetry() throws {
+        try assertUndersizedInitialIsDropped(retry: true)
+    }
+
+    private func assertUndersizedInitialIsDropped(retry: Bool) throws {
+        let sentDatagrams = Mutex<[(firstByte: UInt8, size: Int)]>([])
+        let harness = QUICTestHarness()
+        let server = try attachIdleServer(harness, retry: retry) { firstByte, byteCount in
+            sentDatagrams.withLock { $0.append((firstByte, byteCount)) }
+        }
+        defer {
+            harness.onContext {
+                server.harness.stop()
+                server.harness.teardown()
+                harness.storage.releaseHeldInstances()
+            }
+        }
+
+        let receivedBefore = server.instance.stats.connectionStatistics[.rxPackets] ?? 0
+        injectClientInitial(datagramSize: 300, harness)
+        harness.wait(
+            until: { (server.instance.stats.connectionStatistics[.rxPackets] ?? 0) > receivedBefore },
+            timeout: 5.0,
+            "the server to receive the injected datagram"
+        )
+
+        XCTAssertNil(server.instance.closeError)
+        XCTAssertEqual(server.instance.state, .idle)
+        XCTAssertTrue(sentDatagrams.withLock { $0.isEmpty }, "Expected no reply to a small datagram")
+    }
+
+    // The same Initial padded to the minimum datagram size is taken: the server does not close.
+    func testMinimumSizeInitialDoesNotClose() throws {
+        let harness = QUICTestHarness()
+        let server = try attachIdleServer(harness)
+        defer {
+            harness.onContext {
+                server.harness.stop()
+                server.harness.teardown()
+                harness.storage.releaseHeldInstances()
+            }
+        }
+
+        let receivedBefore = server.instance.stats.connectionStatistics[.rxPackets] ?? 0
+        injectClientInitial(datagramSize: Constants.minimumInitialDatagramSize, harness)
+        harness.wait(
+            until: { (server.instance.stats.connectionStatistics[.rxPackets] ?? 0) > receivedBefore },
+            timeout: 5.0,
+            "the server to receive the injected datagram"
+        )
+
+        XCTAssertNil(server.instance.closeError)
+        XCTAssertEqual(server.instance.state, .initialProcessed)
+    }
+
+    // A small Initial that arrives once the handshake has started is dropped too, without closing: anyone
+    // who saw the client's connection ID could derive the keys to inject one.
+    func testUndersizedInitialAfterFirstIsDropped() throws {
+        let harness = QUICTestHarness()
+        let server = try attachIdleServer(harness)
+        defer {
+            harness.onContext {
+                server.harness.stop()
+                server.harness.teardown()
+                harness.storage.releaseHeldInstances()
+            }
+        }
+
+        let destinationConnectionID = QUICConnectionID(8)
+        let sourceConnectionID = QUICConnectionID(8)
+        for (packetNumber, datagramSize) in [(0, Constants.minimumInitialDatagramSize), (1, 300)] {
+            let receivedBefore = server.instance.stats.connectionStatistics[.rxPackets] ?? 0
+            injectClientInitial(
+                datagramSize: datagramSize,
+                destinationConnectionID: destinationConnectionID,
+                sourceConnectionID: sourceConnectionID,
+                packetNumber: Int64(packetNumber),
+                harness
+            )
+            harness.wait(
+                until: { (server.instance.stats.connectionStatistics[.rxPackets] ?? 0) > receivedBefore },
+                timeout: 5.0,
+                "the server to receive the injected datagram of \(datagramSize) bytes"
+            )
+            XCTAssertNil(server.instance.closeError)
+            XCTAssertEqual(server.instance.state, .initialProcessed)
+        }
+    }
+
+    // RFC 9000, Section 5.2.2: a server MUST drop a small packet of an unsupported version rather than
+    // answer it with a Version Negotiation packet.
+    func testUndersizedInitialOfUnsupportedVersionIsDropped() throws {
+        let sentDatagrams = Mutex<[(firstByte: UInt8, size: Int)]>([])
+        let harness = QUICTestHarness()
+        let server = try attachIdleServer(harness) { firstByte, byteCount in
+            sentDatagrams.withLock { $0.append((firstByte, byteCount)) }
+        }
+        defer {
+            harness.onContext {
+                server.harness.stop()
+                server.harness.teardown()
+                harness.storage.releaseHeldInstances()
+            }
+        }
+
+        let receivedBefore = server.instance.stats.connectionStatistics[.rxPackets] ?? 0
+        injectClientInitial(datagramSize: 300, version: .negotiationPattern, harness)
+        harness.wait(
+            until: { (server.instance.stats.connectionStatistics[.rxPackets] ?? 0) > receivedBefore },
+            timeout: 5.0,
+            "the server to receive the injected datagram"
+        )
+        XCTAssertNil(server.instance.closeError)
+        XCTAssertEqual(server.instance.state, .idle)
+        XCTAssertTrue(sentDatagrams.withLock { $0.isEmpty }, "Expected no reply to a small datagram")
+
+        // The same packet in a datagram of the minimum size is answered with a Version Negotiation packet.
+        injectClientInitial(datagramSize: Constants.minimumInitialDatagramSize, version: .negotiationPattern, harness)
+        harness.wait(
+            until: { sentDatagrams.withLock { !$0.isEmpty } },
+            timeout: 5.0,
+            "the server to send a Version Negotiation packet"
+        )
+        XCTAssertEqual(sentDatagrams.withLock { $0.count }, 1)
+        XCTAssertEqual(server.instance.state, .versionSent)
+    }
+
+    /// Delivers a client Initial of `datagramSize` bytes to the server, sealed with Initial keys so that
+    /// it decrypts. It carries a PING padded to fill the datagram, so the server has nothing to process.
+    private func injectClientInitial(
+        datagramSize: Int,
+        destinationConnectionID: QUICConnectionID = QUICConnectionID(8),
+        sourceConnectionID: QUICConnectionID = QUICConnectionID(8),
+        packetNumber: Int64 = 0,
+        version: QUICVersion = .v1,
+        _ harness: QUICTestHarness
+    ) {
+        harness.onContext {
+            var protector = Protector(
+                isClient: true,
+                destinationCID: destinationConnectionID,
+                logPrefixer: LogPrefixer("[SwiftNetworkQUICPacketParsingTests]")
+            )
+            let tagLength = protector.getTagSize(for: .initial)
+            var packet = Packet(
+                number: PacketNumber(packetNumber),
+                lastAcked: .none,
+                keyState: .initial,
+                destinationConnectionID: destinationConnectionID,
+                sourceConnectionID: sourceConnectionID,
+                version: version
+            )
+            packet.tagLength = tagLength
+
+            var frame = Frame(count: datagramSize)
+            do throws(QUICError) {
+                XCTAssertTrue(frame.claim(fromStart: 0, fromEnd: Int(tagLength)))
+                let lengthBeforeHeader = frame.unclaimedLength
+                var payloadLengthOffset: Int?
+                var truncatedPacketNumberLength = 0
+                try packet.writeHeader(
+                    into: &frame,
+                    lastAcked: .none,
+                    token: [],
+                    payloadLengthOffset: &payloadLengthOffset,
+                    truncatedPacketNumberLength: &truncatedPacketNumberLength
+                )
+                // A PING, then PADDING to the end of the datagram.
+                let body = [0x01] + [UInt8](repeating: 0x00, count: frame.unclaimedLength - 1)
+                let result = Serializer.serialize(&frame, claim: true) { write throws(SerializationError) in
+                    try write.buffer(body)
+                }
+                guard case .success = result, let payloadLengthOffset else {
+                    XCTFail("Failed to write the Initial")
+                    frame.finalize(success: false)
+                    return
+                }
+                XCTAssertTrue(frame.unclaim(fromStart: lengthBeforeHeader, fromEnd: Int(tagLength)))
+                packet.payloadLength = UInt16(datagramSize - Int(packet.headerLength))
+                try packet.updateLongHeaderPayloadLength(frame: &frame, payloadLengthOffset: payloadLengthOffset)
+                XCTAssertEqual(packet.totalLength, datagramSize)
+                try protector.seal(&packet, frame: &frame)
+            } catch {
+                XCTFail("Failed to seal the Initial: \(error.info.description)")
+                frame.finalize(success: false)
+                return
+            }
+            BridgeDatagramProtocol.BridgeInstance.injectDatagram(frame, to: harness.serverPort)
+        }
     }
 
     func testMalformedShortHeaderAfterHandshake() throws {
@@ -431,7 +631,11 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
         let harness: NewStreamFlowHarness<TestStreamLinkageFamily>
     }
 
-    private func attachIdleServer(_ harness: QUICTestHarness) throws -> IdleServer {
+    private func attachIdleServer(
+        _ harness: QUICTestHarness,
+        retry: Bool = false,
+        observeFrameHandler: BridgeObserveFrameHandler = nil
+    ) throws -> IdleServer {
         var result: IdleServer?
 
         harness.onContext {
@@ -446,6 +650,9 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
 
             let serverOptions = QUICProtocol.options()
             harness.updateQUICOptions(serverOptions, server: true)
+            if retry {
+                serverOptions.modifyConnectionOptions { $0.retry = true }
+            }
             serverOptions.setLogID(
                 prefix: "L",
                 parent: "1",
@@ -457,6 +664,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
             let serverBridge = harness.storage.createTestBridgeDatagramInstance()
             let serverBridgeOptions = BridgeDatagramProtocol.options()
             serverBridgeOptions.setProtocolInstance(serverBridge.identifier)
+            serverBridgeOptions.observeFrameHandler = observeFrameHandler
             serverParameters.defaultStack.link = .custom(serverBridgeOptions)
 
             var serverPath = PathProperties(parameters: serverParameters)
