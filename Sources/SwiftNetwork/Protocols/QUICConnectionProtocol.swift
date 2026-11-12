@@ -217,6 +217,15 @@ public struct QUICConnectionProtocol: NetworkProtocol {
             set { self._maxPTODuration = newValue }
         }
 
+        #if !NETWORK_EMBEDDED
+        internal var _trafficAnalysisDefenses = TrafficAnalysisDefenses()
+        /// Padding and chaff for this connection. Off by default.
+        public var trafficAnalysisDefenses: TrafficAnalysisDefenses {
+            get { self._trafficAnalysisDefenses }
+            set { self._trafficAnalysisDefenses = newValue }
+        }
+        #endif
+
         // nil = default
         // true = enabled
         // false = disabled
@@ -542,6 +551,12 @@ public struct QUICConnectionProtocol: NetworkProtocol {
                     return false
                 }
 
+                #if !NETWORK_EMBEDDED
+                guard self.trafficAnalysisDefenses == other.trafficAnalysisDefenses else {
+                    return false
+                }
+                #endif
+
                 #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
                 guard self.privateStorage == other.privateStorage else {
                     return false
@@ -553,6 +568,11 @@ public struct QUICConnectionProtocol: NetworkProtocol {
         }
 
         public static func == (lhs: QUICConnectionOptions, rhs: QUICConnectionOptions) -> Bool {
+            #if !NETWORK_EMBEDDED
+            guard lhs.trafficAnalysisDefenses == rhs.trafficAnalysisDefenses else {
+                return false
+            }
+            #endif
             // Only pick a subsection of the state because certain properties are not comparable
             if lhs.initialMaxData == rhs.initialMaxData
                 && lhs.initialMaxStreamDataBidirectionalLocal == rhs.initialMaxStreamDataBidirectionalLocal

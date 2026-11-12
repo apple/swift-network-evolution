@@ -442,6 +442,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var tlsOptions: SwiftTLSProtocol.Options?
     private(set) var testSendingShortPackets = false
     private(set) var migrationSupported = false
+    #if !NETWORK_EMBEDDED
+    var trafficAnalysis = TrafficAnalysisState()
+    #endif
 
     private var pendOutboundData = false  // Don't immediately process application sends
 
@@ -664,6 +667,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
             testSendingShortPackets =
                 quicConnectionOptions.testSendingShortPackets
+
+            #if !NETWORK_EMBEDDED
+            trafficAnalysis.configure(quicConnectionOptions.trafficAnalysisDefenses)
+            #endif
 
             forceUnsupportedClientVersion = quicConnectionOptions.forceUnsupportedClientVersion
 
@@ -4594,6 +4601,23 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 now: self.now
             )
         }
+        #if !NETWORK_EMBEDDED
+        let packetPadding: TrafficAnalysisDefenses.Padding?
+        if trafficAnalysis.isPaddingEnabled {
+            packetPadding = trafficAnalysis.padding(
+                for: packetNumberSpace,
+                isPMTUDProbe: pendingItems.pmtudProbeMSS != nil,
+                isUnvalidatedServer: isServer && !receivedHandshakePacket
+            )
+        } else {
+            packetPadding = nil
+        }
+        pendingItems.trafficAnalysisPadding = packetPadding
+        // Cleared on return so that later packets do not inherit it.
+        defer { pendingItems.trafficAnalysisPadding = nil }
+        // Read once, not for each packet below.
+        let isChaffEnabled = trafficAnalysis.isChaffEnabled
+        #endif
 
         // Request a full size frame, up to the available congestion window,
         // to be able to greedy fill without pre-calculating size
@@ -4781,7 +4805,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             sentPacketRecord.sentPath = path.pathIdentifier
             log(packet: packet)
 
+            // Read before the record is consumed.
             let carriesAck = sentPacketRecord.transmittedItems.ackFrame != nil
+            #if !NETWORK_EMBEDDED
+            let carriesChaff = isChaffEnabled && sentPacketRecord.transmittedItems.isChaff
+            #endif
             sentPackets.append(sentPacketRecord)
             // Account for the ACK here, where it is known to be sent, rather
             // than when it is built: an ACK can be built and then held back,
@@ -4789,6 +4817,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             if carriesAck {
                 ack.sent(self.now)
             }
+
+            #if !NETWORK_EMBEDDED
+            if isChaffEnabled, packetNumberSpace == .applicationData,
+                let delay = trafficAnalysis.notePacketSent(
+                    isActivity: pendingItems.wroteNonPingAckElicitingFrame,
+                    carriesChaff: carriesChaff,
+                    now: self.now
+                ),
+                let chaffTimerID = trafficAnalysis.chaffTimerID
+            {
+                timer.reschedule(identifier: chaffTimerID, fromNow: delay, timerNow: self.now, in: &eventContext)
+            }
+            #endif
 
             if isInFlightEligible {
                 totalSendBytes += UInt64(totalPacketLength)
@@ -5445,6 +5486,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Configure a keep alive timer that was set up before we were connected.
             keepaliveConfigure(duration: keepaliveDuration, in: &eventContext)
         }
+        #if !NETWORK_EMBEDDED
+        chaffStart(in: &eventContext)
+        #endif
 
         withCurrentPath { path in
             path.pmtudState.start(on: path, in: &eventContext)
