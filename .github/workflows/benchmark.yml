@@ -1,0 +1,237 @@
+name: Benchmark
+
+# A comment of `/benchmark [swift=6.4.1] [tools=QUICTransfer,QUICStreamLoad]` on a pull request, from
+# someone with write access, builds the pull request and its merge base, counts the heap
+# allocations and the retains and releases of each benchmark tool under valgrind, and comments the
+# comparison on the pull request.
+#
+# The counts are deterministic enough to compare across machines, so every tool and build runs as
+# its own job. Wall time is not measured: on a shared runner it varies by a percent or two between runs.
+#
+# Only the `authorize` and `report` jobs hold a token that can write, and neither runs code from the
+# pull request. The `count` jobs run that code with a read-only token and no secrets.
+
+permissions: {}
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  # Only a benchmark request from someone who may have write access joins the pull request's group.
+  # Any other comment, such as one from a stranger, must not cancel a benchmark that is running; the
+  # `authorize` job still checks the permission itself.
+  group: >-
+    ${{ startsWith(github.event.comment.body, '/benchmark')
+        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+        && format('benchmark-{0}', github.event.issue.number)
+        || format('ignored-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+env:
+  # The runner's own Swift (6.4.2) failed to compile the package, and its version changes with the
+  # runner image, so the jobs run in a container with a pinned release.
+  DEFAULT_SWIFT_VERSION: "6.4.1"
+  # The tools that have a workload in benchmark-count.sh. A new tool needs a workload there, an entry
+  # here, and an output for each build in the `count` job.
+  ALL_TOOLS: "QUICTransfer,QUICStreamLoad,IPUDPTransfer"
+
+jobs:
+  authorize:
+    name: Authorize
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/benchmark')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    outputs:
+      pull_request_number: ${{ steps.resolve.outputs.pull_request_number }}
+      base_sha: ${{ steps.resolve.outputs.base_sha }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      swift_version: ${{ steps.resolve.outputs.swift_version }}
+      container: ${{ steps.resolve.outputs.container }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      tools_list: ${{ steps.resolve.outputs.tools_list }}
+    steps:
+      - name: Check the commenter can write
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+        run: |
+          can_push=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${COMMENTER}/permission" --jq '.user.permissions.push')
+          if [ "$can_push" != "true" ]; then
+            echo "::error::${COMMENTER} does not have write access to ${GITHUB_REPOSITORY}."
+            exit 1
+          fi
+
+      - name: Resolve the request
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The comment body is untrusted; it is only ever read from the environment.
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          PULL_REQUEST_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          swift_version="$DEFAULT_SWIFT_VERSION"
+          tools="$ALL_TOOLS"
+          # The words of the comment are arguments, not file name patterns.
+          set -f
+          first_line=$(printf '%s\n' "$COMMENT_BODY" | head -n 1 | tr -d '\r')
+          for word in $first_line; do
+            case "$word" in
+            /benchmark) ;;
+            swift=*) swift_version="${word#swift=}" ;;
+            tools=*) tools="${word#tools=}" ;;
+            *)
+              echo "::error::Unrecognized argument '${word}'. Usage: /benchmark [swift=6.4.1] [tools=A,B]"
+              exit 1
+              ;;
+            esac
+          done
+
+          if ! [[ "$swift_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::swift=${swift_version} is not a release version such as 6.4.1."
+            exit 1
+          fi
+          tools_json=$(jq -cn --arg tools "$tools" --arg all "$ALL_TOOLS" '
+            ($all | split(",")) as $known
+            | ($tools | split(","))
+            | if all(.[]; . as $tool | $known | index($tool)) then . else error("unknown tool") end
+            | reduce .[] as $tool ([]; if index($tool) then . else . + [$tool] end)')
+          head_sha=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}" --jq '.head.sha')
+          base_ref=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}" --jq '.base.ref')
+          base_sha=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${base_ref}...${head_sha}" --jq '.merge_base_commit.sha')
+
+          # One job per tool and build: the counts do not depend on the machine.
+          matrix=$(jq -c --arg base "$base_sha" --arg head "$head_sha" '
+            {include: [.[] as $tool | ("base", "head") as $build
+              | (if $build == "head" then $head else $base end) as $sha
+              | {tool: $tool, build: $build, sha: $sha, short_sha: $sha[0:7]}]}' <<<"$tools_json")
+
+          {
+            echo "pull_request_number=${PULL_REQUEST_NUMBER}"
+            echo "base_sha=${base_sha}"
+            echo "head_sha=${head_sha}"
+            echo "swift_version=${swift_version}"
+            echo "container=swift:${swift_version}"
+            echo "matrix=${matrix}"
+            echo "tools_list=$(jq -r 'join(",")' <<<"$tools_json")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Acknowledge the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}/reactions" -f content=eyes
+
+  count:
+    name: ${{ matrix.tool }} (${{ matrix.build }} ${{ matrix.short_sha }})
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container: ${{ needs.authorize.outputs.container }}
+    defaults:
+      run:
+        # A container job's steps default to sh, which has no `pipefail`.
+        shell: bash
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.authorize.outputs.matrix) }}
+    # Each job's counts come back to the `report` job as an output named for its tool and build,
+    # since the outputs of a matrix job overwrite each other when they share a name.
+    outputs:
+      QUICTransfer_base: ${{ steps.count.outputs.QUICTransfer_base }}
+      QUICTransfer_head: ${{ steps.count.outputs.QUICTransfer_head }}
+      QUICStreamLoad_base: ${{ steps.count.outputs.QUICStreamLoad_base }}
+      QUICStreamLoad_head: ${{ steps.count.outputs.QUICStreamLoad_head }}
+      IPUDPTransfer_base: ${{ steps.count.outputs.IPUDPTransfer_base }}
+      IPUDPTransfer_head: ${{ steps.count.outputs.IPUDPTransfer_head }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          # The default branch, which holds the scripts below; the commit to build is checked out by them.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Mark the workspace as safe
+        # https://github.com/actions/checkout/issues/766
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+      - name: Install valgrind
+        run: |
+          apt-get update -q
+          apt-get install -y -q valgrind
+      - name: Print Swift version
+        run: swift --version
+      - name: Build and count
+        id: count
+        env:
+          TOOL: ${{ matrix.tool }}
+          BUILD: ${{ matrix.build }}
+          SHA: ${{ matrix.sha }}
+          # Only the head is fetched from the pull request, and checked to be the commit that was authorized.
+          PULL_REQUEST_NUMBER: ${{ matrix.build == 'head' && needs.authorize.outputs.pull_request_number || '' }}
+        run: |
+          set -euo pipefail
+
+          # Checking out the commit replaces the files in the workspace, so the scripts run from
+          # copies, and the copies come from the default branch rather than the pull request.
+          scripts="${RUNNER_TEMP}/scripts"
+          mkdir -p "$scripts"
+          cp .github/workflows/scripts/benchmark-build.sh .github/workflows/scripts/benchmark-count.sh "$scripts"
+
+          "$scripts/benchmark-build.sh" "$SHA" "${RUNNER_TEMP}/binaries" "$TOOL" "$PULL_REQUEST_NUMBER"
+          "$scripts/benchmark-count.sh" "$TOOL" "${RUNNER_TEMP}/binaries" "${RUNNER_TEMP}/counts.tsv"
+
+          # This step ran the pull request's code, so it can write any output. The report job reads only
+          # the declared outputs and accepts only integer counts.
+          {
+            echo "${TOOL}_${BUILD}<<END_OF_COUNTS"
+            cat "${RUNNER_TEMP}/counts.tsv"
+            echo "END_OF_COUNTS"
+          } >> "$GITHUB_OUTPUT"
+
+  report:
+    name: Report
+    needs: [authorize, count]
+    if: ${{ !cancelled() && needs.authorize.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout the scripts
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/workflows/scripts
+          persist-credentials: false
+      - name: Write the report
+        env:
+          OUTPUTS: ${{ toJson(needs.count.outputs) }}
+          TOOLS: ${{ needs.authorize.outputs.tools_list }}
+          BASE_SHA: ${{ needs.authorize.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
+          SWIFT_VERSION: ${{ needs.authorize.outputs.swift_version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # The outputs come from jobs that ran the pull request's code. Their names are fixed by the
+          # `count` job's output list and the report parser rejects anything but numbers.
+          mkdir results
+          for name in $(jq -r 'keys[]' <<<"$OUTPUTS"); do
+            jq -j --arg name "$name" '.[$name]' <<<"$OUTPUTS" > "results/${name}.tsv"
+          done
+
+          swift .github/workflows/scripts/benchmark-report.swift \
+            results "$TOOLS" "$BASE_SHA" "$HEAD_SHA" "$SWIFT_VERSION" "$RUN_URL" | tee report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Comment on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ needs.authorize.outputs.pull_request_number }}
+        run: |
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PULL_REQUEST_NUMBER}/comments" -F body=@report.md
