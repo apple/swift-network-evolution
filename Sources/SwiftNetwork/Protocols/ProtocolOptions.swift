@@ -139,6 +139,18 @@ public class AbstractProtocolOptions: PerProtocolOptions, Hashable {
         }
     }
 
+    func matches(source: ProtocolEstablishmentSource) -> Bool {
+        switch source {
+        case .instance(let instance):
+            return matches(protocolInstance: instance)
+        #if !NETWORK_EMBEDDED
+        case .legacyHandle(let address):
+            guard let handle = UnsafeRawPointer(bitPattern: address) else { return false }
+            return matches(protocolHandle: handle)
+        #endif
+        }
+    }
+
     #if !NETWORK_EMBEDDED
     public func matches(protocolHandle handle: UnsafeRawPointer) -> Bool {
         guard let protocolHandle = self.protocolHandle else {

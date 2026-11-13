@@ -1555,10 +1555,19 @@ extension MultiplexedFlow where Self: ~Copyable {
     }
 
     func deliverConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
+        let handshakeEvent = parentProtocol.protocolEstablishmentReport.map {
+            NetworkProtocolEvent.handshakeComplete($0.tagged(.instance(parentProtocol.identifier)))
+        }
         if upper.isDetached {
             // Enqueue pending event instead of delivering immediately.
             // Inbound multiplexed flows may get attached after creation.
             let selfInstance = self.identifier
+            if let handshakeEvent {
+                selfInstance.enqueuePendingEventForUpperProtocol(
+                    event: .networkProtocolEvent(selfInstance, upper.identifier, event: handshakeEvent, { _, _, _ in }),
+                    in: &eventContext
+                )
+            }
             selfInstance.enqueuePendingEventForUpperProtocol(
                 event: .connected(
                     selfInstance,
@@ -1570,6 +1579,14 @@ extension MultiplexedFlow where Self: ~Copyable {
                 in: &eventContext
             )
         } else {
+            if let handshakeEvent {
+                upper.deliverNetworkProtocolEvent(
+                    originalInstance: self.identifier,
+                    selfInstance: self.identifier,
+                    event: handshakeEvent,
+                    in: &eventContext
+                )
+            }
             // Deliver connected event *followed by* any events which were buffered while detached
             upper.deliverConnectedEvent(from: self.identifier, in: &eventContext)
             drainQueuedEventsForUpperProtocol(in: &eventContext)

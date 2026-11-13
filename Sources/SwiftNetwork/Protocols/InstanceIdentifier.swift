@@ -17,7 +17,7 @@
 /// this type can be used for comparison and hashing.
 @_spi(Essentials)
 @available(Network 0.1.0, *)
-public struct InstanceIdentifier: Hashable {
+public struct InstanceIdentifier: Hashable, Sendable {
 
     let eventStateIndex: NetworkStateIndex
 
