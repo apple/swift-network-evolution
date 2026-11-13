@@ -551,6 +551,156 @@ final class SendItemsTests: XCTestCase {
         XCTAssertEqual(outcome.flowsToService, 0, "The drained flow must be descheduled")
     }
 
+    // MARK: - Connection-level flow control
+
+    // Registers a stream holding `bytes` of unsent data, then writes `pendingItems` into one packet
+    // while the connection has used up the peer's MAX_DATA. `configure` queues items once the stream
+    // exists; `inspect` sees what the packet carried.
+    func writeWhileDataBlocked(
+        bytes: Int,
+        configure: (inout PendingItems, MultiplexedFlowIdentifier) -> Void,
+        inspect: (borrowing TransmittedItems, _ isAckEliciting: Bool) -> Void
+    ) -> QUICError? {
+        let clock = TestClockContext("SendItemsTests")
+        let connection = clock.onQueue {
+            QUICConnection(context: clock.context)
+        }
+        let flowID = clock.onQueue { () -> MultiplexedFlowIdentifier in
+            var stream = QUICStreamInstance(parent: connection, inbound: false)
+            stream.setup(streamID: QUICStreamID(0), logPrefixer: LogPrefixer())
+            stream.outboundStreamReady()
+            stream.send.buffer.addSendData(
+                Frame(copyBuffer: [UInt8](repeating: 0xAB, count: bytes)),
+                isLast: false
+            )
+            let flowID = stream.flowIdentifier
+            // The connection owns the stream from here on
+            stream.destroyFromExternalTest()
+            connection.insertFlow(stream, for: flowID)
+            return flowID
+        }
+        defer {
+            clock.onQueue {
+                if var stream = connection.removeFlow(flowID) {
+                    stream.send.buffer.empty()
+                }
+                connection.destroyFromExternalTest()
+            }
+        }
+
+        // Everything the peer allowed has been sent and DATA_BLOCKED has gone out
+        XCTAssertEqual(connection.flowControlState.remainingOutboundBytesAllowed, 0)
+        connection.hasSentDataBlocked = true
+
+        var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+        configure(&pendingItems, flowID)
+
+        var frame = Frame(count: 1200)
+        defer { frame.finalize(success: true) }
+        var transmittedItems = TransmittedItems()
+        var isAckEliciting = false
+        var isInFlightEligible = false
+        var shorthandFrames: [QUICShorthandFrame]? = nil
+        var thrownError: QUICError?
+        // The packet builder borrows streams, which only the send path may do
+        let wasActive = connection.deferredWork.claimSendPath()
+        defer { connection.deferredWork.releaseSendPath(wasActive: wasActive) }
+        do {
+            try pendingItems.write(
+                into: &frame,
+                connection: connection,
+                stats: &connection.stats,
+                keyState: .phase0,
+                transmittedItems: &transmittedItems,
+                availableCongestionWindow: 10000,
+                isAckEliciting: &isAckEliciting,
+                isInFlightEligible: &isInFlightEligible,
+                shorthandFrames: &shorthandFrames
+            )
+        } catch {
+            thrownError = error
+        }
+        inspect(transmittedItems, isAckEliciting)
+        return thrownError
+    }
+
+    // A stream that cannot send because of connection flow control must not keep the frames queued
+    // after STREAM out of the packet. Otherwise RESET_STREAM waits for a MAX_DATA that a peer which
+    // is not reading may never send.
+    func testDataBlockedStreamDoesNotHoldBackResetStream() {
+        var streamResets = 0
+        let error = writeWhileDataBlocked(
+            bytes: 100,
+            configure: { pendingItems, flowID in
+                pendingItems.streamsToService.append(flowID)
+                pendingItems.stream = true
+                pendingItems.addStreamReset(streamID: 4, code: 0, finalSize: 0)
+            },
+            inspect: { transmittedItems, _ in
+                streamResets = transmittedItems.streamResets?.count ?? 0
+            }
+        )
+        XCTAssertNil(error, "RESET_STREAM fits, so the packet is not empty")
+        XCTAssertEqual(streamResets, 1, "RESET_STREAM must be sent while the connection is data-blocked")
+    }
+
+    // Flow control limits the highest offset sent, which a retransmission does not raise. Holding
+    // retransmissions back while blocked can deadlock: the peer cannot read past the lost data, so it
+    // never consumes enough to send the MAX_DATA that would unblock us.
+    func testDataBlockedConnectionStillRetransmitsStreamData() {
+        var retransmittedLength: UInt64 = 0
+        let error = writeWhileDataBlocked(
+            bytes: 100,
+            configure: { pendingItems, flowID in
+                pendingItems.retransmitStreams.append(
+                    TransmittedItems.SentStream(
+                        flowID: flowID,
+                        streamID: QUICStreamID(0),
+                        offset: 0,
+                        length: 100,
+                        isFinal: false
+                    )
+                )
+                pendingItems.stream = true
+            },
+            inspect: { transmittedItems, _ in
+                for index in 0..<transmittedItems.sentStreams.count {
+                    retransmittedLength += transmittedItems.sentStreams[index].length
+                }
+            }
+        )
+        XCTAssertNil(error)
+        XCTAssertEqual(retransmittedLength, 100, "Lost stream data must be retransmitted while data-blocked")
+    }
+
+    // A stream that is dropped for lack of credit writes nothing, so a packet that otherwise only
+    // carries an ACK must stay out of ack-eliciting and retransmission accounting.
+    func testDataBlockedStreamAddsNothingToAnAckOnlyPacket() {
+        var isAckEliciting = true
+        var carriesStream = true
+        var retransmissible = true
+        let error = writeWhileDataBlocked(
+            bytes: 100,
+            configure: { pendingItems, flowID in
+                pendingItems.setAckFrame(
+                    .ack(frame: FrameAck(packetNumberSpace: .applicationData, largest: 10, delay: 0)),
+                    ping: false
+                )
+                pendingItems.streamsToService.append(flowID)
+                pendingItems.stream = true
+            },
+            inspect: { transmittedItems, ackEliciting in
+                isAckEliciting = ackEliciting
+                carriesStream = transmittedItems.stream
+                retransmissible = transmittedItems.hasRetransmissibleItems
+            }
+        )
+        XCTAssertNil(error)
+        XCTAssertFalse(isAckEliciting, "A packet with only an ACK is not ack-eliciting")
+        XCTAssertFalse(carriesStream)
+        XCTAssertFalse(retransmissible)
+    }
+
 }
 
 #endif
