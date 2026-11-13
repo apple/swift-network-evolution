@@ -1205,6 +1205,162 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
             dataBlock: Array("Hello World!".utf8)
         )
     }
+
+    /// Packets smaller than this are taken to be ACK-only, which are not padded.
+    private static let ackOnlySizeThreshold = 100
+
+    /// The 1-RTT packet sizes of an echo with this padding on both sides. PMTUD is off, and the
+    /// echo stays inside the initial congestion window, so padding is not cut short.
+    private func shortHeaderPacketSizes(
+        withPadding padding: TrafficAnalysisDefenses.Padding
+    ) -> [Int] {
+        let observedPacketSizes = Mutex<[Int]>([])
+        let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
+            guard (firstByte & 0xC0) == 0x40 else { return }
+            observedPacketSizes.withLock { $0.append(byteCount) }
+        }
+
+        let clientOptions = QUICProtocol.options()
+        clientOptions.modifyConnectionOptions {
+            $0.trafficAnalysisDefenses.padding = padding
+            $0.pmtud = false
+        }
+        let serverOptions = QUICProtocol.options()
+        serverOptions.modifyConnectionOptions {
+            $0.trafficAnalysisDefenses.padding = padding
+            $0.pmtud = false
+        }
+
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello, traffic analysis!".utf8),
+            clientOptions: clientOptions,
+            serverOptions: serverOptions,
+            bridgeObserveFrameHandler: observeFrameHandler
+        )
+        return observedPacketSizes.withLock { $0 }
+    }
+
+    func testQUICEchoTrafficAnalysisFixedSizePadding() {
+        let packetSizes = shortHeaderPacketSizes(withPadding: .fixedSize(1100))
+        XCTAssertTrue(packetSizes.contains(1100), "the echo's packets should be padded: \(packetSizes)")
+        // ACK-only packets are not padded, and nothing in a small echo is larger.
+        XCTAssertEqual(
+            packetSizes.filter { $0 != 1100 && $0 >= Self.ackOnlySizeThreshold },
+            [],
+            "every 1-RTT packet but the ACK-only ones should be exactly 1100 bytes"
+        )
+    }
+
+    func testQUICEchoTrafficAnalysisRoundUpPadding() {
+        let packetSizes = shortHeaderPacketSizes(withPadding: .roundUp(toMultipleOf: 128))
+        XCTAssertTrue(packetSizes.contains { $0 >= Self.ackOnlySizeThreshold }, "the echo's packets should be sent")
+        XCTAssertEqual(
+            packetSizes.filter { $0 % 128 != 0 && $0 >= Self.ackOnlySizeThreshold },
+            [],
+            "every 1-RTT packet but the ACK-only ones should be a multiple of 128 bytes"
+        )
+    }
+
+    /// Runs an echo with chaff on the client, and returns the 1-RTT packet sizes sent while idle.
+    ///
+    /// Without padding, chaff packets are full size and the server's ACKs are small, so packets of
+    /// 1200 bytes or more are chaff. PMTUD is off so that its probes are not counted. `whileIdle`
+    /// runs after three idle seconds, followed by three more.
+    private func idlePacketSizes(
+        chaff: TrafficAnalysisDefenses.Chaff,
+        padding: TrafficAnalysisDefenses.Padding? = nil,
+        whileIdle: ((QUICTestHarness) -> Void)? = nil
+    ) -> [Int] {
+        let isIdle = Mutex(false)
+        let idlePacketSizes = Mutex<[Int]>([])
+        let observeFrameHandler: BridgeObserveFrameHandler = { firstByte, byteCount in
+            guard (firstByte & 0xC0) == 0x40, isIdle.withLock({ $0 }) else { return }
+            idlePacketSizes.withLock { $0.append(byteCount) }
+        }
+
+        let clientOptions = QUICProtocol.options()
+        clientOptions.modifyConnectionOptions {
+            $0.trafficAnalysisDefenses = .init(padding: padding, chaff: chaff)
+            $0.pmtud = false
+        }
+        let serverOptions = QUICProtocol.options()
+        serverOptions.modifyConnectionOptions {
+            $0.trafficAnalysisDefenses.padding = padding
+            $0.pmtud = false
+        }
+
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello, chaff!".utf8),
+            clientOptions: clientOptions,
+            serverOptions: serverOptions,
+            afterData: { harness in
+                isIdle.withLock { $0 = true }
+                harness.allow(.seconds(3))
+                if let whileIdle {
+                    whileIdle(harness)
+                    harness.allow(.seconds(3))
+                }
+            },
+            bridgeObserveFrameHandler: observeFrameHandler
+        )
+        return idlePacketSizes.withLock { $0 }
+    }
+
+    func testQUICTrafficAnalysisChaffStopsAfterMaximum() {
+        // Ten intervals pass while idle; chaff stops after five of them.
+        let chaff = TrafficAnalysisDefenses.Chaff(
+            interval: .milliseconds(300),
+            maximumConsecutiveChaff: 5
+        )
+        let packetSizes = idlePacketSizes(chaff: chaff)
+        let chaffPackets = packetSizes.filter { $0 >= 1200 }
+        XCTAssertEqual(chaffPackets.count, 5, "chaff should be five full-size packets: \(packetSizes)")
+    }
+
+    func testQUICTrafficAnalysisChaffWithJitterStopsAfterMaximum() {
+        let chaff = TrafficAnalysisDefenses.Chaff(
+            interval: .milliseconds(300),
+            jitter: .milliseconds(100),
+            maximumConsecutiveChaff: 5
+        )
+        let packetSizes = idlePacketSizes(chaff: chaff)
+        let chaffPackets = packetSizes.filter { $0 >= 1200 }
+        XCTAssertEqual(chaffPackets.count, 5, "chaff should be five full-size packets: \(packetSizes)")
+    }
+
+    func testQUICTrafficAnalysisChaffIsPaddedLikeOtherPackets() {
+        let chaff = TrafficAnalysisDefenses.Chaff(
+            interval: .milliseconds(300),
+            maximumConsecutiveChaff: 5
+        )
+        let packetSizes = idlePacketSizes(chaff: chaff, padding: .fixedSize(1100))
+        // The chaff is padded to the fixed size; the server's ACKs of it are not padded.
+        XCTAssertGreaterThanOrEqual(packetSizes.filter { $0 == 1100 }.count, 5, "the chaff should be on the wire")
+        XCTAssertEqual(
+            packetSizes.filter { $0 != 1100 && $0 >= Self.ackOnlySizeThreshold },
+            [],
+            "every idle 1-RTT packet but the ACK-only ones should be exactly 1100 bytes"
+        )
+    }
+
+    func testQUICTrafficAnalysisChaffRestartsAfterRealTraffic() {
+        let chaff = TrafficAnalysisDefenses.Chaff(
+            interval: .milliseconds(300),
+            maximumConsecutiveChaff: 3
+        )
+        let packetSizes = idlePacketSizes(chaff: chaff) { harness in
+            // Chaff has stopped; real data starts it again from a count of zero.
+            guard let clientStream = harness.createNewStream(identifier: "C2") else {
+                XCTFail("Failed to create client stream")
+                return
+            }
+            harness.onContext {
+                _ = clientStream.write(Array("Hello again".utf8))
+            }
+        }
+        // The data and the server's ACKs are small; each idle stretch ends in three chaff packets.
+        XCTAssertEqual(packetSizes.filter { $0 >= 1200 }.count, 6, "chaff should run twice: \(packetSizes)")
+    }
 }
 #endif
 #endif

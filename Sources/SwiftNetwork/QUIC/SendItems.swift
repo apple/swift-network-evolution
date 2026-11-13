@@ -207,9 +207,15 @@ extension FramePing: SendableItem {
         transmittedItems.ping = pendingItems.ping
         transmittedItems.pmtudProbeMSS = pendingItems.pmtudProbeMSS
         transmittedItems.isKeepalive = pendingItems.isKeepalive
+        #if !NETWORK_EMBEDDED
+        transmittedItems.isChaff = pendingItems.isChaff
+        #endif
         pendingItems.ping = false
         pendingItems.pmtudProbeMSS = nil
         pendingItems.isKeepalive = false
+        #if !NETWORK_EMBEDDED
+        pendingItems.isChaff = false
+        #endif
     }
 
     static func addToPendingItems(
@@ -218,6 +224,10 @@ extension FramePing: SendableItem {
         connection: QUICConnection
     ) {
         if transmittedItems.ping, transmittedItems.pmtudProbeMSS == nil {
+            #if !NETWORK_EMBEDDED
+            // Lost chaff is not retransmitted, unless it is also a keep-alive.
+            guard !transmittedItems.isChaff || transmittedItems.isKeepalive else { return }
+            #endif
             pendingItems.ping = true
             if transmittedItems.isKeepalive { pendingItems.isKeepalive = true }
         }
@@ -2459,7 +2469,12 @@ struct SimpleSendableItemsFlags: OptionSet {
     static let isKeepalive = SimpleSendableItemsFlags(
         rawValue: PrioritizedSendableItems.padding.maskBit << 1
     )  // Flag to describe PING
-    // The flags that stand for an item to send, which is all of them but `isKeepalive`.
+    #if !NETWORK_EMBEDDED
+    static let isChaff = SimpleSendableItemsFlags(
+        rawValue: PrioritizedSendableItems.padding.maskBit << 2
+    )  // Flag to describe PING
+    #endif
+    // The flags that stand for an item to send, which is all of them but `isKeepalive` and `isChaff`.
     static let itemFlagsMask: UInt32 = PrioritizedSendableItems.padding.maskBit &- 1
 }
 
@@ -2611,6 +2626,18 @@ struct PendingItems: ~Copyable {
             }
         }
     }
+    #if !NETWORK_EMBEDDED
+    var isChaff: Bool {
+        get { simpleSendableItems.contains(.isChaff) }
+        set {
+            if newValue {
+                simpleSendableItems.insert(.isChaff)
+            } else {
+                simpleSendableItems.remove(.isChaff)
+            }
+        }
+    }
+    #endif
     var ack: Bool {
         get { simpleSendableItems.contains(.ack) }
         set {
@@ -2739,6 +2766,14 @@ struct PendingItems: ~Copyable {
         case fixedSize(Int)
     }
     var paddingApproach = PaddingApproach.none
+
+    #if !NETWORK_EMBEDDED
+    // Inputs to write(into:), set by QUICConnection (padding) and PacketBuilder (header and tag length).
+    var trafficAnalysisPadding: TrafficAnalysisDefenses.Padding?
+    var headerAndTagLength = 0
+    // Output of write(into:): whether an ACK-eliciting frame other than PING was written.
+    var wroteNonPingAckElicitingFrame = false
+    #endif
 
     var pmtudProbeMSS: Int?
 
@@ -3012,6 +3047,9 @@ struct PendingItems: ~Copyable {
         }
 
         let originalAvailableLength = frame.unclaimedLength
+        #if !NETWORK_EMBEDDED
+        wroteNonPingAckElicitingFrame = false
+        #endif
 
         // Allow the congestion window calculations to be updated as we write
         var availableCongestionWindow = availableCongestionWindow
@@ -3051,6 +3089,11 @@ struct PendingItems: ~Copyable {
                 ) {
                     if item.isAckEliciting {
                         isAckEliciting = true
+                        #if !NETWORK_EMBEDDED
+                        if item != .ping {
+                            wroteNonPingAckElicitingFrame = true
+                        }
+                        #endif
                     }
                     if item.isInFlightEligible {
                         isInFlightEligible = true
@@ -3098,6 +3141,23 @@ struct PendingItems: ~Copyable {
                 shorthandFrames: &shorthandFrames
             )
         }
+
+        #if !NETWORK_EMBEDDED
+        // Only ack-eliciting packets are padded, so a padded packet is always in flight.
+        if isAckEliciting, let padding = trafficAnalysisPadding {
+            let packetLength = headerAndTagLength + (originalAvailableLength - frame.unclaimedLength)
+            try writeTrafficAnalysisPadding(
+                padding,
+                into: &frame,
+                packetLength: packetLength,
+                availableCongestionWindow: availableCongestionWindow,
+                connection: connection,
+                stats: &stats,
+                transmittedItems: &transmittedItems,
+                shorthandFrames: &shorthandFrames
+            )
+        }
+        #endif
     }
 
     mutating func copyForRetransmission(
@@ -3238,6 +3298,18 @@ struct TransmittedItems: ~Copyable {
             }
         }
     }
+    #if !NETWORK_EMBEDDED
+    var isChaff: Bool {
+        get { simpleSendableItems.contains(.isChaff) }
+        set {
+            if newValue {
+                simpleSendableItems.insert(.isChaff)
+            } else {
+                simpleSendableItems.remove(.isChaff)
+            }
+        }
+    }
+    #endif
     var ack: Bool {
         get { simpleSendableItems.contains(.ack) }
         set {
