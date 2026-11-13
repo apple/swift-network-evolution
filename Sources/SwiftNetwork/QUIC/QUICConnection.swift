@@ -1866,19 +1866,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // connection as a whole may send at most three times the bytes it has received. This is the number of
     // bytes it may still send, or nil when no such limit applies.
     var antiAmplificationBudget: Int? {
-        antiAmplificationBudget(connectionStatistics: stats)
-    }
-
-    // The same limit, for callers that already hold the connection's statistics exclusively and so
-    // cannot read them through `self`.
-    func antiAmplificationBudget(connectionStatistics: borrowing Statistics) -> Int? {
+        // Reading `stats` through `self` costs a dynamic exclusivity check on every call, so only
+        // pay it when the limit applies: not for a client or for a server that has validated it.
         if isServer, !receivedHandshakePacket {
-            return max(
-                connectionStatistics[.rxBytes] * Constants.antiAmplificationFactor - connectionStatistics[.txBytes],
-                0
-            )
+            return Self.antiAmplificationBudget(receivedBytes: stats[.rxBytes], sentBytes: stats[.txBytes])
         }
         return nil
+    }
+
+    // The bytes a server may still send before it has validated the client's address. It takes the two
+    // counts rather than the whole `Statistics`, which would be copied onto the stack at call sites where
+    // this is not inlined.
+    static func antiAmplificationBudget(receivedBytes: Int, sentBytes: Int) -> Int {
+        max(receivedBytes * Constants.antiAmplificationFactor - sentBytes, 0)
     }
 
     // Whether a server is unable to send anything because of the anti-amplification limit.
@@ -4537,7 +4537,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Server must not send more than 3x the number of bytes received, until
         // the client's address has been validated by receiving a handshake
         // packet. To enforce this constraint limit the congestion window to not send more 3x received.
-        if let budget = antiAmplificationBudget(connectionStatistics: stats) {
+        if isServer, !receivedHandshakePacket {
+            let budget = Self.antiAmplificationBudget(receivedBytes: stats[.rxBytes], sentBytes: stats[.txBytes])
             availableCongestionWindow = UInt64(budget)
             log.debug(
                 "Setting available congestion window: \(availableCongestionWindow) until the client is validated"
