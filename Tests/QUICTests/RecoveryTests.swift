@@ -1586,6 +1586,116 @@ final class RecoveryTests: XCTestCase {
         }
     }
 
+    /// Records an ack-eliciting packet that carries nothing to retransmit, so a PTO has to fall back to a PING.
+    private func recordBareAckElicitingPacket(
+        space: PacketNumberSpace,
+        number: Int64,
+        sentTime: NetworkClock.Instant
+    ) {
+        connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: space, number: PacketNumber(number))
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.pacedSendTime = sentTime
+            sentPacket(packet, connection: connection)
+        }
+    }
+
+    private func firePTO() {
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.fromExternal { eventContext in
+                self.connection.withCurrentPath { path in
+                    self.connection.recovery.sendPTO(
+                        connection: self.connection,
+                        path: path,
+                        in: &eventContext
+                    )
+                }
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    private func pingIsPending(in space: PacketNumberSpace) -> Bool {
+        connection.withPendingItems(for: space) { $0.ping }
+    }
+
+    private func ackElicitingPacketsInFlight(in space: PacketNumberSpace) -> Int {
+        var count = 0
+        connection.recovery.withImmutableInnerState(packetNumberSpace: space) { innerState in
+            count = innerState.ackElicitingPacketsInFlight
+        }
+        return count
+    }
+
+    // The PTO probe must go in a space that has ack-eliciting packets in flight (RFC 9002 Section 6.2.4);
+    // otherwise a space whose packets were all acknowledged, but which still holds an old send time, takes
+    // the probe and the space that is waiting for an acknowledgment is never probed.
+    func testPTOProbeSkipsSpaceWithNothingInFlight() {
+        let start = connection.now
+        recordBareAckElicitingPacket(space: .initial, number: 0, sentTime: start)
+        recordBareAckElicitingPacket(space: .handshake, number: 0, sentTime: start.advanced(by: .milliseconds(1)))
+
+        connection.context.onQueue {
+            let ackFrame = FrameAck(
+                packetNumberSpace: .initial,
+                largest: 0,
+                delay: 0,
+                ranges: [FrameAckRange(gap: 0, range: 0)]
+            )
+            connection.recovery.receivedAck(
+                ack: ackFrame,
+                ackedPath: connection.currentPath!,
+                connection: connection,
+                in: &connection.context.eventContext
+            )
+        }
+        XCTAssertEqual(ackElicitingPacketsInFlight(in: .initial), 0)
+        XCTAssertEqual(ackElicitingPacketsInFlight(in: .handshake), 1)
+
+        firePTO()
+
+        // This connection cannot build a Handshake packet, so the PING stays pending in the space that was chosen.
+        XCTAssertTrue(pingIsPending(in: .handshake), "The probe was not queued in Handshake")
+        XCTAssertFalse(pingIsPending(in: .initial), "The probe was queued in Initial")
+    }
+
+    #if IMPORT_CRYPTO || IMPORT_SWIFTTLS
+    // Installing and dropping keys needs the real `Protector`; the stub used without a crypto
+    // implementation has no key state.
+    // A client that holds Handshake keys has dropped its Initial keys. With only application data in flight
+    // before the handshake completes, no space is eligible for the probe, so the PING must go in Handshake;
+    // otherwise it is queued in Initial, which can no longer seal it, and the server stays blocked.
+    func testPTOProbeUsesHandshakeWhenOnlyApplicationDataIsInFlightBeforeHandshakeCompletes() {
+        connection.context.onQueue {
+            connection.protector.keyUpdate(
+                for: .handshake,
+                cipherSuite: .aesGCM128SHA256,
+                secret: SymmetricKey(data: Data(repeating: 0x42, count: 32)),
+                isWrite: true
+            )
+            connection.protector.drop(keyState: .initial)
+        }
+        XCTAssertTrue(connection.protector.sealKeyReady(for: .handshake))
+        XCTAssertFalse(connection.protector.sealKeyReady(for: .initial))
+
+        recordBareAckElicitingPacket(space: .applicationData, number: 0, sentTime: connection.now)
+        XCTAssertEqual(ackElicitingPacketsInFlight(in: .applicationData), 1)
+        XCTAssertNotEqual(connection.state, .connected)
+
+        firePTO()
+
+        XCTAssertEqual(ackElicitingPacketsInFlight(in: .handshake), 1, "The probe was not sent in Handshake")
+        XCTAssertEqual(ackElicitingPacketsInFlight(in: .initial), 0)
+        XCTAssertFalse(pingIsPending(in: .initial), "The probe was queued in Initial")
+    }
+    #endif
+
     // MARK: - Packet index hints
 
     /// Records a sparse ascending run of packets in the application data space.

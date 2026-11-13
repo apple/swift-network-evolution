@@ -301,6 +301,7 @@ class QUICTestHarness {
         clientOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         serverOptions: ProtocolOptions<QUICProtocol> = QUICProtocol.options(),
         bridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
+        clientBridgeObserveFirstByteHandler: BridgeObserveFirstByteHandler = nil,
         bridgeObserveFrameHandler: BridgeObserveFrameHandler = nil,
         clientMTU: Int = 1500,
         clientInterfaceMTU: Int? = nil,
@@ -340,7 +341,8 @@ class QUICTestHarness {
 
             let clientBridge = self.storage.createTestBridgeDatagramInstance()
             let clientBridgeOptions = BridgeDatagramProtocol.options()
-            clientBridgeOptions.observeFirstByteHandler = bridgeObserveFirstByteHandler
+            clientBridgeOptions.observeFirstByteHandler =
+                clientBridgeObserveFirstByteHandler ?? bridgeObserveFirstByteHandler
             clientBridgeOptions.observeFrameHandler = bridgeObserveFrameHandler
             clientBridgeOptions.setProtocolInstance(clientBridge.identifier)
             clientBridgeOptions.linkDelay = clientLinkDelay
