@@ -400,6 +400,18 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         return .parsed
     }
 
+    /// Whether what is left of `frame` is zero padding after the last packet of the datagram.
+    /// Zero bytes have no fixed bit, so they never parse as a packet.
+    func isTrailingPadding(_ frame: borrowing Frame) -> Bool {
+        guard let bytes = frame.span, !bytes.isEmpty else {
+            return false
+        }
+        for index in bytes.indices where bytes[index] != 0 {
+            return false
+        }
+        return true
+    }
+
     @inline(always)
     mutating func parse(
         frame: inout Frame,

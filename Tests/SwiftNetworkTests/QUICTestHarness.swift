@@ -587,7 +587,7 @@ class QUICTestHarness {
             }
         }
 
-        wait(until: { handshakeFinished }, timeout: timeout, "qUIC connection to be established")
+        wait(until: { handshakeFinished }, timeout: timeout, "QUIC connection to be established")
 
         if let expectHandshakeError {
             XCTAssertFalse(clientConnected && serverConnected, "QUIC client and server incorrectly became connected")
@@ -1301,7 +1301,7 @@ class QUICTestHarness {
                 XCTAssertEqual(self.state?.serverHarness.newInboundCIDEventCount, extraServerCIDs.count)
                 extraCIDFinished = true
             }
-            wait(until: { extraCIDFinished }, timeout: 5.0, "qUIC CIDs to be delivered")
+            wait(until: { extraCIDFinished }, timeout: 5.0, "QUIC CIDs to be delivered")
         }
 
         if let afterHandshake {
@@ -1360,7 +1360,7 @@ class QUICTestHarness {
                     self.validateStreamMetadata(index: index, datagram: datagram)
                     metadataFinished = true
                 }
-                wait(until: { metadataFinished }, timeout: 2.0, "qUIC metadata to be fetched")
+                wait(until: { metadataFinished }, timeout: 2.0, "QUIC metadata to be fetched")
 
                 // Detect if the server needs to send a MAX_STREAMS update
                 if sendMaxStreamUpdate {
@@ -1391,7 +1391,7 @@ class QUICTestHarness {
                         }
                     }
                     maxStreamFinished = true
-                    wait(until: { maxStreamFinished }, timeout: 2.0, "qUIC max stream to be fetched")
+                    wait(until: { maxStreamFinished }, timeout: 2.0, "QUIC max stream to be fetched")
                 }
             }
 
@@ -1452,7 +1452,7 @@ class QUICTestHarness {
                     XCTAssertNotNil(serverReports)
                     snapshotFinished = true
                 }
-                wait(until: { snapshotFinished }, timeout: 5.0, "qUIC connection to receive metrics")
+                wait(until: { snapshotFinished }, timeout: 5.0, "QUIC connection to receive metrics")
                 // Now validate the protocol establishment report
                 clientReports = nil
                 serverReports = nil

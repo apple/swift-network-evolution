@@ -812,7 +812,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
             let now = connection.now
             while let packet = packets.popFirst() {
-                sentPacket(packet, time: now, connection: connection)
+                let time = packet.pacedSendTime ?? now
+                sentPacket(packet, time: time, connection: connection)
             }
 
             return true
@@ -913,7 +914,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     ) {
         let now = connection.now
         while let packet = sentPackets.popFirst() {
-            sentPacket(packet, time: now, connection: connection)
+            let time = packet.pacedSendTime ?? now
+            sentPacket(packet, time: time, connection: connection)
         }
         if inBatch {
             shouldResetTimer = true
