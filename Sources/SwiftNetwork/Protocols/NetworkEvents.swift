@@ -42,6 +42,9 @@ public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible
         case pathPrimaryChanged(primary: Bool)
         case flowControlChanged(controlled: Bool)
         case linkCongestion(info: LinkCongestionInfo)
+        case handshakeComplete(report: ProtocolEstablishmentReport)
+        case doNotReuse
+        case delayStartChildFlow(delay: Bool)
         case quic(event: QUICEvent)
         #if !NETWORK_EMBEDDED
         case custom(event: any DomainSpecificNetworkProtocolEvent)
@@ -59,6 +62,12 @@ public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible
                 return lEvent == rEvent
             case (.pathPrimaryChanged(let lEvent), .pathPrimaryChanged(let rEvent)):
                 return lEvent == rEvent
+            case (.doNotReuse, .doNotReuse):
+                return true
+            case (.handshakeComplete(let lReport), .handshakeComplete(let rReport)):
+                return lReport == rReport
+            case (.delayStartChildFlow(let lDelay), .delayStartChildFlow(let rDelay)):
+                return lDelay == rDelay
             default:
                 return false
             }
@@ -108,6 +117,31 @@ public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible
         .init(internalEvent: .linkCongestion(info: info))
     }
 
+    /// A protocol finished its handshake, and describes it.
+    ///
+    /// Protocols send this by delivering their connected event; the report says which protocol it came from, so the
+    /// flow at the top of the stack can tell the transport's from a proxy's.
+    static func handshakeComplete(_ report: ProtocolEstablishmentReport) -> NetworkProtocolEvent {
+        .init(internalEvent: .handshakeComplete(report: report))
+    }
+
+    /// The report of the handshake this event announces, if it announces one.
+    public var handshakeReport: ProtocolEstablishmentReport? {
+        if case .handshakeComplete(let report) = internalEvent { return report }
+        return nil
+    }
+
+    /// The connection should not be used for anything new, such as another request, though what it carries can
+    /// finish.
+    static public var doNotReuse: NetworkProtocolEvent {
+        .init(internalEvent: .doNotReuse)
+    }
+
+    /// Whether the endpoint's child, which the stack is waiting on, should wait before it starts.
+    static public func delayStartChildFlow(_ delay: Bool) -> NetworkProtocolEvent {
+        .init(internalEvent: .delayStartChildFlow(delay: delay))
+    }
+
     /// Whether this is a flow control event, and if so whether the flow is controlled.
     public var flowControlState: Bool? {
         if case .flowControlChanged(let controlled) = internalEvent { return controlled }
@@ -128,6 +162,9 @@ public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible
         case .linkCongestion(let info):
             return
                 "Link Congestion (congestion: \(info.congestionCount), CE: \(info.congestionExperiencedCount), packets: \(info.packetCount))"
+        case .handshakeComplete(let report): return "Handshake Complete (\(report.protocolIdentifier))"
+        case .doNotReuse: return "Do Not Reuse"
+        case .delayStartChildFlow(let delay): return delay ? "Delay Start Child Flow" : "Start Child Flow"
         case .viabilityChanged(let viable):
             if viable {
                 return "Viable"

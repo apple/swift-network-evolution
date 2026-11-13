@@ -56,12 +56,24 @@ protocol EndpointFlowParent: AnyObject {
     /// Called from the drain, so the flow is still held: an implementation that needs to build
     /// another channel has to defer, because doing so borrows this owner's flow.
     func receiveInboundFlow(_ inboundFlow: PendingInboundFlow)
+
+    func receiveStackSignals(
+        _ signals: EndpointFlowStackSignals,
+        handshakeReports: [ProtocolEstablishmentReport],
+        delayStartChildFlow: Bool?
+    )
 }
 
 @available(Network 0.1.0, *)
 extension EndpointFlowParent {
     /// Only a multiplexing connection receives inbound flows; everything else ignores them.
     func receiveInboundFlow(_ inboundFlow: PendingInboundFlow) {}
+
+    func receiveStackSignals(
+        _ signals: EndpointFlowStackSignals,
+        handshakeReports: [ProtocolEstablishmentReport],
+        delayStartChildFlow: Bool?
+    ) {}
 }
 
 @available(Network 0.1.0, *)
@@ -125,6 +137,7 @@ struct EndpointFlow: ~Copyable {
     var stateUpdateHandler: ((State) -> Void)? = nil
     var cancelRequested = false
     var teardownComplete = false
+    var handshakeReports: [ProtocolEstablishmentReport] = []
     let reuse: Bool
     var _state: State
     var state: State {
@@ -349,6 +362,14 @@ struct EndpointFlow: ~Copyable {
             // connect result first, then a wakeup for any outstanding read, then outbound room,
             // then the disconnect itself. `disconnected` is last because it is what moves the flow
             // out of `.ready`, and the earlier steps need to run while it still is.
+            self.handshakeReports.append(contentsOf: events.handshakeReports)
+            if !events.stackSignals.isEmpty || !events.handshakeReports.isEmpty || events.delayStartChildFlow != nil {
+                parent.receiveStackSignals(
+                    events.stackSignals,
+                    handshakeReports: events.handshakeReports,
+                    delayStartChildFlow: events.delayStartChildFlow
+                )
+            }
             if let connectedError = events.connected, self.state == .preparing {
                 self.startCompleted(connectedError, in: &eventContext)
             }
@@ -1031,17 +1052,6 @@ struct EndpointFlow: ~Copyable {
                 datagramConnectionFlow?.fromExternal { eventContext in self.teardown(in: &eventContext) }
                 #endif
             }
-        }
-    }
-
-    /// The establishment reports of the protocols this flow's stack is made of, lowest first.
-    mutating func protocolEstablishmentReports() -> [ProtocolEstablishmentReport] {
-        switch self.flowProtocol {
-        case .stream(let flow): return flow.protocolEstablishmentReports()
-        case .datagram(let flow): return flow.protocolEstablishmentReports()
-        case .passthroughStream(let flow): return flow.protocolEstablishmentReports()
-        case .passthroughDatagram(let flow): return flow.protocolEstablishmentReports()
-        case .inboundStream, .inboundDatagram, .none: return []
         }
     }
 
