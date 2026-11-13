@@ -333,49 +333,55 @@ public struct Endpoint: EndpointProtocol, Hashable, Sendable {
         set { common.interface = newValue }
     }
 
-    /// The service priority carried by the underlying endpoint, or `0` for endpoint kinds
-    /// that do not carry one.
+    /// The service priority and weight carried on an address or host endpoint. Only address and
+    /// host endpoints carry them; other kinds read `0` and ignore writes. Used to order resolved
+    /// endpoints by service priority then weight.
     ///
-    /// A `0` means "no priority supplied", not the highest priority: RFC 9460 reserves
-    /// SvcPriority 0 for AliasMode, so it never appears as a usable ServiceMode priority.
+    /// A priority of `0` means "none supplied" rather than the most preferred: SvcPriority 0 is
+    /// reserved for AliasMode, so it never appears as a usable ServiceMode priority. A non-zero
+    /// weight may be a service record's own weight or a synthetic key assigned to rank
+    /// equal-priority services; these accessors do not distinguish the two.
     var priority: UInt16 {
-        switch self.type {
-        case .address(let addressEndpoint):
-            return addressEndpoint.priority
-        case .applicationService(_):
-            return 0
-        case .bonjour(_):
-            return 0
-        case .host(let hostEndpoint):
-            return hostEndpoint.priority
-        case .srv(_):
-            return 0
-        case .url(_):
-            return 0
+        get {
+            switch self.type {
+            case .address(let addressEndpoint): return addressEndpoint.priority
+            case .host(let hostEndpoint): return hostEndpoint.priority
+            default: return 0
+            }
+        }
+        set {
+            switch self.type {
+            case .address(var addressEndpoint):
+                addressEndpoint.priority = newValue
+                self.type = .address(addressEndpoint)
+            case .host(var hostEndpoint):
+                hostEndpoint.priority = newValue
+                self.type = .host(hostEndpoint)
+            default:
+                break
+            }
         }
     }
 
-    /// The service weight carried by the underlying endpoint, or `0` for endpoint kinds that
-    /// do not carry one. A `0` means no weight was supplied.
-    ///
-    /// What a non-zero value *means* depends on where the endpoint came from: it may be an
-    /// SRV record's `Weight` field, or a synthetic key a caller assigned in order to rank
-    /// equal-priority services. This accessor does not distinguish the two — see
-    /// ``orderByServicePriority(_:)`` for which of them it can order correctly.
     var weight: UInt16 {
-        switch self.type {
-        case .address(let addressEndpoint):
-            return addressEndpoint.weight
-        case .applicationService(_):
-            return 0
-        case .bonjour(_):
-            return 0
-        case .host(let hostEndpoint):
-            return hostEndpoint.weight
-        case .srv(_):
-            return 0
-        case .url(_):
-            return 0
+        get {
+            switch self.type {
+            case .address(let addressEndpoint): return addressEndpoint.weight
+            case .host(let hostEndpoint): return hostEndpoint.weight
+            default: return 0
+            }
+        }
+        set {
+            switch self.type {
+            case .address(var addressEndpoint):
+                addressEndpoint.weight = newValue
+                self.type = .address(addressEndpoint)
+            case .host(var hostEndpoint):
+                hostEndpoint.weight = newValue
+                self.type = .host(hostEndpoint)
+            default:
+                break
+            }
         }
     }
 
