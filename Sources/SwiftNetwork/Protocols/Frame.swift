@@ -261,6 +261,24 @@ public struct Frame: ~Copyable {
         }
     }
 
+    /// Whether the first unclaimed byte is zero. Use this to fast-track calling frame.bytes
+    /// Until Span getter performance is fixed.
+    @inlinable
+    @inline(always)
+    var firstUnclaimedByteIsZero: Bool {
+        guard isValid, unclaimedLength > 0 else { return false }
+        switch buffer {
+        case .empty:
+            return false
+        case .bytes:
+            return _bytes[startOffset] == 0
+        case .customOwner(let buffer, _):
+            return buffer[startOffset] == 0
+        case .customFinalizer(let buffer, _):
+            return buffer[startOffset] == 0
+        }
+    }
+
     // Only unclaimed bytes in frame, for unsafe types
     @usableFromInline
     var unsafeUnclaimedBuffer: UnsafeMutableRawBufferPointer? {

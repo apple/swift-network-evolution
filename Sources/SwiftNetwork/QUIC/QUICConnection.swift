@@ -407,7 +407,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var initialMSS = Constants.initialMSS
     private(set) var pathPropertiesMTU = 0
 
-    var isPacing: Bool = false
+    /// Check to determine if packet pacing is enabled for the cuurent path after the connection goes into connected.
+    func isPacing(ecnState: inout ECNPathState) -> Bool {
+        guard let currentPath, currentPath.pacer.enabled,
+            state == .connected, !trafficManagementBackground
+        else {
+            return false
+        }
+        return ecnState.state == .capable || currentPath.pacePackets
+    }
 
     // MARK: Logging
     public var qlogConfiguration: QLogConfiguration?
@@ -1976,6 +1984,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         var coalesced = false
         while frame.unclaimedLength > 0 {
+            // Check for the rest of the datagram to be trailing padding
+            if frame.firstUnclaimedByteIsZero, packetParser.isTrailingPadding(frame) {
+                log.debug("Discarding \(frame.unclaimedLength) bytes of trailing zero padding")
+                frame.finalize(success: true)
+                return
+            }
             let continueProcessing = handleInboundPacket(
                 frame: &frame,
                 path: path,
@@ -3202,7 +3216,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             log.debug("Already in closing or draining state")
             return
         }
-        isPacing = false
 
         QUICSignpost.disconnect(id: signpostID)
 
@@ -3358,6 +3371,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Keepalive packets ignore the congestion window.
             sendFrames(ignoreCongestionWindow: true, in: &eventContext)
             migration.checkForKeepaliveLoss(outstandingCount: unackedKeepaliveCount)
+        } else if let keepaliveTimerID = keepaliveTimerID {
+            // A packet arrived within the interval, e.g. the delayed ACK of the previous PING, so
+            // the next keep-alive still due.
+            timer.reschedule(
+                identifier: keepaliveTimerID,
+                fromNow: keepaliveDuration - timeSinceLastReceived,
+                timerNow: now,
+                in: &eventContext
+            )
         }
     }
 
@@ -4516,7 +4538,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) -> Bool {
 
         let packetNumberSpace = pendingItems.packetNumberSpace
-        let isPacing = isPacing
+        let pacingActive = isPacing(ecnState: &ecnState)
         let isServer = isServer
         let testSendingShortPackets = testSendingShortPackets
 
@@ -4560,15 +4582,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let space = PacketNumberSpace.fromKeyState(keyState: keyState)
         let tagSize = protector.getTagSize(for: keyState)
 
-        if isPacing {
+        if pacingActive {
             let now = self.now
             let lastAckElicitingPacketSentTimestamp = lastAckElicitingPacketSentTimestamp
             // lastAckElicitingPacketSentTimestamp can be in the future for kernel packet pacing.
-            if now > lastAckElicitingPacketSentTimestamp {
+            if lastAckElicitingPacketSentTimestamp != .zero && now > lastAckElicitingPacketSentTimestamp {
                 let idleTime = lastAckElicitingPacketSentTimestamp.duration(to: now)
                 if state == .connected && idleTime > Constants.congestionWindowNonvalidatedPeriod {
                     // We have been idle for 3 minutes
                     path.idleTimeoutCongestionControl()
+                    // The pacer restarts from its startup rate along with the window
+                    if path.pacer.enabled {
+                        path.resetPacer()
+                    }
                 }
             }
         }
@@ -4728,7 +4754,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 }
             }
 
-            if isPacing {
+            if pacingActive {
                 var sendTimeContinuous: NetworkClock.Instant = .zero
                 var sendTimeAbsolute: NetworkClock.Instant = .zero
                 path.pacer.getSendTime(
@@ -4740,6 +4766,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 if sendTimeAbsolute >= .zero {
                     outFrame.departureTime = UInt64(sendTimeAbsolute.time.nanoseconds)
                     stats.increment(.txDepartureTimestamp)
+                    sentPacketRecord.pacedSendTime = sendTimeContinuous
                 }
                 if sentPacketRecord.isAckEliciting {
                     lastAckElicitingPacketSentTimestamp = sendTimeContinuous
@@ -5401,16 +5428,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         state.change(to: .connected, logIDString: logPrefixer.logIDString)
         if let signpostConnectInterval {
             QUICSignpost.connectEnd(signpostConnectInterval)
-        }
-        // Now that the connection is connected check if isPacing can be set
-        if !isPacing {
-            if let currentPath, trafficManagementBackground == false {
-                if currentPath.pacer.enabled,
-                    currentPath.ecnState.state == .capable || currentPath.pacePackets
-                {
-                    isPacing = true
-                }
-            }
         }
 
         handshakeDuration = handshakeStartTime.duration(to: self.now)
