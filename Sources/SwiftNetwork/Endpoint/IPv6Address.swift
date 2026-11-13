@@ -51,6 +51,22 @@ public struct IPv6Address: IPAddress, Hashable, CustomDebugStringConvertible {
         }
     }
 
+    /// Whether this is a 6to4 address (`2002::/16`).
+    var is6to4: Bool {
+        var addressFirstChunk = self.address.0
+        return withUnsafeBytes(of: &addressFirstChunk) {
+            $0[0] == 0x20 && $0[1] == 0x02
+        }
+    }
+
+    /// Whether this is a unique local address (`fc00::/7`).
+    var isUniqueLocal: Bool {
+        var addressFirstChunk = self.address.0
+        return withUnsafeBytes(of: &addressFirstChunk) {
+            ($0[0] & 0xfe) == 0xfc
+        }
+    }
+
     var isUnspecified: Bool {
         self == IPv6Address.any
     }
