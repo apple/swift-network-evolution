@@ -1298,6 +1298,31 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         return (earliestTime, pnSpace)
     }
 
+    /// The space with ack-eliciting packets in flight whose last ack-eliciting packet was sent earliest.
+    /// RFC 9002 Section 6.2.4 requires the probe in a space that is waiting for an acknowledgment, and
+    /// a space whose packets were all acknowledged has no probe to send. The application data space
+    /// is skipped until the handshake is complete. Returns `nil` when no space is eligible, for example
+    /// when only application data is in flight before the handshake completes.
+    func spaceToProbeWithPacketsInFlight(connection: QUICConnection) -> PacketNumberSpace? {
+        let handshakeCompleted = connection.state == .connected
+        var earliestTime: NetworkClock.Instant = .zero
+        var earliestSpace: PacketNumberSpace?
+        applyToAllInnerStatesImmutable { innerState, packetNumberSpace in
+            guard innerState.ackElicitingPacketsInFlight > 0 else {
+                return
+            }
+            if packetNumberSpace == .applicationData && !handshakeCompleted {
+                return
+            }
+            let sentTime = innerState.timeOfLastSentAckElicitingPacket
+            if earliestSpace == nil || sentTime < earliestTime {
+                earliestTime = sentTime
+                earliestSpace = packetNumberSpace
+            }
+        }
+        return earliestSpace
+    }
+
     func setTimer(
         delay: NetworkDuration,
         now: NetworkClock.Instant,
@@ -1431,14 +1456,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             // The PING is padded when it goes out in an initial packet.
             connection.log.datapath("Sending a PING as PTO")
             // With packets in flight the probe goes in the space with the earliest ack-eliciting send time.
-            // With none in flight (RFC 9002 Section 6.2.2.1) a client sends a Handshake packet if it has
-            // Handshake keys, and otherwise a padded Initial packet.
+            // With none in flight, or none in an eligible space (RFC 9002 Section 6.2.2.1), a client sends a
+            // Handshake packet if it has Handshake keys, and otherwise a padded Initial packet.
             let packetNumberSpace: PacketNumberSpace
-            if totalAckElicitingPacketsInFlight > 0 {
-                packetNumberSpace = getEarliestTime(
-                    earliestTimeType: .lastSentAckElicitingTime,
-                    connection: connection
-                ).space
+            if let spaceWithPacketsInFlight = spaceToProbeWithPacketsInFlight(connection: connection) {
+                packetNumberSpace = spaceWithPacketsInFlight
             } else if connection.protector.sealKeyReady(for: .handshake) {
                 packetNumberSpace = .handshake
             } else {
