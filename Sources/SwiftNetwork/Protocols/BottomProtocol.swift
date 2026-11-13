@@ -106,7 +106,18 @@ extension BottomProtocolHandler where Self: ~Copyable {
     /// Indicates to the upper protocol that this protocol is connected, using an
     /// already-acquired event context.
     public func deliverConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
+        deliverHandshakeComplete(in: &eventContext)
         upper.deliverConnectedEvent(from: self.identifier, in: &eventContext)
+    }
+
+    func deliverHandshakeComplete(in eventContext: inout NetworkContext.EventContext) {
+        guard let report = protocolEstablishmentReport else { return }
+        upper.deliverNetworkProtocolEvent(
+            originalInstance: self.identifier,
+            selfInstance: self.identifier,
+            event: .handshakeComplete(report.tagged(.instance(self.identifier))),
+            in: &eventContext
+        )
     }
 
     /// Indicates to the upper protocol that this protocol is disconnected, with an error.
