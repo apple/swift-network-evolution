@@ -125,6 +125,8 @@ struct SentPacketRecord: ~Copyable {
     var totalLength = 0
     var sentPath: MultiplexingPathIdentifier = .none
     var identifier: PacketIdentifier = .init(space: .initial, number: 0)
+    /// When the pacer scheduled the kernel to send the packet.
+    var pacedSendTime: NetworkClock.Instant?
     var isAckEliciting: Bool {
         @inline(always)
         get { flags.contains(.isAckEliciting) }
