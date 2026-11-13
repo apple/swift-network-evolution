@@ -1440,24 +1440,24 @@ class QUICTestHarness {
 
         if validateMetrics {
             if let serverHarness = state?.serverHarness, let clientHarness = state?.clientHarness {
-                var clientReports: NetworkMetrics?
-                var serverReports: NetworkMetrics?
+                var clientSnapshot: DataTransferSnapshot?
+                var serverSnapshot: DataTransferSnapshot?
                 var snapshotFinished = false
                 context.async {
-                    clientReports = clientHarness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
-                    serverReports = serverHarness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
-                    XCTAssertNotNil(clientReports)
-                    XCTAssertNotNil(serverReports)
+                    clientSnapshot = clientHarness.getDataTransferSnapshot()
+                    serverSnapshot = serverHarness.getDataTransferSnapshot()
+                    XCTAssertNotNil(clientSnapshot)
+                    XCTAssertNotNil(serverSnapshot)
                     snapshotFinished = true
                 }
                 wait(until: { snapshotFinished }, timeout: 5.0, "QUIC connection to receive metrics")
                 // Now validate the protocol establishment report
-                clientReports = nil
-                serverReports = nil
+                var clientReports: [ProtocolEstablishmentReport]?
+                var serverReports: [ProtocolEstablishmentReport]?
                 var protocolEstablishmentReportFinished = false
                 context.async {
-                    clientReports = clientHarness.getMetrics(requestedNetworkMetric: .protocolEstablishmentReports)
-                    serverReports = serverHarness.getMetrics(requestedNetworkMetric: .protocolEstablishmentReports)
+                    clientReports = clientHarness.getProtocolEstablishmentReports()
+                    serverReports = serverHarness.getProtocolEstablishmentReports()
                     XCTAssertNotNil(clientReports)
                     XCTAssertNotNil(serverReports)
                     protocolEstablishmentReportFinished = true

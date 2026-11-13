@@ -607,13 +607,7 @@ final class SwiftNetworkIPTests: NetTestCase {
             }
 
             if let expectedIPSnapshot {
-                let metrics = upperHarness.getMetrics(requestedNetworkMetric: .dataTransferSnapshot)
-                switch metrics {
-                case .dataTransferSnapshot(let snapshot):
-                    XCTAssertEqual(snapshot, expectedIPSnapshot)
-                default:
-                    XCTFail("Failed to get IP harness metrics")
-                }
+                XCTAssertEqual(upperHarness.getDataTransferSnapshot(), expectedIPSnapshot)
             }
             upperHarness.stop()
             upperHarness.teardown()

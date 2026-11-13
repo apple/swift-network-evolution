@@ -73,10 +73,33 @@ extension ProtocolInstance where Self: AnyObject {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol UpperHarnessProtocol: TopDatapathProtocol, LoggableProtocol {
+public protocol UpperHarnessProtocol: TopDatapathProtocol, LoggableProtocol, NetworkMetricsProviding {
     /// Metadata handed over by the new inbound flow event that created this harness.
     var flowMetadata: AbstractProtocolMetadata? { get set }
     func teardown()
+    func getMetrics(requestedNetworkMetric: RequestedNetworkMetrics) -> NetworkMetrics?
+}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+extension UpperHarnessProtocol {
+    public func getMetrics(
+        requestedNetworkMetric: RequestedNetworkMetrics,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> NetworkMetrics? {
+        lower.invokeGetMetrics(requestedNetworkMetric: requestedNetworkMetric, for: instance, in: &eventContext)
+    }
+
+    /// The data transfer snapshot, or nil if the stack did not answer with one.
+    public func getDataTransferSnapshot() -> DataTransferSnapshot? {
+        getMetrics(requestedNetworkMetric: .dataTransferSnapshot)?.dataTransferSnapshot
+    }
+
+    /// The protocol establishment reports, or nil if the stack did not answer with them.
+    public func getProtocolEstablishmentReports() -> [ProtocolEstablishmentReport]? {
+        getMetrics(requestedNetworkMetric: .protocolEstablishmentReports)?.protocolEstablishmentReports
+    }
 }
 
 @_spi(ProtocolProvider)
@@ -869,7 +892,7 @@ public class StreamLowerHarness<LinkageFamily: StreamLinkageFamily>: LowerHarnes
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public class NewFlowHarness<LinkageFamily: DataLinkageFamily, HarnessType: UpperHarnessProtocol>: InboundFlowHandler,
-    LoggableProtocol
+    LoggableProtocol, NetworkMetricsProviding
 where
     // The harness this one creates per inbound flow sits on the flow linkage that the listener
     // hands back, so its lower protocol has to be the family's own data linkage. Stating it
@@ -1171,3 +1194,25 @@ public class NewStreamFlowHarness<LinkageFamily: StreamLinkageFamily>: NewFlowHa
 {}
 
 #endif
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+extension NewFlowHarness {
+    public func getMetrics(
+        requestedNetworkMetric: RequestedNetworkMetrics,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) -> NetworkMetrics? {
+        lower.invokeGetMetrics(requestedNetworkMetric: requestedNetworkMetric, for: instance, in: &eventContext)
+    }
+
+    /// The data transfer snapshot, or nil if the stack did not answer with one.
+    public func getDataTransferSnapshot() -> DataTransferSnapshot? {
+        getMetrics(requestedNetworkMetric: .dataTransferSnapshot)?.dataTransferSnapshot
+    }
+
+    /// The protocol establishment reports, or nil if the stack did not answer with them.
+    public func getProtocolEstablishmentReports() -> [ProtocolEstablishmentReport]? {
+        getMetrics(requestedNetworkMetric: .protocolEstablishmentReports)?.protocolEstablishmentReports
+    }
+}
