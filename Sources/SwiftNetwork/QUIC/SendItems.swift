@@ -2981,6 +2981,10 @@ struct PendingItems: ~Copyable {
         !isServer || hasAckElicitingPendingItems
     }
 
+    var hasUnsentApplicationData: Bool {
+        PrioritizedSendableItems.stream.isPresent(in: self) || PrioritizedSendableItems.datagram.isPresent(in: self)
+    }
+
     var hasNonInFlightEligiblePendingItems: Bool {
         for item in PrioritizedSendableItems.allCases {
             if !item.isInFlightEligible && item.isPresent(in: self) { return true }

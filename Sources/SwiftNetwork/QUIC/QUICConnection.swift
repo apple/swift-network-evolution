@@ -296,6 +296,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var unackedKeepaliveCount = 0
 
     var maxPTODuration: NetworkDuration = Constants.defaultMaxPTODuration
+    var pathRecoveryDeadline: NetworkClock.Instant?
 
     /// A continuous and an absolute reading of the clock, taken back to back.
     struct ClockSample {
@@ -591,6 +592,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 timerNow: self.now,
                 in: &eventContext
             ) { firedAt, timerState in
+                if let deadline = self.pathRecoveryDeadline, deadline <= firedAt {
+                    self.pathRecoveryDeadline = nil
+                    if !self.state.isTerminal {
+                        self.log.error("No usable path within the path recovery timeout, closing connection")
+                        self.errorToReport = .posix(ETIMEDOUT)
+                        self.close(with: .noError, "path recovery timeout", in: &timerState)
+                        return
+                    }
+                }
                 self.migration.timerFired(at: firedAt, connection: self, in: &timerState)
             }
         }
@@ -2917,6 +2927,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 return
             }
             sendFrames(in: &eventContext)
+            evaluatePathRecoveryTimer(in: &eventContext)
         }
 
     }
@@ -6955,6 +6966,7 @@ extension QUICConnection {
         if !sendFrames(in: &eventContext) {
             log.datapath("Failed to send DATAGRAM frames")
         }
+        evaluatePathRecoveryTimer(in: &eventContext)
     }
 
     func setupNewDatagramFlow(
