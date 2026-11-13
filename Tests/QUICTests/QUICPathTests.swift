@@ -64,6 +64,9 @@ final class QUICPathStateTests: XCTestCase {
             (from: .validated, to: .routeUnavailable),
             (from: .closing, to: .routeUnavailable),
             (from: .unreachable, to: .routeUnavailable),
+
+            // A system path may come back.
+            (from: .routeUnavailable, to: .routeAvailable),
         ]
 
         for (allowedStartState, allowedDestinationState) in allowedQUICPathStateTransitions {
