@@ -297,6 +297,7 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
         // First the stream itself: it checks the caller and closes its own side.
+        var wasClosed = false
         let tornDown = performOnStream(flowID, in: &eventContext) {
             (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) -> Bool in
             do throws(ProtocolInstanceError) {
@@ -304,14 +305,28 @@ extension QUICConnection {
             } catch {
                 return false
             }
+            wasClosed = stream.closed
+            // The stop handlers have nothing to do for a closed stream: its send side is finished and
+            // has nothing queued, and a receive side that is still open was stopped already.
+            assert(
+                !wasClosed
+                    || (stream.send.state != .ready && stream.send.state != .send && !stream.pendingStart
+                        && !stream.hasMoreSendDataToService && (stream.readClosed || stream.receive.state != .receive))
+            )
             stream.teardown(in: &ctx)
             return true
         }
         guard tornDown == true else { throw NetworkError.posix(EINVAL) }
 
         // Then the connection's view of the flow, which looks at the stream and so cannot happen
-        // while it is borrowed.
-        teardown(flow: flowID, in: &eventContext)
+        // while it is borrowed. A stream that was already closed has nothing left to stop. `closed` is
+        // set only by `handleStreamClose`, which the stream reaches once both its directions are
+        // finished, and which has already taken it out of `knownFlows` and told its upper. The stop
+        // handlers would find nothing to do (`handleStopRead` returns early, `handleStopWrite` has no
+        // send state left to act on) and only call `sendFrames` for nothing.
+        if !wasClosed {
+            teardown(flow: flowID, in: &eventContext)
+        }
 
         // Finally release the stream. Once it is out of the table nothing else can reach it.
         if var stream = removeFlow(flowID) {
