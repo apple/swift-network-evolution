@@ -1696,7 +1696,11 @@ final class RecoveryTests: XCTestCase {
     // otherwise a lost Handshake flight is never retransmitted.
     func testServerWithBudgetBelowOneDatagramArmsTimerForInitialAndHandshakePackets() {
         makeServerWithInitialPacketInFlight(receivedBytes: 100)
-        XCTAssertEqual(connection.timer.nextDeadline, .zero, "The timer was armed for an Initial probe that cannot be sent")
+        XCTAssertEqual(
+            connection.timer.nextDeadline,
+            .zero,
+            "The timer was armed for an Initial probe that cannot be sent"
+        )
 
         connection.context.onQueue {
             var packet = SentPacketRecord()
