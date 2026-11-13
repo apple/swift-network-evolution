@@ -175,8 +175,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public func withMultiplexedFlows<R: ~Copyable, E: Error>(
         _ body: (inout MultiplexedFlowTable<Flow>) throws(E) -> R
     ) throws(E) -> R {
-        stateMachine.beginTableBorrow(.streams)
-        defer { stateMachine.endTableBorrow(.streams) }
+        deferredWork.beginTableBorrow(.streams)
+        defer { deferredWork.endTableBorrow(.streams) }
         return try body(&multiplexedFlows)
     }
 
@@ -189,8 +189,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     public func withMultiplexedSecondaryFlows<R: ~Copyable, E: Error>(
         _ body: (inout MultiplexedFlowTable<SecondaryFlow>) throws(E) -> R
     ) throws(E) -> R {
-        stateMachine.beginTableBorrow(.secondary)
-        defer { stateMachine.endTableBorrow(.secondary) }
+        deferredWork.beginTableBorrow(.secondary)
+        defer { deferredWork.endTableBorrow(.secondary) }
         return try body(&multiplexedSecondaryFlows)
     }
 
@@ -249,7 +249,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var ack: Ack
     private(set) var ecn: ECN
     var recovery: Recovery
-    private(set) var migration = Migration()
+    // Replaced in `setup` once the connection knows whether it is a server.
+    private(set) var migration = Migration(isServer: false)
+    // The path whose received datagrams are being handled. Handling them uses the path and its
+    // receive queue throughout, so tearing it down waits until they all have been.
+    var receivingPathID: MultiplexingPathIdentifier?
+    var deferredTeardownPathIDs: [MultiplexingPathIdentifier] = []
+
+    // To handle migration events after frames have been processed.
+    var isHandlingPacket = false
+    var pendingMigrationEvents: [MigrationEvent] = []
+
+    // RETIRE_CONNECTION_ID frames for CIDs that paths gave up, waiting for the next send.
+    var queuedRetireConnectionIDSequences: [UInt64] = []
     private(set) var crypto: QUICCrypto
 
     var protector: Protector
@@ -363,7 +375,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var streamsAwaitingOutboundRoom = QUICStreamList.awaitingOutboundRoomList()
 
     // Keeps track of flow table and sendFrame work on the connection
-    var stateMachine = QUICConnectionStateMachine()
+    var deferredWork = QUICDeferredWorkState()
 
     private(set) var knownFlows = [QUICStreamID: MultiplexedFlowIdentifier]()
 
@@ -372,6 +384,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private var initialStatelessResetToken: QUICStatelessResetToken?
     private var disableAutomaticNewConnectionIDs = false
     private var resendRejectedEarlyDataAutomatically = false
+
+    /// The message identifier of every inbound stream's metadata on this connection. A stream's metadata
+    /// is not a message, so the streams of a connection share one identifier, which saves the locked
+    /// counter a fresh insecure identifier takes for each stream. It is not unique per stream, and does
+    /// not identify a stream (the stream ID does).
+    private let inboundStreamMessageIdentifier = SystemUUID(insecure: true)
 
     private(set) var allowPMTUD = false
     private(set) var pmtudIgnoreCost = false
@@ -389,7 +407,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var initialMSS = Constants.initialMSS
     private(set) var pathPropertiesMTU = 0
 
-    var isPacing: Bool = false
+    /// Check to determine if packet pacing is enabled for the cuurent path after the connection goes into connected.
+    func isPacing(ecnState: inout ECNPathState) -> Bool {
+        guard let currentPath, currentPath.pacer.enabled,
+            state == .connected, !trafficManagementBackground
+        else {
+            return false
+        }
+        return ecnState.state == .capable || currentPath.pacePackets
+    }
 
     // MARK: Logging
     public var qlogConfiguration: QLogConfiguration?
@@ -521,6 +547,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.privateStorage.setupFlowRegistration(path)
         #endif
         self.isServer = parameters?.isServer ?? false
+        self.migration = Migration(isServer: isServer)
         self.logPrefixer.log.logPrefix = self.log.logPrefix
         self.initialInterface = path?.directInterface ?? nil
         self.logPrefixer.logIDString = ""
@@ -733,6 +760,21 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             setupNewOutboundStream(flow: flowID, with: protocolOptions)
         }
+    }
+
+    // Path events carry the path's addresses, so keep them from when the path is added.
+    public func setup(
+        path pathID: MultiplexingPathIdentifier,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {
+        guard let quicPath = self.path(for: pathID) else {
+            throw NetworkError.posix(ENOENT)
+        }
+        quicPath.localEndpoint = local
+        quicPath.remoteEndpoint = remote
     }
 
     deinit {
@@ -1765,6 +1807,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 log.fault("Pending Reassembly Dequeue is not empty")
             }
 
+            receivingPathID = pathID
             accessReceivedDatagrams(path: pathID) { (datagrams, path) in
                 let isServerConnection: Bool = isServer
                 let inConnectedState = state == .connected
@@ -1800,6 +1843,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     connectionStatistics: &stats
                 )
             }
+            finishReceiving(in: &eventContext)
 
             // Note: inboundStopping() triggers any sendFrames*() as necessary due
             // to this external event
@@ -1818,6 +1862,20 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let sendLimit = path.pathStatistics[.rxBytes] * Constants.antiAmplificationFactor
         let alreadySent = path.pathStatistics[.txBytes]
         return max(sendLimit - alreadySent, 0)
+    }
+
+    // A server that follows the peer onto a new path sends everything there, not only path
+    // frames, under the same limit until the path is validated (RFC 9000 9.3). Only a path that is
+    // being probed is limited: until the handshake is confirmed, the path it runs on is neither
+    // probed nor validated, and the handshake enforces its own limit there. `alreadySent` counts
+    // what this send has built so far, which the path's statistics do not include yet.
+    func currentPathAmplificationBudget(on path: QUICPath, alreadySent: Int) -> Int? {
+        guard isServer, path.isProbing, path === currentPath,
+            let remaining = remainingAmplificationBudget(on: path, isServer: true)
+        else {
+            return nil
+        }
+        return max(remaining - alreadySent, 0)
     }
 
     func recordRxPackets(
@@ -1853,17 +1911,20 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return
         }
 
+        // RFC 9000, Section 14.1: an Initial packet must arrive in a datagram of at least 1200 bytes.
+        // The limit is on the datagram, since a client may reach it by coalescing packets, so it is
+        // measured here. The first packet is checked before the server replies or derives keys, and
+        // each later Initial in the datagram once it has been decrypted.
+        let undersizedForInitial = isServerConnection && dataLength < Constants.minimumInitialDatagramSize
+
         #if DatapathLogging
         // Avoid accessing log as a instance property to avoid per-packet being / end access
         log.datapath("Handling inbound packet (length: \(dataLength))")
         #endif
 
-        var unvalidatedPath = false
-        // Attempt path validation if this is the first packet that we have received on this path.
-        if isServerConnection, !path.isValidated, path != currentPath {
-            unvalidatedPath = true
-            path.beginValidation(in: &eventContext)
-        }
+        // The migration strategy decides whether to validate a new path once the packet has been
+        // processed. Whatever it decides, any PATH_RESPONSE the packet calls for is sent then.
+        let unvalidatedPath = isServerConnection && !path.isValidated && path != currentPath
 
         // If we haven't derived the INITIAL keys, try to do that now.
         if isServerConnection, !inConnectedState,
@@ -1889,6 +1950,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 log.error("Dropping RETRY from a client")
                 return
             case .protected(let packet):
+                // Drop it before anything is set up for it: no Version Negotiation, RETRY or keys.
+                if undersizedForInitial, packet.keyState == .initial {
+                    log.error("Dropping Initial packet in a \(dataLength) byte datagram")
+                    return
+                }
                 if !preDecryption(frame: &frame, path: path, packet: packet, in: &eventContext) {
                     return
                 }
@@ -1925,6 +1991,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 unvalidatedPath: unvalidatedPath,
                 coalesced: coalesced,
                 isServerConnection: isServerConnection,
+                undersizedForInitial: undersizedForInitial,
                 packetParser: &packetParser,
                 in: &eventContext
             )
@@ -1979,6 +2046,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         unvalidatedPath: Bool,
         coalesced: Bool,
         isServerConnection: Bool,
+        undersizedForInitial: Bool,
         packetParser: inout PacketParser,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
@@ -2018,6 +2086,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     continueProcessing = handleInboundLongHeader(
                         packet,
                         isServerConnection: isServerConnection,
+                        undersizedForInitial: undersizedForInitial,
                         ack: &ack,
                         protector: &protector,
                         in: &eventContext
@@ -2070,6 +2139,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var isAckEliciting = false
         var isNonProbing = false
 
+        isHandlingPacket = true
+        defer {
+            isHandlingPacket = false
+            pendingMigrationEvents.removeAll()
+        }
         while !packetParser.framesReceived.isEmpty {
             let quicFrame = packetParser.framesReceived.removeFirst()
             let packetKeystate = packet.keyState
@@ -2088,11 +2162,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             if quicFrame.isAckEliciting {
                 isAckEliciting = true
-                /*
-                 * Mark it as transmittable here so we have a chance
-                 * to bundle it with any outgoing frame that might
-                 * be generated during processFrame().
-                 */
+                // Mark it as transmittable here so we have a chance
+                // to bundle it with any outgoing frame that might
+                // be generated during processFrame().
                 ack.shouldTransmit(packetNumberSpace: packet.numberSpace)
             }
             if !quicFrame.isProbing {
@@ -2114,14 +2186,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 // and migration below would start probing on a closed connection.
                 return false
             }
-        }
-
-        if unvalidatedPath {
-            sendFrames(on: path, in: &eventContext)
-        }
-
-        if isServerConnection, isNonProbing, path != currentPath {
-            migration.migrate(to: path, connection: self, in: &eventContext)
         }
 
         withAckState { ack in
@@ -2152,6 +2216,23 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         packetNumberSpace: packet.numberSpace
                     )
             }
+        }
+
+        // Packet numbers are only comparable within a space, and the peer can only migrate once
+        // the handshake is confirmed, so only 1-RTT packets can move the server.
+        if isServerConnection {
+            peerSentPacket(
+                number: packet.number,
+                isNonProbing: isNonProbing && packet.numberSpace == .applicationData,
+                on: path,
+                in: &eventContext
+            )
+        }
+        // The migration strategy runs last.
+        finishHandlingPacket(in: &eventContext)
+
+        if unvalidatedPath {
+            sendFrames(on: path, in: &eventContext)
         }
 
         return true
@@ -2308,10 +2389,22 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private func handleInboundLongHeader(
         _ packet: borrowing Packet,
         isServerConnection: Bool,
+        undersizedForInitial: Bool,
         ack: inout Ack,
         protector: inout Protector,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        // RFC 9000, Section 14.1: a server MUST discard an Initial packet carried in a datagram smaller
+        // than 1200 bytes. It does not close the connection, which it MAY do: Initial keys are derived from
+        // a connection ID sent in the clear, so anyone on the path could then end a handshake in progress.
+        // This runs before the state machine, so the packet sets nothing up and its frames are not processed.
+        if isServerConnection, undersizedForInitial, packet.keyState == .initial {
+            log.error(
+                "Dropping Initial packet in a datagram smaller than \(Constants.minimumInitialDatagramSize) bytes"
+            )
+            return false
+        }
+
         switch state {
         case .idle:
             if !isServerConnection {
@@ -2322,16 +2415,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             if packet.keyState != .initial {
                 let error = "first packet received from the client was not INITIAL"
-                log.error(error)
-                close(with: .protocolViolation, error, in: &eventContext)
-                return false
-            }
-            // NOTE: A server MAY send a CONNECTION_CLOSE frame with error
-            // code PROTOCOL_VIOLATION in response to the first Initial
-            // packet it receives from a client if the UDP datagram is
-            // smaller than 1200 octets.
-            if isServerConnection && packet.keyState == .initial && packet.totalLength < 1200 {
-                let error = "first packet received from the client was smaller than 1200 octets"
                 log.error(error)
                 close(with: .protocolViolation, error, in: &eventContext)
                 return false
@@ -2553,6 +2636,29 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         return true
     }
 
+    // Tells the migration strategy about a packet from the peer when it matters: a non-probing
+    // packet that moved the peer to another path, or any packet on a path that is not validated
+    // yet. Packets on the current path, which are almost all of them, stop at the first check.
+    func peerSentPacket(
+        number: PacketNumber,
+        isNonProbing: Bool,
+        on path: QUICPath,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        if isNonProbing {
+            let peerMoved = migration.nonProbingPacketMovesPeer(number: number, on: path.pathIdentifier)
+            migration.recordNonProbingPacket(number: number, on: path.pathIdentifier)
+            if peerMoved {
+                runMigrationStrategy(events: [.pathChanged(path.pathIdentifier)], in: &eventContext)
+                return
+            }
+        }
+        if path !== currentPath, path.state == .routeEstablished || path.state == .cidAssigned {
+            runMigrationStrategy(events: [.peerProbed(path.pathIdentifier)], in: &eventContext)
+        }
+    }
+
+    @discardableResult
     func assignNewDCID(to path: QUICPath, in eventContext: inout NetworkContext.EventContext) -> Bool {
         var eligibleCID: ManagedConnectionID?
 
@@ -2708,9 +2814,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 let shouldCloseStream =
                     receiveIsDataRead
                     && (stream.receivedStopSending
-                        || (!stream.closed && stream.send.state == .dataReceived))
+                        || (!stream.closed && stream.send.state.isTerminal))
                 if shouldCloseStream {
-                    stream.close(errorCode: nil, in: &ctx)
+                    stream.close(errorCode: stream.closeError, in: &ctx)
                 }
             }
         }
@@ -2980,7 +3086,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             streamID = nil
         }
 
-        stream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
         stream.setup(streamID: streamID, logPrefixer: logPrefixer)
 
         if let remoteTransportParameters {
@@ -3055,7 +3160,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         _ reason: String? = nil,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if !stateMachine.isCloseDeferred {
+        if !deferredWork.isCloseDeferred {
             // A close already waiting for a borrowed flow keeps its error to make sure the correct error is sent
             closeError = QUICTransportError(cryptoError: error, reason)
         }
@@ -3070,7 +3175,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         sendCloseFrame: Bool = true,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        if !stateMachine.isCloseDeferred {
+        if !deferredWork.isCloseDeferred {
             // A close already waiting for a borrowed flow keeps its error to make sure the correct error is sent
             closeError = QUICTransportError(error, reason)
         }
@@ -3097,15 +3202,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Closing all flows, i.e. streams, and the connection itself
     func close(sendCloseFrame: Bool = true, in eventContext: inout NetworkContext.EventContext) {
         // Closing tears down every stream, so it cannot happen while one is borrowed
-        guard !stateMachine.isFlowBorrowed else {
-            stateMachine.deferClose(sendCloseFrame: sendCloseFrame)
+        guard !deferredWork.isFlowBorrowed else {
+            deferredWork.deferClose(sendCloseFrame: sendCloseFrame)
             return
         }
         if state.isTerminal || drainingScheduled {
             log.debug("Already in closing or draining state")
             return
         }
-        isPacing = false
 
         QUICSignpost.disconnect(id: signpostID)
 
@@ -3261,6 +3365,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Keepalive packets ignore the congestion window.
             sendFrames(ignoreCongestionWindow: true, in: &eventContext)
             migration.checkForKeepaliveLoss(outstandingCount: unackedKeepaliveCount)
+        } else if let keepaliveTimerID = keepaliveTimerID {
+            // A packet arrived within the interval, e.g. the delayed ACK of the previous PING, so
+            // the next keep-alive still due.
+            timer.reschedule(
+                identifier: keepaliveTimerID,
+                fromNow: keepaliveDuration - timeSinceLastReceived,
+                timerNow: now,
+                in: &eventContext
+            )
         }
     }
 
@@ -3441,7 +3554,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // MARK: - Send Frames logic
 
     // Performs the sends that had to wait for the send path while a send or a borrowed flow was active.
-    // Only call this once the state machine reports sends ready: replaying claims the send path.
+    // Only call this once the deferred-work state reports sends ready: replaying claims the send path.
     func replayDeferredSends(
         recoveryIsFree: Bool = true,
         in eventContext: inout NetworkContext.EventContext
@@ -3456,7 +3569,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return
         }
         repeat {
-            if let plain = stateMachine.takePlainSend() {
+            if let plain = deferredWork.takePlainSend() {
                 // Anything this send defers is replayed when it finishes
                 sendFrames(
                     ignoreCongestionWindow: plain.ignoreCongestionWindow,
@@ -3471,16 +3584,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Replaying a path send does not record its packets with Recovery, so do that now. It
             // can also have deferred more sends, which the next time round handles.
             flushPendingRecoverySentPackets(in: &eventContext)
-        } while stateMachine.hasDeferredSends
+        } while deferredWork.hasDeferredSends
     }
 
     // Runs a deferred sendFrames on path
     private func replayDeferredPathSend(
-        _ pathSend: QUICConnectionStateMachine.PathSend,
+        _ pathSend: QUICDeferredWorkState.PathSend,
         in eventContext: inout NetworkContext.EventContext
     ) {
         let path = pathSend.path
-        stateMachine.claimSendPath()
+        deferredWork.claimSendPath()
         self.sentPackets.reserveCapacity(
             capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
         )
@@ -3501,7 +3614,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             recovery.resetPTOCount(path: path)
         }
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
-        stateMachine.releaseSendPath(wasActive: false)
+        deferredWork.releaseSendPath(wasActive: false)
     }
 
     // Makes sure that Recovery always records the sentPackets records for PTO bookkeeping
@@ -3516,12 +3629,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         at firedAt: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        let wasActive = stateMachine.claimSendPath()
+        let wasActive = deferredWork.claimSendPath()
         // Ack timer has a sendFrames nested inside of it.
         ack.timerFired(at: firedAt, in: &eventContext)
-        guard stateMachine.releaseSendPath(wasActive: wasActive) else { return }
+        guard deferredWork.releaseSendPath(wasActive: wasActive) else { return }
 
-        if let plain = stateMachine.takePlainSend() {
+        if let plain = deferredWork.takePlainSend() {
             sendFrames(ignoreCongestionWindow: plain.ignoreCongestionWindow, delayedACK: true, in: &eventContext)
 
             // `timerFired`'s own idle check ran before this deferred flush, while the ACK
@@ -3538,10 +3651,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         at firedAt: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        let wasActive = stateMachine.claimSendPath()
+        let wasActive = deferredWork.claimSendPath()
         flushPendingRecoverySentPackets(in: &eventContext)
         recovery.timerFired(at: firedAt, in: &eventContext)
-        if stateMachine.releaseSendPath(wasActive: wasActive) {
+        if deferredWork.releaseSendPath(wasActive: wasActive) {
             replayDeferredSends(in: &eventContext)
         }
     }
@@ -3555,10 +3668,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         // Any send waits while an existing send active, and while a flow is borrowed, since sending
-        // looks at the flow tables. The state machine keeps track of this state and reports ready once released.
+        // looks at the flow tables. The deferred-work state keeps track of this and reports ready once released.
         // If any future work is deferred, that will be replayed at the bottom of this function.
-        guard stateMachine.claimSendPathIfFree() else {
-            stateMachine.deferSend(ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK)
+        guard deferredWork.claimSendPathIfFree() else {
+            deferredWork.deferSend(ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK)
             return false
         }
         let result = sendFrames(
@@ -3571,7 +3684,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             applicationPendingItems: &applicationPendingItems,
             in: &eventContext
         )
-        if stateMachine.releaseSendPath(wasActive: false) {
+        if deferredWork.releaseSendPath(wasActive: false) {
             replayDeferredSends(in: &eventContext)
         }
         return result
@@ -3588,6 +3701,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         applicationPendingItems: inout PendingItems,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        addQueuedRetireConnectionIDs(to: &applicationPendingItems)
         // Make sure there are packets to send
         guard
             initialPendingItems.hasPendingItems
@@ -3663,7 +3777,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         // Waits for the send path and for any borrowed flow, like sendFrames
-        guard stateMachine.claimSendPathIfFree() else {
+        guard deferredWork.claimSendPathIfFree() else {
             deferPathSend(
                 path,
                 ignoreCongestionWindow: ignoreCongestionWindow,
@@ -3674,6 +3788,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.sentPackets.reserveCapacity(
             capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
         )
+        if path === currentPath {
+            addQueuedRetireConnectionIDs(to: &applicationPendingItems)
+        }
         var discardInitialRecoveryState = false
         let success = sendFramesInternal(
             path: path,
@@ -3693,7 +3810,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             recovery.resetPTOCount(path: path)
         }
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
-        if stateMachine.releaseSendPath(wasActive: false) {
+        if deferredWork.releaseSendPath(wasActive: false) {
             replayDeferredSends(in: &eventContext)
         }
         return success
@@ -3709,7 +3826,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) -> NetworkUniqueDeque<SentPacketRecord> {
         // sendFramesFromRecovery should always claim the send path so anything that
         // comes in for sendFrames while this is active should drain afterwards
-        let wasActive = stateMachine.claimSendPath()
+        let wasActive = deferredWork.claimSendPath()
         let result = sendFramesFromRecovery(
             on: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
@@ -3721,7 +3838,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             in: &eventContext
         )
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
-        if stateMachine.releaseSendPath(wasActive: wasActive) {
+        if deferredWork.releaseSendPath(wasActive: wasActive) {
             replayDeferredSends(recoveryIsFree: false, in: &eventContext)
         }
         return result
@@ -4415,7 +4532,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) -> Bool {
 
         let packetNumberSpace = pendingItems.packetNumberSpace
-        let isPacing = isPacing
+        let pacingActive = isPacing(ecnState: &ecnState)
         let isServer = isServer
         let testSendingShortPackets = testSendingShortPackets
 
@@ -4441,8 +4558,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return false
         }
 
-        if keyState == .initial {
-            // Initial packets are always fully padded, only allow if the congestion window has room
+        if keyState == .initial, pendingItems.padsInitialPacket(isServer: isServer) {
+            // Padded Initial packets fill the datagram, only allow if the congestion window has room
             guard availableCongestionWindow >= path.mss else {
                 log.datapath("Path is congestion controlled, cannot fit a full initial packet")
                 return false
@@ -4459,15 +4576,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let space = PacketNumberSpace.fromKeyState(keyState: keyState)
         let tagSize = protector.getTagSize(for: keyState)
 
-        if isPacing {
+        if pacingActive {
             let now = self.now
             let lastAckElicitingPacketSentTimestamp = lastAckElicitingPacketSentTimestamp
             // lastAckElicitingPacketSentTimestamp can be in the future for kernel packet pacing.
-            if now > lastAckElicitingPacketSentTimestamp {
+            if lastAckElicitingPacketSentTimestamp != .zero && now > lastAckElicitingPacketSentTimestamp {
                 let idleTime = lastAckElicitingPacketSentTimestamp.duration(to: now)
                 if state == .connected && idleTime > Constants.congestionWindowNonvalidatedPeriod {
                     // We have been idle for 3 minutes
                     path.idleTimeoutCongestionControl()
+                    // The pacer restarts from its startup rate along with the window
+                    if path.pacer.enabled {
+                        path.resetPacer()
+                    }
                 }
             }
         }
@@ -4513,7 +4634,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         // NOTE: This should only run in cases where the path is not validated
-        if let amplificationBudget {
+        if let amplificationBudget = amplificationBudget
+            ?? currentPathAmplificationBudget(on: path, alreadySent: totalTxBytes)
+        {
             guard amplificationBudget > 0 else {
                 log.error("Path is limited by anti-amplification, nothing left to send")
                 return false
@@ -4625,7 +4748,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 }
             }
 
-            if isPacing {
+            if pacingActive {
                 var sendTimeContinuous: NetworkClock.Instant = .zero
                 var sendTimeAbsolute: NetworkClock.Instant = .zero
                 path.pacer.getSendTime(
@@ -4637,6 +4760,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 if sendTimeAbsolute >= .zero {
                     outFrame.departureTime = UInt64(sendTimeAbsolute.time.nanoseconds)
                     stats.increment(.txDepartureTimestamp)
+                    sentPacketRecord.pacedSendTime = sendTimeContinuous
                 }
                 if sentPacketRecord.isAckEliciting {
                     lastAckElicitingPacketSentTimestamp = sendTimeContinuous
@@ -4712,8 +4836,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 break
             }
 
-            // Allow sending a padding-only packet for a second packet
-            if !pendingItems.hasPendingItems && !pendingItems.hasPadding {
+            // Stop once nothing is left to send. Padding goes in the packet that needs it, never in a
+            // packet of its own.
+            if !pendingItems.hasPendingItems {
                 break
             }
         } while testSendingShortPackets
@@ -5211,7 +5336,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         #endif
     }
 
-    func confirmHandshake() {
+    func confirmHandshake(in eventContext: inout NetworkContext.EventContext) {
         if isHandshakeConfirmed {
             return
         }
@@ -5232,8 +5357,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         isHandshakeConfirmed = true
         log.debug("Handshake keys discarded")
-
-        migration.handshakeConfirmed(self)
+        // Migration is not allowed during the handshake, so it ran on the current path.
+        currentPath?.handshakeValidated()
+        runMigrationStrategyForAllPaths(in: &eventContext)
     }
 
     func updateSecretForHandshakeLevel() {
@@ -5297,16 +5423,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         if let signpostConnectInterval {
             QUICSignpost.connectEnd(signpostConnectInterval)
         }
-        // Now that the connection is connected check if isPacing can be set
-        if !isPacing {
-            if let currentPath, trafficManagementBackground == false {
-                if currentPath.pacer.enabled,
-                    currentPath.ecnState.state == .capable || currentPath.pacePackets
-                {
-                    isPacing = true
-                }
-            }
-        }
 
         handshakeDuration = handshakeStartTime.duration(to: self.now)
         var currentRTT: NetworkDuration = .milliseconds(0)
@@ -5319,7 +5435,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.keyState = .phase0
 
         if isServer {
-            confirmHandshake()
+            confirmHandshake(in: &eventContext)
         }
 
         logTransportParameters(owner: .remote, transportParameters: remoteTransportParameters)
@@ -5746,8 +5862,11 @@ extension QUICConnection {
             close(with: .protocolViolation, "Client sent NEW_TOKEN frame", in: &eventContext)
             return false
         }
+        // A client MUST treat receipt of a NEW_TOKEN frame with an empty Token
+        // field as a connection error of type FRAME_ENCODING_ERROR.
         guard frame.token.count > 0 else {
             log.error("NEW_TOKEN frame received with invalid token size \(frame.token.count)")
+            close(with: .frameEncodingError, "NEW_TOKEN frame with an empty token", in: &eventContext)
             return false
         }
         // In the future we need to deliver NEW_TOKEN to client application layer for usage in later connections
@@ -6051,8 +6170,7 @@ extension QUICConnection {
                     return false
                 }
                 // To inform QUICStreamMetadata
-                stream.streamMetadata.streamID = stream.streamID?.value ?? 0  // Default for QUICStreamMetadata is 0
-                stream.streamMetadata.streamType = streamType
+                stream.updateStreamMetadataID()
                 return true
             }
             guard readied == true else {
@@ -6174,7 +6292,7 @@ extension QUICConnection {
         // to flush frames. Suppress those nested flushes for the duration of the
         // `recovery` borrow below, then perform one flush afterwards if any were
         // requested.
-        let wasActive = stateMachine.claimSendPath()
+        let wasActive = deferredWork.claimSendPath()
         recovery.receivedAck(
             ack: frame,
             ackedPath: path,
@@ -6188,7 +6306,7 @@ extension QUICConnection {
         recovery.recordSentPackets(&sentPackets, connection: self, in: &eventContext)
 
         // The borrow of `recovery` has ended, so it is safe to flush again.
-        if stateMachine.releaseSendPath(wasActive: wasActive) {
+        if deferredWork.releaseSendPath(wasActive: wasActive) {
             replayDeferredSends(in: &eventContext)
         }
         return true
@@ -6716,7 +6834,6 @@ extension QUICConnection {
                 inbound: true,
                 in: &eventContext
             )
-            newStream.streamMetadata.quicConnectionMetadata = self.connectionMetadata
 
             let newFlowIdentifier = newStream.flowIdentifier
             knownFlows[newStreamID] = newFlowIdentifier
@@ -6740,10 +6857,12 @@ extension QUICConnection {
             let newStreamMetadata = newStream.streamMetadata
             insertFlow(newStream, for: newFlowIdentifier)
 
+            // The message identifier names a message; a stream's metadata is not one, so inbound
+            // streams share one, which saves the locked counter a fresh insecure identifier takes.
             let abstractMetadata: AbstractProtocolMetadata = ProtocolMetadata<QUICStreamProtocol>(
                 protocolIdentifier: QUICStreamProtocol.identifier,
                 perProtocolMetadata: newStreamMetadata,
-                messageIdentifier: SystemUUID(insecure: true)
+                messageIdentifier: inboundStreamMessageIdentifier
             )
             deliverNewInboundFlowEvent(
                 newStreamInstance,
@@ -7026,7 +7145,7 @@ extension QUICConnection {
         _ packet: borrowing SentPacketRecord,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
-        sentPath: QUICPath,
+        sentPath: QUICPath?,
         in eventContext: inout NetworkContext.EventContext
     ) {
         packet.transmittedItems.allAcknowledged(
@@ -7042,7 +7161,7 @@ extension QUICConnection {
         frame: borrowing TransmittedItems.TransmittedAckFrame,
         packetNumber: PacketNumber,
         packetNumberSpace: PacketNumberSpace,
-        sentPath: QUICPath
+        sentPath: QUICPath?
     ) {
         Ack.withBlocks(frame: frame) { block in
             ack.acknowledged(
@@ -7084,6 +7203,10 @@ extension QUICConnection {
 
         let logIDString = self.logIDString
         performOnStream(flowID, in: &eventContext) { (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
+            guard stream.send.state != .resetReceived else {
+                stream.log.debug("[S\(stream.streamID?.value ?? 0)] duplicate RESET_STREAM ACK ignored")
+                return
+            }
             if stream.send.state == .send {
                 stream.log.error(
                     "[S\(stream.streamID?.value ?? 0)] in state send (resetSent? \(stream.resetSent))"
@@ -7136,9 +7259,9 @@ extension QUICConnection {
             }
             if streamFinished, stream.peerAcknowledgedFIN, stream.send.state != .dataReceived {
                 stream.send.state.change(logIDString: stream.log.logPrefix, to: .dataReceived)
-                if !stream.closed, stream.receive.state == .dataRead {
+                if !stream.closed, stream.receive.state.isTerminal {
                     // If both directions are closed, and all data is read, close the stream
-                    stream.close(errorCode: nil, in: &ctx)
+                    stream.close(errorCode: stream.closeError, in: &ctx)
                 }
             }
         }
@@ -7240,8 +7363,8 @@ extension QUICConnection {
             return
         }
         // Looking at every stream cannot happen while one is borrowed
-        guard !stateMachine.isFlowBorrowed else {
-            stateMachine.deferIdleCheck()
+        guard !deferredWork.isFlowBorrowed else {
+            deferredWork.deferIdleCheck()
             return
         }
         let isIdle = connectionIsIdleForAllStreams(unackedPacketCount: unackedPacketCount)
@@ -7406,11 +7529,9 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         let nonZeroLengthCIDs = withCurrentPath { path in
-            guard let dcid = path.dcid else {
-                log.error("DCID not set, cannot process new connection ID")
-                return false
-            }
-            guard dcid.length > 0 else {
+            // A current path whose route went away has given up its CID, but only a CID that is
+            // not zero-length is ever given up.
+            guard path.dcid?.length != 0 else {
                 log.error(
                     "Received NEW_CONNECTION_ID frame for connection with zero-length DCID"
                 )
@@ -7467,7 +7588,8 @@ extension QUICConnection {
         // one for each connection ID under its Retire Prior To, and one for
         // its own connection ID if an earlier frame already retired that
         // sequence number. A frame that queues nothing is always accepted.
-        let queuedRetireCount = withPendingItemsForKeyState { $0.retireConnectionIDs.count }
+        let queuedRetireCount =
+            withPendingItemsForKeyState { $0.retireConnectionIDs.count } + queuedRetireConnectionIDSequences.count
         var newRetireCount = remoteCIDs.managedConnectionIDs.count(where: {
             $0.sequenceNumber < frame.retirePriorToSequence
         })
@@ -7497,8 +7619,6 @@ extension QUICConnection {
         // transport parameter"
         let retiredCIDs = remoteCIDs.retire(priorTo: frame.retirePriorToSequence)
         for retiredCID in retiredCIDs {
-            migration.retireDCID(retiredCID.connectionID)
-
             // Send a protocol notification up the stack
             deliverNetworkProtocolEvent(
                 flow: .allFlows,
@@ -7541,6 +7661,7 @@ extension QUICConnection {
         // If we have not seen this frame before and haven't reached the
         // active CID limit, add it to the CID table.
         let cidLimit = remoteCIDs.activeConnectionIDLimit
+        var insertedCID = false
         if remoteCIDs.count < cidLimit {
             do {
                 try remoteCIDs.insert(
@@ -7549,6 +7670,7 @@ extension QUICConnection {
                     token: frame.statelessResetToken,
                     used: false
                 )
+                insertedCID = true
                 deliverNetworkProtocolEvent(
                     flow: .allFlows,
                     event: .init(
@@ -7559,7 +7681,6 @@ extension QUICConnection {
                     ),
                     in: &eventContext
                 )
-                migration.newDCID(frame.connectionID)
             } catch {
                 // RFC 9000: 19.15:
                 // Transmission errors, timeouts, and retransmissions might cause the same NEW_CONNECTION_ID frame
@@ -7576,7 +7697,7 @@ extension QUICConnection {
 
         // Re-point the path only after the insert above: the CID this frame supplies may be
         // the only replacement left for a DCID it retired.
-        return withCurrentPath { path in
+        let repointedCurrentPath = withCurrentPath { path in
             if retiredCIDs.contains(where: { $0.connectionID == path.dcid }) {
                 guard assignNewDCID(to: path, in: &eventContext) else {
                     log.error("Asked to retire current DCID but could not allocate a new DCID")
@@ -7590,6 +7711,52 @@ extension QUICConnection {
             }
             return true
         }
+        guard repointedCurrentPath else {
+            return false
+        }
+        replaceRetiredDCIDs(retiredCIDs, in: &eventContext)
+        if insertedCID {
+            runMigrationStrategyForPathsAwaitingCID(in: &eventContext)
+        }
+        return true
+    }
+
+    // Gives the other paths that were using a CID the peer just retired a new one, so that they
+    // keep their state. A path that cannot get one gives up the retired CID and waits for another.
+    private func replaceRetiredDCIDs(
+        _ retiredCIDs: [ManagedConnectionID],
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        guard !retiredCIDs.isEmpty else {
+            return
+        }
+        var paths: [QUICPath] = []
+        applyToAllPaths { path in
+            if path !== currentPath, path.state.holdsCID, !path.hasPreAssignedCIDs,
+                retiredCIDs.contains(where: { $0.connectionID == path.dcid })
+            {
+                paths.append(path)
+            }
+        }
+        for path in paths where !assignNewDCID(to: path, in: &eventContext) {
+            log.info("No CID to replace the one retired on path \(path.pathIdentifier)")
+            path.changeState(to: .routeEstablished)
+        }
+    }
+
+    // A path that could not get a CID waits in `routeEstablished`. Each new CID is a chance for it
+    // to get one.
+    private func runMigrationStrategyForPathsAwaitingCID(in eventContext: inout NetworkContext.EventContext) {
+        var events: [MigrationEvent] = []
+        applyToAllPaths { path in
+            if path.state == .routeEstablished {
+                events.append(.pathChanged(path.pathIdentifier))
+            }
+        }
+        guard !events.isEmpty else {
+            return
+        }
+        runMigrationStrategy(events: events, in: &eventContext)
     }
 
     // For inbound (local) CIDs

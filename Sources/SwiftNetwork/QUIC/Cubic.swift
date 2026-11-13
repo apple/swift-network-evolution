@@ -246,7 +246,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         // microseconds, so an ack duration under 500ns becomes 0µs and dividing by it below would
         // trap. Fall back to the initial estimate.
         let smoothedRTTInMicroseconds =
-            smoothedRTT.microseconds == 0 ? pacingInitialRTT.microseconds : smoothedRTT.microseconds
+            smoothedRTT.microseconds <= 0 ? pacingInitialRTT.microseconds : smoothedRTT.microseconds
 
         // Use 200% rate when in slow start
         let pacedWindow =

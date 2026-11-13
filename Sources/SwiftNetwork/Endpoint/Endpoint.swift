@@ -333,6 +333,60 @@ public struct Endpoint: EndpointProtocol, Hashable, Sendable {
         set { common.interface = newValue }
     }
 
+    /// The service priority carried by the underlying endpoint, or `0` for endpoint kinds
+    /// that do not carry one.
+    ///
+    /// A `0` means "no priority supplied", not the highest priority: RFC 9460 reserves
+    /// SvcPriority 0 for AliasMode, so it never appears as a usable ServiceMode priority.
+    var priority: UInt16 {
+        switch self.type {
+        case .address(let addressEndpoint):
+            return addressEndpoint.priority
+        case .applicationService(_):
+            return 0
+        case .bonjour(_):
+            return 0
+        case .host(let hostEndpoint):
+            return hostEndpoint.priority
+        case .srv(_):
+            return 0
+        case .url(_):
+            return 0
+        }
+    }
+
+    /// The service weight carried by the underlying endpoint, or `0` for endpoint kinds that
+    /// do not carry one. A `0` means no weight was supplied.
+    ///
+    /// What a non-zero value *means* depends on where the endpoint came from: it may be an
+    /// SRV record's `Weight` field, or a synthetic key a caller assigned in order to rank
+    /// equal-priority services. This accessor does not distinguish the two — see
+    /// ``orderByServicePriority(_:)`` for which of them it can order correctly.
+    var weight: UInt16 {
+        switch self.type {
+        case .address(let addressEndpoint):
+            return addressEndpoint.weight
+        case .applicationService(_):
+            return 0
+        case .bonjour(_):
+            return 0
+        case .host(let hostEndpoint):
+            return hostEndpoint.weight
+        case .srv(_):
+            return 0
+        case .url(_):
+            return 0
+        }
+    }
+
+    /// The address family of this endpoint, or `nil` if it does not carry an address.
+    var addressFamily: AddressFamily? {
+        guard case .address(let addressEndpoint) = self.type else {
+            return nil
+        }
+        return addressEndpoint.addressFamily
+    }
+
     // MARK: -- Hashing --
 
     var hashInternal: Int {
