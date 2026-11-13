@@ -1809,7 +1809,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
             // The PTO timer is not armed while the server cannot send, and receiving bytes raises the
             // budget; the timer must be set again once they are counted.
-            let wasLimitedByAntiAmplification = isAtAntiAmplificationLimit
+            let wasLimitedByAntiAmplification = isAtAntiAmplificationLimit(
+                initialPacketsOnly: recovery.hasOnlyInitialAckElicitingPacketsInFlight
+            )
             receivingPathID = pathID
             accessReceivedDatagrams(path: pathID) { (datagrams, path) in
                 let isServerConnection: Bool = isServer
@@ -1889,9 +1891,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         max(receivedBytes * Constants.antiAmplificationFactor - sentBytes, 0)
     }
 
-    // Whether a server is unable to send anything because of the anti-amplification limit.
-    var isAtAntiAmplificationLimit: Bool {
-        antiAmplificationBudget == 0
+    // Whether a server is unable to send a probe because of the anti-amplification limit. A probe in the
+    // Initial space is padded to a full datagram, which the sender refuses unless the budget covers the
+    // path's MSS. A probe in any other space is not padded, so it can be sent with any budget left.
+    // `initialPacketsOnly` says that every ack-eliciting packet in flight is in the Initial space. It is
+    // an autoclosure because working it out walks every recovery state, and only a server that has not
+    // validated the client needs it.
+    func isAtAntiAmplificationLimit(initialPacketsOnly: @autoclosure () -> Bool) -> Bool {
+        guard let budget = antiAmplificationBudget else { return false }
+        if initialPacketsOnly() {
+            let pathMSS = currentPath?.mss ?? 0
+            return budget < (pathMSS > 0 ? pathMSS : initialMSS)
+        }
+        return budget == 0
     }
 
     // A server that follows the peer onto a new path sends everything there, not only path

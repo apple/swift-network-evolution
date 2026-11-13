@@ -1587,8 +1587,11 @@ final class RecoveryTests: XCTestCase {
     }
 
     /// Makes the connection a server, which also gives it a recovery timer registered with the connection's
-    /// timer, and records one ack-eliciting Initial packet in flight after it has received `receivedBytes`.
-    private func makeServerWithInitialPacketInFlight(receivedBytes: Int = 0) {
+    /// timer, and records one ack-eliciting packet in `space` in flight after it has received `receivedBytes`.
+    private func makeServerWithInitialPacketInFlight(
+        receivedBytes: Int = 0,
+        space: PacketNumberSpace = .initial
+    ) {
         let expectation = XCTestExpectation()
         self.connection.context.async {
             var parameters = Parameters(context: .implicitContext)
@@ -1608,7 +1611,7 @@ final class RecoveryTests: XCTestCase {
 
         connection.context.onQueue {
             var packet = SentPacketRecord()
-            packet.identifier = .init(space: .initial, number: 0)
+            packet.identifier = .init(space: space, number: 0)
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 20 + 96
@@ -1624,7 +1627,7 @@ final class RecoveryTests: XCTestCase {
     func testServerAtAntiAmplificationLimitDoesNotArmTimer() {
         makeServerWithInitialPacketInFlight()
 
-        XCTAssertTrue(connection.isAtAntiAmplificationLimit)
+        XCTAssertTrue(connection.isAtAntiAmplificationLimit(initialPacketsOnly: true))
         XCTAssertEqual(connection.timer.nextDeadline, .zero, "The timer was armed for a server that cannot send")
     }
 
@@ -1648,7 +1651,7 @@ final class RecoveryTests: XCTestCase {
             }
         }
 
-        XCTAssertFalse(connection.isAtAntiAmplificationLimit)
+        XCTAssertFalse(connection.isAtAntiAmplificationLimit(initialPacketsOnly: true))
         XCTAssertNotEqual(connection.timer.nextDeadline, .zero, "The timer was not armed after the budget rose")
     }
 
@@ -1657,8 +1660,138 @@ final class RecoveryTests: XCTestCase {
     func testServerBelowAntiAmplificationLimitArmsTimer() {
         makeServerWithInitialPacketInFlight(receivedBytes: 1200)
 
-        XCTAssertFalse(connection.isAtAntiAmplificationLimit)
+        XCTAssertFalse(connection.isAtAntiAmplificationLimit(initialPacketsOnly: true))
         XCTAssertNotEqual(connection.timer.nextDeadline, .zero, "The timer was not armed for a server that can send")
+    }
+
+    // A probe in the Initial space is padded to a full datagram, which the sender refuses unless the budget
+    // covers the path's MSS; a server with less cannot probe, so its timer must not be armed. Otherwise
+    // each firing sends nothing yet backs the timer off.
+    func testServerWithBudgetBelowOneDatagramDoesNotArmTimerForInitialPackets() {
+        makeServerWithInitialPacketInFlight(receivedBytes: 100)
+
+        let budget = connection.antiAmplificationBudget ?? 0
+        let mss = connection.currentPath?.mss ?? 0
+        XCTAssertGreaterThan(budget, 0)
+        XCTAssertLessThan(budget, mss)
+        XCTAssertTrue(connection.isAtAntiAmplificationLimit(initialPacketsOnly: true))
+        XCTAssertEqual(connection.timer.nextDeadline, .zero, "The timer was armed for a server that cannot probe")
+    }
+
+    // Handshake packets are not padded, so a server with any budget left can probe in that space and must
+    // arm its timer; otherwise a lost Handshake flight is never retransmitted.
+    func testServerWithBudgetBelowOneDatagramArmsTimerForHandshakePackets() {
+        makeServerWithInitialPacketInFlight(receivedBytes: 100, space: .handshake)
+
+        let budget = connection.antiAmplificationBudget ?? 0
+        let mss = connection.currentPath?.mss ?? 0
+        XCTAssertGreaterThan(budget, 0)
+        XCTAssertLessThan(budget, mss)
+        XCTAssertFalse(connection.isAtAntiAmplificationLimit(initialPacketsOnly: false))
+        XCTAssertNotEqual(connection.timer.nextDeadline, .zero, "The timer was not armed for a server that can probe")
+    }
+
+    // A server with Initial and Handshake packets in flight can send an unpadded Handshake probe with any
+    // budget left, so its timer must be armed even when the budget cannot cover a padded Initial probe;
+    // otherwise a lost Handshake flight is never retransmitted.
+    func testServerWithBudgetBelowOneDatagramArmsTimerForInitialAndHandshakePackets() {
+        makeServerWithInitialPacketInFlight(receivedBytes: 100)
+        XCTAssertEqual(connection.timer.nextDeadline, .zero, "The timer was armed for an Initial probe that cannot be sent")
+
+        connection.context.onQueue {
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .handshake, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            sentPacket(packet, connection: connection)
+        }
+
+        let budget = connection.antiAmplificationBudget ?? 0
+        let mss = connection.currentPath?.mss ?? 0
+        XCTAssertGreaterThan(budget, 0)
+        XCTAssertLessThan(budget, mss)
+        XCTAssertFalse(connection.recovery.hasOnlyInitialAckElicitingPacketsInFlight)
+        XCTAssertNotEqual(connection.timer.nextDeadline, .zero, "The timer was not armed for a server that can probe")
+    }
+
+    // Received bytes that lift the budget from below one datagram to one datagram must set the timer;
+    // otherwise a server that waited for the client is never woken to probe.
+    func testServerArmsTimerOnceReceivedBytesLiftBudgetToOneDatagram() {
+        makeServerWithInitialPacketInFlight(receivedBytes: 100)
+        XCTAssertEqual(connection.timer.nextDeadline, .zero)
+
+        connection.context.onQueue {
+            guard let pathIdentifier = self.connection.currentPath?.pathIdentifier else {
+                XCTFail("The server has no path to receive on")
+                return
+            }
+            self.connection.accessReceivedDatagrams(path: pathIdentifier) { receiveQueue in
+                receiveQueue.add(frame: Frame(copyBuffer: [UInt8](repeating: 0, count: 1200)))
+            }
+            self.connection.fromExternal { eventContext in
+                self.connection.serviceReceivedDatagrams(path: pathIdentifier, in: &eventContext)
+            }
+        }
+
+        XCTAssertFalse(connection.isAtAntiAmplificationLimit(initialPacketsOnly: true))
+        XCTAssertNotEqual(connection.timer.nextDeadline, .zero, "The timer was not armed after the budget rose")
+    }
+
+    // The PTO duration limit bounds how long consecutive PTOs keep expiring (RFC 9002 Section 6.2.1). Time
+    // a server spends waiting at the anti-amplification limit is not PTO time; otherwise the first PTO
+    // after the client's datagrams arrive would close the connection.
+    func testServerBlockedPastPTODurationDoesNotReachPTOLimit() {
+        makeServerWithInitialPacketInFlight(receivedBytes: 1200)
+
+        let start = NetworkClock.Instant.systemNow
+        let blockedUntil = start.advanced(by: connection.maxPTODuration + .minutes(1))
+        connection.context.onQueue {
+            connection.fromExternal { eventContext in
+                // A PTO with budget left starts the PTO episode.
+                connection.pinnedClock = .init(continuous: start, absolute: start)
+                connection.recovery.timerFired(at: start, in: &eventContext)
+                XCTAssertEqual(connection.recovery.firstPTOTimestamp, start)
+
+                // The server then sends everything it is allowed to and waits for the client.
+                let remainingBudget = connection.antiAmplificationBudget ?? 0
+                connection.stats.increment(.txBytes, by: remainingBudget)
+                XCTAssertTrue(connection.isAtAntiAmplificationLimit(initialPacketsOnly: true))
+                connection.recovery.resetTimer(now: start, connection: connection, in: &eventContext)
+                XCTAssertEqual(connection.timer.nextDeadline, .zero, "The timer was armed at the limit")
+            }
+        }
+
+        connection.context.onQueue {
+            guard let pathIdentifier = connection.currentPath?.pathIdentifier else {
+                XCTFail("The server has no path to receive on")
+                return
+            }
+            connection.pinnedClock = .init(continuous: blockedUntil, absolute: blockedUntil)
+            connection.accessReceivedDatagrams(path: pathIdentifier) { receiveQueue in
+                receiveQueue.add(frame: Frame(copyBuffer: [UInt8](repeating: 0, count: 1200)))
+            }
+            connection.fromExternal { eventContext in
+                connection.serviceReceivedDatagrams(path: pathIdentifier, in: &eventContext)
+            }
+        }
+        defer { connection.pinnedClock = nil }
+
+        let deadline = connection.timer.nextDeadline
+        XCTAssertNotEqual(deadline, .zero, "The timer was not armed after the budget rose")
+        XCTAssertGreaterThan(
+            blockedUntil.duration(to: deadline),
+            Recovery.timerGranularity,
+            "The timer was armed to fire at once"
+        )
+
+        connection.context.onQueue {
+            connection.fromExternal { eventContext in
+                connection.recovery.timerFired(at: deadline, in: &eventContext)
+            }
+        }
+        XCTAssertFalse(connection.recovery.ptoLimitReached, "Time spent at the limit counted towards the PTO limit")
     }
 
     // MARK: - Packet index hints

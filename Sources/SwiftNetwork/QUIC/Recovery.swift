@@ -1618,10 +1618,15 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 timeout = .microseconds(1000)
             }
             setTimer(delay: timeout, now: now, connection: connection, in: &eventContext)
-        } else if connection.isAtAntiAmplificationLimit {
+        } else if connection.isAtAntiAmplificationLimit(
+            initialPacketsOnly: hasOnlyInitialAckElicitingPacketsInFlight
+        ) {
             // A PTO sends nothing while the server is at the limit, and packets sent on PTO count against
             // it, so the timer stays unarmed until the client's datagrams raise the budget.
             log.debug("Server is at the anti-amplification limit, cancelling timer")
+            // Time spent waiting for the client is not PTO time, so the next PTO starts a new episode
+            // instead of finding the PTO duration limit already spent.
+            firstPTOTimestamp = nil
             setTimer(delay: .zero, now: now, connection: connection, in: &eventContext)
         } else {
             // Arm PTO
@@ -1688,6 +1693,12 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             totalAckElicitingPacketsInFlight += innerState.ackElicitingPacketsInFlight
         }
         return totalAckElicitingPacketsInFlight
+    }
+
+    // Whether the only ack-eliciting packets in flight are in the Initial space.
+    var hasOnlyInitialAckElicitingPacketsInFlight: Bool {
+        let total = totalAckElicitingPacketsInFlight
+        return total > 0 && total == initialInnerState.ackElicitingPacketsInFlight
     }
 
     mutating func resetPNSpace(
