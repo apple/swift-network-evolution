@@ -494,7 +494,7 @@ public struct IPProtocol: NetworkProtocol {
 
             #if NETWORK_PRIVATE && !targetEnvironment(simulator)
             var _ipStatsRegion: UnsafeMutableRawPointer? = nil
-            var flowRegistration: PathEvaluator.FlowRegistration? = nil
+            var flowRegistration: PathFlowRegistration? = nil
             #endif
 
             struct IPv4ReassemblyState: ~Copyable {
@@ -1255,7 +1255,7 @@ public struct IPProtocol: NetworkProtocol {
 
             #if NETWORK_PRIVATE && !targetEnvironment(simulator)
             var _ipStatsRegion: UnsafeMutableRawPointer? = nil
-            var flowRegistration: PathEvaluator.FlowRegistration? = nil
+            var flowRegistration: PathFlowRegistration? = nil
             #endif
 
             static let fragmentExtensionHeader: UInt8 = 44
