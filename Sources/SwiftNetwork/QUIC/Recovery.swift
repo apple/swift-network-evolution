@@ -1621,7 +1621,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         } else if connection.isAtAntiAmplificationLimit {
             // A PTO sends nothing while the server is at the limit, and packets sent on PTO count against
             // it, so the timer stays unarmed until the client's datagrams raise the budget.
-            log.datapath("Server is at the anti-amplification limit, cancelling timer")
+            log.debug("Server is at the anti-amplification limit, cancelling timer")
             setTimer(delay: .zero, now: now, connection: connection, in: &eventContext)
         } else {
             // Arm PTO
