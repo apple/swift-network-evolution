@@ -2576,11 +2576,9 @@ extension Endpoint {
     /// interface the path scopes the flow to, or else the required interface, or else this
     /// endpoint's interface.
     fileprivate func sourceInterfaceIndex(parameters: Parameters?, path: PathProperties?) -> Int {
-        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
         if let interface = path?.scopedInterface {
             return interface.index
         }
-        #endif
         if let interface = parameters?.requiredInterface ?? self.interface {
             return interface.index
         }
