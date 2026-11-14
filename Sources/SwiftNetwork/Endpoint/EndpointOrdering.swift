@@ -52,8 +52,23 @@ extension EndpointOrdering {
 
     // MARK: Grouping by application protocol and security requirements
 
-    // Not implemented: no endpoint carries ALPN values or security parameters. Its groups are
-    // alternatives rather than one list, so it is not a change to `orderEndpoints`.
+    /// Collects the entries belonging to each application-protocol and security group, returning
+    /// one list of indices per group, groups in ascending rank order.
+    ///
+    /// `memberships[i]` is every group entry `i` belongs to. An entry may belong to more than one
+    /// and is then listed in each of them: an endpoint reachable over two application protocols is
+    /// a candidate for either, so it appears in both groups. An entry belonging to no group is
+    /// listed nowhere. Within a group, entries keep their input order.
+    ///
+    /// Groups are alternatives rather than one ordered list, which is why this returns lists
+    /// instead of a permutation — the same entry can appear twice across the result, and the
+    /// counts need not add up to the input's.
+    static func protocolGroups(_ memberships: [[Int]]) -> [[Int]] {
+        let ranks = Set(memberships.joined()).sorted()
+        return ranks.map { rank in
+            memberships.indices.filter { memberships[$0].contains(rank) }
+        }
+    }
 
     // MARK: Grouping by service priority
 
@@ -147,6 +162,14 @@ extension EndpointOrdering {
 
     // MARK: Sorting within a group: interleave address families
 
+    /// How many endpoints of the leading address family are tried before the other family is
+    /// tried at all — the specification's "Preferred Address Family Count" ("First Address
+    /// Family Count" in RFC 8305).
+    ///
+    /// The specification recommends 1 and sanctions 2. 2 is the default here, which favours the
+    /// leading family slightly more aggressively.
+    static let defaultPreferredFamilyCount = 2
+
     /// Interleaves address families so one family does not monopolize the start of the list,
     /// returning an index permutation.
     ///
@@ -158,12 +181,10 @@ extension EndpointOrdering {
     ///
     /// Exactly one entry is ever moved, however many distinct families are present.
     ///
-    /// - Parameter preferredFamilyCount: The spec's "Preferred Address Family Count" ("First
-    ///   Address Family Count" in RFC 8305). 1 and 2 are both sanctioned; 2 is the default here.
-    ///   Below 1 means 1.
+    /// - Parameter preferredFamilyCount: See ``defaultPreferredFamilyCount``. Below 1 means 1.
     static func interleaveByFamily<Family: Equatable>(
         _ families: [Family],
-        preferredFamilyCount: Int = 2
+        preferredFamilyCount: Int = defaultPreferredFamilyCount
     ) -> [Int] {
         var order = Array(families.indices)
         let preferredCount = max(1, preferredFamilyCount)
@@ -275,6 +296,23 @@ extension EndpointOrdering {
     /// stage. Returning zeroes makes that stage a no-op.
     typealias ConnectionUseReader = (Endpoint) -> (connectedFlows: UInt32, activeInstances: UInt64)
 
+    /// Reports every application-protocol and security group an endpoint belongs to, lower ranks
+    /// tried first. Supplied by a caller that knows the application protocols and security
+    /// requirements in play — nothing on `Endpoint` carries them.
+    ///
+    /// An endpoint usable over two application protocols belongs to both of their groups and is
+    /// offered in each; returning an empty array leaves it out of every group.
+    ///
+    /// Name resolution deliberately passes no ranker, so the stage is inert there rather than
+    /// unimplemented. A resolved endpoint carries no application protocol, and resolution already
+    /// handles the protocols a service record advertises one layer up: it maps each advertised
+    /// protocol to a protocol definition and hands the caller an alternative endpoint per protocol
+    /// on a separate channel, rather than collapsing them into the one ordered list. Alternatives
+    /// are a choice for the caller to make, not an order to attempt in. This hook is for a caller
+    /// that does want them in a single list, and holds its own protocol preferences to rank them
+    /// by.
+    typealias ProtocolGroupMembership = (Endpoint) -> [Int]
+
     /// Which of two endpoints is the preferred destination. Endpoints carrying no address cannot
     /// be ranked and compare equal, which leaves them where they are in a stable sort.
     private static func endpointPreference(
@@ -306,8 +344,12 @@ extension EndpointOrdering {
     ///
     /// Service priority is the primary key, then weight. Within one priority, addresses are
     /// ordered by destination address selection — which puts IPv6 ahead of IPv4 in the common
-    /// case — and then interleaved by family. An endpoint already carrying connections is lifted
-    /// to the front last of all, and an SRV list then takes a weighted draw within each priority.
+    /// case — and then interleaved by family. An SRV list then takes a weighted draw within each
+    /// priority, and an endpoint already carrying connections is lifted to the front last of all.
+    ///
+    /// Returns a permutation of `endpoints`. To order the application-protocol and security groups
+    /// instead, which are alternatives and can share an endpoint, see
+    /// ``orderEndpointGroups(_:belongingTo:preferredFamilyCount:priorityOrigin:comparingDestinations:readingConnectionUse:randomBelow:)``.
     ///
     /// Deterministic unless `priorityOrigin` is ``PriorityOrigin/srv``. Randomising equal-priority
     /// service records is otherwise the caller's job: assign each record one random weight (see
@@ -321,7 +363,7 @@ extension EndpointOrdering {
     ///   - randomBelow: The draw used for ``PriorityOrigin/srv``; unused otherwise.
     static func orderEndpoints(
         _ endpoints: [Endpoint],
-        preferredFamilyCount: Int = 2,
+        preferredFamilyCount: Int = defaultPreferredFamilyCount,
         priorityOrigin: PriorityOrigin = .serviceBinding,
         comparingDestinations compare: DestinationComparator = {
             preferredDestination(between: $0, and: $1)
@@ -343,13 +385,78 @@ extension EndpointOrdering {
             }
         }.map { endpoints[$0] }
 
-        // Service priority and weight outrank address preference. Stable, so the ordering above
-        // survives as the tiebreak within one service.
-        let priorityOrder = orderByServicePriority(
-            addressOrdered.map { (priority: $0.priority, weight: $0.weight) },
+        // Service priority and weight, then family interleaving within each priority. Stable, so
+        // the address ordering above survives as the tiebreak within one service.
+        var ordered = orderWithinGroup(
+            addressOrdered,
+            preferredFamilyCount: preferredFamilyCount,
             priorityOrigin: priorityOrigin
         )
-        let prioritized = priorityOrder.map { addressOrdered[$0] }
+
+        // The SRV draw reads maximal runs of equal priority, so it has to run while those runs
+        // are still contiguous — that is, before prefer-connected moves an entry to the front.
+        if case .srv = priorityOrigin {
+            ordered = orderBySRVWeight(
+                ordered.map { (priority: $0.priority, weight: $0.weight) },
+                randomBelow: randomBelow
+            ).map { ordered[$0] }
+        }
+
+        // Established use outranks everything above, so it is applied last and to the whole list.
+        if let readConnectionUse {
+            ordered = preferConnectedOrder(ordered.map(readConnectionUse)).map { ordered[$0] }
+        }
+        return ordered
+    }
+
+    /// Orders each application-protocol and security group separately, returning one list of
+    /// connection-attempt candidates per group, groups in ascending rank order.
+    ///
+    /// The groups are alternatives: a caller picks one and attempts it, rather than walking a
+    /// single list across all of them. An endpoint usable over two application protocols belongs
+    /// to both groups and is therefore offered in both lists, so the lists are not a partition of
+    /// `endpoints` and their counts need not add up to it. Each list is ordered exactly as
+    /// ``orderEndpoints(_:preferredFamilyCount:priorityOrigin:comparingDestinations:readingConnectionUse:randomBelow:)``
+    /// would order it on its own, so no stage reaches across a group boundary.
+    ///
+    /// - Parameter belongingTo: See ``ProtocolGroupMembership``.
+    static func orderEndpointGroups(
+        _ endpoints: [Endpoint],
+        belongingTo membership: ProtocolGroupMembership,
+        preferredFamilyCount: Int = defaultPreferredFamilyCount,
+        priorityOrigin: PriorityOrigin = .serviceBinding,
+        comparingDestinations compare: DestinationComparator = {
+            preferredDestination(between: $0, and: $1)
+        },
+        readingConnectionUse readConnectionUse: ConnectionUseReader? = nil,
+        randomBelow: (UInt32) -> UInt32 = { UInt32.random(in: 0..<$0) }
+    ) -> [[Endpoint]] {
+        protocolGroups(endpoints.map(membership)).map { group in
+            orderEndpoints(
+                group.map { endpoints[$0] },
+                preferredFamilyCount: preferredFamilyCount,
+                priorityOrigin: priorityOrigin,
+                comparingDestinations: compare,
+                readingConnectionUse: readConnectionUse,
+                randomBelow: randomBelow
+            )
+        }
+    }
+
+    /// Orders one application-protocol and security group: service priority and weight, then
+    /// family interleaving within each priority.
+    private static func orderWithinGroup(
+        _ group: [Endpoint],
+        preferredFamilyCount: Int,
+        priorityOrigin: PriorityOrigin
+    ) -> [Endpoint] {
+        // Service priority and weight outrank address preference. Stable, so the incoming address
+        // ordering survives as the tiebreak within one service.
+        let priorityOrder = orderByServicePriority(
+            group.map { (priority: $0.priority, weight: $0.weight) },
+            priorityOrigin: priorityOrigin
+        )
+        let prioritized = priorityOrder.map { group[$0] }
 
         // Interleave within each priority. The run key is priority alone, so two services sharing
         // a priority interleave as one block.
@@ -361,7 +468,7 @@ extension EndpointOrdering {
                 runs.append([endpoint])
             }
         }
-        var ordered = runs.flatMap { run -> [Endpoint] in
+        return runs.flatMap { run -> [Endpoint] in
             // Interleave only the endpoints that have an IP family. Everything else holds its
             // slot — an endpoint with no address, and a Unix-domain one, which has an address
             // family but not an IP one. Addresses move only among address slots, so a held slot
@@ -382,18 +489,5 @@ extension EndpointOrdering {
             }
             return reordered
         }
-
-        // Established use outranks the ordering above, so it is applied to the whole list.
-        if let readConnectionUse {
-            ordered = preferConnectedOrder(ordered.map(readConnectionUse)).map { ordered[$0] }
-        }
-
-        guard case .srv = priorityOrigin else {
-            return ordered
-        }
-        return orderBySRVWeight(
-            ordered.map { (priority: $0.priority, weight: $0.weight) },
-            randomBelow: randomBelow
-        ).map { ordered[$0] }
     }
 }
