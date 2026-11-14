@@ -121,7 +121,11 @@ final class SwiftNetworkEndpointFlowInlineSchedulerTests: NetTestCase {
         sender.send(.message(content: [1, 2, 3]))
         scheduler.runsNextTaskInline = true
         scheduler.manual.run()
-        XCTAssertEqual(scheduler.inlineTaskCount, 1, "exactly one task should run inline; a retry loop would run until the limit")
+        XCTAssertEqual(
+            scheduler.inlineTaskCount,
+            1,
+            "exactly one task should run inline; a retry loop would run until the limit"
+        )
 
         receiver.receive(atLeast: 3, atMost: Int.max) { result in
             switch result {
