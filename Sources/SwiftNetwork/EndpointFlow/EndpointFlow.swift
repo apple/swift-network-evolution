@@ -48,6 +48,14 @@ protocol EndpointFlowParent: AnyObject {
     /// and the call already running drains them on its way out.
     func withFlow<R>(_ body: (inout EndpointFlow) -> R) -> R?
 
+    /// Arranges for the owner to call `flushWrites()` on the flow once the flow call now running
+    /// returns.
+    ///
+    /// Used when a flush task finds the flow in use. The task cannot retry: a scheduler that runs
+    /// deferred work inline runs the task inside the call that holds the flow, so a retry would
+    /// recurse without end.
+    func deferWriteFlush()
+
     /// Asks the owned flow to consume the events the stack has recorded for it.
     func drainFlowEvents(in eventContext: inout NetworkContext.EventContext)
 
@@ -755,19 +763,16 @@ struct EndpointFlow: ~Copyable {
         guard !isWriteFlushScheduled else { return }
         isWriteFlushScheduled = true
         let context = parameters.context
-        func requestFlush() {
-            context.async {
-                // `withFlow` returns `nil` only while another flow call is running, which cannot
-                // happen between tasks. Retrying means the requests are never stranded regardless.
-                if parent.withFlow({ $0.flushWrites() }) == nil {
-                    requestFlush()
-                }
+        context.async {
+            // An inline scheduler runs this inside the call holding the flow, so `withFlow`
+            // returns `nil` and a retry would recurse; the call flushes as it returns instead.
+            if parent.withFlow({ $0.flushWrites() }) == nil {
+                parent.deferWriteFlush()
             }
         }
-        requestFlush()
     }
 
-    private mutating func flushWrites() {
+    mutating func flushWrites() {
         isWriteFlushScheduled = false
         if state == .ready && !writeRequests.isEmpty {
             write()
