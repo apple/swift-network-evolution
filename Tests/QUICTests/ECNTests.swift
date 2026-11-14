@@ -934,6 +934,48 @@ final class ECNValidateTests: XCTestCase {
             "largestCECount should remain unchanged for reordered ACKs"
         )
     }
+
+    // RFC 9000 13.4.2.1: validation fails if the *increase* in ECT + CE counts is
+    // less than the number of newly acknowledged packets sent with ECT. The
+    // increase must be computed against the previously accepted ECN feedback.
+    func testValidateAckFailsWhenECNCountsDoNotIncrease() throws {
+        let ecn = ECN(
+            echoEnabled: true,
+            markingEnabled: true,
+            l4sEnabled: true,
+            logPrefixer: self.logPrefixer
+        )
+        var ecnPath = ECNPathState(ecn: ecn)
+        let counters = ecnPath.ecnCounters(ecn: ecn, packetNumberSpace: .applicationData)
+        counters.txECNPackets = 25
+
+        var ackFrame1 = FrameAck(packetNumberSpace: .applicationData, largest: 10, delay: 0)
+        ackFrame1.ecnCounter = ECNCounter(ect0: 0, ect1: 8, ce: 5)
+        _ = ecnPath.validateAck(
+            ecn: ecn,
+            frame: ackFrame1,
+            previousLargestAcked: PacketNumber.none,
+            newlyAckedECNPackets: 10
+        )
+        XCTAssertEqual(ecnPath.state, .handshakeValidationSuccess)
+        XCTAssertEqual(counters.currentECNFeedback.ect0, 0)
+        XCTAssertEqual(counters.currentECNFeedback.ect1, 8)
+        XCTAssertEqual(counters.currentECNFeedback.ce, 5)
+
+        // Five more ECT(1) packets are acknowledged, but the peer's ECN counts
+        // did not move. The cumulative sum (13) still exceeds 5, so this only
+        // fails if the delta is taken against the stored feedback.
+        var ackFrame2 = FrameAck(packetNumberSpace: .applicationData, largest: 15, delay: 0)
+        ackFrame2.ecnCounter = ECNCounter(ect0: 0, ect1: 8, ce: 5)
+        let returnedCECount = ecnPath.validateAck(
+            ecn: ecn,
+            frame: ackFrame2,
+            previousLargestAcked: 10,
+            newlyAckedECNPackets: 5
+        )
+        XCTAssertEqual(returnedCECount, 0)
+        XCTAssertEqual(ecnPath.state, .unsupported)
+    }
 }
 #endif
 #endif
