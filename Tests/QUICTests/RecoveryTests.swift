@@ -30,6 +30,12 @@ import XCTest
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
+#if canImport(CryptoKit)
+import CryptoKit
+#elseif canImport(Crypto)
+import Crypto
+#endif
+
 #if canImport(BasicContainers)
 import BasicContainers
 internal import DequeModule
@@ -1370,6 +1376,10 @@ final class RecoveryTests: XCTestCase {
     // it rather than from the first PTO overall.
     func testPTOLimitClockRestartsAfterAck() {
         connection.recovery.received1RTTAck = true
+        // An established connection, so the probe goes in the application data space.
+        connection.context.onQueue {
+            connection.state = .connected
+        }
         connection.context.onQueue {
             recordSparsePackets([0, 1])
         }
@@ -1413,6 +1423,10 @@ final class RecoveryTests: XCTestCase {
     // running for a later loss episode.
     func testSpuriousPTODoesNotStartPTOLimitClock() {
         connection.recovery.received1RTTAck = true
+        // An established connection, so the probe goes in the application data space.
+        connection.context.onQueue {
+            connection.state = .connected
+        }
         XCTAssertEqual(connection.recovery.totalAckElicitingPacketsInFlight, 0)
 
         let start = NetworkClock.Instant.systemNow
@@ -1633,6 +1647,11 @@ final class RecoveryTests: XCTestCase {
         return count
     }
 
+    #if IMPORT_CRYPTO || IMPORT_SWIFTTLS
+    // The tests below depend on key state. The first expects the PING to stay pending because the connection
+    // holds no Handshake keys, and the second installs and drops keys, which needs the real `Protector`.
+    // The stub used without a crypto implementation reports every key as ready and sends the PING.
+
     // The PTO probe must go in a space that has ack-eliciting packets in flight (RFC 9002 Section 6.2.4);
     // otherwise a space whose packets were all acknowledged, but which still holds an old send time, takes
     // the probe and the space that is waiting for an acknowledgment is never probed.
@@ -1665,9 +1684,6 @@ final class RecoveryTests: XCTestCase {
         XCTAssertFalse(pingIsPending(in: .initial), "The probe was queued in Initial")
     }
 
-    #if IMPORT_CRYPTO || IMPORT_SWIFTTLS
-    // Installing and dropping keys needs the real `Protector`; the stub used without a crypto
-    // implementation has no key state.
     // A client that holds Handshake keys has dropped its Initial keys. With only application data in flight
     // before the handshake completes, no space is eligible for the probe, so the PING must go in Handshake;
     // otherwise it is queued in Initial, which can no longer seal it, and the server stays blocked.
