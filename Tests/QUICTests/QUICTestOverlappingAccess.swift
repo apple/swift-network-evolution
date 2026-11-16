@@ -261,8 +261,7 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
             let firstPath = self.makePath(dcid: MigrationTests.newCID, sequenceNumber: 2, validated: false)
             let secondPath = self.makePath(dcid: probeCID, sequenceNumber: 3, validated: false)
             self.connection.currentPathID = currentPath
-            for path in [currentPath, firstPath, secondPath] {
-            }
+            for _ in [currentPath, firstPath, secondPath] {}
 
             self.connection.fromExternal { eventContext in
                 self.connection.testPath(firstPath) { $0.beginValidation(in: &eventContext) }

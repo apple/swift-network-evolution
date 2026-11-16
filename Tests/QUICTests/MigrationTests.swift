@@ -238,8 +238,7 @@ final class MigrationTests: XCTestCase {
             let probedPath = self.makePath(dcid: Self.otherCID, sequenceNumber: 3, validated: false)
             self.connection.testPath(probedPath) { $0.changeState(to: .probing) }
             self.connection.currentPathID = oldPath
-            for path in [oldPath, newPath, probedPath] {
-            }
+            for _ in [oldPath, newPath, probedPath] {}
 
             self.peerSentPacket(number: 10, on: newPath)
 
@@ -309,8 +308,7 @@ final class MigrationTests: XCTestCase {
             let peerPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
             let stalePath = self.makePath(dcid: Self.otherCID, sequenceNumber: 3, validated: true)
             self.connection.currentPathID = firstPath
-            for path in [firstPath, peerPath, stalePath] {
-            }
+            for _ in [firstPath, peerPath, stalePath] {}
 
             // The peer's path is not validated yet, so the server keeps every other path.
             self.peerSentPacket(number: 10, on: peerPath)
@@ -1276,8 +1274,7 @@ final class MigrationTests: XCTestCase {
                 registerCID: false
             )
             self.connection.currentPathID = wifi
-            for path in [wifi, cell, newWifi] {
-            }
+            for _ in [wifi, cell, newWifi] {}
             self.connection.testPath(wifi) { $0.pathIsPrimary = false }
             self.connection.testPath(newWifi) { $0.pathIsPrimary = true }
 
