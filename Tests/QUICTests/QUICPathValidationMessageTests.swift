@@ -30,7 +30,8 @@ import XCTest
 class QUICPathValidationMessageTests: XCTestCase {
     let logString = "PathValidationTests"
     var connection: QUICConnection!
-    var pathID: MultiplexingPathIdentifier = 0  // NOTE: This path immediately transitions to cid assigned due to setup()
+    // NOTE: This path immediately transitions to cid assigned due to setup()/
+    var pathID: MultiplexingPathIdentifier = 0
 
     override func setUp() {
         connection = NetworkContext.implicitContext.onQueue {
