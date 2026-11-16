@@ -98,7 +98,7 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
     }
 
     context.queue.sync {
-        let path = QUICPath.makeFromExternalTest(parent: connection)
+        var path = QUICPath.makeFromExternalTest(parent: connection)
         connection.state = .connected
         for keyState in PacketKeyState.allCases {
             connection.protector.installNullProtector(for: keyState)
@@ -118,6 +118,10 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
             count -= cidLength
         }
 
+        // The path is reached through the connection's path table, like any other path
+        let pathID = path.pathIdentifier
+        connection.insertPath(path, for: pathID)
+
         let data = Data(bytes: start, count: count)
         let frame = Frame(copyBuffer: data.span)
         connection.fromExternal(frame) { eventContext, frame in
@@ -125,7 +129,8 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
             var packetParser = PacketParser(logPrefixer: connection.logPrefixer)
             connection.handleInbound(
                 frame: &frame,
-                from: path,
+                from: pathID,
+                unvalidatedPath: false,
                 inConnectedState: true,
                 isServerConnection: false,
                 packetParser: &packetParser,
@@ -152,8 +157,8 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
             connection.withMultiplexedSecondaryFlows { $0.removeAll() }
             connection.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
         }
-        path.destroyFromExternalTest()
         connection.fromExternal { eventContext in
+            connection.destroyAllPaths(in: &eventContext)
             connection.unregisterEventManager(in: &eventContext)
         }
     }

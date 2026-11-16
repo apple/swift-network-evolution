@@ -44,14 +44,11 @@ final class PMTUDTests: XCTestCase {
         defer { clock.onQueue { connection.destroyFromExternalTest() } }
 
         return clock.onQueue {
-            let path = QUICPath.makeFromExternalTest(parent: connection)
-            defer {
-                connection.currentPath = nil
-                path.destroyFromExternalTest()
-            }
+            var path = QUICPath.makeFromExternalTest(parent: connection)
+            defer { connection.currentPathID = nil }
 
             path.mss = maximumSegmentSize
-            connection.currentPath = path
+            connection.currentPathID = path.pathIdentifier
             path.pmtudState.enabled = true
 
             var packet = SentPacketRecord()
@@ -72,8 +69,12 @@ final class PMTUDTests: XCTestCase {
             var sentPackets = NetworkUniqueDeque<SentPacketRecord>(minimumCapacity: 1)
             sentPackets.append(packet)
 
-            path.pmtudState.countFullSizePackets(in: sentPackets, on: path)
-            return path.pmtudState.fullSizeBytesSentInRound
+            path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
+                state.countFullSizePackets(in: sentPackets, on: &path)
+            }
+            let counted = path.pmtudState.fullSizeBytesSentInRound
+            path.destroyFromExternalTest()
+            return counted
         }
     }
 

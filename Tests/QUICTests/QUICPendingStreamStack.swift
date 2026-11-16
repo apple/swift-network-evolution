@@ -113,15 +113,17 @@ extension XCTestCase {
                 quicPath.assignDCID(peerConnectionID, in: &eventContext)
             }
             _ = try? quicPath.attachLowerProtocol(lowerLinkage.base)
+            let upperLinkage = quicPath.asUpperLinkage()
+            // The path is reached through the connection's table, so it is in the table before its
+            // lower protocol is given the linkage that leads back to it
+            connection.installCurrentPath(quicPath)
             try? lowerLinkage.base.invokeAttachUpperProtocol(
-                quicPath.asUpperLinkage(),
+                upperLinkage,
                 remote: remote,
                 local: local,
                 parameters: parameters,
                 path: path
             )
-            connection.currentPath = quicPath
-            connection.multiplexingPaths[quicPath.pathIdentifier] = quicPath
 
             // A stream opened while the handshake is in flight has no stream ID yet, so it is one
             // of the pending streams that completion has to ready.
@@ -185,11 +187,7 @@ extension XCTestCase {
             if !connection.identifier.isNone {
                 connection.destroyFromExternalTest()
             }
-            connection.currentPath = nil
-            for path in connection.multiplexingPaths.values where !path.identifier.isNone {
-                path.destroyFromExternalTest()
-            }
-            connection.multiplexingPaths.removeAll()
+            connection.currentPathID = nil
             stack.storage.releaseHeldInstances()
         }
     }

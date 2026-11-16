@@ -30,19 +30,18 @@ import XCTest
 class QUICPathValidationMessageTests: XCTestCase {
     let logString = "PathValidationTests"
     var connection: QUICConnection!
-    var path: QUICPath!  // NOTE: This path immediately transitions to cid assigned due to setup()
+    var pathID: MultiplexingPathIdentifier = 0  // NOTE: This path immediately transitions to cid assigned due to setup()
 
     override func setUp() {
         connection = NetworkContext.implicitContext.onQueue {
             QUICConnection(context: NetworkContext.implicitContext)
         }
-        path = connection.context.onQueue {
-            QUICPath.makeFromExternalTest(parent: self.connection)
+        pathID = connection.makeTestPath { path in
+            path.set(interface: nil, priority: 0, isInitial: true)
         }
-        path.set(interface: nil, priority: 0, isInitial: true)
         connection.context.onQueue {
             connection.fromExternal { eventContext in
-                path.assignDCID(QUICConnectionID(8), in: &eventContext)
+                self.connection.testPath(self.pathID) { $0.assignDCID(QUICConnectionID(8), in: &eventContext) }
             }
         }
     }
@@ -51,79 +50,79 @@ class QUICPathValidationMessageTests: XCTestCase {
         // The path and the connection were both built outside a protocol stack, so nothing else
         // releases their event states.
         connection.context.onQueue {
-            self.path.destroyFromExternalTest()
             self.connection.destroyFromExternalTest()
         }
-        path = nil
         connection = nil
     }
 
     func testIncomingPathChallenge() {
         // challenge received from a path that is not validated
         let challenge = FramePathChallenge(data: 1)
-        XCTAssertEqual(path.challengesSent, 0)
+        XCTAssertEqual(connection.testPath(pathID) { $0.challengesSent }, 0)
         let _ = connection.context.onQueue {
             connection.fromExternal { eventContext in
-                connection.handlePathChallengeFrame(challenge, path: path, in: &eventContext)
+                connection.handlePathChallengeFrame(challenge, pathID: pathID, in: &eventContext)
             }
         }
-        XCTAssertEqual(path.pendingInboundChallenges.count, 1)
-        XCTAssertEqual(path.state, .probing)
-        XCTAssertEqual(path.pendingOutboundChallenges.count, 0)
+        XCTAssertEqual(connection.testPath(pathID) { $0.pendingInboundChallenges.count }, 1)
+        XCTAssertEqual(connection.testPath(pathID) { $0.state }, .probing)
+        XCTAssertEqual(connection.testPath(pathID) { $0.pendingOutboundChallenges.count }, 0)
 
         // challenge received on a path that is validated, should just generate response
-        path.changeState(to: .validated)
+        connection.testPath(pathID) { $0.changeState(to: .validated) }
         let challenge2 = FramePathChallenge(data: 2)
         let _ = connection.context.onQueue {
             connection.fromExternal { eventContext in
-                connection.handlePathChallengeFrame(challenge2, path: path, in: &eventContext)
+                connection.handlePathChallengeFrame(challenge2, pathID: pathID, in: &eventContext)
             }
         }
         // pending challenges are not cleared until they are processed
-        XCTAssertEqual(path.pendingInboundChallenges.count, 2)
-        XCTAssertEqual(path.state, .validated)  // we remain validated when the peer re-probes
+        XCTAssertEqual(connection.testPath(pathID) { $0.pendingInboundChallenges.count }, 2)
+        XCTAssertEqual(connection.testPath(pathID) { $0.state }, .validated)  // we remain validated when the peer re-probes
     }
 
     func testOutgoingPathChallenge() {
         self.connection.context.onQueue {
-            XCTAssertEqual(path.state, .cidAssigned)
+            XCTAssertEqual(connection.testPath(pathID) { $0.state }, .cidAssigned)
 
             let startTime = NetworkClock.Instant.systemNow
             var pendingItems = PendingItems(packetNumberSpace: .applicationData)
             connection.fromExternal { eventContext in
-                path.addPendingItems(&pendingItems, now: startTime, in: &eventContext)
+                connection.testPath(pathID) { $0.addPendingItems(&pendingItems, now: startTime, in: &eventContext) }
             }  // should be empty
             XCTAssertTrue(pendingItems.pathChallenges.isEmpty)
             XCTAssertTrue(pendingItems.pathResponses.isEmpty)
 
             // Add incoming and outgoing challenges. These will produce path-specific PendingItems
             connection.fromExternal { eventContext in
-                path.beginValidation(in: &eventContext)
+                connection.testPath(pathID) { $0.beginValidation(in: &eventContext) }
             }
-            XCTAssertEqual(path.state, .probing)
-            XCTAssertEqual(path.pendingOutboundChallenges.count, 0)
+            XCTAssertEqual(connection.testPath(pathID) { $0.state }, .probing)
+            XCTAssertEqual(connection.testPath(pathID) { $0.pendingOutboundChallenges.count }, 0)
             connection.fromExternal { eventContext in
-                path.handlePathChallenge(1, in: &eventContext)
+                connection.testPath(pathID) { $0.handlePathChallenge(1, in: &eventContext) }
             }
-            XCTAssertEqual(path.pendingInboundChallenges.count, 1)
+            XCTAssertEqual(connection.testPath(pathID) { $0.pendingInboundChallenges.count }, 1)
             connection.fromExternal { eventContext in
-                path.addPendingItems(&pendingItems, now: startTime, in: &eventContext)
+                connection.testPath(pathID) { $0.addPendingItems(&pendingItems, now: startTime, in: &eventContext) }
             }
 
             XCTAssertFalse(pendingItems.pathChallenges.isEmpty)
             XCTAssertFalse(pendingItems.pathResponses.isEmpty)
-            XCTAssertEqual(path.pendingInboundChallenges.count, 0)
+            XCTAssertEqual(connection.testPath(pathID) { $0.pendingInboundChallenges.count }, 0)
 
             let outboundChallenge = pendingItems.pathChallenges.first?.data ?? 0
 
-            XCTAssertEqual(path.lastChallengeSentTime, startTime)
-            XCTAssertEqual(path.nextChallengeDuration, .milliseconds(250))
+            XCTAssertEqual(connection.testPath(pathID) { $0.lastChallengeSentTime }, startTime)
+            XCTAssertEqual(connection.testPath(pathID) { $0.nextChallengeDuration }, .milliseconds(250))
 
             pendingItems = PendingItems(packetNumberSpace: .applicationData)  // clear items
             // simulate send on the path before the challenge retransmission time is met
             var interval = NetworkDuration.milliseconds(100)
             connection.fromExternal { eventContext in
-                path.addPendingItems(&pendingItems, now: startTime + interval, in: &eventContext)
+                connection.testPath(pathID) {
+                    $0.addPendingItems(&pendingItems, now: startTime + interval, in: &eventContext)
+                }
             }
             XCTAssertTrue(pendingItems.pathChallenges.isEmpty)
             XCTAssertTrue(pendingItems.pathResponses.isEmpty)
@@ -131,16 +130,18 @@ class QUICPathValidationMessageTests: XCTestCase {
             // simulate a retransmission of the challenge
             interval = NetworkDuration.milliseconds(250)
             connection.fromExternal { eventContext in
-                path.addPendingItems(&pendingItems, now: startTime + interval, in: &eventContext)
+                connection.testPath(pathID) {
+                    $0.addPendingItems(&pendingItems, now: startTime + interval, in: &eventContext)
+                }
             }
             XCTAssertFalse(pendingItems.pathChallenges.isEmpty)
             XCTAssertTrue(pendingItems.pathResponses.isEmpty)
 
             connection.fromExternal { eventContext in
-                path.handlePathChallengeResponse(outboundChallenge, in: &eventContext)
+                self.connection.handlePathChallengeResponse(path: pathID, data: outboundChallenge, in: &eventContext)
             }
-            XCTAssertEqual(path.state, .validated)
-            XCTAssertEqual(path.pendingOutboundChallenges.count, 0)
+            XCTAssertEqual(connection.testPath(pathID) { $0.state }, .validated)
+            XCTAssertEqual(connection.testPath(pathID) { $0.pendingOutboundChallenges.count }, 0)
         }
     }
 

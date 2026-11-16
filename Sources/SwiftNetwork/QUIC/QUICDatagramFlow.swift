@@ -141,7 +141,7 @@ public struct QUICDatagramFlow: ~Copyable, AutomaticUpperDatagramProcessing, Mul
 
     mutating func updateUsableDatagramFrameSize(
         connection: QUICConnection,
-        path: QUICPath
+        path: borrowing QUICPath
     ) {
         guard let dcid = path.dcid else { return }
         let shortHeaderUnusablePayloadSize =

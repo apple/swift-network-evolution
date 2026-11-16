@@ -69,7 +69,8 @@ final class SwiftNetworkQUICClosedConnectionInboundTests: NetTestCase {
                     },
                     check: { server in
                         XCTAssertTrue(server.state.isTerminal, "Server did not close: \(server.state)")
-                        let pathStates = server.multiplexingPaths.values.map { $0.state }
+                        var pathStates: [QUICPathState] = []
+                        server.applyToAllPaths { (path: inout QUICPath) in pathStates.append(path.state) }
                         XCTAssertFalse(
                             pathStates.contains(.probing),
                             "Closed server connection started path validation: \(pathStates)"
@@ -98,13 +99,15 @@ final class SwiftNetworkQUICClosedConnectionInboundTests: NetTestCase {
                     },
                     check: { server in
                         XCTAssertTrue(server.state.isTerminal, "Server did not close: \(server.state)")
-                        let pathStates = server.multiplexingPaths.values.map { $0.state }
+                        var pathStates: [QUICPathState] = []
+                        server.applyToAllPaths { (path: inout QUICPath) in pathStates.append(path.state) }
                         XCTAssertFalse(
                             pathStates.contains(.probing),
                             "Closed server connection started path validation: \(pathStates)"
                         )
                         // The probe is a ~1200 byte datagram sent from a closing connection.
-                        let challengesSent = server.multiplexingPaths.values.map { $0.challengesSent }
+                        var challengesSent: [Int] = []
+                        server.applyToAllPaths { (path: inout QUICPath) in challengesSent.append(path.challengesSent) }
                         XCTAssertEqual(
                             challengesSent.reduce(0, +),
                             0,

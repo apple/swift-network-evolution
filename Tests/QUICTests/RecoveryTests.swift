@@ -43,7 +43,7 @@ final class RecoveryTests: XCTestCase {
     var connection = NetworkContext.implicitContext.onQueue {
         QUICConnection(context: .implicitContext)
     }
-    var path: QUICPath! = nil
+    var pathID: MultiplexingPathIdentifier = 0
     // The base linkages are storage-backed, so lower harnesses have to come from storage
     // rather than being wrapped in a bare linkage.
     let storage = TestNetworkProtocolStorage(context: .implicitContext)
@@ -73,31 +73,31 @@ final class RecoveryTests: XCTestCase {
             // The path is a framework protocol, so it is bound through the base form of the
             // harness's linkage -- which carries the box that reaches back to the harness.
             _ = try? newPath.attachLowerProtocol(lowerHarnessLinkage.base)
+            let upperLinkage = newPath.asUpperLinkage()
+            self.pathID = self.connection.installCurrentPath(newPath)
             try? lowerHarnessLinkage.base.invokeAttachUpperProtocol(
-                newPath.asUpperLinkage(),
+                upperLinkage,
                 remote: nil,
                 local: nil,
                 parameters: nil,
                 path: nil
             )
-            self.path = newPath
-            self.connection.currentPath = newPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
     }
 
     override func tearDown() {
-        self.connection.currentPath = nil
+        self.connection.currentPathID = nil
         self.connection.context.onQueue {
-            self.path.destroyFromExternalTest()
+            self.connection.destroyAllPaths(in: &self.connection.context.eventContext)
         }
-        self.connection.multiplexingPaths.removeAll()
-        self.path = nil
     }
 
     func sentPacket(_ sentPacket: consuming SentPacketRecord, connection: QUICConnection) {
+        var sentPacket = sentPacket
+        // The packet builder tells the path about a packet it builds, before Recovery records it
+        connection.notePathSent(&sentPacket)
         var packets = NetworkUniqueDeque<SentPacketRecord>()
         packets.append(sentPacket)
         // Driven straight from the test body rather than from the context queue, so
@@ -110,7 +110,7 @@ final class RecoveryTests: XCTestCase {
     }
 
     func testInitialValues() {
-        connection.withCurrentPath { path in
+        connection.testCurrentPath { (path: inout QUICPath) in
             XCTAssertEqual(path.recoveryState.PTOPeriod, .zero)
         }
         XCTAssertEqual(
@@ -152,7 +152,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 20 + 96
-            let sentPath = connection.currentPath?.pathIdentifier ?? .none
+            let sentPath = connection.currentPathID ?? .none
             packet.sentPath = sentPath
             let space = packet.identifier.space
             sentPacket(packet, connection: connection)
@@ -163,7 +163,7 @@ final class RecoveryTests: XCTestCase {
             1
         )
         //path.withCongestionControl { XCTAssertEqual($0.bytesInFlight, 116) }
-        XCTAssertEqual(path.congestionControlBytesInFlight, 116)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlBytesInFlight }, 116)
         connection.recovery.withImmutableInnerState(packetNumberSpace: space) {
             innerState in
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 1)
@@ -177,7 +177,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 500 + 500
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             let space = packet.identifier.space
 
             sentPacket(packet, connection: connection)
@@ -230,7 +230,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 500 + 500
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             let space = packet.identifier.space
 
             sentPacket(packet, connection: connection)
@@ -283,7 +283,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 500 + 500
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             let space = packet.identifier.space
 
             sentPacket(packet, connection: connection)
@@ -336,7 +336,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = false
             packet.totalLength = 500 + 516
-            let sentPath = connection.currentPath?.pathIdentifier ?? .none
+            let sentPath = connection.currentPathID ?? .none
             packet.sentPath = sentPath
             let space = packet.identifier.space
 
@@ -350,7 +350,7 @@ final class RecoveryTests: XCTestCase {
             ),
             10
         )
-        XCTAssertEqual(path.congestionControlBytesInFlight, 1016)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlBytesInFlight }, 1016)
         connection.recovery.withImmutableInnerState(packetNumberSpace: space) {
             innerState in
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
@@ -390,7 +390,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 500 + 540
-            let sentPath = connection.currentPath?.pathIdentifier ?? .none
+            let sentPath = connection.currentPathID ?? .none
             packet.sentPath = sentPath
             let space = packet.identifier.space
             sentPacket(packet, connection: connection)
@@ -402,7 +402,7 @@ final class RecoveryTests: XCTestCase {
             ),
             3
         )
-        XCTAssertEqual(path.congestionControlBytesInFlight, 1040)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlBytesInFlight }, 1040)
         connection.recovery.withImmutableInnerState(packetNumberSpace: space) {
             innerState in
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 1)
@@ -415,7 +415,7 @@ final class RecoveryTests: XCTestCase {
         )
 
         // Validate that the congestion window starts at the default
-        XCTAssertEqual(path.congestionControlWindow, 12000)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlWindow }, 12000)
 
         connection.context.onQueue {
             let ackFrame = FrameAck(
@@ -426,14 +426,14 @@ final class RecoveryTests: XCTestCase {
             )
             connection.recovery.receivedAck(
                 ack: ackFrame,
-                ackedPath: connection.currentPath!,
+                ackedPath: connection.currentPathID!,
                 connection: connection,
                 in: &connection.context.eventContext
             )
         }
 
         // Validate that the congestion window has grown after the packet is acked
-        XCTAssertGreaterThan(path.congestionControlWindow, 12000)
+        XCTAssertGreaterThan(connection.testPath(pathID) { $0.congestionControlWindow }, 12000)
 
         XCTAssertEqual(
             connection.recovery.getLargestSentPN(
@@ -441,7 +441,7 @@ final class RecoveryTests: XCTestCase {
             ),
             3
         )
-        XCTAssertEqual(path.congestionControlBytesInFlight, 0)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlBytesInFlight }, 0)
         connection.recovery.withImmutableInnerState(packetNumberSpace: space) {
             innerState in
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
@@ -452,7 +452,11 @@ final class RecoveryTests: XCTestCase {
     // MARK: - Loss detection and spurious losses
 
     /// Records ack-eliciting application data packets of 1000 bytes sent on `path` at `time`.
-    private func sendPackets(_ numbers: ClosedRange<Int64>, on path: QUICPath, at time: NetworkClock.Instant) {
+    private func sendPackets(
+        _ numbers: ClosedRange<Int64>,
+        on pathID: MultiplexingPathIdentifier,
+        at time: NetworkClock.Instant
+    ) {
         // The context asserts that its event context is acquired on its queue, so hop there to
         // record the packets.
         connection.context.onQueue {
@@ -463,14 +467,18 @@ final class RecoveryTests: XCTestCase {
                 packet.isInFlightEligible = true
                 packet.isAckEliciting = true
                 packet.totalLength = 1000
-                packet.sentPath = path.pathIdentifier
+                packet.sentPath = pathID
                 sentPacket(packet, connection: connection)
             }
         }
     }
 
     /// Delivers, on `path` at `time`, an ACK frame with a single range covering `acked`.
-    private func receiveAck(_ acked: ClosedRange<Int64>, on path: QUICPath, at time: NetworkClock.Instant) {
+    private func receiveAck(
+        _ acked: ClosedRange<Int64>,
+        on pathID: MultiplexingPathIdentifier,
+        at time: NetworkClock.Instant
+    ) {
         // As in `sendPackets`, the ACK is delivered on the context's queue.
         connection.context.onQueue {
             connection.pinnedClock = .init(continuous: time, absolute: time)
@@ -481,16 +489,16 @@ final class RecoveryTests: XCTestCase {
                     delay: 0,
                     ranges: [FrameAckRange(gap: 0, range: PacketNumber(acked.upperBound - acked.lowerBound))]
                 ),
-                ackedPath: path,
+                ackedPath: pathID,
                 connection: connection,
                 in: &connection.context.eventContext
             )
         }
     }
 
-    private func slowStartThreshold(of path: QUICPath) -> UInt64 {
+    private func slowStartThreshold(of pathID: MultiplexingPathIdentifier) -> UInt64 {
         var snapshot = DataTransferSnapshot()
-        path.congestionControlFilloutDataTransferSnapshot(snapshot: &snapshot)
+        connection.testPath(pathID) { $0.congestionControlFilloutDataTransferSnapshot(snapshot: &snapshot) }
         return snapshot.transportSlowStartThreshold
     }
 
@@ -517,15 +525,15 @@ final class RecoveryTests: XCTestCase {
     func testFirstLossReducesCongestionWindow() {
         let start = NetworkClock.Instant.testBase
         defer { connection.pinnedClock = nil }
-        let initialWindow = path.congestionControlWindow
+        let initialWindow = connection.testPath(pathID) { $0.congestionControlWindow }
 
         // Packet 0 is overtaken by three later packets, so it is lost by the packet threshold.
-        sendPackets(0...4, on: path, at: start)
-        receiveAck(1...4, on: path, at: start + .milliseconds(10))
+        sendPackets(0...4, on: pathID, at: start)
+        receiveAck(1...4, on: pathID, at: start + .milliseconds(10))
 
         XCTAssertNotEqual(outstandingEntry(0)?.lostTime ?? .zero, .zero, "Packet 0 should have been declared lost")
-        XCTAssertLessThan(path.congestionControlWindow, initialWindow)
-        XCTAssertEqual(slowStartThreshold(of: path), path.congestionControlWindow)
+        XCTAssertLessThan(connection.testPath(pathID) { $0.congestionControlWindow }, initialWindow)
+        XCTAssertEqual(slowStartThreshold(of: pathID), connection.testPath(pathID) { $0.congestionControlWindow })
         XCTAssertEqual(
             outstandingEntry(0)?.reducedCongestionWindow,
             true,
@@ -538,24 +546,24 @@ final class RecoveryTests: XCTestCase {
     func testLateAckForLostPacketUndoesCongestionWindowReduction() {
         let start = NetworkClock.Instant.testBase
         defer { connection.pinnedClock = nil }
-        let initialWindow = path.congestionControlWindow
+        let initialWindow = connection.testPath(pathID) { $0.congestionControlWindow }
 
-        sendPackets(0...4, on: path, at: start)
-        receiveAck(1...4, on: path, at: start + .milliseconds(10))
-        XCTAssertLessThan(path.congestionControlWindow, initialWindow)
+        sendPackets(0...4, on: pathID, at: start)
+        receiveAck(1...4, on: pathID, at: start + .milliseconds(10))
+        XCTAssertLessThan(connection.testPath(pathID) { $0.congestionControlWindow }, initialWindow)
 
         // The lost packet is kept, but no longer counts as awaiting acknowledgment.
         XCTAssertNotEqual(outstandingEntry(0)?.lostTime ?? .zero, .zero)
         XCTAssertEqual(lostPacketCount, 1)
         XCTAssertFalse(connection.recovery.hasOutstandingPackets)
         XCTAssertEqual(connection.recovery.totalAckElicitingPacketsInFlight, 0)
-        XCTAssertEqual(path.congestionControlBytesInFlight, 0)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlBytesInFlight }, 0)
 
         // Packet 0 was only reordered: its ACK arrives within an RTT of the loss.
-        receiveAck(0...4, on: path, at: start + .milliseconds(15))
+        receiveAck(0...4, on: pathID, at: start + .milliseconds(15))
 
-        XCTAssertEqual(path.congestionControlWindow, initialWindow)
-        XCTAssertEqual(slowStartThreshold(of: path), UInt64.max)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlWindow }, initialWindow)
+        XCTAssertEqual(slowStartThreshold(of: pathID), UInt64.max)
         XCTAssertNil(outstandingEntry(0))
         XCTAssertEqual(lostPacketCount, 0)
         // Packet 0 was overtaken by four packets, so a threshold of five would have tolerated it.
@@ -569,30 +577,30 @@ final class RecoveryTests: XCTestCase {
     func testLostPacketIsDroppedOneRTTAfterItsLoss() {
         let start = NetworkClock.Instant.testBase
         defer { connection.pinnedClock = nil }
-        let initialWindow = path.congestionControlWindow
+        let initialWindow = connection.testPath(pathID) { $0.congestionControlWindow }
 
-        sendPackets(0...4, on: path, at: start)
-        receiveAck(1...4, on: path, at: start + .milliseconds(10))
+        sendPackets(0...4, on: pathID, at: start)
+        receiveAck(1...4, on: pathID, at: start + .milliseconds(10))
         XCTAssertEqual(lostPacketCount, 1)
 
         // Less than an RTT after the loss, the lost packet is still kept.
-        sendPackets(5...5, on: path, at: start + .milliseconds(10))
-        receiveAck(1...5, on: path, at: start + .milliseconds(15))
+        sendPackets(5...5, on: pathID, at: start + .milliseconds(10))
+        receiveAck(1...5, on: pathID, at: start + .milliseconds(15))
         XCTAssertNotNil(outstandingEntry(0))
         XCTAssertEqual(lostPacketCount, 1)
 
         // More than an RTT after the loss, it is dropped.
-        sendPackets(6...6, on: path, at: start + .milliseconds(15))
-        receiveAck(1...6, on: path, at: start + .milliseconds(40))
+        sendPackets(6...6, on: pathID, at: start + .milliseconds(15))
+        receiveAck(1...6, on: pathID, at: start + .milliseconds(40))
         XCTAssertNil(outstandingEntry(0))
         XCTAssertEqual(lostPacketCount, 0)
         XCTAssertFalse(connection.recovery.hasOutstandingPackets)
 
         // An ACK for it now is no longer treated as a spurious loss: the window stays reduced.
-        let windowBeforeLateAck = path.congestionControlWindow
+        let windowBeforeLateAck = connection.testPath(pathID) { $0.congestionControlWindow }
         XCTAssertLessThan(windowBeforeLateAck, initialWindow)
-        receiveAck(0...6, on: path, at: start + .milliseconds(45))
-        XCTAssertEqual(path.congestionControlWindow, windowBeforeLateAck)
+        receiveAck(0...6, on: pathID, at: start + .milliseconds(45))
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlWindow }, windowBeforeLateAck)
     }
 
     /// A packet declared lost on one path and then acknowledged on another must undo the
@@ -603,43 +611,40 @@ final class RecoveryTests: XCTestCase {
 
         // A second path that the spuriously lost packet goes out on. `path` (from setUp)
         // receives every ACK.
-        let sentPath = connection.context.onQueue {
-            QUICPath.makeFromExternalTest(parent: connection)
-        }
-        sentPath.set(interface: nil, priority: 1, isInitial: true)
-        connection.multiplexingPaths[sentPath.pathIdentifier] = sentPath
+        let sentPathID = connection.makeTestPath { $0.set(interface: nil, priority: 1, isInitial: true) }
         defer {
-            connection.multiplexingPaths[sentPath.pathIdentifier] = nil
-            connection.context.onQueue { sentPath.destroyFromExternalTest() }
+            connection.context.onQueue {
+                if let removed = connection.removePath(sentPathID) { removed.destroyFromExternalTest() }
+            }
         }
-        XCTAssertNotEqual(sentPath.pathIdentifier, path.pathIdentifier)
-        let ackPathInitialWindow = path.congestionControlWindow
-        let sentPathInitialWindow = sentPath.congestionControlWindow
+        XCTAssertNotEqual(sentPathID, pathID)
+        let ackPathInitialWindow = connection.testPath(pathID) { $0.congestionControlWindow }
+        let sentPathInitialWindow = connection.testPath(sentPathID) { $0.congestionControlWindow }
 
         // A real loss on the ACK path puts it in recovery, so undoing the wrong path's
         // reduction would be visible.
-        sendPackets(0...4, on: path, at: start)
-        receiveAck(1...4, on: path, at: start + .milliseconds(10))
-        XCTAssertLessThan(path.congestionControlWindow, ackPathInitialWindow)
+        sendPackets(0...4, on: pathID, at: start)
+        receiveAck(1...4, on: pathID, at: start + .milliseconds(10))
+        XCTAssertLessThan(connection.testPath(pathID) { $0.congestionControlWindow }, ackPathInitialWindow)
 
         // Packet 5 goes out on the other path and is overtaken by three packets on the ACK path.
-        sendPackets(5...5, on: sentPath, at: start + .milliseconds(10))
-        sendPackets(6...8, on: path, at: start + .milliseconds(10))
-        receiveAck(6...8, on: path, at: start + .milliseconds(20))
-        XCTAssertLessThan(sentPath.congestionControlWindow, sentPathInitialWindow)
+        sendPackets(5...5, on: sentPathID, at: start + .milliseconds(10))
+        sendPackets(6...8, on: pathID, at: start + .milliseconds(10))
+        receiveAck(6...8, on: pathID, at: start + .milliseconds(20))
+        XCTAssertLessThan(connection.testPath(sentPathID) { $0.congestionControlWindow }, sentPathInitialWindow)
         XCTAssertEqual(outstandingEntry(5)?.reducedCongestionWindow, true)
-        let ackPathWindow = path.congestionControlWindow
-        let ackPathSlowStartThreshold = slowStartThreshold(of: path)
+        let ackPathWindow = connection.testPath(pathID) { $0.congestionControlWindow }
+        let ackPathSlowStartThreshold = slowStartThreshold(of: pathID)
 
         // Packet 5 was only reordered; its ACK comes in on the ACK path.
-        receiveAck(5...8, on: path, at: start + .milliseconds(25))
+        receiveAck(5...8, on: pathID, at: start + .milliseconds(25))
 
         // The reduction is undone on the path that sent the packet...
-        XCTAssertEqual(sentPath.congestionControlWindow, sentPathInitialWindow)
-        XCTAssertEqual(slowStartThreshold(of: sentPath), UInt64.max)
+        XCTAssertEqual(connection.testPath(sentPathID) { $0.congestionControlWindow }, sentPathInitialWindow)
+        XCTAssertEqual(slowStartThreshold(of: sentPathID), UInt64.max)
         // ...and the ACK path, whose own loss was real, stays in recovery.
-        XCTAssertEqual(path.congestionControlWindow, ackPathWindow)
-        XCTAssertEqual(slowStartThreshold(of: path), ackPathSlowStartThreshold)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlWindow }, ackPathWindow)
+        XCTAssertEqual(slowStartThreshold(of: pathID), ackPathSlowStartThreshold)
         XCTAssertNil(outstandingEntry(5))
     }
 
@@ -651,33 +656,30 @@ final class RecoveryTests: XCTestCase {
         let start = NetworkClock.Instant.testBase
         defer { connection.pinnedClock = nil }
 
-        let secondPath = connection.context.onQueue {
-            QUICPath.makeFromExternalTest(parent: connection)
-        }
-        secondPath.set(interface: nil, priority: 1, isInitial: true)
-        connection.multiplexingPaths[secondPath.pathIdentifier] = secondPath
+        let secondPathID = connection.makeTestPath { $0.set(interface: nil, priority: 1, isInitial: true) }
         defer {
-            connection.multiplexingPaths[secondPath.pathIdentifier] = nil
-            connection.context.onQueue { secondPath.destroyFromExternalTest() }
+            connection.context.onQueue {
+                if let removed = connection.removePath(secondPathID) { removed.destroyFromExternalTest() }
+            }
         }
-        XCTAssertNotEqual(secondPath.pathIdentifier, path.pathIdentifier)
-        let initialWindow = path.congestionControlWindow
-        let secondPathInitialWindow = secondPath.congestionControlWindow
+        XCTAssertNotEqual(secondPathID, pathID)
+        let initialWindow = connection.testPath(pathID) { $0.congestionControlWindow }
+        let secondPathInitialWindow = connection.testPath(secondPathID) { $0.congestionControlWindow }
 
         // Packets 0-1 on the ACK path, 2-3 on the second path, 4-7 on the ACK path again: one
         // ACK for 4-7 declares 0-3 lost as a single batch spanning both paths.
-        sendPackets(0...1, on: path, at: start)
-        sendPackets(2...3, on: secondPath, at: start)
-        sendPackets(4...7, on: path, at: start)
-        receiveAck(4...7, on: path, at: start + .milliseconds(10))
+        sendPackets(0...1, on: pathID, at: start)
+        sendPackets(2...3, on: secondPathID, at: start)
+        sendPackets(4...7, on: pathID, at: start)
+        receiveAck(4...7, on: pathID, at: start + .milliseconds(10))
         XCTAssertEqual(lostPacketCount, 4)
 
         // Each path's own bytes came down.
-        XCTAssertEqual(path.congestionControlBytesInFlight, 0)
-        XCTAssertEqual(secondPath.congestionControlBytesInFlight, 0)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlBytesInFlight }, 0)
+        XCTAssertEqual(connection.testPath(secondPathID) { $0.congestionControlBytesInFlight }, 0)
         // The loss on each path reduced that path's window.
-        XCTAssertLessThan(path.congestionControlWindow, initialWindow)
-        XCTAssertLessThan(secondPath.congestionControlWindow, secondPathInitialWindow)
+        XCTAssertLessThan(connection.testPath(pathID) { $0.congestionControlWindow }, initialWindow)
+        XCTAssertLessThan(connection.testPath(secondPathID) { $0.congestionControlWindow }, secondPathInitialWindow)
         // The reduction of each path is attributed to the last packet of its run.
         XCTAssertEqual(outstandingEntry(0)?.reducedCongestionWindow, false)
         XCTAssertEqual(outstandingEntry(1)?.reducedCongestionWindow, true)
@@ -693,39 +695,36 @@ final class RecoveryTests: XCTestCase {
         let start = NetworkClock.Instant.testBase
         defer { connection.pinnedClock = nil }
 
-        let sentPath = connection.context.onQueue {
-            QUICPath.makeFromExternalTest(parent: connection)
-        }
-        sentPath.set(interface: nil, priority: 1, isInitial: true)
-        connection.multiplexingPaths[sentPath.pathIdentifier] = sentPath
+        let sentPathID = connection.makeTestPath { $0.set(interface: nil, priority: 1, isInitial: true) }
         defer {
-            connection.multiplexingPaths[sentPath.pathIdentifier] = nil
-            connection.context.onQueue { sentPath.destroyFromExternalTest() }
+            connection.context.onQueue {
+                if let removed = connection.removePath(sentPathID) { removed.destroyFromExternalTest() }
+            }
         }
-        XCTAssertNotEqual(sentPath.pathIdentifier, path.pathIdentifier)
-        let sentPathInitialWindow = sentPath.congestionControlWindow
+        XCTAssertNotEqual(sentPathID, pathID)
+        let sentPathInitialWindow = connection.testPath(sentPathID) { $0.congestionControlWindow }
 
         // Packet 0 goes out on the sent path and is overtaken by packets on the ACK path.
-        sendPackets(0...0, on: sentPath, at: start)
-        sendPackets(1...4, on: path, at: start)
-        receiveAck(1...4, on: path, at: start + .milliseconds(10))
+        sendPackets(0...0, on: sentPathID, at: start)
+        sendPackets(1...4, on: pathID, at: start)
+        receiveAck(1...4, on: pathID, at: start + .milliseconds(10))
         XCTAssertNotEqual(outstandingEntry(0)?.lostTime ?? .zero, .zero)
-        XCTAssertLessThan(sentPath.congestionControlWindow, sentPathInitialWindow)
+        XCTAssertLessThan(connection.testPath(sentPathID) { $0.congestionControlWindow }, sentPathInitialWindow)
         XCTAssertEqual(outstandingEntry(0)?.reducedCongestionWindow, true)
 
         // An ACK on the ACK path 95 ms after the loss. The ACK path's RTT is ~10 ms, so the
         // lost packet would be dropped if the ACK path's RTT decided retention; the sent path's
         // RTT (the 333 ms initial estimate, never sampled) keeps it.
-        sendPackets(9...9, on: path, at: start + .milliseconds(100))
-        receiveAck(9...9, on: path, at: start + .milliseconds(105))
+        sendPackets(9...9, on: pathID, at: start + .milliseconds(100))
+        receiveAck(9...9, on: pathID, at: start + .milliseconds(105))
         XCTAssertNotNil(outstandingEntry(0), "The lost packet must be kept for its sent path's RTT")
         XCTAssertEqual(lostPacketCount, 1)
 
         // The late ACK for the lost packet is recognized as a spurious loss and undoes the
         // reduction on its sent path.
-        receiveAck(0...9, on: path, at: start + .milliseconds(150))
-        XCTAssertEqual(sentPath.congestionControlWindow, sentPathInitialWindow)
-        XCTAssertEqual(slowStartThreshold(of: sentPath), UInt64.max)
+        receiveAck(0...9, on: pathID, at: start + .milliseconds(150))
+        XCTAssertEqual(connection.testPath(sentPathID) { $0.congestionControlWindow }, sentPathInitialWindow)
+        XCTAssertEqual(slowStartThreshold(of: sentPathID), UInt64.max)
         XCTAssertNil(outstandingEntry(0))
         XCTAssertEqual(lostPacketCount, 0)
         XCTAssertEqual(connection.stats[.txSpuriousLostPackets], 1)
@@ -737,31 +736,29 @@ final class RecoveryTests: XCTestCase {
         let start = NetworkClock.Instant.testBase
         defer { connection.pinnedClock = nil }
 
-        let sentPath = connection.context.onQueue {
-            QUICPath.makeFromExternalTest(parent: connection)
-        }
-        sentPath.set(interface: nil, priority: 1, isInitial: true)
-        connection.multiplexingPaths[sentPath.pathIdentifier] = sentPath
-        let sentPathIdentifier = sentPath.pathIdentifier
+        let sentPathID = connection.makeTestPath { $0.set(interface: nil, priority: 1, isInitial: true) }
         defer {
-            connection.multiplexingPaths[sentPathIdentifier] = nil
-            connection.context.onQueue { sentPath.destroyFromExternalTest() }
+            connection.context.onQueue {
+                if let removed = connection.removePath(sentPathID) { removed.destroyFromExternalTest() }
+            }
         }
-        XCTAssertNotEqual(sentPath.pathIdentifier, path.pathIdentifier)
+        XCTAssertNotEqual(sentPathID, pathID)
 
         // Packet 0 is declared lost on the sent path and would normally be kept for that
         // path's RTT.
-        sendPackets(0...0, on: sentPath, at: start)
-        sendPackets(1...4, on: path, at: start)
-        receiveAck(1...4, on: path, at: start + .milliseconds(10))
+        sendPackets(0...0, on: sentPathID, at: start)
+        sendPackets(1...4, on: pathID, at: start)
+        receiveAck(1...4, on: pathID, at: start + .milliseconds(10))
         XCTAssertEqual(lostPacketCount, 1)
 
         // The sent path goes away.
-        connection.multiplexingPaths[sentPathIdentifier] = nil
+        connection.context.onQueue {
+            if let removed = connection.removePath(sentPathID) { removed.destroyFromExternalTest() }
+        }
 
         // The next ACK drops the lost packet: nothing retains it for a path that is gone.
-        sendPackets(9...9, on: path, at: start + .milliseconds(15))
-        receiveAck(9...9, on: path, at: start + .milliseconds(16))
+        sendPackets(9...9, on: pathID, at: start + .milliseconds(15))
+        receiveAck(9...9, on: pathID, at: start + .milliseconds(16))
         XCTAssertNil(outstandingEntry(0))
         XCTAssertEqual(lostPacketCount, 0)
     }
@@ -774,7 +771,7 @@ final class RecoveryTests: XCTestCase {
     func testLostPMTUDProbeDoesNotReduceCongestionWindow() {
         let start = NetworkClock.Instant.testBase
         defer { connection.pinnedClock = nil }
-        let initialWindow = path.congestionControlWindow
+        let initialWindow = connection.testPath(pathID) { $0.congestionControlWindow }
 
         // Packet 0 is a PMTUD probe.
         connection.pinnedClock = .init(continuous: start, absolute: start)
@@ -784,23 +781,23 @@ final class RecoveryTests: XCTestCase {
             probe.isInFlightEligible = true
             probe.isAckEliciting = true
             probe.totalLength = 1000
-            probe.sentPath = path.pathIdentifier
+            probe.sentPath = pathID
             probe.transmittedItems.pmtudProbeMSS = 1200
             sentPacket(probe, connection: connection)
         }
 
         // The probe is overtaken by regular packets and declared lost by the packet threshold.
-        sendPackets(1...4, on: path, at: start)
-        receiveAck(1...4, on: path, at: start + .milliseconds(10))
+        sendPackets(1...4, on: pathID, at: start)
+        receiveAck(1...4, on: pathID, at: start + .milliseconds(10))
         XCTAssertNotEqual(outstandingEntry(0)?.lostTime ?? .zero, .zero, "The probe should have been declared lost")
         XCTAssertEqual(lostPacketCount, 1)
 
         // Its loss is not a congestion event: the window is unchanged.
-        XCTAssertEqual(path.congestionControlWindow, initialWindow)
-        XCTAssertEqual(slowStartThreshold(of: path), UInt64.max)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlWindow }, initialWindow)
+        XCTAssertEqual(slowStartThreshold(of: pathID), UInt64.max)
         XCTAssertEqual(outstandingEntry(0)?.reducedCongestionWindow, false)
         // Its bytes still count as lost.
-        XCTAssertEqual(path.congestionControlBytesInFlight, 0)
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlBytesInFlight }, 0)
     }
 
     func testPacketAckedNonAckEliciting() throws {
@@ -818,7 +815,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = false
             packet.totalLength = 500 + 524
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             packet.transmittedItems = TransmittedItems()
             packet.transmittedItems.ackFrame = .init(makeAckFrame())
             let space = packet.identifier.space
@@ -842,7 +839,7 @@ final class RecoveryTests: XCTestCase {
         connection.context.onQueue {
             connection.recovery.receivedAck(
                 ack: makeAckFrame(),
-                ackedPath: connection.currentPath!,
+                ackedPath: connection.currentPathID!,
                 connection: connection,
                 in: &connection.context.eventContext
             )
@@ -882,7 +879,7 @@ final class RecoveryTests: XCTestCase {
                 delay: delay,
                 ranges: [FrameAckRange(gap: 0, range: 0)]
             ),
-            ackedPath: connection.currentPath!,
+            ackedPath: connection.currentPathID!,
             connection: connection,
             in: &connection.context.eventContext
         )
@@ -893,7 +890,7 @@ final class RecoveryTests: XCTestCase {
     func testAckDelayIsScaledByRemoteDelayExponent() {
         let start = connection.now
         defer { connection.pinnedClock = nil }
-        path.rtt.remoteMaxAckDelay = .milliseconds(25)
+        connection.testPath(pathID) { $0.rtt.remoteMaxAckDelay = .milliseconds(25) }
         connection.ack.remoteDelayExponent = 5
 
         // The first sample only seeds the estimator, so it leaves the minimum RTT at 10 ms.
@@ -905,8 +902,8 @@ final class RecoveryTests: XCTestCase {
             sendAndAck(2, start: start, sentAt: .milliseconds(10), ackedAt: .milliseconds(110), delay: 625)
         }
 
-        XCTAssertEqual(path.rtt.latestRTT, .milliseconds(100))
-        XCTAssertEqual(path.rtt.adjustedRTT, .milliseconds(80))
+        XCTAssertEqual(connection.testPath(pathID) { $0.rtt.latestRTT }, .milliseconds(100))
+        XCTAssertEqual(connection.testPath(pathID) { $0.rtt.adjustedRTT }, .milliseconds(80))
     }
 
     // RFC 9002 Section 5.3: the acknowledgment delay is limited to the peer's max_ack_delay,
@@ -914,7 +911,7 @@ final class RecoveryTests: XCTestCase {
     func testDecodedAckDelayAboveRemoteMaxAckDelayIsLimited() {
         let start = connection.now
         defer { connection.pinnedClock = nil }
-        path.rtt.remoteMaxAckDelay = .milliseconds(25)
+        connection.testPath(pathID) { $0.rtt.remoteMaxAckDelay = .milliseconds(25) }
         connection.ack.remoteDelayExponent = 5
 
         connection.context.onQueue {
@@ -926,8 +923,8 @@ final class RecoveryTests: XCTestCase {
             sendAndAck(2, start: start, sentAt: .milliseconds(10), ackedAt: .milliseconds(110), delay: 1000)
         }
 
-        XCTAssertEqual(path.rtt.latestRTT, .milliseconds(100))
-        XCTAssertEqual(path.rtt.adjustedRTT, .milliseconds(75))
+        XCTAssertEqual(connection.testPath(pathID) { $0.rtt.latestRTT }, .milliseconds(100))
+        XCTAssertEqual(connection.testPath(pathID) { $0.rtt.adjustedRTT }, .milliseconds(75))
     }
 
     // After a migration the old path is torn down while packets sent on it can still be in flight.
@@ -937,11 +934,7 @@ final class RecoveryTests: XCTestCase {
         let start = NetworkClock.Instant.testBase
         defer { connection.pinnedClock = nil }
 
-        let oldPath = connection.context.onQueue {
-            QUICPath.makeFromExternalTest(parent: connection)
-        }
-        oldPath.set(interface: nil, priority: 1, isInitial: true)
-        connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
+        let oldPathID = connection.makeTestPath { $0.set(interface: nil, priority: 1, isInitial: true) }
         connection.unackedKeepaliveCount = 1
         connection.context.onQueue {
             connection.pinnedClock = .init(continuous: start, absolute: start)
@@ -951,7 +944,7 @@ final class RecoveryTests: XCTestCase {
                 packet.isInFlightEligible = true
                 packet.isAckEliciting = true
                 packet.totalLength = 1200
-                packet.sentPath = oldPath.pathIdentifier
+                packet.sentPath = oldPathID
                 packet.transmittedItems.isKeepalive = number == 0
                 sentPacket(packet, connection: connection)
             }
@@ -959,9 +952,8 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(connection.recovery.totalAckElicitingPacketsInFlight, 2)
 
         // `tearDownMigratedPath` removes the old path as soon as the connection has migrated away.
-        connection.multiplexingPaths.removeValue(forKey: oldPath.pathIdentifier)
         connection.context.onQueue {
-            oldPath.destroyFromExternalTest()
+            if let removed = connection.removePath(oldPathID) { removed.destroyFromExternalTest() }
         }
 
         connection.context.onQueue {
@@ -974,7 +966,7 @@ final class RecoveryTests: XCTestCase {
                     delay: 0,
                     ranges: [FrameAckRange(gap: 0, range: 1)]
                 ),
-                ackedPath: connection.currentPath!,
+                ackedPath: connection.currentPathID!,
                 connection: connection,
                 in: &connection.context.eventContext
             )
@@ -992,7 +984,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 540 + 500
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             let space = packet.identifier.space
             sentPacket(packet, connection: connection)
             return space
@@ -1112,7 +1104,7 @@ final class RecoveryTests: XCTestCase {
             packet.totalLength = 20 + 96
             // Pretend there was an ACK eliciting frame inside the packet.
             packet.transmittedItems.ping = true
-            let sentPath = connection.currentPath?.pathIdentifier ?? .none
+            let sentPath = connection.currentPathID ?? .none
             packet.sentPath = sentPath
             let timeNow = NetworkClock.Instant.systemNow
             sentPacket(packet, connection: connection)
@@ -1132,11 +1124,11 @@ final class RecoveryTests: XCTestCase {
             innerState in
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
         }
-        XCTAssertEqual(path.recoveryState.PTOCount, 0)
+        XCTAssertEqual(connection.testPath(pathID) { $0.recoveryState.PTOCount }, 0)
         // `PTOPeriod` is the backed-off period; `computedTimeout` is what remains of it once the
         // fired instant is taken into account, and this test advances its own clock by whole
         // seconds between fires, so only the former doubles.
-        XCTAssertGreaterThan(path.recoveryState.PTOPeriod, .milliseconds(900))
+        XCTAssertGreaterThan(connection.testPath(pathID) { $0.recoveryState.PTOPeriod }, .milliseconds(900))
 
         var expectation = XCTestExpectation()
         self.connection.context.async {
@@ -1158,8 +1150,8 @@ final class RecoveryTests: XCTestCase {
             innerState in
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
         }
-        XCTAssertEqual(path.recoveryState.PTOCount, 1)
-        XCTAssertGreaterThan(path.recoveryState.PTOPeriod, .milliseconds(1900))
+        XCTAssertEqual(connection.testPath(pathID) { $0.recoveryState.PTOCount }, 1)
+        XCTAssertGreaterThan(connection.testPath(pathID) { $0.recoveryState.PTOPeriod }, .milliseconds(1900))
 
         expectation = XCTestExpectation()
         self.connection.context.async {
@@ -1181,8 +1173,8 @@ final class RecoveryTests: XCTestCase {
             innerState in
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
         }
-        XCTAssertEqual(path.recoveryState.PTOCount, 2)
-        XCTAssertGreaterThan(path.recoveryState.PTOPeriod, .milliseconds(3900))
+        XCTAssertEqual(connection.testPath(pathID) { $0.recoveryState.PTOCount }, 2)
+        XCTAssertGreaterThan(connection.testPath(pathID) { $0.recoveryState.PTOPeriod }, .milliseconds(3900))
 
         expectation = XCTestExpectation()
         self.connection.context.async {
@@ -1204,8 +1196,8 @@ final class RecoveryTests: XCTestCase {
             innerState in
             XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 0)
         }
-        XCTAssertEqual(path.recoveryState.PTOCount, 3)
-        XCTAssertGreaterThan(path.recoveryState.PTOPeriod, .milliseconds(7900))
+        XCTAssertEqual(connection.testPath(pathID) { $0.recoveryState.PTOCount }, 3)
+        XCTAssertGreaterThan(connection.testPath(pathID) { $0.recoveryState.PTOPeriod }, .milliseconds(7900))
     }
 
     // Once the connection has been in PTO recovery for two minutes, the next PTO sends no probe and
@@ -1218,7 +1210,7 @@ final class RecoveryTests: XCTestCase {
             packet.isAckEliciting = true
             packet.totalLength = 20 + 96
             packet.transmittedItems.ping = true
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             sentPacket(packet, connection: connection)
         }
 
@@ -1229,18 +1221,22 @@ final class RecoveryTests: XCTestCase {
                 // The first PTO starts the clock.
                 self.connection.recovery.timerFired(at: start, in: &eventContext)
                 XCTAssertEqual(self.connection.recovery.firstPTOTimestamp, start)
-                XCTAssertEqual(self.path.recoveryState.PTOCount, 1)
+                XCTAssertEqual(self.connection.testPath(self.pathID) { $0.recoveryState.PTOCount }, 1)
 
                 // Still inside the limit, so it probes as usual.
                 self.connection.recovery.timerFired(at: start.advanced(by: .minutes(1)), in: &eventContext)
                 XCTAssertFalse(self.connection.recovery.ptoLimitReached)
-                XCTAssertEqual(self.path.recoveryState.PTOCount, 2)
+                XCTAssertEqual(self.connection.testPath(self.pathID) { $0.recoveryState.PTOCount }, 2)
                 let inFlight = self.connection.recovery.totalAckElicitingPacketsInFlight
 
                 // Two minutes after the first PTO: stop probing and flag the connection to close.
                 self.connection.recovery.timerFired(at: start.advanced(by: .minutes(2)), in: &eventContext)
                 XCTAssertTrue(self.connection.recovery.ptoLimitReached)
-                XCTAssertEqual(self.path.recoveryState.PTOCount, 2, "PTO counted after the limit")
+                XCTAssertEqual(
+                    self.connection.testPath(self.pathID) { $0.recoveryState.PTOCount },
+                    2,
+                    "PTO counted after the limit"
+                )
                 XCTAssertEqual(
                     self.connection.recovery.totalAckElicitingPacketsInFlight,
                     inFlight,
@@ -1264,7 +1260,7 @@ final class RecoveryTests: XCTestCase {
             packet.isAckEliciting = true
             packet.totalLength = 20 + 96
             packet.transmittedItems.ping = true
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             sentPacket(packet, connection: connection)
         }
 
@@ -1278,12 +1274,16 @@ final class RecoveryTests: XCTestCase {
                 // Just inside the configured limit, so it still probes.
                 self.connection.recovery.timerFired(at: start.advanced(by: .seconds(29)), in: &eventContext)
                 XCTAssertFalse(self.connection.recovery.ptoLimitReached)
-                XCTAssertEqual(self.path.recoveryState.PTOCount, 2)
+                XCTAssertEqual(self.connection.testPath(self.pathID) { $0.recoveryState.PTOCount }, 2)
 
                 // The configured limit, well short of the two-minute default.
                 self.connection.recovery.timerFired(at: start.advanced(by: .seconds(30)), in: &eventContext)
                 XCTAssertTrue(self.connection.recovery.ptoLimitReached)
-                XCTAssertEqual(self.path.recoveryState.PTOCount, 2, "PTO counted after the limit")
+                XCTAssertEqual(
+                    self.connection.testPath(self.pathID) { $0.recoveryState.PTOCount },
+                    2,
+                    "PTO counted after the limit"
+                )
             }
             expectation.fulfill()
         }
@@ -1303,7 +1303,7 @@ final class RecoveryTests: XCTestCase {
             packet.isAckEliciting = true
             packet.totalLength = 20 + 96
             packet.transmittedItems.ping = true
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             sentPacket(packet, connection: connection)
         }
 
@@ -1340,7 +1340,7 @@ final class RecoveryTests: XCTestCase {
             packet.isAckEliciting = true
             packet.totalLength = 20 + 96
             packet.transmittedItems.ping = true
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             sentPacket(packet, connection: connection)
         }
 
@@ -1380,7 +1380,7 @@ final class RecoveryTests: XCTestCase {
             self.connection.fromExternal { eventContext in
                 self.connection.recovery.timerFired(at: start, in: &eventContext)
                 XCTAssertEqual(self.connection.recovery.firstPTOTimestamp, start)
-                XCTAssertEqual(self.path.recoveryState.PTOCount, 1)
+                XCTAssertEqual(self.connection.testPath(self.pathID) { $0.recoveryState.PTOCount }, 1)
 
                 // Packet 1 stays in flight, so the timer is not cancelled.
                 self.connection.recovery.receivedAck(
@@ -1390,19 +1390,19 @@ final class RecoveryTests: XCTestCase {
                         delay: 0,
                         ranges: [FrameAckRange(gap: 0, range: 0)]
                     ),
-                    ackedPath: self.path,
+                    ackedPath: self.pathID,
                     connection: self.connection,
                     in: &eventContext
                 )
                 XCTAssertNil(self.connection.recovery.firstPTOTimestamp, "ACK did not end the PTO episode")
-                XCTAssertEqual(self.path.recoveryState.PTOCount, 0)
+                XCTAssertEqual(self.connection.testPath(self.pathID) { $0.recoveryState.PTOCount }, 0)
                 XCTAssertGreaterThan(self.connection.recovery.totalAckElicitingPacketsInFlight, 0)
 
                 // Three minutes after the first PTO overall, but the first of a new episode.
                 self.connection.recovery.timerFired(at: start.advanced(by: .minutes(3)), in: &eventContext)
                 XCTAssertFalse(self.connection.recovery.ptoLimitReached)
                 XCTAssertEqual(self.connection.recovery.firstPTOTimestamp, start.advanced(by: .minutes(3)))
-                XCTAssertEqual(self.path.recoveryState.PTOCount, 1)
+                XCTAssertEqual(self.connection.testPath(self.pathID) { $0.recoveryState.PTOCount }, 1)
             }
             expectation.fulfill()
         }
@@ -1421,14 +1421,15 @@ final class RecoveryTests: XCTestCase {
             self.connection.fromExternal { eventContext in
                 self.connection.recovery.timerFired(at: start, in: &eventContext)
                 XCTAssertNil(self.connection.recovery.firstPTOTimestamp)
-                XCTAssertEqual(self.path.recoveryState.PTOCount, 0)
+                XCTAssertEqual(self.connection.testPath(self.pathID) { $0.recoveryState.PTOCount }, 0)
 
                 var packet = SentPacketRecord()
                 packet.identifier = .init(space: .applicationData, number: 0)
                 packet.isInFlightEligible = true
                 packet.isAckEliciting = true
                 packet.totalLength = 100
-                packet.sentPath = self.connection.currentPath?.pathIdentifier ?? .none
+                packet.sentPath = self.connection.currentPathID ?? .none
+                self.connection.notePathSent(&packet)
                 var packets = NetworkUniqueDeque<SentPacketRecord>()
                 packets.append(packet)
                 self.connection.recovery.recordSentPackets(&packets, connection: self.connection, in: &eventContext)
@@ -1437,7 +1438,7 @@ final class RecoveryTests: XCTestCase {
                 self.connection.recovery.timerFired(at: start.advanced(by: .minutes(3)), in: &eventContext)
                 XCTAssertFalse(self.connection.recovery.ptoLimitReached)
                 XCTAssertEqual(self.connection.recovery.firstPTOTimestamp, start.advanced(by: .minutes(3)))
-                XCTAssertEqual(self.path.recoveryState.PTOCount, 1)
+                XCTAssertEqual(self.connection.testPath(self.pathID) { $0.recoveryState.PTOCount }, 1)
             }
             expectation.fulfill()
         }
@@ -1472,7 +1473,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 20 + 96
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             packet.transmittedItems.sentStreams.append(
                 TransmittedItems.SentStream(
                     flowID: streamFlowID,
@@ -1494,16 +1495,16 @@ final class RecoveryTests: XCTestCase {
         // the condition under which the anti-deadlock PING is incorrectly skipped.
         connection.recovery.received1RTTAck = true
         XCTAssertTrue(connection.recovery.peerCompletedValidation(connection: connection))
-        XCTAssertEqual(path.recoveryState.PTOCount, 0)
+        XCTAssertEqual(connection.testPath(pathID) { $0.recoveryState.PTOCount }, 0)
 
         // Fire the PTO with no new ack-eliciting data pending.
         let expectation = XCTestExpectation()
         self.connection.context.async {
             self.connection.fromExternal { eventContext in
-                self.connection.withCurrentPath { path in
+                _ = self.connection.withCurrentPath { (path: inout QUICPath) in
                     self.connection.recovery.sendPTO(
                         connection: self.connection,
-                        path: path,
+                        path: &path,
                         in: &eventContext
                     )
                 }
@@ -1518,7 +1519,7 @@ final class RecoveryTests: XCTestCase {
             2,
             "PTO produced no probe for a closed-flow tail packet"
         )
-        XCTAssertEqual(path.recoveryState.PTOCount, 1)
+        XCTAssertEqual(connection.testPath(pathID) { $0.recoveryState.PTOCount }, 1)
     }
 
     // `sendPTO` must emit a probe; otherwise the PTO makes no progress. A pending item whose flow was
@@ -1552,7 +1553,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 20 + 96
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
 
             sentPacket(packet, connection: connection)
         }
@@ -1564,10 +1565,10 @@ final class RecoveryTests: XCTestCase {
         let expectation = XCTestExpectation()
         self.connection.context.async {
             self.connection.fromExternal { eventContext in
-                self.connection.withCurrentPath { path in
+                _ = self.connection.withCurrentPath { (path: inout QUICPath) in
                     self.connection.recovery.sendPTO(
                         connection: self.connection,
-                        path: path,
+                        path: &path,
                         in: &eventContext
                     )
                 }
@@ -1596,7 +1597,7 @@ final class RecoveryTests: XCTestCase {
             packet.isInFlightEligible = true
             packet.isAckEliciting = true
             packet.totalLength = 100
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            packet.sentPath = connection.currentPathID ?? .none
             sentPacket(packet, connection: connection)
         }
     }

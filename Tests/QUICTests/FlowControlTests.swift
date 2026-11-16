@@ -84,10 +84,10 @@ final class FlowControlTests: XCTestCase {
                 streamID: QUICStreamID(0),
                 logPrefixer: logPrefixer
             )
-            let newPath = QUICPath.makeFromExternalTest(parent: connection)
+            var newPath = QUICPath.makeFromExternalTest(parent: connection)
 
             newPath.mss = 1200
-            connection.currentPath = newPath
+            connection.installCurrentPath(newPath)
 
             stream.receive.state.change(logIDString: "FlowControlTests", to: .receive)
 
@@ -108,8 +108,7 @@ final class FlowControlTests: XCTestCase {
             XCTAssertEqual(inboundMaxData, initialReceiveSpace + 1_500_000)
             XCTAssertEqual(maxUnreadInbound, initialReceiveSpace)
 
-            connection.currentPath = nil
-            newPath.destroyFromExternalTest()
+            connection.currentPathID = nil
         }
     }
 
@@ -117,7 +116,8 @@ final class FlowControlTests: XCTestCase {
     /// maximum segment size is `maximumSegmentSize`.
     private func withOutboundStream(
         maximumSegmentSize: Int = 1200,
-        _ body: (_ connection: QUICConnection, _ stream: inout QUICStreamInstance, _ path: QUICPath) -> Void
+        _ body: (_ connection: QUICConnection, _ stream: inout QUICStreamInstance, _ pathID: MultiplexingPathIdentifier)
+            -> Void
     ) {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
         let clock = TestClockContext("test context")
@@ -134,29 +134,28 @@ final class FlowControlTests: XCTestCase {
                 streamID: QUICStreamID(0),
                 logPrefixer: logPrefixer
             )
-            let path = QUICPath.makeFromExternalTest(parent: connection)
+            var path = QUICPath.makeFromExternalTest(parent: connection)
             defer {
-                connection.currentPath = nil
-                path.destroyFromExternalTest()
+                connection.currentPathID = nil
             }
 
             path.mss = maximumSegmentSize
             path.initialMSS = maximumSegmentSize
             path.resetCongestionControl()
-            connection.currentPath = path
+            let pathID = connection.installCurrentPath(path)
 
-            body(connection, &stream, path)
+            body(connection, &stream, pathID)
         }
     }
 
     func testOutboundRoomIsTargetMinusPendingBytes() {
-        withOutboundStream { connection, stream, path in
+        withOutboundStream { connection, stream, pathID in
             XCTAssertTrue(stream.updateOutboundMaxData(to: 8_000_000))
             XCTAssertTrue(connection.updateOutboundMaxData(to: 8_000_000))
 
-            let window = Int(path.congestionControlAvailableCongestionWindow)
+            let window = Int(connection.testPath(pathID) { $0.congestionControlAvailableCongestionWindow })
             XCTAssertGreaterThan(window, 0, "An open window is what makes the room continuous")
-            let minimumTarget = Int(FlowControlGlobals.sendQueueFactor) * path.mss
+            let minimumTarget = Int(FlowControlGlobals.sendQueueFactor) * connection.testPath(pathID) { $0.mss }
             let target = window + minimumTarget
 
             // The room must shrink by exactly the bytes enqueued, including across the minimum
@@ -180,10 +179,10 @@ final class FlowControlTests: XCTestCase {
     }
 
     func testOutboundRoomIsLimitedByPeerFlowControl() {
-        withOutboundStream { connection, stream, path in
-            let window = Int(path.congestionControlAvailableCongestionWindow)
+        withOutboundStream { connection, stream, pathID in
+            let window = Int(connection.testPath(pathID) { $0.congestionControlAvailableCongestionWindow })
             XCTAssertGreaterThan(window, 3000, "The window must not be what limits the room here")
-            let minimumTarget = Int(FlowControlGlobals.sendQueueFactor) * path.mss
+            let minimumTarget = Int(FlowControlGlobals.sendQueueFactor) * connection.testPath(pathID) { $0.mss }
 
             // The connection may send 500 more bytes and the stream a lot more, so the connection's
             // limit plus the minimum target is the room.
@@ -428,11 +427,10 @@ final class FlowControlTests: XCTestCase {
         in eventContext: inout NetworkContext.EventContext
     ) -> QUICStreamInstance {
         let logPrefixer = LogPrefixer("[FlowControlTests]")
-        let path = QUICPath(parent: connection, in: &eventContext)
+        var path = QUICPath(parent: connection, in: &eventContext)
         path.mss = 1200
-        connection.currentPath = path
         // The connection owns its paths, and tearing it down is what retires this one's event state.
-        connection.multiplexingPaths[path.pathIdentifier] = path
+        connection.installCurrentPath(path)
         connection.flowControlState.initializeMaxDataValues(
             remoteMaxData: window,
             localMaxData: window
@@ -503,7 +501,7 @@ final class FlowControlTests: XCTestCase {
                 UInt64(byteCount),
                 "MAX_DATA should move past bytes the application has consumed"
             )
-            connection.currentPath = nil
+            connection.currentPathID = nil
             stream.destroyFromExternalTest()
             connection.destroyFromExternalTest()
             done.fulfill()
@@ -571,7 +569,7 @@ final class FlowControlTests: XCTestCase {
                 UInt64(byteCount),
                 "MAX_DATA must move past the bytes that were dropped"
             )
-            connection.currentPath = nil
+            connection.currentPathID = nil
             stream.destroyFromExternalTest()
             connection.destroyFromExternalTest()
             done.fulfill()
@@ -634,7 +632,7 @@ final class FlowControlTests: XCTestCase {
                 zombies.find(streamID: streamID),
                 "Zombie should be retired once its final size is known"
             )
-            connection.currentPath = nil
+            connection.currentPathID = nil
             connection.destroyFromExternalTest()
             done.fulfill()
         }

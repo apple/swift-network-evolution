@@ -66,18 +66,17 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
     }
 
     override func tearDown() {
-        self.connection.currentPath = nil
+        self.connection.currentPathID = nil
+        // Destroying the connection destroys the paths it holds
         self.connection.context.onQueue {
-            for path in self.connection.multiplexingPaths.values {
-                path.destroyFromExternalTest()
-            }
+            self.connection.destroyFromExternalTest()
         }
-        self.connection.multiplexingPaths.removeAll()
     }
 
     // Builds a path open for sending, backed by a lower harness, with its DCID registered in
     // `remoteCIDs` so it can be retired. Mirrors `MigrationTests.makePath`.
-    private func makePath(dcid: QUICConnectionID, sequenceNumber: UInt64, validated: Bool) -> QUICPath {
+    private func makePath(dcid: QUICConnectionID, sequenceNumber: UInt64, validated: Bool) -> MultiplexingPathIdentifier
+    {
         let (lower, lowerLinkage) = storage.createDatagramLowerHarness(
             identifier: "\(sequenceNumber)",
             context: .implicitContext
@@ -95,8 +94,12 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
             path.changeState(to: .validated)
         }
         _ = try? path.attachLowerProtocol(lowerLinkage.base)
+        let upperLinkage = path.asUpperLinkage()
+        // The path is reached through the connection's table, so it is in the table before its lower
+        // protocol is given the linkage that leads back to it
+        let pathID = connection.addTestPath(path)
         try? lowerLinkage.base.invokeAttachUpperProtocol(
-            path.asUpperLinkage(),
+            upperLinkage,
             remote: nil,
             local: nil,
             parameters: nil,
@@ -107,7 +110,7 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
             connectionID: dcid,
             token: QUICStatelessResetToken(Array(repeating: UInt8(sequenceNumber & 0xff), count: 16))!
         )
-        return path
+        return pathID
     }
 
     // Mirrors `RecoveryTests.sentPacket`: records a packet as sent and in flight so the recovery
@@ -129,13 +132,11 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
         connection.context.async {
             let currentPath = self.makePath(dcid: Self.pathACID, sequenceNumber: 1, validated: false)
             let waitingPath = self.makePath(dcid: Self.pathBCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[waitingPath.pathIdentifier] = waitingPath
+            self.connection.currentPathID = currentPath
 
             self.connection.fromExternal { eventContext in
-                currentPath.beginValidation(in: &eventContext)
-                waitingPath.beginValidation(in: &eventContext)
+                self.connection.testPath(currentPath) { $0.beginValidation(in: &eventContext) }
+                self.connection.testPath(waitingPath) { $0.beginValidation(in: &eventContext) }
                 // `sendFrames(in:)` bails out before building a packet if nothing is already
                 // queued, which is exactly where `addPathChallenge` would run -- so queue
                 // something trivial first, mirroring what `Migration.migrate` does.
@@ -143,8 +144,8 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
                 self.connection.sendFrames(in: &eventContext)
             }
 
-            XCTAssertEqual(currentPath.challengesSent, 1)
-            XCTAssertEqual(waitingPath.challengesSent, 1)
+            XCTAssertEqual(self.connection.testPath(currentPath) { $0.challengesSent }, 1)
+            XCTAssertEqual(self.connection.testPath(waitingPath) { $0.challengesSent }, 1)
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -158,23 +159,21 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
         connection.context.async {
             let currentPath = self.makePath(dcid: Self.pathACID, sequenceNumber: 1, validated: false)
             let waitingPath = self.makePath(dcid: Self.pathBCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[waitingPath.pathIdentifier] = waitingPath
+            self.connection.currentPathID = currentPath
 
             self.connection.fromExternal { eventContext in
-                currentPath.beginValidation(in: &eventContext)
-                waitingPath.beginValidation(in: &eventContext)
+                self.connection.testPath(currentPath) { $0.beginValidation(in: &eventContext) }
+                self.connection.testPath(waitingPath) { $0.beginValidation(in: &eventContext) }
                 // Simulate "a received frame unblocked a stream", which is what makes
                 // `inboundStopping` decide there is something to flush. The nested `sendFrames(in:)`
                 // still bails without a packet to build, so queue something trivial too.
                 self.connection.applicationPendingItems.triggerAllStreamsUnblocked = true
                 self.connection.withPendingItems(for: .applicationData) { $0.ping = true }
-                self.connection.inboundStopping(path: currentPath.pathIdentifier, in: &eventContext)
+                self.connection.inboundStopping(path: currentPath, in: &eventContext)
             }
 
-            XCTAssertEqual(currentPath.challengesSent, 1)
-            XCTAssertEqual(waitingPath.challengesSent, 1)
+            XCTAssertEqual(self.connection.testPath(currentPath) { $0.challengesSent }, 1)
+            XCTAssertEqual(self.connection.testPath(waitingPath) { $0.challengesSent }, 1)
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -188,13 +187,11 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
         connection.context.async {
             let currentPath = self.makePath(dcid: Self.pathACID, sequenceNumber: 1, validated: false)
             let waitingPath = self.makePath(dcid: Self.pathBCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[waitingPath.pathIdentifier] = waitingPath
+            self.connection.currentPathID = currentPath
 
             self.connection.fromExternal { eventContext in
-                currentPath.beginValidation(in: &eventContext)
-                waitingPath.beginValidation(in: &eventContext)
+                self.connection.testPath(currentPath) { $0.beginValidation(in: &eventContext) }
+                self.connection.testPath(waitingPath) { $0.beginValidation(in: &eventContext) }
             }
 
             // Record an outstanding ack-eliciting packet on `currentPath` so the recovery timer
@@ -205,15 +202,15 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
             packet.isAckEliciting = true
             packet.totalLength = 20 + 96
             packet.transmittedItems.ping = true
-            packet.sentPath = currentPath.pathIdentifier
+            packet.sentPath = currentPath
             self.recordSentPacket(packet)
 
             self.connection.fromExternal { eventContext in
                 self.connection.fireRecoveryTimer(at: NetworkClock.Instant.systemNow, in: &eventContext)
             }
 
-            XCTAssertEqual(currentPath.challengesSent, 1)
-            XCTAssertEqual(waitingPath.challengesSent, 1)
+            XCTAssertEqual(self.connection.testPath(currentPath) { $0.challengesSent }, 1)
+            XCTAssertEqual(self.connection.testPath(waitingPath) { $0.challengesSent }, 1)
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -227,13 +224,11 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
         connection.context.async {
             let currentPath = self.makePath(dcid: Self.pathACID, sequenceNumber: 1, validated: false)
             let waitingPath = self.makePath(dcid: Self.pathBCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[waitingPath.pathIdentifier] = waitingPath
+            self.connection.currentPathID = currentPath
 
             self.connection.fromExternal { eventContext in
-                currentPath.beginValidation(in: &eventContext)
-                waitingPath.beginValidation(in: &eventContext)
+                self.connection.testPath(currentPath) { $0.beginValidation(in: &eventContext) }
+                self.connection.testPath(waitingPath) { $0.beginValidation(in: &eventContext) }
             }
 
             // Make the client owe the peer a delayed ACK for `.applicationData`, so the timer has
@@ -248,8 +243,8 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
                 self.connection.fireDelayedAckTimer(at: .systemNow, in: &eventContext)
             }
 
-            XCTAssertEqual(currentPath.challengesSent, 1)
-            XCTAssertEqual(waitingPath.challengesSent, 1)
+            XCTAssertEqual(self.connection.testPath(currentPath) { $0.challengesSent }, 1)
+            XCTAssertEqual(self.connection.testPath(waitingPath) { $0.challengesSent }, 1)
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -265,19 +260,18 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
             let currentPath = self.makePath(dcid: MigrationTests.oldCID, sequenceNumber: 1, validated: true)
             let firstPath = self.makePath(dcid: MigrationTests.newCID, sequenceNumber: 2, validated: false)
             let secondPath = self.makePath(dcid: probeCID, sequenceNumber: 3, validated: false)
-            self.connection.currentPath = currentPath
+            self.connection.currentPathID = currentPath
             for path in [currentPath, firstPath, secondPath] {
-                self.connection.multiplexingPaths[path.pathIdentifier] = path
             }
 
             self.connection.fromExternal { eventContext in
-                firstPath.beginValidation(in: &eventContext)
-                secondPath.beginValidation(in: &eventContext)
+                self.connection.testPath(firstPath) { $0.beginValidation(in: &eventContext) }
+                self.connection.testPath(secondPath) { $0.beginValidation(in: &eventContext) }
                 self.connection.sendFrames(on: firstPath, in: &eventContext)
             }
 
-            XCTAssertEqual(firstPath.challengesSent, 1)
-            XCTAssertEqual(secondPath.challengesSent, 1)
+            XCTAssertEqual(self.connection.testPath(firstPath) { $0.challengesSent }, 1)
+            XCTAssertEqual(self.connection.testPath(secondPath) { $0.challengesSent }, 1)
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)

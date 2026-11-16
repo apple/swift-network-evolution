@@ -175,6 +175,15 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
             let readApplicationData = readApplicationBytes.withUnsafeBytes { [UInt8]($0) }
             XCTAssertEqual(inputPacketData, readApplicationData, "Failed to read expected multiplexed input data")
 
+            // Reading the datagram serviced it once. The read that found nothing more must not service
+            // again: that is a whole pass over the received datagrams for no datagrams.
+            XCTAssertGreaterThan(instance.receivedServicePasses, 0, "The received datagram was never serviced")
+            XCTAssertEqual(
+                instance.emptyReceivedServicePasses,
+                0,
+                "The protocol was asked to service received datagrams when there were none"
+            )
+
             instance.triggerNewFlowCreation()
             XCTAssertEqual(listenerHarness.upperHarnesses.count, 1, "Listener expects to have 1 inbound flows")
 

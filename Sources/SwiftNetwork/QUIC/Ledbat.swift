@@ -71,7 +71,6 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
     @discardableResult
     mutating func packetLost(
         state: inout CongestionControlState,
-        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -113,7 +112,7 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
     mutating func ackEnd(
         state: inout CongestionControlState,
         rtt: borrowing RTT,
-        path: QUICPath?,
+        pacer: inout Pacer,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -230,7 +229,6 @@ struct Ledbat: CongestionControlProtocol, CubicLikeProtocol {
 
     mutating func processECN(
         state: inout CongestionControlState,
-        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,

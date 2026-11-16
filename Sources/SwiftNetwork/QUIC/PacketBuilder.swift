@@ -58,7 +58,7 @@ extension Packet {
         number: PacketNumber,
         lastAcked: PacketNumber,
         keyState: PacketKeyState,
-        path: QUICPath,
+        path: borrowing QUICPath,
         tagSize: UInt8,
         pendingItems: inout PendingItems,
         sentPacketRecord: inout SentPacketRecord,

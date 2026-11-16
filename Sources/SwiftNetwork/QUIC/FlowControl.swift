@@ -679,14 +679,15 @@ extension QUICStreamInstance {
     fileprivate func maximumUnreadOutboundBytesAllowed(connection: QUICConnection) -> UInt64 {
         var minMSS: UInt64 = UInt64(Constants.initialMSS)
         var allowedCCWindow: UInt64 = 0
-        connection.withCurrentPath { path in
-            let pathMSS = path.mss
+        // The current path may be out of the path table, in the middle of a send or an ACK, so this
+        // reads what was true when it was last put back.
+        let currentPathState = connection.currentPathState
+        if currentPathState.mss > 0 {
+            let pathMSS = currentPathState.mss
             if pathMSS < minMSS {
                 minMSS = UInt64(pathMSS)
             }
-
-            allowedCCWindow += path.congestionControlAvailableCongestionWindow
-            return
+            allowedCCWindow += currentPathState.availableCongestionWindow
         }
 
         let guaranteedQueueLength = FlowControlGlobals.sendQueueFactor * minMSS
@@ -885,12 +886,12 @@ extension QUICStreamInstance {
         // Here, we estimate if the bandwidth measured in this RTT
         // is more than a certain value of the bandwidth measured
         // in the previous RTT.
-        let rtt = connection.currentPath?.smoothedRTT ?? .zero
+        let rtt = connection.currentPathState.smoothedRTT
         if now >= receiveHighWaterMarkTime.advanced(by: rtt) {
             let receiveHighWaterMarkPreviousCount = flowControlStreamState.receiveHighWaterMarkPreviousCount
             var newPreviousCount = receiveHighWaterMarkPreviousCount
             if receiveHighWaterMarkCount > receiveHighWaterMarkPreviousCount {
-                let mss = UInt64(connection.currentPath?.mss ?? 0)
+                let mss = UInt64(connection.currentPathState.mss)
                 let shift: Int
                 if receiveHighWaterMarkCount
                     > (receiveHighWaterMarkPreviousCount + (receiveHighWaterMarkPreviousCount >> 1))

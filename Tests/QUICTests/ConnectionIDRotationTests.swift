@@ -47,23 +47,20 @@ final class ConnectionIDRotationTests: XCTestCase {
     }
 
     override func tearDown() {
-        self.connection.currentPath = nil
-        // The paths built by `makePath` outlive the test body, so release them.
+        self.connection.currentPathID = nil
+        // The paths built by `makePath` outlive the test body, and destroying the connection releases them.
         self.connection.context.onQueue {
-            for path in self.connection.multiplexingPaths.values {
-                path.destroyFromExternalTest()
-            }
+            self.connection.destroyFromExternalTest()
         }
-        self.connection.multiplexingPaths.removeAll()
     }
 
     // Builds a path with `dcid` assigned and registered in `remoteCIDs`, so it mirrors an active
     // path using that CID. Processing NEW_CONNECTION_ID frames doesn't send anything, so the path
-    // needs no lower protocol. The path is registered in `multiplexingPaths` so `tearDown`
+    // needs no lower protocol. The path is registered in the connection's path table so `tearDown`
     // releases it.
-    private func makePath(dcid: QUICConnectionID, sequenceNumber: UInt64, used: Bool) -> QUICPath {
+    private func makePath(dcid: QUICConnectionID, sequenceNumber: UInt64, used: Bool) -> MultiplexingPathIdentifier {
         // Every caller builds its paths from inside `context.async`, so this runs on the context.
-        let path = QUICPath.makeFromExternalTest(parent: self.connection)
+        var path = QUICPath.makeFromExternalTest(parent: self.connection)
         path.set(interface: nil, priority: 1, isInitial: true)  // -> .routeEstablished
         connection.fromExternal { eventContext in
             path.assignDCID(dcid, in: &eventContext)  // -> .cidAssigned (open for sending)
@@ -74,8 +71,7 @@ final class ConnectionIDRotationTests: XCTestCase {
             token: QUICStatelessResetToken(),
             used: used
         )
-        connection.multiplexingPaths[path.pathIdentifier] = path
-        return path
+        return connection.addTestPath(path)
     }
 
     // A RETIRE_CONNECTION_ID frame only leaves the queue once it is sent, and nothing is sent
@@ -89,7 +85,7 @@ final class ConnectionIDRotationTests: XCTestCase {
             let newCID = QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!
 
             let path = self.makePath(dcid: oldCID, sequenceNumber: 0, used: true)
-            self.connection.currentPath = path
+            self.connection.currentPathID = path
 
             let retireLimit = 2 * self.connection.remoteCIDs.activeConnectionIDLimit
             let frameCount = UInt64(4 * retireLimit)
@@ -173,7 +169,7 @@ final class ConnectionIDRotationTests: XCTestCase {
         connection.context.async {
             let oldCID = QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!
             let path = self.makePath(dcid: oldCID, sequenceNumber: 0, used: true)
-            self.connection.currentPath = path
+            self.connection.currentPathID = path
 
             let retireLimit = 2 * self.connection.remoteCIDs.activeConnectionIDLimit
             let threshold = UInt64(retireLimit) + 1
@@ -209,7 +205,7 @@ final class ConnectionIDRotationTests: XCTestCase {
         connection.context.async {
             let oldCID = QUICConnectionID([0xA1, 0xA2, 0xA3, 0xA4])!
             let path = self.makePath(dcid: oldCID, sequenceNumber: 0, used: true)
-            self.connection.currentPath = path
+            self.connection.currentPathID = path
 
             let retireLimit = 2 * self.connection.remoteCIDs.activeConnectionIDLimit
             let threshold = UInt64(retireLimit) + 1
@@ -262,7 +258,7 @@ final class ConnectionIDRotationTests: XCTestCase {
             let newCID = QUICConnectionID([0xB1, 0xB2, 0xB3, 0xB4])!
 
             let path = self.makePath(dcid: oldCID, sequenceNumber: 0, used: true)
-            self.connection.currentPath = path
+            self.connection.currentPathID = path
 
             XCTAssertEqual(
                 self.connection.remoteCIDs.count,
@@ -285,7 +281,7 @@ final class ConnectionIDRotationTests: XCTestCase {
                 "Connection fatally closed instead of using the CID its own frame supplied"
             )
             XCTAssertEqual(
-                self.connection.currentPath?.dcid,
+                self.connection.withCurrentPath { (path: inout QUICPath) in path.dcid } ?? nil,
                 newCID,
                 "Path should be re-pointed to the new CID"
             )

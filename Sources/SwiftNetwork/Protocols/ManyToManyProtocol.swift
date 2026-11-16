@@ -34,7 +34,7 @@ internal import os
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol where Flow: MultiplexedFlow {
-    associatedtype Path: MultiplexingPath
+    associatedtype Path: ~Copyable, MultiplexingPath
 
     var inboundFlowLinkage: UpperProtocol { get set }
 
@@ -48,7 +48,23 @@ public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol whe
 
     /// Adds a flow to the table. Conformers implement this by inserting into their stored table.
     func insertFlow(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier)
-    var multiplexingPaths: [MultiplexingPathIdentifier: Path] { get set }
+
+    /// Lends out the table that holds this protocol's paths.
+    ///
+    /// Conformers implement this by passing their stored table to `body`. The table is exclusively
+    /// accessed while `body` runs.
+    func withMultiplexedPaths<R: ~Copyable, E: Error>(
+        _ body: (inout MultiplexedPathTable<Path>) throws(E) -> R
+    ) throws(E) -> R
+
+    /// Adds a path to the table. Conformers implement this by inserting into their stored table.
+    func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier)
+
+    /// Whether a path is being borrowed from the table. Conformers store the flag; `withPath` sets it.
+    ///
+    /// Borrowing a path holds the table exclusively, so a lookup from inside a borrow would conflict with it.
+    /// The flag lets the lookup see that and get no path, instead.
+    var isPathBorrowed: Bool { get nonmutating set }
 
     // MARK: Connection-wide calls to implement
     func setup(
@@ -220,6 +236,21 @@ public protocol ManyToManyApplicationDatagramProtocol: ManyToManyDatapathProtoco
 public protocol ManyToManyOutboundDatagramProtocol: ManyToManyDatapathProtocol
 where Path.LowerProtocol: OutboundDatagramLinkage {
     func serviceReceivedDatagrams(path: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext)
+
+    /// Reads what the lower protocol of a path has for it, and has the protocol service it.
+    ///
+    /// A path is reached by borrowing it from the protocol's path table, so these run on the protocol,
+    /// which borrows the path only as long as it needs it, instead of on the path.
+    func handleInboundDataAvailableEvent(
+        path: MultiplexingPathIdentifier,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
+    func handleOutboundRoomAvailableEvent(
+        path: MultiplexingPathIdentifier,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    )
 }
 
 @_spi(ProtocolProvider)
@@ -345,7 +376,7 @@ extension MultiplexingPathIdentifier {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol MultiplexingPath: UpperProtocolHandler {
+public protocol MultiplexingPath: ~Copyable, UpperProtocolHandler {
     associatedtype ParentProtocol: ManyToManyProtocolHandler
     var lower: LowerProtocol { get set }
     var parentProtocol: ParentProtocol { get }
@@ -358,7 +389,7 @@ public protocol MultiplexingPath: UpperProtocolHandler {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol MultiplexingDatapathPath<LowerProtocol>: MultiplexingPath
+public protocol MultiplexingDatapathPath<LowerProtocol>: ~Copyable, MultiplexingPath
 where LowerProtocol: OutboundDataLinkage, ParentProtocol: ManyToManyDatapathProtocol {}
 
 // MARK: Implementations
@@ -497,17 +528,19 @@ extension ManyToManyProtocolHandler {
     where Path.ParentProtocol == Self {
         var newPath = Path(parent: self, in: &eventContext)
         _ = try newPath.attachLowerProtocol(lowerProtocol)
-        let isFirstPath = multiplexingPaths.isEmpty
+        let isFirstPath = hasNoPaths
         if isFirstPath { newPath.pathIsPrimary = true }
         if path?.hasMigrationInfo == true { newPath.pathHasMigrationInfo = true }
-        multiplexingPaths[newPath.pathIdentifier] = newPath
+        let newPathID = newPath.pathIdentifier
+        let newPathIsPrimary = newPath.pathIsPrimary
+        let upperLinkage = newPath.asUpperLinkage()
+        insertPath(newPath, for: newPathID)
         do throws(NetworkError) {
-            try setup(path: newPath.pathIdentifier, remote: remote, local: local, parameters: parameters, path: path)
+            try setup(path: newPathID, remote: remote, local: local, parameters: parameters, path: path)
         } catch {
-            multiplexingPaths.removeValue(forKey: newPath.pathIdentifier)
+            _ = removePath(newPathID)
             throw error
         }
-        let upperLinkage = newPath.asUpperLinkage()
         // Bind the lower protocol's upper side before announcing the path. Announcing it can take
         // the protocol straight into `invokeEstablish`, and a lower protocol that connects
         // synchronously delivers its connected event back up the moment it is asked to connect. If
@@ -522,9 +555,9 @@ extension ManyToManyProtocolHandler {
         )
         if !isFirstPath {
             handlePathChanged(
-                path: newPath.pathIdentifier,
+                path: newPathID,
                 event: .available(local: local, remote: remote, path: path, parameters: parameters),
-                isPrimary: newPath.pathIsPrimary,
+                isPrimary: newPathIsPrimary,
                 in: &eventContext
             )
         }
@@ -538,8 +571,8 @@ extension ManyToManyProtocolHandler {
             }
         } else {
             connectRequested(in: &eventContext)
-            for path in multiplexingPaths.values {
-                path.invokeConnect(in: &eventContext)
+            allPathIdentifiers { pathID in
+                invokeConnect(path: pathID, in: &eventContext)
             }
         }
     }
@@ -620,42 +653,97 @@ extension ManyToManyProtocolHandler {
         withMultiplexedFlows { $0.forEachFlow(closure) }
     }
 
-    public func path(for pathID: MultiplexingPathIdentifier) -> Path? {
-        multiplexingPaths[pathID]
+    /// Lends out the path with the given identifier, in place, or returns `nil` if there is none or a path is
+    /// already being borrowed.
+    ///
+    /// The table is exclusively accessed while `body` runs, so a lookup of any path from inside `body` gets
+    /// `nil`; `body` has to work with the path it is given.
+    @inline(always)
+    public func withPath<R: ~Copyable, E: Error>(
+        _ pathID: MultiplexingPathIdentifier,
+        _ body: (inout Path) throws(E) -> R
+    ) throws(E) -> R? {
+        let result: R?? = try withUnborrowedPaths { (table: inout MultiplexedPathTable<Path>) throws(E) -> R? in
+            try table.withPath(pathID, body)
+        }
+        return result ?? nil
     }
 
-    public var somePath: Path? {
-        multiplexingPaths.first?.value
+    /// Lends out the path table, or returns `nil` if a path is being borrowed from it.
+    ///
+    /// A borrowed path holds the table exclusively, so reaching the table from inside the borrow would
+    /// conflict with it. Everything that reaches the table goes through here, so that it finds the
+    /// borrow and gets nothing, which callers treat as no path.
+    @inline(always)
+    public func withUnborrowedPaths<R: ~Copyable, E: Error>(
+        _ body: (inout MultiplexedPathTable<Path>) throws(E) -> R
+    ) throws(E) -> R? {
+        guard !isPathBorrowed else { return nil }
+        isPathBorrowed = true
+        defer { isPathBorrowed = false }
+        return try withMultiplexedPaths(body)
+    }
+
+    /// The identifiers of the paths, or none while a path is being borrowed.
+    public var pathIdentifiersNow: [MultiplexingPathIdentifier] {
+        withUnborrowedPaths { $0.pathIdentifiers } ?? []
+    }
+
+    public func hasPath(_ pathID: MultiplexingPathIdentifier) -> Bool {
+        withUnborrowedPaths { $0.contains(pathID) } ?? false
+    }
+
+    public var hasNoPaths: Bool {
+        withUnborrowedPaths { $0.isEmpty } ?? false
+    }
+
+    public var pathCount: Int {
+        withUnborrowedPaths { $0.count } ?? 0
+    }
+
+    /// Removes the path from the table and hands it to the caller. A path cannot be removed while a path
+    /// is being borrowed.
+    public func removePath(_ pathID: MultiplexingPathIdentifier) -> Path? {
+        guard let removed = withUnborrowedPaths({ (table: inout MultiplexedPathTable<Path>) in table.remove(pathID) })
+        else {
+            assertionFailure("Path \(pathID) was removed while a path was borrowed")
+            return nil
+        }
+        return removed
     }
 
     public var somePathIdentifier: MultiplexingPathIdentifier? {
-        multiplexingPaths.first?.value.pathIdentifier
+        withUnborrowedPaths { $0.firstPathIdentifier } ?? nil
     }
 
+    /// Calls `closure` with the identifier of each path in turn. The identifiers are collected first,
+    /// so `closure` can look paths up or remove them.
     public func allPathIdentifiers(_ closure: (MultiplexingPathIdentifier) -> Void) {
-        multiplexingPaths.keys.forEach(closure)
+        for pathID in pathIdentifiersNow {
+            closure(pathID)
+        }
     }
 
-    public func applyToAllPaths(_ closure: (Path) -> Void) {
-        multiplexingPaths.values.forEach(closure)
+    /// Lends out each path in turn, skipping one that is already being borrowed. The table is not held
+    /// while `closure` runs.
+    public func applyToAllPaths(_ closure: (inout Path) -> Void) {
+        for pathID in pathIdentifiersNow {
+            _ = withPath(pathID, closure)
+        }
     }
 
     public func somePathIsConnected(in eventContext: inout NetworkContext.EventContext) -> Bool {
-        for path in multiplexingPaths.values {
-            if path.lower.protocolIsConnected(in: &eventContext) {
+        for pathID in pathIdentifiersNow {
+            if withPath(pathID, { (path: inout Path) in path.lower.protocolIsConnected(in: &eventContext) }) == true {
                 return true
             }
         }
         return false
     }
 
-    fileprivate mutating func resetPrimaryPath(newPrimary: MultiplexingPathIdentifier) {
-        allPathIdentifiers { pathIdentifier in
-            if pathIdentifier == newPrimary {
-                multiplexingPaths[pathIdentifier]?.pathIsPrimary = true
-            } else {
-                multiplexingPaths[pathIdentifier]?.pathIsPrimary = false
-            }
+    fileprivate func resetPrimaryPath(newPrimary: MultiplexingPathIdentifier) {
+        applyToAllPaths { (path: inout Path) in
+            path.pathIsPrimary = path.pathIdentifier == newPrimary
         }
     }
 
@@ -666,8 +754,9 @@ extension ManyToManyProtocolHandler {
     ) {
         // Don't validate upper, can pass through
         if self.handleApplicationEvent(event, in: &eventContext) == .consumed { return }
-        applyToAllPaths { path in
-            path.lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
+        for pathID in pathIdentifiersNow {
+            guard let lower = withPath(pathID, { (path: inout Path) in path.lower }) else { continue }
+            lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
         }
     }
 }
@@ -778,8 +867,9 @@ extension ManyToManyProtocolHandler {
     ) {
         // Don't validate upper, can pass through
         if handleApplicationEvent(flow: flowID, event: event, in: &eventContext) == .consumed { return }
-        applyToAllPaths { path in
-            path.lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
+        for pathID in pathIdentifiersNow {
+            guard let lower = withPath(pathID, { (path: inout Path) in path.lower }) else { continue }
+            lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
         }
     }
 
@@ -982,10 +1072,7 @@ extension HomogeneousManyToManyProtocolHandler {
             return
         }
         teardown(in: &eventContext)
-        allPathIdentifiers { pathIdentifier in
-            multiplexingPaths[pathIdentifier]?.destroy(in: &eventContext)
-        }
-        multiplexingPaths.removeAll()
+        destroyAllPaths(in: &eventContext)
         unregisterEventManager(in: &eventContext)
     }
 
@@ -1055,10 +1142,7 @@ extension HeterogeneousManyToManyProtocolHandler {
             return
         }
         teardown(in: &eventContext)
-        allPathIdentifiers { pathIdentifier in
-            multiplexingPaths[pathIdentifier]?.destroy(in: &eventContext)
-        }
-        multiplexingPaths.removeAll()
+        destroyAllPaths(in: &eventContext)
         unregisterEventManager(in: &eventContext)
     }
 
@@ -1496,8 +1580,10 @@ extension MultiplexedFlow where Self: ~Copyable {
         if parentProtocol.handleApplicationEvent(flow: flowIdentifier, event: event, in: &eventContext) == .consumed {
             return
         }
-        parentProtocol.applyToAllPaths { path in
-            path.lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
+        for pathID in parentProtocol.pathIdentifiersNow {
+            guard let lower = parentProtocol.withPath(pathID, { (path: inout ParentProtocol.Path) in path.lower })
+            else { continue }
+            lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
         }
     }
 
@@ -2197,19 +2283,7 @@ public struct MultiplexedDatagramFlow<
 }
 
 @available(Network 0.1.0, *)
-extension MultiplexingPath {
-    internal func validate(
-        lower lowerProtocol: InstanceIdentifier,
-        _ label: String
-    ) throws(ProtocolInstanceError) {
-        #if DEBUG
-        guard !lowerProtocol.isNone else {
-            Logger.proto.fault("Received \'\(label)\' from incorrect lower protocol")
-            throw ProtocolInstanceError.invalidLowerProtocol
-        }
-        #endif
-    }
-
+extension MultiplexingPath where Self: ~Copyable {
     public var context: NetworkContext { parentProtocol.context }
 
     public mutating func attachLowerProtocol(
@@ -2222,24 +2296,40 @@ extension MultiplexingPath {
         return nil
     }
 
-    fileprivate func invokeConnect() {
-        lower.invokeConnect(for: self.identifier, in: &context.eventContext)
-    }
-
-    fileprivate func invokeConnect(in eventContext: inout NetworkContext.EventContext) {
-        lower.invokeConnect(for: self.identifier, in: &eventContext)
-    }
-
-    fileprivate func invokeDisconnect(error: NetworkError?) {
-        lower.invokeDisconnect(error: error, for: self.identifier, in: &context.eventContext)
-    }
-
-    fileprivate func invokeDetach() {
-        try? lower.invokeDetach(for: self.identifier, in: &context.eventContext)
-    }
-
     fileprivate func invokeDetach(in eventContext: inout NetworkContext.EventContext) {
         try? lower.invokeDetach(for: self.identifier, in: &eventContext)
+    }
+
+    // The events a lower protocol delivers to a path are routed through the protocol, which finds the
+    // path in its table. These forward there so that a path that is held on its own still handles
+    // them; they must not be called while the path is borrowed from the table.
+
+    public mutating func handleConnectedEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        parentProtocol.handleConnectedEvent(path: pathIdentifier, for: instance, in: &eventContext)
+    }
+
+    public mutating func handleDisconnectedEvent(
+        error: NetworkError?,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        parentProtocol.handleDisconnectedEvent(path: pathIdentifier, error: error, for: instance, in: &eventContext)
+    }
+
+    public mutating func handleNetworkProtocolEvent(
+        event: NetworkProtocolEvent,
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        parentProtocol.handleNetworkProtocolEvent(
+            path: pathIdentifier,
+            event: event,
+            for: instance,
+            in: &eventContext
+        )
     }
 
     /// Detaches the lower protocol and releases this path's own event state.
@@ -2250,65 +2340,100 @@ extension MultiplexingPath {
     }
 }
 
+// MARK: Events from a path's lower protocol
+//
+// A path lives in its protocol's table, and the table is exclusively accessed while the path is
+// borrowed. The events below do their work on the protocol, which looks at the table again, so they
+// run on the protocol and borrow the path only for as long as they need it, never while calling out.
 @available(Network 0.1.0, *)
-extension MultiplexingPath {
+extension ManyToManyProtocolHandler {
+    internal func validate(
+        lowerOfPath lowerProtocol: InstanceIdentifier,
+        _ label: String
+    ) throws(ProtocolInstanceError) {
+        #if DEBUG
+        guard !lowerProtocol.isNone else {
+            Logger.proto.fault("Received \'\(label)\' from incorrect lower protocol")
+            throw ProtocolInstanceError.invalidLowerProtocol
+        }
+        #endif
+    }
+
+    /// Releases every path: detaches its lower protocol and releases its event state. A path that is being
+    /// borrowed is left for whoever is borrowing it.
+    public func destroyAllPaths(in eventContext: inout NetworkContext.EventContext) {
+        allPathIdentifiers { pathID in
+            _ = withPath(pathID) { (path: inout Path) in
+                path.destroy(in: &eventContext)
+            }
+        }
+        _ = withUnborrowedPaths { $0.removeAll() }
+        // A path that is being borrowed is left to whoever is borrowing it, which is not expected here: nothing
+        // that borrows a path calls back into the stack to tear it down.
+        assert(hasNoPaths, "A path was still being borrowed when the protocol released its paths")
+    }
+
     public func handleConnectedEvent(
+        path pathID: MultiplexingPathIdentifier,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        do { try validate(lower: instance, #function) } catch { return }
-        if parentProtocol.canCallConnect(requested: false, in: &eventContext) {
-            parentProtocol.connect(in: &eventContext)
+        do { try validate(lowerOfPath: instance, #function) } catch { return }
+        guard let isPrimary = withPath(pathID, { (path: inout Path) in path.pathIsPrimary }) else { return }
+        if canCallConnect(requested: false, in: &eventContext) {
+            connect(in: &eventContext)
         }
-        parentProtocol.handleConnectedEvent(path: pathIdentifier, in: &eventContext)
-        parentProtocol.handlePathChanged(
-            path: pathIdentifier,
+        handleConnectedEvent(path: pathID, in: &eventContext)
+        handlePathChanged(
+            path: pathID,
             event: .established,
-            isPrimary: pathIsPrimary,
+            isPrimary: isPrimary,
             in: &eventContext
         )
     }
 
     public func handleDisconnectedEvent(
+        path pathID: MultiplexingPathIdentifier,
         error: NetworkError?,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        do { try validate(lower: instance, #function) } catch { return }
-        parentProtocol.handlePathChanged(path: pathIdentifier, event: .unavailable, isPrimary: false, in: &eventContext)
-        parentProtocol.handleDisconnectedEvent(path: pathIdentifier, error: error, in: &eventContext)
+        do { try validate(lowerOfPath: instance, #function) } catch { return }
+        handlePathChanged(path: pathID, event: .unavailable, isPrimary: false, in: &eventContext)
+        handleDisconnectedEvent(path: pathID, error: error, in: &eventContext)
     }
 
-    public mutating func handleNetworkProtocolEvent(
+    public func handleNetworkProtocolEvent(
+        path pathID: MultiplexingPathIdentifier,
         event: NetworkProtocolEvent,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
         // Don't validate lower, can pass through
         if case .pathPrimaryChanged(let primary) = event.internalEvent {
-            if primary && !pathIsPrimary {
-                var parent = parentProtocol
-                parent.resetPrimaryPath(newPrimary: pathIdentifier)
+            guard let wasPrimary = withPath(pathID, { (path: inout Path) in path.pathIsPrimary }) else { return }
+            if primary && !wasPrimary {
+                resetPrimaryPath(newPrimary: pathID)
             } else if !primary {
-                pathIsPrimary = false
+                _ = withPath(pathID) { (path: inout Path) in path.pathIsPrimary = false }
             }
             let pathEvent: MultiplexingPathEvent =
-                isConnected(in: &eventContext)
+                withPath(pathID, { (path: inout Path) in path.isConnected(in: &eventContext) }) == true
                 ? .established : .available(local: nil, remote: nil, path: nil, parameters: nil)
-            parentProtocol.handlePathChanged(
-                path: pathIdentifier,
+            let isPrimary = withPath(pathID, { (path: inout Path) in path.pathIsPrimary }) ?? false
+            handlePathChanged(
+                path: pathID,
                 event: pathEvent,
-                isPrimary: pathIsPrimary,
+                isPrimary: isPrimary,
                 in: &eventContext
             )
             return
         }
 
-        if parentProtocol.handleNetworkProtocolEvent(path: pathIdentifier, event: event, in: &eventContext) == .consumed
-        {
+        if handleNetworkProtocolEvent(path: pathID, event: event, in: &eventContext) == .consumed {
             return
         }
-        parentProtocol.applyToAllFlows { flow in
+        applyToAllFlows { flow in
             flow.upper.deliverNetworkProtocolEvent(
                 originalInstance: instance,
                 selfInstance: flow.identifier,
@@ -2338,13 +2463,16 @@ extension ManyToManyProtocolHandler {
         path pathID: MultiplexingPathIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard let path = self.path(for: pathID) else { return }
-        path.lower.invokeConnect(for: path.identifier, in: &eventContext)
+        // The lower protocol is called once the path is no longer borrowed, since it can call back.
+        guard let (lower, identifier) = withPath(pathID, { (path: inout Path) in (path.lower, path.identifier) })
+        else { return }
+        lower.invokeConnect(for: identifier, in: &eventContext)
     }
 
     public func invokeDisconnect(path pathID: MultiplexingPathIdentifier, error: NetworkError? = nil) {
-        guard let path = self.path(for: pathID) else { return }
-        path.lower.invokeDisconnect(error: error, for: path.identifier, in: &context.eventContext)
+        guard let (lower, identifier) = withPath(pathID, { (path: inout Path) in (path.lower, path.identifier) })
+        else { return }
+        lower.invokeDisconnect(error: error, for: identifier, in: &context.eventContext)
     }
 
     public func invokeEstablish(
@@ -2567,11 +2695,81 @@ extension HeterogeneousManyToManyProtocolHandler {
     }
 }
 
+/// A path's queued datagrams, taken from it so they can be handed to its lower protocol once the path is
+/// no longer borrowed.
+@available(Network 0.1.0, *)
+struct QueuedLowerDatagrams<Lower: LowerProtocolLinkage>: ~Copyable {
+    let lower: Lower
+    let identifier: InstanceIdentifier
+    var datagrams: FrameArray
+}
+
 @available(Network 0.1.0, *)
 extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramProcessing {
-    public mutating func resumeReadingInboundDatagrams(path pathID: MultiplexingPathIdentifier) {
-        guard var path = self.path(for: pathID) else { return }
-        path.resumeReadingInboundDatagrams(in: &context.eventContext)
+    /// Hands the datagrams a path has queued to send to its lower protocol.
+    ///
+    /// The queue is taken while the path is borrowed and sent once it is not, since the lower protocol
+    /// can call back.
+    public func serviceLowerSendQueue(
+        path pathID: MultiplexingPathIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) where Path.LowerProtocol: OutboundDatagramLinkage {
+        let queued = withPath(pathID) { (path: inout Path) -> QueuedLowerDatagrams<Path.LowerProtocol>? in
+            guard !path.lowerSendQueue.isEmpty else { return nil }
+            return QueuedLowerDatagrams(
+                lower: path.lower,
+                identifier: path.identifier,
+                datagrams: path.lowerSendQueue.drainArrayKeepingCapacity()
+            )
+        }
+        guard let queued = consume queued, let queued = consume queued else { return }
+        try? queued.lower.invokeSendDatagrams(queued.datagrams, from: queued.identifier, in: &eventContext)
+    }
+
+    /// Reads the datagrams the lower protocol has for a path and has the protocol service them,
+    /// until the lower protocol has no more.
+    ///
+    /// Each step borrows the path only for as long as it needs it. Servicing the datagrams, and
+    /// sending whatever that queued, reach the protocol and the path table again, so they run with
+    /// nothing borrowed.
+    public func resumeReadingInboundDatagrams(
+        path pathID: MultiplexingPathIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        var readCount = 0
+        repeat {
+            // What the read left: how many datagrams it brought, and whether the receive queue holds any, which
+            // can include some from before. `nil` means the lower protocol failed the read.
+            let read = withPath(pathID) { (path: inout Path) -> (count: Int, hasQueued: Bool)? in
+                do throws(NetworkError) {
+                    let datagrams = try path.lower.invokeReceiveDatagrams(
+                        maximumDatagramCount: Int.max,
+                        for: path.identifier,
+                        in: &eventContext
+                    )
+                    var count = 0
+                    if let datagrams = consume datagrams {
+                        count = datagrams.count
+                        path.lowerReceiveQueue.add(frames: datagrams)
+                    }
+                    return (count, !path.lowerReceiveQueue.isEmpty)
+                } catch {
+                    return nil
+                }
+            }
+            guard let read, let (count, hasQueued) = read else { return }
+            readCount = count
+            // Servicing is not asked for when there is nothing to service: it is a whole pass over the
+            // received datagrams, ACKs and all.
+            if hasQueued {
+                serviceReceivedDatagrams(path: pathID, in: &eventContext)
+            }
+            serviceLowerSendQueue(path: pathID, in: &eventContext)
+        } while readCount != 0
+    }
+
+    public func resumeReadingInboundDatagrams(path pathID: MultiplexingPathIdentifier) {
+        resumeReadingInboundDatagrams(path: pathID, in: &context.eventContext)
     }
 
     public func getDatagramsToSend(
@@ -2596,11 +2794,13 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         minimumDatagramSize: Int,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
-        guard let path = self.path(for: pathID) else { throw NetworkError.posix(EINVAL) }
-        return try path.lower.invokeGetDatagramsToSend(
+        // Ask the lower protocol with the path no longer borrowed, since it can call back.
+        guard let (lower, identifier) = withPath(pathID, { (path: inout Path) in (path.lower, path.identifier) })
+        else { throw NetworkError.posix(EINVAL) }
+        return try lower.invokeGetDatagramsToSend(
             maximumDatagramCount: maximumDatagramCount,
             minimumDatagramSize: minimumDatagramSize,
-            for: path.identifier,
+            for: identifier,
             in: &eventContext
         )
     }
@@ -2609,16 +2809,18 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         path pathID: MultiplexingPathIdentifier,
         datagrams: consuming FrameArray
     ) throws(NetworkError) {
-        guard var path = self.path(for: pathID) else {
+        guard hasPath(pathID) else {
             datagrams.finalizeAllFramesAsFailed()
             throw NetworkError.posix(EINVAL)
         }
-        return try path.addToLowerSendQueue(datagrams)
+        var pendingDatagrams: FrameArray? = datagrams
+        try withPath(pathID) { (path: inout Path) throws(NetworkError) in
+            try path.addToLowerSendQueue(pendingDatagrams.take()!)
+        }
     }
 
     public func sendEnqueuedOutboundDatagrams(path pathID: MultiplexingPathIdentifier) throws(NetworkError) {
-        guard var path = self.path(for: pathID) else { throw NetworkError.posix(EINVAL) }
-        path.serviceLowerSendQueue(in: &context.eventContext)
+        try sendEnqueuedOutboundDatagrams(path: pathID, in: &context.eventContext)
     }
 
     /// Services a path's send queue using an event context the caller already holds.
@@ -2626,27 +2828,19 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         path pathID: MultiplexingPathIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
-        guard var path = self.path(for: pathID) else { throw NetworkError.posix(EINVAL) }
-        path.serviceLowerSendQueue(in: &eventContext)
+        guard hasPath(pathID) else { throw NetworkError.posix(EINVAL) }
+        serviceLowerSendQueue(path: pathID, in: &eventContext)
     }
 
+    /// Lends out the datagrams received on a path. The path is borrowed for the whole of `body`, so
+    /// `body` must not reach the path table again.
     public func accessReceivedDatagrams(path pathID: MultiplexingPathIdentifier, _ body: (inout FrameArray) -> Void) {
-        guard var path = self.path(for: pathID) else {
-            log.error("Unknown path for id: \(pathID)")
-            return
+        let found: Void? = withPath(pathID) { (path: inout Path) in
+            body(&path.lowerReceiveQueue)
         }
-        body(&path.lowerReceiveQueue)
-    }
-
-    public func accessReceivedDatagrams(
-        path pathID: MultiplexingPathIdentifier,
-        _ body: (inout FrameArray, Path) -> Void
-    ) {
-        guard var path = self.path(for: pathID) else {
+        if found == nil {
             log.error("Unknown path for id: \(pathID)")
-            return
         }
-        body(&path.lowerReceiveQueue, path)
     }
 
     public func sendAllEnqueuedOutboundDatagrams(in eventContext: inout NetworkContext.EventContext) {
@@ -2654,33 +2848,33 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
             try? sendEnqueuedOutboundDatagrams(path: pathID, in: &eventContext)
         }
     }
-}
 
-@available(Network 0.1.0, *)
-extension MultiplexingDatapathPath where Self: AutomaticLowerDatagramProcessing {
-    public mutating func handleInboundDataAvailableEvent(
+    public func handleInboundDataAvailableEvent(
+        path pathID: MultiplexingPathIdentifier,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        do { try validate(lower: instance, #function) } catch { return }
-        handleInboundDataAvailableEvent(in: &eventContext)
+        do { try validate(lowerOfPath: instance, #function) } catch { return }
+        resumeReadingInboundDatagrams(path: pathID, in: &eventContext)
     }
 
-    public mutating func handleOutboundRoomAvailableEvent(
+    public func handleOutboundRoomAvailableEvent(
+        path pathID: MultiplexingPathIdentifier,
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        do { try validate(lower: instance, #function) } catch { return }
-        handleOutboundRoomAvailableEvent(in: &eventContext)
+        do { try validate(lowerOfPath: instance, #function) } catch { return }
+        serviceLowerSendQueue(path: pathID, in: &eventContext)
+        handleOutboundRoomAvailableEvent(path: pathID, in: &eventContext)
     }
 }
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-open class MultiplexingDatagramPath<
+public struct MultiplexingDatagramPath<
     ParentProtocol: ManyToManyOutboundDatagramProtocol,
     LinkageType: OutboundDatagramLinkage
->: MultiplexingDatapathPath,
+>: ~Copyable, MultiplexingDatapathPath,
     AutomaticLowerDatagramProcessing
 {
     public typealias ParentProtocol = ParentProtocol
@@ -2700,23 +2894,42 @@ open class MultiplexingDatagramPath<
 
     public var identifier: InstanceIdentifier
 
-    public func serviceLowerReceiveQueue(in eventContext: inout NetworkContext.EventContext) {
-        guard !lowerReceiveQueue.isEmpty else { return }
-        parentProtocol.serviceReceivedDatagrams(path: pathIdentifier, in: &eventContext)
+    /// The protocol services a path's received datagrams from `resumeReadingInboundDatagrams`, with
+    /// the path not borrowed, so there is nothing to do here.
+    public mutating func serviceLowerReceiveQueue(in eventContext: inout NetworkContext.EventContext) {}
+
+    /// The protocol is told about outbound room from `handleOutboundRoomAvailableEvent`, with the
+    /// path not borrowed, so there is nothing to do here.
+    public mutating func handleOutboundRoomAvailable(in eventContext: inout NetworkContext.EventContext) {}
+
+    // The events a lower protocol delivers to a path for data and room are handled on the protocol, which
+    // finds the path in its table. These forward there so that a path that is held on its own still handles
+    // them; they must not be called while the path is borrowed from the table.
+
+    public mutating func handleInboundDataAvailableEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        parentProtocol.handleInboundDataAvailableEvent(path: pathIdentifier, for: instance, in: &eventContext)
     }
 
-    public func handleOutboundRoomAvailable(in eventContext: inout NetworkContext.EventContext) {
-        parentProtocol.handleOutboundRoomAvailableEvent(path: pathIdentifier, in: &eventContext)
+    public mutating func handleOutboundRoomAvailableEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        parentProtocol.handleOutboundRoomAvailableEvent(path: pathIdentifier, for: instance, in: &eventContext)
     }
 
-    public required init(parent: ParentProtocol, in eventContext: inout NetworkContext.EventContext) {
+    public init(parent: ParentProtocol, in eventContext: inout NetworkContext.EventContext) {
         self.parentProtocol = parent
         identifier = .init(eventManager: &self.eventManager, in: &eventContext)
         identifier.setParentInstance(parent.identifier)
     }
 
-    /// To be overridden by subclasses
-    open func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage {
+    /// Builds the linkage that reaches this path from its lower protocol.
+    ///
+    /// Empty here; a protocol that wraps this path supplies its own.
+    public func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage {
         .init()
     }
 }

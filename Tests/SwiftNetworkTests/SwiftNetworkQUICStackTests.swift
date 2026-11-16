@@ -465,7 +465,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                 }
                 XCTAssertTrue(connection.isHandshakeConfirmed, "\(side) handshake not confirmed")
                 XCTAssertEqual(
-                    connection.currentPath?.state,
+                    connection.withCurrentPath { (path: inout QUICPath) in path.state },
                     .validated,
                     "\(side) handshake path not validated"
                 )
@@ -548,12 +548,13 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                 // and the rest by probing.
                 if let clientConnection = storage.quicInstance(for: clientQUICMultipathLinkage.base) {
                     XCTAssertEqual(
-                        clientConnection.multiplexingPaths.count,
+                        clientConnection.pathCount,
                         pathIndex,
                         "Unexpected path count after migration \(pathIndex)"
                     )
-                    for path in clientConnection.multiplexingPaths.values
-                    where path !== clientConnection.currentPath {
+                    let currentPathID = clientConnection.currentPathID
+                    clientConnection.applyToAllPaths { (path: inout QUICPath) in
+                        guard path.pathIdentifier != currentPathID else { return }
                         XCTAssertTrue(
                             path.isValidated,
                             "Path \(path.pathIdentifier) left in \(path.state) after migration \(pathIndex)"
@@ -994,7 +995,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                 let newPort = BridgeDatagramProtocol.BridgeInstance.nextGeneratedPort
                 let local = Endpoint(address: IPv4Address(QUICTestHarness.serverIPv4Address)!, port: newPort)
                 let unvalidated = Endpoint(address: IPv4Address([192, 0, 2, 1])!, port: 4433)
-                var newPath: QUICPath?
+                var newPath: MultiplexingPathIdentifier?
                 harness.onContext {
                     let bridge = harness.storage.createTestBridgeDatagramInstance()
                     let bridgeOptions = BridgeDatagramProtocol.options()
@@ -1021,7 +1022,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                         XCTFail("Failed to attach the new path: \(error)")
                         return
                     }
-                    newPath = server.multiplexingPaths.values.first { $0.localEndpoint?.port == newPort }
+                    newPath = server.pathIdentifier(localPort: newPort)
                 }
                 guard let newPath else {
                     XCTFail("New server path not found")
@@ -1047,7 +1048,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                         BridgeDatagramProtocol.BridgeInstance.injectDatagram(Frame(copyBuffer: forged), to: newPort)
                     }
                     injected += 1
-                    counted = harness.reached({ newPath.pathStatistics[.rxBytes] > 0 }, within: 1.0)
+                    counted = harness.reached({ server.pathStatistic(newPath, .rxBytes) > 0 }, within: 1.0)
                 }
                 XCTAssertTrue(counted, "The forged datagram never reached the new path")
                 XCTAssertEqual(
@@ -1063,9 +1064,9 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                 var sent = 0
                 var datagrams = 0
                 harness.onContext {
-                    received = newPath.pathStatistics[.rxBytes]
-                    sent = newPath.pathStatistics[.txBytes]
-                    datagrams = newPath.pathStatistics[.txPackets]
+                    received = server.pathStatistic(newPath, .rxBytes)
+                    sent = server.pathStatistic(newPath, .txBytes)
+                    datagrams = server.pathStatistic(newPath, .txPackets)
                 }
                 XCTAssertEqual(received, forged.count)
                 XCTAssertLessThanOrEqual(
@@ -1112,8 +1113,8 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
     // reports for each.
     struct FollowedPaths {
         let server: QUICConnection
-        let firstPath: QUICPath
-        let newPath: QUICPath
+        let firstPath: MultiplexingPathIdentifier
+        let newPath: MultiplexingPathIdentifier
         let firstPathInfo: QUICPathInfo
         let newPathInfo: QUICPathInfo
     }
@@ -1148,11 +1149,11 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         let newPort = BridgeDatagramProtocol.BridgeInstance.nextGeneratedPort
         let newRemoteAddress = IPv4Address([192, 0, 2, 1])!
         let newRemotePort: UInt16 = 4433
-        var firstPath: QUICPath?
-        var newPath: QUICPath?
+        var firstPath: MultiplexingPathIdentifier?
+        var newPath: MultiplexingPathIdentifier?
         harness.onContext {
             recorder.record(serverHarness)
-            firstPath = server.currentPath
+            firstPath = server.currentPathID
 
             let bridge = harness.storage.createTestBridgeDatagramInstance()
             let bridgeOptions = BridgeDatagramProtocol.options()
@@ -1179,13 +1180,18 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                 XCTFail("Failed to attach the new path: \(error)")
                 return
             }
-            newPath = server.multiplexingPaths.values.first { $0.localEndpoint?.port == newPort }
+            newPath = server.pathIdentifier(localPort: newPort)
         }
         guard let firstPath, let newPath else {
             XCTFail("Server paths not found")
             return nil
         }
-        guard harness.reached({ newPath.isRouteEstablished }, within: 1.0) else {
+        guard
+            harness.reached(
+                { server.withPath(newPath) { (path: inout QUICPath) in path.isRouteEstablished } ?? false },
+                within: 1.0
+            )
+        else {
             XCTFail("New server path never came up")
             return nil
         }
@@ -1196,7 +1202,9 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
             server.fromExternal { eventContext in
                 server.peerSentPacket(number: 1_000_000, isNonProbing: true, on: newPath, in: &eventContext)
             }
-            followed = server.currentPath === newPath && newPath.isProbing
+            followed =
+                server.currentPathID == newPath
+                && (server.withPath(newPath) { (path: inout QUICPath) in path.isProbing } ?? false)
         }
         guard followed else {
             XCTFail("Server did not follow the peer onto the new path, or validated it already")
@@ -1249,9 +1257,9 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                             in: &eventContext
                         )
                     }
-                    XCTAssertTrue(paths.server.currentPath === paths.firstPath, "Server did not follow the peer back")
-                    XCTAssertNil(
-                        paths.server.multiplexingPaths[paths.newPath.pathIdentifier],
+                    XCTAssertTrue(paths.server.currentPathID == paths.firstPath, "Server did not follow the peer back")
+                    XCTAssertFalse(
+                        paths.server.hasPath(paths.newPath),
                         "Server kept the path the peer left"
                     )
                 }
@@ -1296,16 +1304,18 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                         now = now.advanced(by: .seconds(60))
                         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
                         server.fromExternal { eventContext in
-                            paths.newPath.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                            server.withPath(paths.newPath) { (path: inout QUICPath) in
+                                path.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                            }
                         }
                     }
-                    XCTAssertEqual(paths.newPath.state, .unreachable)
+                    XCTAssertEqual(server.pathState(paths.newPath), .unreachable)
                     server.fromExternal { eventContext in
                         server.migration.timerFired(at: now, connection: server, in: &eventContext)
                     }
-                    XCTAssertTrue(server.currentPath === paths.firstPath, "Server did not fall back to the first path")
-                    XCTAssertNil(
-                        server.multiplexingPaths[paths.newPath.pathIdentifier],
+                    XCTAssertTrue(server.currentPathID == paths.firstPath, "Server did not fall back to the first path")
+                    XCTAssertFalse(
+                        server.hasPath(paths.newPath),
                         "Server kept the path that failed validation"
                     )
                 }

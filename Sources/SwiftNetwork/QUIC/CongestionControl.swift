@@ -344,7 +344,7 @@ struct CongestionControl: ~Copyable {
 
     mutating func ackEnd(
         rtt: borrowing RTT,
-        path: QUICPath?,
+        pacer: inout Pacer,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -352,14 +352,38 @@ struct CongestionControl: ~Copyable {
     ) {
         switch algorithm {
         case .cubic(var cubic):
-            cubic.ackEnd(state: &state, rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
+            cubic.ackEnd(
+                state: &state,
+                rtt: rtt,
+                pacer: &pacer,
+                mss: mss,
+                packetsLost: packetsLost,
+                now: now,
+                qlog: qlog
+            )
             algorithm = .cubic(algorithm: cubic)
         #if !NETWORK_EMBEDDED
         case .ledbat(var ledbat):
-            ledbat.ackEnd(state: &state, rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
+            ledbat.ackEnd(
+                state: &state,
+                rtt: rtt,
+                pacer: &pacer,
+                mss: mss,
+                packetsLost: packetsLost,
+                now: now,
+                qlog: qlog
+            )
             algorithm = .ledbat(algorithm: ledbat)
         case .prague(var prague):
-            prague.ackEnd(state: &state, rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
+            prague.ackEnd(
+                state: &state,
+                rtt: rtt,
+                pacer: &pacer,
+                mss: mss,
+                packetsLost: packetsLost,
+                now: now,
+                qlog: qlog
+            )
             algorithm = .prague(algorithm: prague)
         #endif
         }
@@ -367,7 +391,6 @@ struct CongestionControl: ~Copyable {
 
     @discardableResult
     mutating func packetsLost(
-        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -378,7 +401,6 @@ struct CongestionControl: ~Copyable {
         case .cubic(var cubic):
             let reducedCongestionWindow = cubic.packetLost(
                 state: &state,
-                path: path,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
@@ -391,7 +413,6 @@ struct CongestionControl: ~Copyable {
         case .ledbat(var ledbat):
             let reducedCongestionWindow = ledbat.packetLost(
                 state: &state,
-                path: path,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
@@ -403,7 +424,6 @@ struct CongestionControl: ~Copyable {
         case .prague(var prague):
             let reducedCongestionWindow = prague.packetLost(
                 state: &state,
-                path: path,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
@@ -417,7 +437,6 @@ struct CongestionControl: ~Copyable {
     }
 
     mutating func processECN(
-        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,
@@ -432,7 +451,6 @@ struct CongestionControl: ~Copyable {
         case .cubic(var cubic):
             cubic.processECN(
                 state: &state,
-                path: path,
                 ceCount: ceCount,
                 packetsAcked: packetsAcked,
                 largestSentPN: largestSentPN,
@@ -448,7 +466,6 @@ struct CongestionControl: ~Copyable {
         case .ledbat(var ledbat):
             ledbat.processECN(
                 state: &state,
-                path: path,
                 ceCount: ceCount,
                 packetsAcked: packetsAcked,
                 largestSentPN: largestSentPN,
@@ -463,7 +480,6 @@ struct CongestionControl: ~Copyable {
         case .prague(var prague):
             prague.processECN(
                 state: &state,
-                path: path,
                 ceCount: ceCount,
                 packetsAcked: packetsAcked,
                 largestSentPN: largestSentPN,
@@ -553,7 +569,7 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     mutating func ackEnd(
         state: inout CongestionControlState,
         rtt: borrowing RTT,
-        path: QUICPath?,
+        pacer: inout Pacer,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -565,7 +581,6 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     mutating func enterRecovery(state: inout CongestionControlState, mss: Int, now: NetworkClock.Instant, qlog: QLog?)
     mutating func processECN(
         state: inout CongestionControlState,
-        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,
@@ -578,7 +593,6 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     )
     mutating func packetLost(
         state: inout CongestionControlState,
-        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,

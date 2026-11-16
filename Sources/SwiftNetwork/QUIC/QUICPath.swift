@@ -135,11 +135,15 @@ struct BandwidthDelayProduct {
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public final class QUICPath: MultiplexingDatagramPath<
-    QUICConnection,
-    BaseOutboundDatagramLinkage
->, Equatable, PrefixedLoggable
-{
+public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatagramProcessing, PrefixedLoggable {
+    public typealias ParentProtocol = QUICConnection
+    public typealias LowerProtocol = BaseOutboundDatagramLinkage
+
+    // The generic path: identity, lower linkage and the queues shared with the lower protocol. A QUIC
+    // path lives inline in its connection's path table, so nothing here is reference counted.
+    @usableFromInline
+    var base: MultiplexingDatagramPath<QUICConnection, BaseOutboundDatagramLinkage>
+
     // Initial probe interval for resending PATH_CHALLENGE is 250 ms
     // Further probes will follow exponential backoff.
     static let initialProbeInterval: NetworkDuration = .milliseconds(250)
@@ -158,6 +162,12 @@ public final class QUICPath: MultiplexingDatagramPath<
     var pendingInboundChallenges = [UInt64]()  // Received challenges requiring a response
 
     var pendingOutboundChallenges = [PendingChallenge]()  // Sent challenges waiting for a response
+
+    /// Set when a challenge was sent or answered, which changes when the migration timer is due, with the
+    /// time to measure that from. The connection takes it with `forwardMigrationTimerResetRequest` once
+    /// the work on the path is done. It is kept here so that a send that sent no challenge, which is
+    /// nearly every send, has nothing to look at beyond the path it already holds.
+    var migrationTimerResetRequest: NetworkClock.Instant?
     static let maximumPendingChallenges: Int = 6
     private(set) var challengesSent: Int = 0
     private(set) var lastChallengeSentTime: NetworkClock.Instant = .zero
@@ -246,16 +256,75 @@ public final class QUICPath: MultiplexingDatagramPath<
         set { if newValue { flags.insert(.reportedIdleEvent) } else { flags.remove(.reportedIdleEvent) } }
     }
 
+    // MARK: Forwarded path state
+
+    public var parentProtocol: QUICConnection {
+        @inline(always) get { base.parentProtocol }
+        @inline(always) set { base.parentProtocol = newValue }
+    }
+    public var lower: BaseOutboundDatagramLinkage {
+        @inline(always) get { base.lower }
+        @inline(always) set { base.lower = newValue }
+    }
+    public var eventManager: ProtocolEventManager {
+        @inline(always) _read { yield base.eventManager }
+        @inline(always) _modify { yield &base.eventManager }
+    }
+    public var pathIdentifier: MultiplexingPathIdentifier {
+        @inline(always) get { base.pathIdentifier }
+    }
+    public var lowerSendQueue: FrameArray {
+        @inline(always) _read { yield base.lowerSendQueue }
+        @inline(always) _modify { yield &base.lowerSendQueue }
+    }
+    public var lowerReceiveQueue: FrameArray {
+        @inline(always) _read { yield base.lowerReceiveQueue }
+        @inline(always) _modify { yield &base.lowerReceiveQueue }
+    }
+    public var pathIsPrimary: Bool {
+        @inline(always) get { base.pathIsPrimary }
+        @inline(always) set { base.pathIsPrimary = newValue }
+    }
+    public var pathHasMigrationInfo: Bool {
+        @inline(always) get { base.pathHasMigrationInfo }
+        @inline(always) set { base.pathHasMigrationInfo = newValue }
+    }
+    public var identifier: InstanceIdentifier {
+        @inline(always) get { base.identifier }
+        @inline(always) set { base.identifier = newValue }
+    }
+
+    public mutating func serviceLowerReceiveQueue(in eventContext: inout NetworkContext.EventContext) {
+        base.serviceLowerReceiveQueue(in: &eventContext)
+    }
+
+    public mutating func handleOutboundRoomAvailable(in eventContext: inout NetworkContext.EventContext) {
+        base.handleOutboundRoomAvailable(in: &eventContext)
+    }
+
+    public mutating func handleInboundDataAvailableEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        base.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+    }
+
+    public mutating func handleOutboundRoomAvailableEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        base.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+    }
+
     var log: LogPrefixer {
         parentProtocol.logPrefixer
     }
 
-    override public func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage {
-        BaseInboundDatagramLinkage(quicPath: self)
-    }
-
-    public static func == (lhs: QUICPath, rhs: QUICPath) -> Bool {
-        lhs.pathIdentifier == rhs.pathIdentifier
+    /// Builds the linkage that reaches this path from its lower protocol. It names the connection and
+    /// the path's place in the connection's table, since the path itself can only be reached by
+    /// borrowing it from there.
+    public func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage {
+        BaseInboundDatagramLinkage(quicConnection: parentProtocol, path: pathIdentifier, identifier: identifier)
     }
 
     var isOpenForSending: Bool { state.isOpenForSending }
@@ -271,11 +340,11 @@ public final class QUICPath: MultiplexingDatagramPath<
         rtt.smoothedRTT
     }
 
-    func withECNState(_ block: (inout ECNPathState) -> Void) {
+    mutating func withECNState(_ block: (inout ECNPathState) -> Void) {
         block(&self.ecnState)
     }
 
-    func changeState(to newState: QUICPathState) {
+    mutating func changeState(to newState: QUICPathState) {
         guard state.isValidStateChange(to: newState) else {
             log.fault("Invalid path transition: \(state) -> \(newState)")
             return
@@ -291,7 +360,7 @@ public final class QUICPath: MultiplexingDatagramPath<
     // Gives the peer's CID back once the path can no longer send with it. The connection retires
     // it, unless the peer already has. A zero-length CID is not something the peer can run out
     // of, and a pre-assigned one belongs to the path, so those are kept.
-    private func releaseDCID() {
+    private mutating func releaseDCID() {
         guard let dcid, dcid.length > 0, !hasPreAssignedCIDs else {
             return
         }
@@ -299,10 +368,25 @@ public final class QUICPath: MultiplexingDatagramPath<
         self.dcid = nil
     }
 
-    func set(
+    /// What a new path takes from the paths the connection already has.
+    ///
+    /// The path is not in the connection's path table when it is set up, so the connection looks
+    /// at its other paths first and hands over what the path needs from them.
+    struct Inheritance {
+        /// The remote max ack delay of the current path, for a path that is not the initial one.
+        var remoteMaxAckDelay: NetworkDuration?
+        /// The MSS another path on the same interface has already worked out, with that path's
+        /// identifier for the log.
+        var sharedInterfaceMSS: (mss: Int, pathIdentifier: MultiplexingPathIdentifier)?
+
+        static let none = Inheritance(remoteMaxAckDelay: nil, sharedInterfaceMSS: nil)
+    }
+
+    mutating func set(
         interface: Interface?,
         priority: Int,
         isInitial: Bool,
+        inheriting: Inheritance = .none
     ) {
         self.isInitialPath = isInitial
         self.priority = priority
@@ -311,13 +395,11 @@ public final class QUICPath: MultiplexingDatagramPath<
         if isInitial {
             // initial paths start with fully established routes
             self.state = .routeEstablished
-        } else {
-            parentProtocol.withCurrentPath {
-                // Copy over remote max ack delay from current path
-                self.rtt.remoteMaxAckDelay = $0.rtt.remoteMaxAckDelay
-            }
+        } else if let remoteMaxAckDelay = inheriting.remoteMaxAckDelay {
+            // Copy over remote max ack delay from current path
+            self.rtt.remoteMaxAckDelay = remoteMaxAckDelay
         }
-        self.setup()
+        self.setup(sharedInterfaceMSS: inheriting.sharedInterfaceMSS)
 
         log.debug(
             "Set up new path \(pathIdentifier) (\(priority)), \(interface?.description ?? "<none>")"
@@ -335,9 +417,9 @@ public final class QUICPath: MultiplexingDatagramPath<
     ///
     /// A path built this way isn't in the parent's `multiplexingPaths`, so nothing tears it down.
     /// Pair it with `destroyFromExternalTest()` before letting it go.
-    static func makeFromExternalTest(parent: QUICConnection) -> Self {
+    static func makeFromExternalTest(parent: QUICConnection) -> QUICPath {
         parent.fromExternal { eventContext in
-            Self(parent: parent, in: &eventContext)
+            QUICPath(parent: parent, in: &eventContext)
         }
     }
 
@@ -345,15 +427,16 @@ public final class QUICPath: MultiplexingDatagramPath<
     ///
     /// This is an external entry point; code inside the stack calls `destroy(in:)` with the
     /// state it already holds.
-    func destroyFromExternalTest() {
-        fromExternal { eventContext in
-            var selfVar = self
-            selfVar.destroy(in: &eventContext)
+    consuming func destroyFromExternalTest() {
+        let connection = parentProtocol
+        var path = consume self
+        connection.fromExternal { eventContext in
+            path.destroy(in: &eventContext)
         }
     }
     #endif
 
-    required init(parent: QUICConnection, in eventContext: inout NetworkContext.EventContext) {
+    public init(parent: QUICConnection, in eventContext: inout NetworkContext.EventContext) {
         self.rtt = RTT(logPrefixer: parent.logPrefixer)
         self.pacer = Pacer()
         // Overwritten with the real mss/qlog once `setup()` runs; RX/TX aren't allowed on a
@@ -367,15 +450,26 @@ public final class QUICPath: MultiplexingDatagramPath<
             logPrefixer: parent.logPrefixer
         )
         self.congestionControl = CongestionControl(state: congestionControlState, algorithm: .cubic(algorithm: cubic))
-        super.init(parent: parent, in: &eventContext)
+        self.base = MultiplexingDatagramPath(parent: parent, in: &eventContext)
+    }
+
+    /// Lends out the path's PMTUD state alongside the rest of the path.
+    ///
+    /// PMTUD looks at the path as it works, and the state is part of the path, so the two cannot be
+    /// borrowed at once. The state is moved out for the duration of `body` and put back after.
+    mutating func withPMTUDState<R>(_ body: (inout PMTUDState, inout QUICPath) -> R) -> R {
+        var state = PMTUDState()
+        swap(&state, &pmtudState)
+        defer { swap(&state, &pmtudState) }
+        return body(&state, &self)
     }
 
     deinit {
         // Ensure PMTUD timers are removed
-        pmtudState.stop(on: self)
+        pmtudState.removeTimer(from: base.parentProtocol)
     }
 
-    private func setup() {
+    private mutating func setup(sharedInterfaceMSS: (mss: Int, pathIdentifier: MultiplexingPathIdentifier)?) {
         self.initialMSS = parentProtocol.initialMSS
         self.maximumMSS =
             PMTUDState.maximumMTU - (IPProtocol.ipv6HeaderLength + UDPProtocol.headerLength)
@@ -383,18 +477,12 @@ public final class QUICPath: MultiplexingDatagramPath<
             PMTUDState.minimumMTU - (IPProtocol.ipv6HeaderLength + UDPProtocol.headerLength)
 
         self.mss = parentProtocol.initialMSS
-        if !self.isInitialPath, let interface {
-            // Search for other paths that share the same interface that have calculated another MSS
-            var foundMSS = false
-            parentProtocol.applyToAllPaths { otherPath in
-                if !foundMSS, interface == otherPath.interface, otherPath.mss > 0 {
-                    self.mss = otherPath.mss
-                    log.debug(
-                        "MSS \(otherPath.mss) copied from path \(otherPath.pathIdentifier.description), since they share the same interface \(interface)"
-                    )
-                    foundMSS = true
-                }
-            }
+        if !self.isInitialPath, let interface, let shared = sharedInterfaceMSS {
+            // Another path on the same interface has calculated another MSS
+            self.mss = shared.mss
+            log.debug(
+                "MSS \(shared.mss) copied from path \(shared.pathIdentifier.description), since they share the same interface \(interface)"
+            )
         }
 
         self.ecnState = ECNPathState(ecn: parentProtocol.ecn)
@@ -414,14 +502,14 @@ public final class QUICPath: MultiplexingDatagramPath<
         self.spinValue = parentProtocol.initialSpinValue
     }
 
-    func setSCID(_ scid: QUICConnectionID) {
+    mutating func setSCID(_ scid: QUICConnectionID) {
         self.scid = scid
         log.datapath(
             "Assigning SCID \(scid.description) to path ID \(self.pathIdentifier)"
         )
     }
 
-    func assignDCID(_ dcid: QUICConnectionID, in eventContext: inout NetworkContext.EventContext) {
+    mutating func assignDCID(_ dcid: QUICConnectionID, in eventContext: inout NetworkContext.EventContext) {
         self.dcid = dcid
         if case .routeEstablished = state {
             changeState(to: .cidAssigned)
@@ -449,7 +537,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         )
     }
 
-    func updateBDP(length: Int, now: NetworkClock.Instant) {
+    mutating func updateBDP(length: Int, now: NetworkClock.Instant) {
         if bdp.timestamp == .zero {
             bdp.timestamp = now
         }
@@ -466,11 +554,11 @@ public final class QUICPath: MultiplexingDatagramPath<
         }
     }
 
-    func resetPacer() {
+    mutating func resetPacer() {
         pacer.reset()
     }
 
-    func resetCongestionControl() {
+    mutating func resetCongestionControl() {
         switch self.congestionControl.algorithm {
         case .cubic:
             var congestionControlState = CongestionControlState()
@@ -507,7 +595,7 @@ public final class QUICPath: MultiplexingDatagramPath<
     #if !NETWORK_EMBEDDED
     // Replaces the congestion controller with a fresh Prague bound to this path's pacer. Shared by
     // `resetCongestionControl()` and `setupL4SState(l4sEnabled:)` so Prague is built in one place.
-    private func installPragueCongestionControl() {
+    private mutating func installPragueCongestionControl() {
         var congestionControlState = CongestionControlState()
         let prague = Prague(
             state: &congestionControlState,
@@ -523,11 +611,11 @@ public final class QUICPath: MultiplexingDatagramPath<
     }
     #endif
 
-    func idleTimeoutCongestionControl() {
+    mutating func idleTimeoutCongestionControl() {
         self.congestionControl.idleTimeout(mss: mss)
     }
 
-    func setupL4SState(l4sEnabled: Bool) {
+    mutating func setupL4SState(l4sEnabled: Bool) {
         // Account for Developer / Carrier settings
         self.l4sEnabled = l4sEnabled
         if l4sEnabled {
@@ -542,7 +630,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         }
     }
 
-    func markAsBackground(_ background: Bool) {
+    mutating func markAsBackground(_ background: Bool) {
         #if !NETWORK_EMBEDDED
         // Use LEDBAT for background cases
         switch self.congestionControl.algorithm {
@@ -612,7 +700,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         #endif
     }
 
-    func handlePathChallenge(_ challenge: UInt64, in eventContext: inout NetworkContext.EventContext) {
+    mutating func handlePathChallenge(_ challenge: UInt64, in eventContext: inout NetworkContext.EventContext) {
         log.debug("Path challenge received: \(challenge)")
 
         // Save the challenge, to schedule a response
@@ -624,10 +712,10 @@ public final class QUICPath: MultiplexingDatagramPath<
         }
     }
 
-    func beginValidation(ifNecessary: Bool = true, in eventContext: inout NetworkContext.EventContext) {
+    mutating func beginValidation(ifNecessary: Bool = true, in eventContext: inout NetworkContext.EventContext) {
         if case .routeEstablished = state {
             // The route is established, but needs CID allocation
-            guard parentProtocol.assignNewDCID(to: self, in: &eventContext) else {
+            guard parentProtocol.assignNewDCID(to: &self, in: &eventContext) else {
                 log.error("Failed to assign remote CID to path")
                 return
             }
@@ -647,7 +735,7 @@ public final class QUICPath: MultiplexingDatagramPath<
     // The handshake validates the peer's address on the path it ran on (RFC 9000 8.1), so that
     // path is never probed. Takes it through probing to validated as if it had been, so that it
     // reads as a path the connection can use and go back to like any other.
-    func handshakeValidated() {
+    mutating func handshakeValidated() {
         guard state == .cidAssigned else {
             return
         }
@@ -685,7 +773,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         shouldSendPathResponses || shouldSendPathChallenge(now: now)
     }
 
-    func addPathChallenge(
+    mutating func addPathChallenge(
         to pendingItems: inout PendingItems,
         now: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
@@ -726,10 +814,12 @@ public final class QUICPath: MultiplexingDatagramPath<
         }
         challengesSent += 1
 
-        parentProtocol.migration.resetTimer(now: now, connection: parentProtocol, in: &eventContext)
+        // The timer looks at every path, so it is reset once the paths are all in the connection's
+        // table again, measured from the time this challenge was sent.
+        migrationTimerResetRequest = now
     }
 
-    func addPendingItems(
+    mutating func addPendingItems(
         _ pendingItems: inout PendingItems,
         now: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
@@ -744,21 +834,25 @@ public final class QUICPath: MultiplexingDatagramPath<
         addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
     }
 
-    func handlePathChallengeResponse(
+    /// Handles the answer to a PATH_CHALLENGE. Returns whether it validated the path.
+    ///
+    /// The migration strategy looks at every path, so it is left to the connection to run once the
+    /// path is no longer borrowed: see `QUICConnection.handlePathChallengeResponse(path:data:in:)`.
+    @discardableResult
+    mutating func handlePathChallengeResponse(
         _ data: UInt64,
         in eventContext: inout NetworkContext.EventContext
-    ) {
-        guard case .probing = state else { return }
+    ) -> Bool {
+        guard case .probing = state else { return false }
         guard
             let pendingOutboundChallenge = pendingOutboundChallenges.first(where: {
                 $0.data == data
             })
         else {
             log.info("Received path response for unknown challenge \(data)")
-            return
+            return false
         }
         log.debug("Valid path challenge response received: \(data)")
-        let before = parentProtocol.migrationPathStates
         let now = parentProtocol.now
         let responseDuration = pendingOutboundChallenge.sentTime.duration(to: now)
         pendingOutboundChallenges.removeAll()
@@ -767,7 +861,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         changeState(to: .validated)
         // Initialize RTT based on the PATH_RESPONSE duration so that we have a proper RTT estimate when we reset the timers.
         rtt.processNewSample(ackDuration: responseDuration, packetAckedTime: now, ackDelay: .zero)
-        parentProtocol.migration.resetTimer(now: now, connection: parentProtocol, in: &eventContext)
+        migrationTimerResetRequest = now
         // Notify the stack about the path becoming validated
         if let localEndpoint, let remoteEndpoint,
             case .address(let localAddress) = localEndpoint.type,
@@ -786,12 +880,36 @@ public final class QUICPath: MultiplexingDatagramPath<
         } else {
             log.error("Path \(pathIdentifier) is missing endpoints, not delivering pathValidated")
         }
-        parentProtocol.runMigrationStrategy(
-            events: parentProtocol.migrationEvents(since: before),
-            in: &eventContext
-        )
+        return true
     }
 
+}
+
+@available(Network 0.1.0, *)
+extension QUICPath {
+    /// Works out when a packet should be sent, and fills in the times it should go out at.
+    mutating func pacedSendTime(
+        packetLength: UInt16,
+        sendTimeAbsolute: inout NetworkClock.Instant,
+        sendTimeContinuous: inout NetworkClock.Instant
+    ) {
+        let rateWasZero = pacer.getSendTime(
+            now: parentProtocol.now,
+            nowAbsolute: parentProtocol.nowAbsolute,
+            packetLength: packetLength,
+            sendTimeAbsolute: &sendTimeAbsolute,
+            sendTimeContinuous: &sendTimeContinuous
+        )
+        if rateWasZero {
+            let startupRate = pacer.startupRate
+            let algorithm = congestionControlName
+            let window = congestionControlWindow
+            let smoothedRTTMilliseconds = smoothedRTT.milliseconds
+            Logger.proto.fault(
+                "Pacer rate shouldn't be 0, startup rate = \(startupRate), CCA is \(algorithm) (cwnd=\(window), smoothed rtt=\(smoothedRTTMilliseconds) ms)"
+            )
+        }
+    }
 }
 
 // Congestion Control access
@@ -813,21 +931,19 @@ extension QUICPath {
     }
 
     @inline(always)
-    func congestionControlPersistentCongestion(mss: Int, qlog: QLog? = nil) {
+    mutating func congestionControlPersistentCongestion(mss: Int, qlog: QLog? = nil) {
         congestionControl.persistentCongestion(mss: mss, qlog: qlog)
     }
 
     @inline(always)
-    func congestionControlAckEnd(
-        rtt: borrowing RTT,
-        path: QUICPath?,
+    mutating func congestionControlAckEnd(
         mss: Int,
         packetsLost: Bool,
         qlog: QLog? = nil
     ) {
         congestionControl.ackEnd(
             rtt: rtt,
-            path: self,
+            pacer: &pacer,
             mss: mss,
             packetsLost: packetsLost,
             now: parentProtocol.now,
@@ -836,26 +952,23 @@ extension QUICPath {
     }
 
     @inline(always)
-    func congestionControlPacketsSent(bytesSent: Int, qlog: QLog? = nil) {
+    mutating func congestionControlPacketsSent(bytesSent: Int, qlog: QLog? = nil) {
         congestionControl.packetSent(bytesSent: bytesSent, qlog: qlog)
     }
 
     @inline(always)
-    func congestionControlPacketsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant) {
+    mutating func congestionControlPacketsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant) {
         congestionControl.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
     }
 
     @inline(always)
-    func congestionControlPacketsLost(
+    mutating func congestionControlPacketsLost(
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
         smoothedRTT: NetworkDuration
     ) -> Bool {
-        // Loss accounting doesn't repace this path, so there is no path to hand down.
-        let unpacedPath: QUICPath? = nil
-        return congestionControl.packetsLost(
-            path: unpacedPath,
+        congestionControl.packetsLost(
             bytesLost: bytesLost,
             largestLostSentTime: largestLostSentTime,
             mss: mss,
@@ -865,12 +978,12 @@ extension QUICPath {
     }
 
     @inline(always)
-    func congestionControlPacketDiscarded(bytesSent: Int, qlog: QLog? = nil) {
+    mutating func congestionControlPacketDiscarded(bytesSent: Int, qlog: QLog? = nil) {
         congestionControl.packetDiscarded(bytesSent: bytesSent, qlog: qlog)
     }
 
     @inline(always)
-    func congestionControlAckBegin() {
+    mutating func congestionControlAckBegin() {
         congestionControl.ackBegin()
     }
 
@@ -885,22 +998,22 @@ extension QUICPath {
     }
 
     @inline(always)
-    func congestionControlSpuriousRetransmit(qlog: QLog? = nil) {
+    mutating func congestionControlSpuriousRetransmit(qlog: QLog? = nil) {
         congestionControl.spuriousRetransmit(qlog: qlog)
     }
 
     @inline(always)
-    func congestionControlMSSChanged(mss: Int) {
+    mutating func congestionControlMSSChanged(mss: Int) {
         congestionControl.mssChanged(mss: mss)
     }
 
     @inline(always)
-    func congestionControlIdleTimeout(mss: Int) {
+    mutating func congestionControlIdleTimeout(mss: Int) {
         congestionControl.idleTimeout(mss: mss)
     }
 
     @inline(always)
-    func congestionControlProcessECN(
+    mutating func congestionControlProcessECN(
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,
@@ -910,10 +1023,7 @@ extension QUICPath {
         smoothedRTT: NetworkDuration,
         qlog: QLog? = nil
     ) {
-        // ECN accounting doesn't repace this path, so there is no path to hand down.
-        let unpacedPath: QUICPath? = nil
         congestionControl.processECN(
-            path: unpacedPath,
             ceCount: ceCount,
             packetsAcked: packetsAcked,
             largestSentPN: largestSentPN,
