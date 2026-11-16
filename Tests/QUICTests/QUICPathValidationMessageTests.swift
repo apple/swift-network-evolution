@@ -78,7 +78,8 @@ class QUICPathValidationMessageTests: XCTestCase {
         }
         // pending challenges are not cleared until they are processed
         XCTAssertEqual(connection.testPath(pathID) { $0.pendingInboundChallenges.count }, 2)
-        XCTAssertEqual(connection.testPath(pathID) { $0.state }, .validated)  // we remain validated when the peer re-probes
+        // we remain validated when the peer re-probes
+        XCTAssertEqual(connection.testPath(pathID) { $0.state }, .validated)
     }
 
     func testOutgoingPathChallenge() {
