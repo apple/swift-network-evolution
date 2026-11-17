@@ -13,58 +13,86 @@ on:
 jobs:
   tests:
     name: Test
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.16
+    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.18
     with:
+      name: tests
       swift_flags: "-Xswiftc -warnings-as-errors"
       swift_nightly_flags: "-Xswiftc -warnings-as-errors"
-      enable_macos_checks: true
-      macos_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}, {\"xcode_version\": \"swift_6.3\"}]"
-      macos_build_command: bash .github/workflows/scripts/ci-macos.sh
-      enable_ios_checks: true
-      ios_host_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}, {\"xcode_version\": \"swift_6.3\"}]"
-      ios_build_command: bash .github/workflows/scripts/ci-ios.sh
-      enable_linux_checks: true
+
+      # Linux
       linux_swift_versions: '["6.4"]'
+      linux_command: &linux_command |
+        Build: swift build --build-tests --quiet
+        Build-Additive-Traits: swift build --build-tests --quiet --traits DatapathLogging,QlogOutput,SignpostOutput
+        Build-Reductive-Traits: swift build --build-tests --quiet --traits DisableDebugLogging,DisableErrorLogging
+        Test-Debug: swift test --quiet
+        Test-Release: swift test --quiet -c release
       linux_static_sdk_versions: '["6.4"]'
-      linux_build_command: bash .github/workflows/scripts/ci-linux.sh
-      enable_windows_checks: false
+
+      # Android
       android_sdk_versions: '["6.4"]'
-      enable_android_sdk_build: true
-      enable_android_sdk_checks: true
+
+      # macOS
+      macos_swift_versions: '["6.4"]'
+      macos_command: |
+        Apple: bash .github/workflows/scripts/ci-macos.sh
+        iOS: bash .github/workflows/scripts/ci-ios.sh
+
+      # Not run by this package.
+      enable_windows: false
+      enable_macos_swiftly: false
+      enable_wasm_sdk_build: false
       enable_embedded_wasm_sdk_build: false
-      enable_linux_static_sdk_build: true
+      enable_cxx_interop: false
+      enable_freebsd: false
+
   tests-real-time:
     name: Test (real time)
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.15
+    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.18
     with:
+      name: tests-real-time
       swift_flags: "-Xswiftc -warnings-as-errors -Xswiftc -DSWIFT_NETWORK_TEST_REAL_TIME"
       swift_nightly_flags: "-Xswiftc -warnings-as-errors -Xswiftc -DSWIFT_NETWORK_TEST_REAL_TIME"
-      enable_macos_checks: true
-      macos_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}, {\"xcode_version\": \"swift_6.3\"}]"
-      macos_build_command: bash .github/workflows/scripts/ci-macos.sh
-      enable_ios_checks: false
-      enable_linux_checks: true
+
+      # Linux
       linux_swift_versions: '["6.4"]'
-      linux_build_command: bash .github/workflows/scripts/ci-linux.sh
-      enable_windows_checks: false
-      enable_android_sdk_build: false
-      enable_android_sdk_checks: false
-      enable_embedded_wasm_sdk_build: false
+      linux_command: *linux_command
+
+      # macOS
+      macos_swift_versions: '["6.4"]'
+      macos_command: bash .github/workflows/scripts/ci-macos.sh
+
+      # Not run by this package.
+      enable_windows: false
+      enable_macos_swiftly: false
       enable_linux_static_sdk_build: false
+      enable_wasm_sdk_build: false
+      enable_embedded_wasm_sdk_build: false
+      enable_android_sdk_build: false
+      enable_cxx_interop: false
+      enable_freebsd: false
+
   tests-nightly-main:
     # Keep this separate so that it can be disabled if the nightly compiler shows any issue.
     name: Test (nightly-main)
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.16
+    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.18
     with:
+      name: tests-nightly-main
       swift_nightly_flags: "-Xswiftc -warnings-as-errors"
-      enable_linux_checks: true
+
+      # Linux
       linux_swift_versions: '["nightly-main"]'
+      linux_command: *linux_command
       linux_static_sdk_versions: '["nightly-main"]'
-      linux_build_command: bash .github/workflows/scripts/ci-linux.sh
-      enable_macos_checks: false
-      enable_windows_checks: false
+
+      # Android
       android_sdk_versions: '["nightly-main"]'
-      enable_android_sdk_build: true
-      enable_android_sdk_checks: true
+
+      # Not run by this package.
+      enable_macos: false
+      enable_windows: false
+      enable_macos_swiftly: false
+      enable_wasm_sdk_build: false
       enable_embedded_wasm_sdk_build: false
-      enable_linux_static_sdk_build: true
+      enable_cxx_interop: false
+      enable_freebsd: false
