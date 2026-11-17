@@ -469,19 +469,37 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
     }
     private var flags = Flags()
 
-    // The metadata object is made when something asks for it: most streams are never asked, and it is
-    // a class, so making one for every stream costs an allocation and a free.
-    private var streamMetadataStorage: QUICStreamProtocol.QUICStreamMetadata?
+    // The metadata is made when something asks for it: most streams are never asked, and it is
+    // shared with whoever asked, so a stream's later changes (ID, application error) reach them.
+    // QUICStreamMetadata cannot be copied, so the shared ProtocolMetadata holds it.
+    private var streamMetadataStorage: ProtocolMetadata<QUICStreamProtocol>?
 
-    var streamMetadata: QUICStreamProtocol.QUICStreamMetadata {
-        mutating get {
-            if let made = self.streamMetadataStorage { return made }
-            let made = QUICStreamProtocol.QUICStreamMetadata()
-            self.fillStreamMetadataID(made)
-            made.quicConnectionMetadata = self.parentProtocol.connectionMetadata
-            self.streamMetadataStorage = made
-            return made
+    // Returns the cached streamMetadataStorage if available
+    mutating func streamMetadata(
+        messageIdentifier: @autoclosure () -> SystemUUID = SystemUUID()
+    ) -> ProtocolMetadata<QUICStreamProtocol> {
+        if let made = self.streamMetadataStorage { return made }
+        let made = ProtocolMetadata<QUICStreamProtocol>(
+            protocolIdentifier: QUICStreamProtocol.identifier,
+            perProtocolMetadata: QUICStreamProtocol.QUICStreamMetadata(),
+            messageIdentifier: messageIdentifier()
+        )
+        made.mutablePerProtocolMetadata { $0?.replaceConnectionMetadata(self.parentProtocol.connectionMetadata) }
+        self.fillStreamMetadataID(made)
+        // Errors recorded before anyone asked for the metadata are still reported through it.
+        if let applicationError = self.inboundApplicationError ?? self.outboundApplicationError {
+            made.mutablePerProtocolMetadata { $0?.applicationError = applicationError }
         }
+        self.streamMetadataStorage = made
+        return made
+    }
+
+    /// Updates the metadata's application error if one was made. The error is also kept in
+    /// `inboundApplicationError` / `outboundApplicationError`, which `streamMetadata()` reads when it
+    /// makes the metadata, so a stream nobody asked about does not pay for it.
+    mutating func updateStreamMetadataApplicationError(_ code: UInt64) {
+        guard let made = self.streamMetadataStorage else { return }
+        made.mutablePerProtocolMetadata { $0?.applicationError = code }
     }
 
     /// Brings the metadata, if one was made, up to date with the stream's ID.
@@ -491,9 +509,13 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
     }
 
     /// A stream without an ID yet (one waiting to start) reports 0 and the type it will have.
-    private func fillStreamMetadataID(_ metadata: QUICStreamProtocol.QUICStreamMetadata) {
-        metadata.streamID = self.streamID?.value ?? 0
-        metadata.streamType = self.streamID?.quicStreamType ?? (self.unidirectional ? .unidirectional : .bidirectional)
+    private func fillStreamMetadataID(_ metadata: ProtocolMetadata<QUICStreamProtocol>) {
+        let streamID = self.streamID?.value ?? 0
+        let streamType = self.streamID?.quicStreamType ?? (self.unidirectional ? .unidirectional : .bidirectional)
+        metadata.mutablePerProtocolMetadata {
+            $0?.streamID = streamID
+            $0?.streamType = streamType
+        }
     }
 
     var flowControlState = FlowControlState(isStream: true)

@@ -1216,8 +1216,8 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         // Set the application error code
-        stream.streamMetadata.applicationError = self.code
         stream.inboundApplicationError = self.code
+        stream.updateStreamMetadataApplicationError(self.code)
         connection.deliverInboundAbortedEvent(
             stream: &stream,
             error: NetworkError(quicApplicationError: self.code),
@@ -1412,8 +1412,8 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         if stream.receive.state == .resetReceived {
             streamError = NetworkError.posix(ECONNRESET)
         }
-        stream.streamMetadata.applicationError = self.code
         stream.outboundApplicationError = self.code
+        stream.updateStreamMetadataApplicationError(self.code)
         stream.deliverOutboundAbortedEvent(
             error: NetworkError(quicApplicationError: self.code),
             in: &eventContext
