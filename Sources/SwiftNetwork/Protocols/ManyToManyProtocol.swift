@@ -101,6 +101,15 @@ public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol whe
     func updateDataTransferSnapshot(flow: MultiplexedFlowIdentifier, _ snapshot: inout DataTransferSnapshot)
     var protocolEstablishmentReport: ProtocolEstablishmentReport? { get }
 
+    // MARK: Per-path calls to implement
+    func setup(
+        path pathID: MultiplexingPathIdentifier,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError)
+
     // MARK: Per-path events to implement
     func handleConnectedEvent(path: MultiplexingPathIdentifier, in eventContext: inout NetworkContext.EventContext)
     func handleDisconnectedEvent(
@@ -383,6 +392,14 @@ extension ManyToManyProtocolHandler {
         path: PathProperties?
     ) throws(NetworkError) {}
 
+    public func setup(
+        path pathID: MultiplexingPathIdentifier,
+        remote: Endpoint?,
+        local: Endpoint?,
+        parameters: Parameters?,
+        path: PathProperties?
+    ) throws(NetworkError) {}
+
     public func connect(flow: MultiplexedFlowIdentifier, in eventContext: inout NetworkContext.EventContext) {
         deliverConnectedEvent(flow: flow, in: &eventContext)
     }
@@ -484,6 +501,12 @@ extension ManyToManyProtocolHandler {
         if isFirstPath { newPath.pathIsPrimary = true }
         if path?.hasMigrationInfo == true { newPath.pathHasMigrationInfo = true }
         multiplexingPaths[newPath.pathIdentifier] = newPath
+        do throws(NetworkError) {
+            try setup(path: newPath.pathIdentifier, remote: remote, local: local, parameters: parameters, path: path)
+        } catch {
+            multiplexingPaths.removeValue(forKey: newPath.pathIdentifier)
+            throw error
+        }
         let upperLinkage = newPath.asUpperLinkage()
         // Bind the lower protocol's upper side before announcing the path. Announcing it can take
         // the protocol straight into `invokeEstablish`, and a lower protocol that connects

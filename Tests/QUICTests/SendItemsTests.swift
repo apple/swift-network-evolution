@@ -29,6 +29,53 @@ import XCTest
 @available(Network 0.1.0, *)
 final class SendItemsTests: XCTestCase {
 
+    /// `PendingItems.write` finds the next item to send from the flags, so each flag has to sit at the
+    /// bit that is its item's sending priority. The flags are built from `PrioritizedSendableItems`, so this
+    /// checks that each one was built from the right item.
+    func testPresentItemsMaskFollowsSendingPriority() {
+        let setters: [(PrioritizedSendableItems, (inout PendingItems) -> Void)] = [
+            (.crypto, { $0.sendCrypto = true }),
+            (.newToken, { $0.newToken = true }),
+            (.newConnectionID, { $0.newConnectionID = true }),
+            (.retireConnectionID, { $0.retireConnectionID = true }),
+            (.pathChallenge, { $0.pathChallenge = true }),
+            (.pathResponse, { $0.pathResponse = true }),
+            (.handshakeDone, { $0.handshakeDone = true }),
+            (.ack, { $0.ack = true }),
+            (.ping, { $0.ping = true }),
+            (.datagram, { $0.datagram = true }),
+            (.dataBlocked, { $0.dataBlocked = true }),
+            (.streamDataBlocked, { $0.streamDataBlocked = true }),
+            (.streamsBlockedBidirectional, { $0.streamsBlockedBidirectional = true }),
+            (.streamsBlockedUnidirectional, { $0.streamsBlockedUnidirectional = true }),
+            (.maxData, { $0.maxData = true }),
+            (.maxStreamData, { $0.maxStreamData = true }),
+            (.maxStreamsBidirectional, { $0.maxStreamsBidirectional = true }),
+            (.maxStreamsUnidirectional, { $0.maxStreamsUnidirectional = true }),
+            (.stream, { $0.stream = true }),
+            (.resetStream, { $0.resetStream = true }),
+            (.stopSending, { $0.stopSendingFlag = true }),
+            (.connectionClose, { $0.connectionClose = true }),
+            (.applicationClose, { $0.applicationClose = true }),
+            (.padding, { $0.paddingApproach = .padToEnd }),
+        ]
+        XCTAssertEqual(setters.count, PrioritizedSendableItems.allCases.count)
+        for (item, set) in setters {
+            let priority = PrioritizedSendableItems.allCases.firstIndex(of: item)!
+            XCTAssertEqual(item.rawValue, priority, "\(item)")
+            XCTAssertEqual(item.flag?.rawValue ?? item.maskBit, item.maskBit, "\(item)")
+            var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+            XCTAssertEqual(pendingItems.presentItemsMask, 0)
+            set(&pendingItems)
+            XCTAssertEqual(pendingItems.presentItemsMask, UInt32(1) << UInt32(priority), "\(item)")
+        }
+
+        // The keepalive marker is not an item
+        var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+        pendingItems.isKeepalive = true
+        XCTAssertEqual(pendingItems.presentItemsMask, 0)
+    }
+
     func testHasFrames() {
         var pendingItems = PendingItems(packetNumberSpace: .initial)
         XCTAssertFalse(pendingItems.hasPendingItems)
@@ -129,6 +176,47 @@ final class SendItemsTests: XCTestCase {
 
         XCTAssertFalse(isAckEliciting)
         XCTAssertTrue(isInFlightEligible)
+    }
+
+    // A frame limit, as `testSendingShortPackets` sets for long header packets, does not count PADDING:
+    // an Initial packet holds its one frame and is still padded to fill the datagram (RFC 9000 14.1),
+    // rather than leaving the padding for a packet of its own.
+    func testPendingItems_frameLimitStillPadsInitial() {
+        var pendingItems = PendingItems(packetNumberSpace: .initial)
+        pendingItems.setAckFrame(.ack(frame: FrameAck(packetNumberSpace: .initial, largest: 7, delay: 0)), ping: false)
+        pendingItems.ping = true
+        var transmittedItems = TransmittedItems()
+        var isAckEliciting = false
+        var isInFlightEligible = false
+
+        var frame = Frame(count: 1200)
+        defer { frame.finalize(success: true) }
+        let clock = TestClockContext("SendItemsTests")
+        let connection = clock.onQueue {
+            QUICConnection(context: clock.context)
+        }
+        defer { clock.onQueue { connection.destroyFromExternalTest() } }
+        var shorthandFrames: [QUICShorthandFrame]? = nil
+        XCTAssertNoThrow(
+            try pendingItems.write(
+                into: &frame,
+                connection: connection,
+                stats: &connection.stats,
+                keyState: .initial,
+                transmittedItems: &transmittedItems,
+                availableCongestionWindow: 10000,
+                isAckEliciting: &isAckEliciting,
+                isInFlightEligible: &isInFlightEligible,
+                maximumFrameCount: 1,
+                shorthandFrames: &shorthandFrames
+            )
+        )
+
+        XCTAssertTrue(transmittedItems.ackFrame != nil, "The ACK, first in priority, fills the one frame")
+        XCTAssertFalse(transmittedItems.ping, "The PING must wait for the next packet")
+        XCTAssertTrue(pendingItems.ping, "The PING must still be pending")
+        XCTAssertEqual(frame.unclaimedLength, 0, "PADDING must fill the rest of the packet")
+        XCTAssertFalse(pendingItems.hasPadding, "No PADDING may be left for a packet of its own")
     }
 
     func testPendingItems_PING() {

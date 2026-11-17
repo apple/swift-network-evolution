@@ -1496,7 +1496,7 @@ public struct UDP: DatagramProtocol, @unchecked Sendable {
     private var preferNoChecksum: Bool?
     var options: ProtocolOptions<UDPProtocol> {
         var options = UDPProtocol.Options()
-        if preferNoChecksum != nil { options.insert(.preferNoChecksum) }
+        if preferNoChecksum == true { options.insert(.preferNoChecksum) }
         return ProtocolOptions<UDPProtocol>(protocolIdentifier: UDPProtocol.identifier, perProtocolOptions: options)
     }
 
@@ -1554,27 +1554,11 @@ public struct IP: NetworkProtocolOptions {
         var options = IPProtocol.Options()
         if let version { options.version = version }
         if let hopLimit { options.hopLimit = hopLimit }
-        if useMinimumMTU != nil {
-            var flags = options.flags
-            flags.insert(.useMinimumMTU)
-            options.flags = flags
-        }
-        if disableFragmentation != nil {
-            var flags = options.flags
-            flags.remove(.fragmentationEnabled)
-            options.flags = flags
-        }
-        if calculateReceiveTime != nil {
-            var flags = options.flags
-            flags.remove(.calculateReceiveTime)
-            options.flags = flags
-        }
+        if let useMinimumMTU { options.useMinimumMTU = useMinimumMTU }
+        if let disableFragmentation { options.fragmentationEnabled = !disableFragmentation }
+        if let calculateReceiveTime { options.calculateReceiveTime = calculateReceiveTime }
         if let localAddressPreference { options.localAddressPreference = localAddressPreference }
-        if disableMulticastLoopback != nil {
-            var flags = options.flags
-            flags.insert(.disableMulticastLoopback)
-            options.flags = flags
-        }
+        if let disableMulticastLoopback { options.disableMulticastLoopback = disableMulticastLoopback }
         return ProtocolOptions<IPProtocol>(protocolIdentifier: IPProtocol.identifier, perProtocolOptions: options)
     }
 
@@ -1885,17 +1869,43 @@ public class NetworkChannelBase: EndpointFlowParent {
 
     /// Whether a call already holds `endpointFlow` exclusively.
     ///
-    /// The stack can record an event and ask the flow to drain from deep inside a call the flow
+    /// A flush task that finds the flow borrowed records that the call holding it has to flush
+    /// as it returns. The stack can record an event and ask the flow to drain from deep inside a call the flow
     /// itself made, so `withFlow` has to be re-entrancy safe. Taking the flow a second time would
     /// be an exclusivity violation; skipping is correct because the events stay recorded on the
     /// flow protocol and the call already running drains them on its way out.
-    private var flowIsBorrowed = false
+    private var flowBorrow = FlowBorrow.available
+
+    private enum FlowBorrow {
+        case available
+        /// `flushPending` is set when a flush task ran during the borrow and left its flush to
+        /// the borrower.
+        case borrowed(flushPending: Bool)
+    }
 
     final func withFlow<R>(_ body: (inout EndpointFlow) -> R) -> R? {
-        guard !flowIsBorrowed else { return nil }
-        flowIsBorrowed = true
-        defer { flowIsBorrowed = false }
+        guard case .available = flowBorrow else { return nil }
+        flowBorrow = .borrowed(flushPending: false)
+        defer { releaseFlow() }
         return body(&endpointFlow)
+    }
+
+    final func deferWriteFlush() {
+        guard case .borrowed = flowBorrow else {
+            preconditionFailure("a flush can only be deferred to a call holding the flow")
+        }
+        flowBorrow = .borrowed(flushPending: true)
+    }
+
+    /// Ends the flow borrow, first flushing writes a flush task could not run because the borrow
+    /// was held. A flush task can run inline during a flush and defer again, so this repeats
+    /// until none is left.
+    private func releaseFlow() {
+        while case .borrowed(flushPending: true) = flowBorrow {
+            flowBorrow = .borrowed(flushPending: false)
+            endpointFlow.flushWrites()
+        }
+        flowBorrow = .available
     }
 
     /// Runs `body` with exclusive access to the owned flow, handing it a non-copyable value.
@@ -1907,9 +1917,11 @@ public class NetworkChannelBase: EndpointFlowParent {
         _ value: consuming T,
         _ body: (inout EndpointFlow, consuming T) -> R
     ) -> R {
-        precondition(!flowIsBorrowed, "flow entry point taking a request called re-entrantly")
-        flowIsBorrowed = true
-        defer { flowIsBorrowed = false }
+        guard case .available = flowBorrow else {
+            preconditionFailure("flow entry point taking a request called re-entrantly")
+        }
+        flowBorrow = .borrowed(flushPending: false)
+        defer { releaseFlow() }
         return body(&endpointFlow, value)
     }
 

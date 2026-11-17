@@ -587,13 +587,13 @@ public struct InPlaceSerializer<Factory: SerializerSpanFactory & ~Copyable & ~Es
     @inline(always)
     public mutating func vle(_ value: UInt64) throws(SerializationError) {
         // QUIC mixes all four encoded sizes, so no single size is hinted as the common case.
-        if value <= 63 {
+        if value < 1 << 6 {
             try writeFixedSize(UInt8(truncatingIfNeeded: value))
-        } else if value <= 16383 {
+        } else if value < 1 << 14 {
             try writeFixedSize(UInt16(truncatingIfNeeded: 1 << 14 | value).bigEndian)
-        } else if value <= 1_073_741_823 {
-            try writeFixedSize(UInt32(truncatingIfNeeded: 1 << 31 | value).bigEndian)
-        } else if value <= 4_611_686_018_427_387_903 {
+        } else if value < 1 << 30 {
+            try writeFixedSize(UInt32(truncatingIfNeeded: 2 << 30 | value).bigEndian)
+        } else if value < 1 << 62 {
             try writeFixedSize(UInt64(3 << 62 | value).bigEndian)
         } else {
             try invalidate(.invalidParameter)

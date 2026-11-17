@@ -17,6 +17,8 @@
 @available(Network 0.1.0, *)
 enum Constants {
     static let initialMSS = 1200
+    // RFC 9000, Section 14.1: the smallest UDP payload that may carry a client's Initial packet.
+    static let minimumInitialDatagramSize = 1200
     static let streamIDDatagramMask: UInt64 = 0x8000_0000_0000_0000
     static let pathIdentifierTypeThisPath: UInt64 = 2
     static let highMemorySystem: UInt64 = 3 * 1024 * 1024 * 1024

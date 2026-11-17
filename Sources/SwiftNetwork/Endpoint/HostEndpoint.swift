@@ -72,7 +72,7 @@ public struct HostEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendable {
             write.fixedLengthUTF8(name, byteCount: name.utf8.count + 1)
         }
 
-        let length = UInt8(8 + innerBuffer.count)
+        let length = UInt8(clamping: 8 + innerBuffer.count)
         return Serializer.serialize { write in
             write.uint8(length)
             write.uint8(AddressFamily.unspecified.rawValue)

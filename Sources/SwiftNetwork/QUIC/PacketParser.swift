@@ -380,9 +380,36 @@ struct PacketParser: ~Copyable, PrefixedLoggable {
         } catch {
             // Explicitly release finalize frames in case of error
             self.cleanupReceivedFrames()
+            // The packet was authenticated, so a frame that fails to parse is the peer's doing rather than
+            // noise from the network: RFC 9000, Sections 12.4 and 20.1 require a FRAME_ENCODING_ERROR. A close
+            // raised while parsing is more specific, and a connection already closing has decided.
+            if connection.closeError == nil, !connection.state.isTerminal {
+                switch error {
+                case .frameParse(let parseError):
+                    connection.close(with: .frameEncodingError, parseError.description(), in: &eventContext)
+                case .packet(.deserializationError):
+                    // The Deserializer could not read a frame, such as a frame type cut off by the end of
+                    // the packet.
+                    connection.close(with: .frameEncodingError, "Frame deserialization failed", in: &eventContext)
+                default:
+                    break
+                }
+            }
             return .dropped
         }
         return .parsed
+    }
+
+    /// Whether what is left of `frame` is zero padding after the last packet of the datagram.
+    /// Zero bytes have no fixed bit, so they never parse as a packet.
+    func isTrailingPadding(_ frame: borrowing Frame) -> Bool {
+        guard let bytes = frame.span, !bytes.isEmpty else {
+            return false
+        }
+        for index in bytes.indices where bytes[index] != 0 {
+            return false
+        }
+        return true
     }
 
     @inline(always)
@@ -852,16 +879,15 @@ extension Deserializer where Factory: ~Escapable {
         _ value: inout QUICConnectionIDStorage,
         length: Int
     ) throws(DeserializationError) {
-        guard length <= QUICConnectionID.maximumSize else {
+        guard length >= 0, length <= QUICConnectionID.maximumSize else {
             try invalidate(.parsingFailed)
         }
         var mutableBytes = value.mutableSpan
-        // The default connection ID length is 8 bytes, which fits a single unaligned load and store.
-        // Fast path to avoid a variable-length memmove for every packet received.
-        if length == MemoryLayout<UInt64>.size, hasRoom(length) {
-            let bytes = currentSpan.unsafeLoadUnaligned(fromByteOffset: cursor, as: UInt64.self)
-            var destination = mutableBytes.mutableBytes
-            destination.storeBytes(of: bytes, toByteOffset: 0, as: UInt64.self)
+        // Connection IDs are at most 20 bytes, and the default length is 8 bytes. Copy with unaligned 8/4/2/1 byte
+        // loads and stores to avoid a variable-length memmove for every packet received. The fast path is only
+        // taken when both ranges are in bounds.
+        var destination = mutableBytes.mutableBytes
+        if destination.copyIfInBounds(from: currentSpan, sourceOffset: cursor, count: length) {
             moveCursorUnchecked(length)
             return
         }

@@ -91,6 +91,16 @@ enum QUICSendStreamState: UInt8, CaseIterable, CustomStringConvertible {
             return false
         }
     }
+
+    /// The send side has reached a terminal state (all data ACKed, or the reset ACKed).
+    var isTerminal: Bool {
+        switch self {
+        case .dataReceived, .resetReceived:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 // Bundles the streams outbound send buffer and send-state enum into a single stored
@@ -188,6 +198,16 @@ enum QUICReceiveStreamState: CaseIterable, CustomStringConvertible {
     var dataHasAlreadyBeenReceived: Bool {
         switch self {
         case .dataReceived, .resetReceived, .dataRead, .resetRead:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The receive side has reached a terminal state (all data read, or the reset received/read).
+    var isTerminal: Bool {
+        switch self {
+        case .dataRead, .resetReceived, .resetRead:
             return true
         default:
             return false

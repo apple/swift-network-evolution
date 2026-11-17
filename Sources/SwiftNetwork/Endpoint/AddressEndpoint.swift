@@ -144,9 +144,13 @@ public struct AddressEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendabl
         case .unix(let path):
             let pathLength = path.utf8.count
             return Serializer.serialize { write in
-                write.uint8(UInt8(pathLength + 2))
+                write.uint8(UInt8(max(pathLength, 1) + 2))
                 write.uint8(AddressFamily.unix.rawValue)
-                write.fixedLengthUTF8(path, byteCount: pathLength)
+                if pathLength > 0 {
+                    write.fixedLengthUTF8(path, byteCount: pathLength)
+                } else {
+                    write.uint8(0)
+                }
             }
         default: return nil
         }

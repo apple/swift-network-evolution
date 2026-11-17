@@ -103,6 +103,21 @@ final class QUICStreamTests: XCTestCase {
         }
     }
 
+    func testStreamMetadataTypeIsKnownBeforeTheStreamHasAnID() {
+        connection.context.onQueue {
+            var pending = QUICStreamInstance(parent: self.connection, inbound: false)
+            pending.unidirectional = true
+            let metadata = pending.streamMetadata
+            XCTAssertEqual(metadata.streamID, 0)
+            XCTAssertEqual(metadata.streamType, .unidirectional, "a pending stream reports the type it will have")
+
+            pending.setup(streamID: QUICStreamID(2), logPrefixer: quicStreamTestsLogPrefixer)
+            XCTAssertEqual(metadata.streamID, 2, "the metadata made earlier follows the stream's ID")
+            XCTAssertEqual(metadata.streamType, .unidirectional)
+            pending.destroyFromExternalTest()
+        }
+    }
+
     func testFinalSizeDefaultsToNil() {
         XCTAssertNil(holder.stream.finalSize)
     }
@@ -358,8 +373,8 @@ final class QUICStreamUpperProtocolBorrowingTests: XCTestCase {
                 }
                 body(action, stack, flowID)
                 // However the callback went, nothing is left borrowed or held back
-                XCTAssertFalse(connection.stateMachine.isFlowBorrowed, "\(action)")
-                XCTAssertFalse(connection.stateMachine.isSendActive, "\(action)")
+                XCTAssertFalse(connection.deferredWork.isFlowBorrowed, "\(action)")
+                XCTAssertFalse(connection.deferredWork.isSendActive, "\(action)")
             }
         }
     }
@@ -379,11 +394,11 @@ final class QUICStreamUpperProtocolBorrowingTests: XCTestCase {
         _ stack: AsynchronousHandshakeStack,
         _ eventContext: inout NetworkContext.EventContext
     ) {
-        let stateMachine = stack.connection.stateMachine
-        XCTAssertFalse(stateMachine.isFlowBorrowed, "Called while a flow was borrowed (\(action))")
+        let deferredWork = stack.connection.deferredWork
+        XCTAssertFalse(deferredWork.isFlowBorrowed, "Called while a flow was borrowed (\(action))")
         #if DEBUG
-        XCTAssertFalse(stateMachine.isBorrowed(.streams), "Called while the stream table was borrowed (\(action))")
-        XCTAssertFalse(stateMachine.isBorrowed(.secondary), "Called while the datagram table was borrowed (\(action))")
+        XCTAssertFalse(deferredWork.isBorrowed(.streams), "Called while the stream table was borrowed (\(action))")
+        XCTAssertFalse(deferredWork.isBorrowed(.secondary), "Called while the datagram table was borrowed (\(action))")
         #endif
         action.run(on: stack.harness, in: &eventContext)
     }
@@ -575,8 +590,8 @@ final class QUICStreamUpperProtocolBorrowingTests: XCTestCase {
             }
             XCTAssertTrue(called, "connected never reached the upper protocol (\(action))")
             stack.connection.context.onQueue {
-                XCTAssertFalse(stack.connection.stateMachine.isFlowBorrowed, "\(action)")
-                XCTAssertFalse(stack.connection.stateMachine.isSendActive, "\(action)")
+                XCTAssertFalse(stack.connection.deferredWork.isFlowBorrowed, "\(action)")
+                XCTAssertFalse(stack.connection.deferredWork.isSendActive, "\(action)")
             }
         }
     }
