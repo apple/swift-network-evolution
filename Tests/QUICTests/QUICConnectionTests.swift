@@ -473,7 +473,8 @@ final class QUICConnectionTests: XCTestCase {
         }
 
         connection.context.onQueue {
-            self.connection.state = .connected
+            try? self.connection.setup(remote: nil, local: nil, parameters: nil, path: nil)
+            self.connection.moveToConnectedFromExternalTest()
             self.connection.localCIDLength = 8
             self.connection.protector = Protector(
                 isClient: true,
@@ -486,10 +487,6 @@ final class QUICConnectionTests: XCTestCase {
                 secret: SymmetricKey(size: .bits256),
                 isWrite: false
             )
-            defer {
-                // Teardown must not act on a connection that never finished a handshake.
-                self.connection.state = .invalid
-            }
             var parser = PacketParser(logPrefixer: LogPrefixer("[QUICConnectionTests]"))
             for reset in resets {
                 var frame = Frame(copyBuffer: reset)
@@ -525,6 +522,17 @@ final class QUICConnectionTests: XCTestCase {
             }
             XCTAssertTrue(parser.framesReceived.isEmpty, "No frames must be parsed from a Stateless Reset")
         }
+    }
+}
+
+@available(Network 0.1.0, *)
+extension QUICConnection {
+    /// Takes a client connection that has been set up through the states a handshake moves it
+    /// through, to connected, without running the handshake.
+    func moveToConnectedFromExternalTest() {
+        state = .initialSent
+        state = .handshake
+        state = .connected
     }
 }
 

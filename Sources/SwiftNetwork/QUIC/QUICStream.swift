@@ -635,7 +635,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
     /// the RESET_STREAM ACK or the final read closes the stream.
     var closeError: NetworkError? {
         let wasReset =
-            send.state == .resetReceived || receive.state == .resetReceived || receive.state == .resetRead
+            sendState == .resetReceived || receiveState == .resetReceived || receiveState == .resetRead
         return wasReset ? NetworkError.posix(ECONNRESET) : nil
     }
     var unidirectional: Bool {
@@ -804,13 +804,13 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         }
 
         // Ignore STREAM frame when all data has already been received
-        if self.receive.state.dataHasAlreadyBeenReceived {
+        if self.receiveState.dataHasAlreadyBeenReceived {
             frame.frame.finalize(success: true)
             return true
         }
 
         var result = true
-        if self.receive.state.isReceivingData {
+        if self.receiveState.isReceivingData {
             result = processIncomingStreamData(connection: connection, frame: frame, in: &eventContext)
         } else {
             frame.frame.finalize(success: false)
@@ -873,8 +873,8 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
                 break processing
             }
 
-            if frameFinalSize != nil {
-                receive.markSizeKnownIfNeeded(logPrefix: log.logPrefix)
+            if frameFinalSize != nil, receiveState != .sizeKnown {
+                receiveState = .sizeKnown
             }
 
             if dataAdded || appendResult.hasFin {
@@ -896,11 +896,11 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
                 let finOffset = appendResult.finOffset
                 let newOffset = appendResult.currentOffset &+ appendResult.availableToDequeue
 
-                if receive.markDataReceivedIfReached(
-                    newOffset: newOffset,
-                    finOffset: finOffset,
-                    logPrefix: log.logPrefix
-                ) {
+                if newOffset == finOffset {
+                    receiveState = .dataReceived
+                }
+                // Past the FIN offset is a protocol violation, which closes the stream.
+                if newOffset > finOffset {
                     log.error(
                         "Bytes received \(newOffset) > fin offset \(finOffset)"
                     )
@@ -924,7 +924,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
     var isOpen: Bool {
 
         !(self.pendingStart || self.closed
-            || (self.send.state == .invalid && self.receive.state == .invalid))
+            || (self.sendState == .invalid && self.receiveState == .invalid))
     }
 
     var streamType: QUICStreamType? { self.streamID?.quicStreamType }
@@ -967,7 +967,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
             // established final size.
             if let finalSize = self.finalSize, newFinalSize == nil, finalSize < newLastOffset {
                 log.error(
-                    "[true:\(self.receive.state)] endpoint received stream offset \(newLastOffset) that exceeds final size \(finalSize)"
+                    "[true:\(self.receiveState)] endpoint received stream offset \(newLastOffset) that exceeds final size \(finalSize)"
                 )
                 closeReason = "stream offset exceeded its final size"
                 break validation
@@ -977,7 +977,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
             // than the size of the stream data that was already established
             if self.finalSize == nil, newFinalSize != nil, newLastOffset < self.lastReceivedOffset {
                 log.error(
-                    "[false:\(self.receive.state)] endpoint received size \(newLastOffset) that's lower than size of the stream \(self.lastReceivedOffset)"
+                    "[false:\(self.receiveState)] endpoint received size \(newLastOffset) that's lower than size of the stream \(self.lastReceivedOffset)"
                 )
                 closeReason = "received final size lower than already received size"
                 break validation
@@ -987,7 +987,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
             // to the one already established
             if let finalSize = self.finalSize, let newFinalSize, finalSize != newFinalSize {
                 log.error(
-                    "[true:\(self.receive.state)] Endpoint received final size \(newFinalSize) different from already established \(finalSize)"
+                    "[true:\(self.receiveState)] Endpoint received final size \(newFinalSize) different from already established \(finalSize)"
                 )
                 closeReason = "received final size different to already established final size"
                 break validation
@@ -1011,7 +1011,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         )
         if lastOffsetDelta != nil {
             log.datapath(
-                "[\(self.finalSize != nil ? "true" : "false"):\(self.receive.state)] Adjusted last offset (conn \(connection.lastReceivedOffset), stream \(self.lastReceivedOffset))"
+                "[\(self.finalSize != nil ? "true" : "false"):\(self.receiveState)] Adjusted last offset (conn \(connection.lastReceivedOffset), stream \(self.lastReceivedOffset))"
             )
         }
 
@@ -1115,9 +1115,9 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         }
 
         // If all data has now been read, move to the data read state
-        if receive.state != .dataRead, upperReceiveQueue.isEmpty, markedInboundFINOnFrame {
-            receive.state.change(logIDString: log.logPrefix, to: .dataRead)
-            if !self.closed, (self.unidirectional && self.send.state == .invalid) || self.send.state.isTerminal {
+        if receiveState != .dataRead, upperReceiveQueue.isEmpty, markedInboundFINOnFrame {
+            receiveState = .dataRead
+            if !self.closed, (self.unidirectional && self.sendState == .invalid) || self.sendState.isTerminal {
                 // If both directions are closed, and all data is read, close the stream
                 self.close(errorCode: self.closeError, in: &eventContext)
             }
@@ -1159,19 +1159,17 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
     }
 
     mutating func inboundStreamReady() {
-        let logPrefix = log.logPrefix
-        receive.state.change(logIDString: logPrefix, to: .receive)
+        receiveState = .receive
         if !unidirectional {
-            send.state.change(logIDString: logPrefix, to: .ready)
+            sendState = .ready
         }
     }
 
     mutating func outboundStreamReady() {
-        let logPrefix = log.logPrefix
         if !self.unidirectional {
-            self.receive.state.change(logIDString: logPrefix, to: .receive)
+            self.receiveState = .receive
         }
-        self.send.state.change(logIDString: logPrefix, to: .ready)
+        self.sendState = .ready
     }
 
     func outboundStreamPending(
@@ -1226,16 +1224,19 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         }
     }
 
-    // Only the first write on a stream gets here. It is kept out of line so reading the log prefix
-    // does not become part of every addStreamData call.
+    // Only the first write on a stream gets here. It is kept out of line so the state transition
+    // logging does not become part of every addStreamData call.
     @inline(never)
     private mutating func startSending() {
-        send.startSending(logIDString: log.logPrefix)
+        sendState = .send
     }
 
     // To be called when 0-RTT sending is rejected
     mutating func resetSendStreamData() {
-        send.reset()
+        // The send side starts over from a new one, ready again.
+        send.buffer.empty()
+        send = QUICSendState()
+        sendState = .ready
         flowControlState.resetSentBytes()
     }
 
@@ -1259,7 +1260,9 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         pendingItems: inout PendingItems,
         connection: QUICConnection
     ) {
-        send.recordSent(isFinal: isFinal, logPrefix: log.logPrefix)
+        if isFinal, sendState == .send {
+            sendState = .dataSent
+        }
 
         updateFlowControlWithSentBytes(writtenLength, connection: connection)
 
@@ -1323,7 +1326,7 @@ extension QUICStreamInstance {
         log.datapath("Process MAX_STREAM_DATA")
 
         // Ignore MAX_STREAM_DATA when all stream data has been sent
-        if send.state.dataHasAlreadyBeenSent {
+        if sendState.dataHasAlreadyBeenSent {
             return
         }
 
