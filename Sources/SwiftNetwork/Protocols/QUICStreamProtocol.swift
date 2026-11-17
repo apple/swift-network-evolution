@@ -325,19 +325,19 @@ public struct QUICStreamProtocol: NetworkProtocol {
         }
 
         func deepCopy() -> Self {
-            var implicitCopy = QUICStreamMetadata()
-            implicitCopy.streamID = self.streamID
-            implicitCopy.datagramFlowID = self.datagramFlowID
-            implicitCopy.applicationError = self.applicationError
-            implicitCopy.reliableSize = self.reliableSize
+            var copy = QUICStreamMetadata()
+            copy.streamID = self.streamID
+            copy.datagramFlowID = self.datagramFlowID
+            copy.applicationError = self.applicationError
+            copy.reliableSize = self.reliableSize
             #if !NETWORK_EMBEDDED
-            implicitCopy.setApplicationErrorHandler = self.setApplicationErrorHandler
+            copy.setApplicationErrorHandler = self.setApplicationErrorHandler
             #endif
-            implicitCopy.quicConnectionMetadata = self.quicConnectionMetadata
-            implicitCopy.usableDatagramFrameSize = self.usableDatagramFrameSize
-            implicitCopy.streamType = self.streamType
-            implicitCopy.isDatagramFlow = self.isDatagramFlow
-            return implicitCopy
+            copy.quicConnectionMetadata = self.quicConnectionMetadata
+            copy.usableDatagramFrameSize = self.usableDatagramFrameSize
+            copy.streamType = self.streamType
+            copy.isDatagramFlow = self.isDatagramFlow
+            return copy
         }
 
         static public func == (lhs: borrowing QUICStreamMetadata, rhs: borrowing QUICStreamMetadata) -> Bool {
