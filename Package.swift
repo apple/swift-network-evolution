@@ -70,6 +70,10 @@ let package = Package(
             name: "SwiftNetworkTestSupport",
             targets: ["SwiftNetworkTestSupport"]
         ),
+        .library(
+            name: "SwiftNetworkTestHarness",
+            targets: ["SwiftNetworkTestHarness"]
+        ),
     ],
     traits: [
         .trait(
