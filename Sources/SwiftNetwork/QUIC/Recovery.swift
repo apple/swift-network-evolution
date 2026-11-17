@@ -479,11 +479,49 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             }
         }
 
+        /// Bytes acked on one path during an ACK frame, reported to its congestion controller in one
+        /// call instead of one per packet.
+        struct AckedBytesBatch {
+            private var path: QUICPath?
+            private var recoveryStartTime = NetworkClock.Instant.zero
+            private var bytesAcked = 0
+            private var creditedBytes = 0
+
+            mutating func add(
+                bytes: Int,
+                sentTime: NetworkClock.Instant,
+                path sentPath: QUICPath
+            ) {
+                if let path, path !== sentPath {
+                    flush()
+                }
+                if path == nil {
+                    path = sentPath
+                    recoveryStartTime = sentPath.congestionControlRecoveryStartTime
+                }
+                bytesAcked += bytes
+                if sentTime > recoveryStartTime {
+                    creditedBytes += bytes
+                }
+            }
+
+            /// Must run before anything that can read or change the controller mid-ACK, and before
+            /// the ACK bracket closes.
+            mutating func flush() {
+                guard let path else { return }
+                path.congestionControlPacketsAcked(bytesAcked: bytesAcked, creditedBytes: creditedBytes)
+                self.path = nil
+                bytesAcked = 0
+                creditedBytes = 0
+            }
+        }
+
         // `sentPath` is nil when the path the packet was sent on has since been torn down, for
         // example after a migration. The packet is still retired, but there is no path to credit.
         mutating func packetAcked(
             sentPath: QUICPath?,
             sentEntry: borrowing PacketContainerEntry,
+            ackedBytes: inout AckedBytesBatch,
             connection: QUICConnection,
             in eventContext: inout NetworkContext.EventContext
         ) {
@@ -508,10 +546,18 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
                     log.datapath("Non-Ack eliciting packet \(number) acked")
                 }
-                sentPath?.congestionControlPacketsAcked(
-                    bytesAcked: sentEntry.packet.isInFlightEligible ? sentEntry.packet.totalLength : 0,
-                    sentTime: sentEntry.sentTime
-                )
+                if let sentPath {
+                    ackedBytes.add(
+                        bytes: sentEntry.packet.isInFlightEligible ? sentEntry.packet.totalLength : 0,
+                        sentTime: sentEntry.sentTime,
+                        path: sentPath
+                    )
+                }
+            }
+
+            // A PMTUD probe ack checks congestion control, so it has to see the bytes already acked.
+            if sentEntry.packet.transmittedItems.pmtudProbeMSS != nil {
+                ackedBytes.flush()
             }
 
             // Acknowledge the data sent with the packet
@@ -609,6 +655,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         ) -> Bool {
             let packetNumberSpace = ackFrame.packetNumberSpace
             var newlyECTAcked: UInt64 = 0
+            var ackedBytes = AckedBytesBatch()
 
             let newlyAckedPacketNumbers = findNewlyAckedPackets(ackFrame: ackFrame, path: path)
 
@@ -653,6 +700,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                         log.datapath(
                             "Spurious loss of \(lostPacketNumber) undoes the congestion window reduction on path \(sentPath.pathIdentifier)"
                         )
+                        // The undo restores the recovery start time that later packets are judged by.
+                        ackedBytes.flush()
                         sentPath.congestionControlSpuriousRetransmit(qlog: connection.qLog)
                     }
                 }
@@ -660,10 +709,12 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 packetAcked(
                     sentPath: sentPath,
                     sentEntry: ackedEntry,
+                    ackedBytes: &ackedBytes,
                     connection: connection,
                     in: &eventContext
                 )
             }
+            ackedBytes.flush()
 
             // Process ECN after packet_acked.
             // Update the total acked packets that were sent with ECT
