@@ -86,6 +86,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
         tlsOptions.serverName = "quic-test.local"
         if server {
             if mutualAuthentication {
+                tlsOptions.clientAuthRequired = true
                 tlsOptions.trustedRawPublicKeyCertificates = [[UInt8](clientSigningKey.publicKey.derRepresentation)]
             }
             tlsOptions.rawPrivateKey = [UInt8](serverSigningKey.rawRepresentation)
