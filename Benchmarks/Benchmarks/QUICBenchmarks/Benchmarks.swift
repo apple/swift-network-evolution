@@ -36,6 +36,10 @@ struct Allowances {
     var retains = 4
     var releases = 4
     var syscalls = 50
+
+    /// ARC counts through a handshake shift by tens between runs of the same source, as the
+    /// dependencies it runs through float.
+    static let handshake = Allowances(retains: 32, releases: 32)
 }
 
 func gate(_ allowances: Allowances) -> [BenchmarkMetric: BenchmarkThresholds] {
@@ -93,7 +97,8 @@ private func quicBenchmarks() {
         configuration: configuration(
             scalingFactor: .one,
             maxDuration: .seconds(20),
-            maxIterations: 200
+            maxIterations: 200,
+            allowances: .handshake
         )
     ) { benchmark in
         for _ in benchmark.scaledIterations {
@@ -109,7 +114,8 @@ private func quicBenchmarks() {
         configuration: configuration(
             scalingFactor: .one,
             maxDuration: .seconds(20),
-            maxIterations: 200
+            maxIterations: 200,
+            allowances: .handshake
         )
     ) { benchmark in
         for _ in benchmark.scaledIterations {
@@ -168,7 +174,8 @@ private func quicBenchmarks() {
         configuration: configuration(
             scalingFactor: .one,
             maxDuration: .seconds(30),
-            maxIterations: 50
+            maxIterations: 50,
+            allowances: .handshake
         )
     ) { benchmark in
         for _ in benchmark.scaledIterations {

@@ -77,7 +77,7 @@ Every tolerance is an absolute count, in the units stored in `Thresholds/`:
 
 | Target | `mallocCountTotal` | `objectAllocCount` | `retainCount`, `releaseCount` | `syscalls`, `writeSyscalls` |
 | --- | ---: | ---: | ---: | ---: |
-| `QUICBenchmarks` | 2 | 2 | 4 | 50 |
+| `QUICBenchmarks` | 2 | 2 | 4 (32 for `QUICConnectionSetup`, `QUICHandshake` and `QUICStreamEcho_16KB_with_loss`) | 50 |
 | `SwiftNetworkCoreBenchmarks` | 50 | 0 | 0 | 50 |
 
 The tolerances are in `Benchmarks.swift` for each target: `Allowances` for `QUICBenchmarks` and
