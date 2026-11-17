@@ -1,8 +1,8 @@
 {
-  "mallocCountTotal" : 15502,
-  "objectAllocCount" : 8001,
-  "releaseCount" : 98009,
-  "retainCount" : 64008,
+  "mallocCountTotal" : 18502,
+  "objectAllocCount" : 11001,
+  "releaseCount" : 99509,
+  "retainCount" : 64508,
   "syscalls" : 0,
   "writeSyscalls" : 0
 }
