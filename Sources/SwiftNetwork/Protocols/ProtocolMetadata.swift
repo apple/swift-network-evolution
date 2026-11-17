@@ -105,7 +105,7 @@ public final class ProtocolMetadata<P: NetworkProtocol>: AbstractProtocolMetadat
 
         let selfId = ObjectIdentifier(self)
         let otherId = ObjectIdentifier(other)
-
+        // Evaluate the object identifiers to reverse the order if two metadata object evaluate at the same time on different threads
         if selfId < otherId {
             return withPerProtocolMetadata { lhMetadata in
                 other.withPerProtocolMetadata { rhMetadata in
