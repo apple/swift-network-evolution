@@ -94,7 +94,7 @@ private func coreBenchmarks() {
     Benchmark("FrameArray_add_and_drain_8", configuration: configuration()) { benchmark in
         for _ in benchmark.scaledIterations {
             var frames = FrameArray()
-            for _ in 0 ..< 8 {
+            for _ in 0..<8 {
                 frames.add(frame: Frame(count: 128))
             }
             while var frame = frames.popFirst() {
