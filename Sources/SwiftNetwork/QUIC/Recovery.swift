@@ -56,6 +56,9 @@ struct PacketContainerEntry: ~Copyable, NetworkComparable {
 struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     struct InnerState: ~Copyable, PrefixedLoggable {
         var log: LogPrefixer
+        /// The packet number space this state tracks. Packet numbers are only comparable within one
+        /// space, so a packet belongs here only if it was built for this space.
+        let packetNumberSpace: PacketNumberSpace
         var ackElicitingPacketsInFlight = 0
         var timeOfLastSentAckElicitingPacket = NetworkClock.Instant.zero
         var largestSentPacketNumber = PacketNumber.none
@@ -712,12 +715,17 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             return true
         }
 
+        /// Tracks `sentPacket`, which must have been built for this state's packet number space.
         @_optimize(speed)
-        mutating func sentPacket(
+        mutating func trackSentPacket(
             _ sentPacket: consuming SentPacketRecord,
             time: NetworkClock.Instant,
             connection: QUICConnection
         ) {
+            assert(
+                sentPacket.numberSpace == self.packetNumberSpace,
+                "A \(sentPacket.numberSpace) packet must not be tracked in the \(self.packetNumberSpace) space"
+            )
             let sentPath: QUICPath
             if let currentPath = connection.currentPath,
                 sentPacket.sentPath == currentPath.pathIdentifier
@@ -800,24 +808,6 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         ) {
             // To be handled for L4S
         }
-
-        @discardableResult
-        mutating func recordSentPackets(
-            _ packets: consuming NetworkUniqueDeque<SentPacketRecord>,
-            connection: QUICConnection
-        ) -> Bool {
-            if packets.isEmpty {
-                return false
-            }
-
-            let now = connection.now
-            while let packet = packets.popFirst() {
-                let time = packet.pacedSendTime ?? now
-                sentPacket(packet, time: time, connection: connection)
-            }
-
-            return true
-        }
     }
 
     struct PathState: ~Copyable {
@@ -869,12 +859,13 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         self.connection = connection
         self.timerID = timerID
         self.log = logPrefixer
-        self.initialInnerState = InnerState(log: log)
-        self.handshakeInnerState = InnerState(log: log)
-        self.applicationDataInnerState = InnerState(log: log)
+        self.initialInnerState = InnerState(log: log, packetNumberSpace: .initial)
+        self.handshakeInnerState = InnerState(log: log, packetNumberSpace: .handshake)
+        self.applicationDataInnerState = InnerState(log: log, packetNumberSpace: .applicationData)
     }
 
-    fileprivate mutating func sentPacket(
+    /// Records `sentPacket` in the state of the packet number space it was built for.
+    fileprivate mutating func recordSentPacket(
         _ sentPacket: consuming SentPacketRecord,
         time: NetworkClock.Instant,
         connection: QUICConnection
@@ -883,8 +874,34 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         withMutableInnerState(packetNumberSpace: packetNumberSpace, packet: sentPacket) {
             innerState,
             sentPacket in
-            innerState.sentPacket(sentPacket, time: time, connection: connection)
+            innerState.trackSentPacket(sentPacket, time: time, connection: connection)
         }
+    }
+
+    /// Records each packet in the state of the packet number space it was built for, without
+    /// touching the timer. A send builds packets for every space with something pending, not only
+    /// the space that prompted it.
+    private mutating func recordSentPacketsInTheirOwnSpaces(
+        _ packets: consuming NetworkUniqueDeque<SentPacketRecord>,
+        connection: QUICConnection
+    ) {
+        let now = connection.now
+        while let packet = packets.popFirst() {
+            let time = packet.pacedSendTime ?? now
+            recordSentPacket(packet, time: time, connection: connection)
+        }
+    }
+
+    /// Moves `packets` to the end of `collected`, and returns whether there were any.
+    private static func collect(
+        _ packets: consuming NetworkUniqueDeque<SentPacketRecord>,
+        into collected: inout NetworkUniqueDeque<SentPacketRecord>
+    ) -> Bool {
+        let hadPackets = !packets.isEmpty
+        while let packet = packets.popFirst() {
+            collected.append(packet)
+        }
+        return hadPackets
     }
 
     private var inBatch = false
@@ -915,7 +932,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         let now = connection.now
         while let packet = sentPackets.popFirst() {
             let time = packet.pacedSendTime ?? now
-            sentPacket(packet, time: time, connection: connection)
+            recordSentPacket(packet, time: time, connection: connection)
         }
         if inBatch {
             shouldResetTimer = true
@@ -1119,11 +1136,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     ) {
         for identifier in lostPackets {
             var discardInitialRecoveryState = false
+            var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
             withMutableInnerState(packetNumberSpace: identifier.space) {
                 innerState in
                 // The lost packet stays in `outstandingPackets` (see `removeLostPackets`), so a
                 // late ACK for it is still recognized as a spurious loss.
-                var sentPackets: NetworkUniqueDeque<SentPacketRecord>?
                 let found = innerState.findSentPacketEntry(packetNumber: identifier.number) { entry in
                     sentPackets = connection.retransmitPacket(
                         entry.packet,
@@ -1135,10 +1152,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     return
                 }
                 innerState.retainLostPacket(identifier.number)
-                if let sentPackets {
-                    innerState.recordSentPackets(sentPackets, connection: connection)
-                }
             }
+            recordSentPacketsInTheirOwnSpaces(sentPackets, connection: connection)
             if discardInitialRecoveryState {
                 self.resetPNSpace(packetNumberSpace: .initial, connection: connection)
                 connection.withCurrentPath {
@@ -1330,6 +1345,9 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         var sentPTO = false
 
         var discardInitialRecoveryState = false
+        // Recording needs the whole `Recovery`, which the loop below holds exclusively, so the packets
+        // every space's probe built are collected here and recorded once it ends.
+        var probePackets = NetworkUniqueDeque<SentPacketRecord>(minimumCapacity: 2)
         applyToAllInnerStatesMutable { innerState, packetNumberSpace in
             let ackElicitingPacketsInFlight = innerState.ackElicitingPacketsInFlight
             guard ackElicitingPacketsInFlight > 0 else {
@@ -1352,8 +1370,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     discardInitialRecoveryState: &discardInitialRecoveryState,
                     in: &eventContext
                 )
-                // Only a recorded packet counts as a probe; the pending items may write no payload.
-                if innerState.recordSentPackets(packets, connection: connection) {
+                // Only a collected packet counts as a probe; the pending items may write no payload.
+                if Recovery.collect(packets, into: &probePackets) {
                     sentPTO = true
                 } else {
                     connection.log.datapath(
@@ -1401,7 +1419,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                         continue
                     }
 
-                    if let packets, innerState.recordSentPackets(packets, connection: connection) {
+                    if let packets, Recovery.collect(packets, into: &probePackets) {
                         sentPTO = true
                         addedPackets += 1
                     } else {
@@ -1414,6 +1432,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 }
             }
         }
+        recordSentPacketsInTheirOwnSpaces(probePackets, connection: connection)
 
         if !sentPTO {
             if totalAckElicitingPacketsInFlight == 0, peerCompletedValidation(connection: connection) {
@@ -1439,19 +1458,18 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
             sentPTO = true
 
-            withMutableInnerState(packetNumberSpace: packetNumberSpace) { innerState in
-                let packets = connection.sendFramesFromRecovery(
-                    on: path,
-                    ignoreCongestionWindow: true,
-                    discardInitialRecoveryState: &discardInitialRecoveryState,
-                    in: &eventContext
+            let packets = connection.sendFramesFromRecovery(
+                on: path,
+                ignoreCongestionWindow: true,
+                discardInitialRecoveryState: &discardInitialRecoveryState,
+                in: &eventContext
+            )
+            if packets.isEmpty {
+                connection.log.datapath(
+                    "Unable to force send PTOs, likely flow-controlled or unavailable"
                 )
-                if !innerState.recordSentPackets(packets, connection: connection) {
-                    connection.log.datapath(
-                        "Unable to force send PTOs, likely flow-controlled or unavailable"
-                    )
-                }
             }
+            recordSentPacketsInTheirOwnSpaces(packets, connection: connection)
         }
 
         if discardInitialRecoveryState {

@@ -30,6 +30,12 @@ import XCTest
 @_spi(TestHarness) @_spi(Essentials) @_spi(ProtocolProvider) import SwiftNetworkTestHarness
 #endif
 
+#if canImport(CryptoKit)
+import CryptoKit
+#elseif canImport(Crypto)
+import Crypto
+#endif
+
 #if canImport(BasicContainers)
 import BasicContainers
 internal import DequeModule
@@ -1585,6 +1591,64 @@ final class RecoveryTests: XCTestCase {
             )
         }
     }
+
+    #if IMPORT_CRYPTO || IMPORT_SWIFTTLS
+    // A Handshake PTO also sends a packet for the application data space, which has a pending ping.
+    // That packet must be recorded in the application data space; otherwise its ACK finds nothing and
+    // its data is never acknowledged.
+    func testPTOProbeForAnotherSpaceIsRecordedInThatSpace() {
+        connection.context.onQueue {
+            for keyState in [TLSEncryptionLevel.handshake, TLSEncryptionLevel.earlyData] {
+                connection.protector.keyUpdate(
+                    for: keyState,
+                    cipherSuite: .aesGCM128SHA256,
+                    secret: SymmetricKey(size: .bits256),
+                    isWrite: true
+                )
+            }
+
+            var packet = SentPacketRecord()
+            packet.identifier = .init(space: .handshake, number: 0)
+            packet.isInFlightEligible = true
+            packet.isAckEliciting = true
+            packet.totalLength = 20 + 96
+            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
+            sentPacket(packet, connection: connection)
+        }
+        connection.withPendingItems(for: .handshake) { $0.ping = true }
+        connection.withPendingItems(for: .applicationData) { $0.ping = true }
+
+        let expectation = XCTestExpectation()
+        self.connection.context.async {
+            self.connection.fromExternal { eventContext in
+                self.connection.withCurrentPath { path in
+                    self.connection.recovery.sendPTO(
+                        connection: self.connection,
+                        path: path,
+                        in: &eventContext
+                    )
+                }
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .handshake) { innerState in
+            XCTAssertEqual(
+                innerState.ackElicitingPacketsInFlight,
+                2,
+                "the Handshake space holds the original packet and its own probe only"
+            )
+        }
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) { innerState in
+            XCTAssertEqual(
+                innerState.ackElicitingPacketsInFlight,
+                1,
+                "the application data probe must be recorded in the application data space"
+            )
+        }
+    }
+    #endif
 
     // MARK: - Packet index hints
 
