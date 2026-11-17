@@ -35,7 +35,7 @@ final class ConnectionIDRotationTests: XCTestCase {
 
     override func setUp() {
         connection = NetworkContext.implicitContext.onQueue {
-           QUICConnection(context: .implicitContext)
+            QUICConnection(context: .implicitContext)
         }
 
         let expectation = XCTestExpectation()

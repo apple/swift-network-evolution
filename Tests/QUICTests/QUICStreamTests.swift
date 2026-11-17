@@ -242,9 +242,9 @@ final class QUICStreamListTests: XCTestCase {
     var logPrefix = LogPrefixer("[QUICStreamListTests]")
 
     override func setUp() {
-       connection = NetworkContext.implicitContext.onQueue {
-           QUICConnection(context: NetworkContext.implicitContext)
-       }
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
     }
 
     override func tearDown() {
