@@ -873,6 +873,7 @@ extension FrameStreamSendMetadata: SendableItem {
             // Remove the stream for now
             pendingItems.popServicedStream()
             stream.listMembership.remove(.sendable)
+            pendingItems.streamsMayBeBlocked = true
             // And trigger sending blocked frames if necessary
             stream.recordStreamDataSending(
                 writtenLength: 0,
@@ -2476,8 +2477,24 @@ struct PendingItems: ~Copyable {
         }
         var rawValue: UInt32
         static let triggerAllStreamsUnblocked = Flags(rawValue: 1 << 1)
+        /// A stream with data to send was left off the list of streams to service for lack of
+        /// flow-control window, and nothing has put it back yet.
+        static let streamsMayBeBlocked = Flags(rawValue: 1 << 2)
     }
     private var flags = Flags()
+
+    /// Whether some stream holds data that it cannot send for lack of window, and so is not on the
+    /// list of streams to service. An ACK has to look for streams to put back only when this is set.
+    var streamsMayBeBlocked: Bool {
+        get { flags.contains(.streamsMayBeBlocked) }
+        set {
+            if newValue {
+                flags.insert(.streamsMayBeBlocked)
+            } else {
+                flags.remove(.streamsMayBeBlocked)
+            }
+        }
+    }
     var triggerAllStreamsUnblocked: Bool {
         get { flags.contains(.triggerAllStreamsUnblocked) }
         set {
@@ -2798,6 +2815,15 @@ struct PendingItems: ~Copyable {
                 || stream.send.buffer.hasLast)
     }
 
+    /// Records that a stream the list of streams to service declined has data it is waiting on window
+    /// to send, which is the only reason a stream with data is declined.
+    @inline(always)
+    private mutating func noteIfBlocked(_ stream: borrowing QUICStreamInstance) {
+        if !stream.send.state.dataHasAlreadyBeenSent && stream.hasMoreSendDataToService {
+            streamsMayBeBlocked = true
+        }
+    }
+
     mutating func rotateFirstStreamToService() {
         if let element = streamsToService.popFirst() {
             streamsToService.append(element)
@@ -2810,7 +2836,8 @@ struct PendingItems: ~Copyable {
 
     mutating func appendStreamToService(_ newStream: inout QUICStreamInstance, connection: QUICConnection) {
         guard canAddStreamToService(newStream, connection: connection) else {
-            // Nothing new to send
+            // Nothing new to send, or data that has to wait for window
+            noteIfBlocked(newStream)
             return
         }
         guard !newStream.listMembership.contains(.sendable) else {
@@ -2824,7 +2851,8 @@ struct PendingItems: ~Copyable {
 
     mutating func prependStreamToService(_ newStream: inout QUICStreamInstance) {
         guard canAddStreamToService(newStream) else {
-            // Nothing new to send
+            // Nothing new to send, or data that has to wait for window
+            noteIfBlocked(newStream)
             return
         }
         guard !newStream.listMembership.contains(.sendable) else {
@@ -2931,7 +2959,11 @@ struct PendingItems: ~Copyable {
     @discardableResult
     mutating func flushClearingQueuedStreams() -> Deque<MultiplexedFlowIdentifier> {
         let droppedStreams = streamsToService
+        let mayHaveBlockedStreams = streamsMayBeBlocked
         flush()
+        // A dropped stream still holds data it has not sent, and a stream that was blocked still is:
+        // the next ACK has to look for them, as nothing else puts them back.
+        streamsMayBeBlocked = mayHaveBlockedStreams || !droppedStreams.isEmpty
         return droppedStreams
     }
 
