@@ -483,6 +483,15 @@ public struct PathProperties: CustomStringConvertible {
         return nil
     }
 
+    /// The interface that policy scopes this path's flows to, or nil when it scopes them to none.
+    var scopedInterface: Interface? {
+        if overrideInterfaceScoped, let overrideInterface { return overrideInterface }
+        #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
+        if scopedInterfaceIndex != 0, let directInterface { return directInterface }
+        #endif
+        return nil
+    }
+
     var isExpensive: Bool {
         if overrideIsExpensive { return true }
         if connectedInterface?.isExpensive == true { return true }

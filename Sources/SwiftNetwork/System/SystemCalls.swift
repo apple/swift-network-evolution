@@ -224,15 +224,25 @@ extension System {
 
     #if canImport(Darwin)
     @inline(never)
-    static func connectx(descriptor: CInt, addr: UnsafePointer<sockaddr>, size: socklen_t) throws(NetworkError) -> Bool
-    {
+    static func connectx(
+        descriptor: CInt,
+        addr: UnsafePointer<sockaddr>,
+        size: socklen_t,
+        interfaceIndex: UInt32,
+        flags: UInt32 = 0,
+        sourceAddr: UnsafePointer<sockaddr>? = nil,
+        sourceSize: socklen_t = 0
+    ) throws(NetworkError) -> Bool {
         var endpoints = sa_endpoints_t()
+        endpoints.sae_srcif = interfaceIndex
+        endpoints.sae_srcaddr = sourceAddr
+        endpoints.sae_srcaddrlen = sourceSize
         endpoints.sae_dstaddr = addr
         endpoints.sae_dstaddrlen = size
         do {
             try withUnsafePointer(to: &endpoints) { endpointsPtr in
                 _ = try syscall(blocking: false) {
-                    sysConnectx(descriptor, endpointsPtr, sae_associd_t(SAE_ASSOCID_ANY), 0, nil, 0, nil, nil)
+                    sysConnectx(descriptor, endpointsPtr, sae_associd_t(SAE_ASSOCID_ANY), flags, nil, 0, nil, nil)
                 }
             }
             return true

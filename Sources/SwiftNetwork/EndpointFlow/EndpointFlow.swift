@@ -48,6 +48,14 @@ protocol EndpointFlowParent: AnyObject {
     /// and the call already running drains them on its way out.
     func withFlow<R>(_ body: (inout EndpointFlow) -> R) -> R?
 
+    /// Arranges for the owner to call `flushWrites()` on the flow once the flow call now running
+    /// returns.
+    ///
+    /// Used when a flush task finds the flow in use. The task cannot retry: a scheduler that runs
+    /// deferred work inline runs the task inside the call that holds the flow, so a retry would
+    /// recurse without end.
+    func deferWriteFlush()
+
     /// Asks the owned flow to consume the events the stack has recorded for it.
     func drainFlowEvents(in eventContext: inout NetworkContext.EventContext)
 
@@ -511,7 +519,7 @@ struct EndpointFlow: ~Copyable {
         let completion = writeRequest.completion
         let success = flow.write(writeRequest.frame, in: &eventContext)
         deliverToApplication(in: &eventContext) {
-            WriteRequest.runCompletion(completion, success: success)
+            WriteRequest.runCompletion(completion, error: success ? nil : .posix(ENOBUFS))
         }
     }
 
@@ -569,7 +577,7 @@ struct EndpointFlow: ~Copyable {
         }
         deliverToApplication(in: &eventContext) {
             for completion in completions {
-                WriteRequest.runCompletion(completion.run, success: success)
+                WriteRequest.runCompletion(completion.run, error: success ? nil : .posix(ENOBUFS))
             }
         }
     }
@@ -733,14 +741,16 @@ struct EndpointFlow: ~Copyable {
             if var takenRequest = writeRequest.take() {
                 let completion = takenRequest.completion
                 takenRequest.frame.finalize(success: false)
-                WriteRequest.runCompletion(completion, success: false)
+                WriteRequest.runCompletion(completion, error: .posix(ENOBUFS))
             }
             return
         }
         if let takenRequest = writeRequest.take() {
             writeRequests.append(takenRequest)
         }
-        if state == .ready {
+        if self.cancelRequested {
+            self.failPendingRequests()
+        } else if state == .ready {
             scheduleWriteFlush(parent)
         }
         self.drainPendingEvents(parent)
@@ -753,19 +763,16 @@ struct EndpointFlow: ~Copyable {
         guard !isWriteFlushScheduled else { return }
         isWriteFlushScheduled = true
         let context = parameters.context
-        func requestFlush() {
-            context.async {
-                // `withFlow` returns `nil` only while another flow call is running, which cannot
-                // happen between tasks. Retrying means the requests are never stranded regardless.
-                if parent.withFlow({ $0.flushWrites() }) == nil {
-                    requestFlush()
-                }
+        context.async {
+            // An inline scheduler runs this inside the call holding the flow, so `withFlow`
+            // returns `nil` and a retry would recurse; the call flushes as it returns instead.
+            if parent.withFlow({ $0.flushWrites() }) == nil {
+                parent.deferWriteFlush()
             }
         }
-        requestFlush()
     }
 
-    private mutating func flushWrites() {
+    mutating func flushWrites() {
         isWriteFlushScheduled = false
         if state == .ready && !writeRequests.isEmpty {
             write()
@@ -797,9 +804,11 @@ struct EndpointFlow: ~Copyable {
         if let takenRequest = readRequest.take() {
             readRequests.append(takenRequest)
         }
-        // If state is ready and this is the first read request, then try to start reading.
-        // Otherwise, wait for an `inboundDataAvailable` event to bring us back through the drain.
-        if state == .ready && readRequests.count == 1 {
+        if self.cancelRequested {
+            self.failPendingRequests()
+        } else if state == .ready && readRequests.count == 1 {
+            // If state is ready and this is the first read request, then try to start reading.
+            // Otherwise, wait for an `inboundDataAvailable` event to bring us back through the drain.
             read()
         }
         self.drainPendingEvents(parent)
@@ -1046,7 +1055,7 @@ struct EndpointFlow: ~Copyable {
         while var writeRequest = self.writeRequests.popFirst() {
             let completion = writeRequest.completion
             writeRequest.frame.finalize(success: false)
-            WriteRequest.runCompletion(completion, success: false)
+            WriteRequest.runCompletion(completion, error: .posix(ECANCELED))
         }
         while !self.readRequests.isEmpty {
             let readRequest = self.readRequests.removeFirst()

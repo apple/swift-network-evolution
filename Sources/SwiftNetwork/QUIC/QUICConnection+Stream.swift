@@ -74,13 +74,13 @@ extension QUICConnection {
     /// Borrows nest: only the outermost one performs the deferred work.
     @inline(always)
     func withFlowBorrowed<R: ~Copyable, E: Error>(
-        of table: QUICConnectionStateMachine.Table,
+        of table: QUICDeferredWorkState.Table,
         in eventContext: inout NetworkContext.EventContext,
         _ body: (inout NetworkContext.EventContext) throws(E) -> R
     ) throws(E) -> R {
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: table)
+        let wasFlowBorrowed = deferredWork.beginFlowBorrow(of: table)
         defer {
-            if let work = stateMachine.endFlowBorrow(of: table, wasFlowBorrowed: wasFlowBorrowed) {
+            if let work = deferredWork.endFlowBorrow(of: table, wasFlowBorrowed: wasFlowBorrowed) {
                 runDeferredStreamWork(work, in: &eventContext)
             }
         }
@@ -89,12 +89,12 @@ extension QUICConnection {
 
     /// The same, from outside the protocol stack, where no event context is held.
     func withFlowBorrowed<R: ~Copyable, E: Error>(
-        of table: QUICConnectionStateMachine.Table,
+        of table: QUICDeferredWorkState.Table,
         _ body: () throws(E) -> R
     ) throws(E) -> R {
-        let wasFlowBorrowed = stateMachine.beginFlowBorrow(of: table)
+        let wasFlowBorrowed = deferredWork.beginFlowBorrow(of: table)
         defer {
-            if let work = stateMachine.endFlowBorrow(of: table, wasFlowBorrowed: wasFlowBorrowed) {
+            if let work = deferredWork.endFlowBorrow(of: table, wasFlowBorrowed: wasFlowBorrowed) {
                 performDeferredStreamWorkFromExternal(work)
             }
         }
@@ -109,9 +109,9 @@ extension QUICConnection {
         _ flowID: MultiplexedFlowIdentifier,
         _ body: (inout QUICStreamInstance) throws(E) -> R
     ) throws(E) -> R? {
-        assert(stateMachine.isSendActive, "A stream is borrowed for sending without the send path claimed")
-        stateMachine.beginTableBorrow(.streams)
-        defer { stateMachine.endTableBorrow(.streams) }
+        assert(deferredWork.isSendActive, "A stream is borrowed for sending without the send path claimed")
+        deferredWork.beginTableBorrow(.streams)
+        defer { deferredWork.endTableBorrow(.streams) }
         return try multiplexedFlows.withFlow(flowID, body)
     }
 
@@ -141,7 +141,7 @@ extension QUICConnection {
 
     @inline(never)
     func runDeferredStreamWork(
-        _ work: QUICConnectionStateMachine.DeferredWork,
+        _ work: QUICDeferredWorkState.ReadyWork,
         in eventContext: inout NetworkContext.EventContext
     ) {
         if let sendCloseFrame = work.close {
@@ -151,7 +151,7 @@ extension QUICConnection {
             // whether it is idle. A close that did not reach its own send (the connection was already
             // closing, or never started) would leave those sends, and the paths they hold, to fire on
             // some later release, so drop them here.
-            _ = stateMachine.takePlainSend()
+            _ = deferredWork.takePlainSend()
             _ = takePathSends()
             return
         }
@@ -164,7 +164,7 @@ extension QUICConnection {
         }
     }
 
-    func performDeferredStreamWorkFromExternal(_ work: QUICConnectionStateMachine.DeferredWork) {
+    func performDeferredStreamWorkFromExternal(_ work: QUICDeferredWorkState.ReadyWork) {
         fromExternal { eventContext in
             runDeferredStreamWork(work, in: &eventContext)
         }
@@ -297,6 +297,7 @@ extension QUICConnection {
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) {
         // First the stream itself: it checks the caller and closes its own side.
+        var wasClosed = false
         let tornDown = performOnStream(flowID, in: &eventContext) {
             (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) -> Bool in
             do throws(ProtocolInstanceError) {
@@ -304,14 +305,28 @@ extension QUICConnection {
             } catch {
                 return false
             }
+            wasClosed = stream.closed
+            // The stop handlers have nothing to do for a closed stream: its send side is finished and
+            // has nothing queued, and a receive side that is still open was stopped already.
+            assert(
+                !wasClosed
+                    || (stream.send.state != .ready && stream.send.state != .send && !stream.pendingStart
+                        && !stream.hasMoreSendDataToService && (stream.readClosed || stream.receive.state != .receive))
+            )
             stream.teardown(in: &ctx)
             return true
         }
         guard tornDown == true else { throw NetworkError.posix(EINVAL) }
 
         // Then the connection's view of the flow, which looks at the stream and so cannot happen
-        // while it is borrowed.
-        teardown(flow: flowID, in: &eventContext)
+        // while it is borrowed. A stream that was already closed has nothing left to stop. `closed` is
+        // set only by `handleStreamClose`, which the stream reaches once both its directions are
+        // finished, and which has already taken it out of `knownFlows` and told its upper. The stop
+        // handlers would find nothing to do (`handleStopRead` returns early, `handleStopWrite` has no
+        // send state left to act on) and only call `sendFrames` for nothing.
+        if !wasClosed {
+            teardown(flow: flowID, in: &eventContext)
+        }
 
         // Finally release the stream. Once it is out of the table nothing else can reach it.
         if var stream = removeFlow(flowID) {

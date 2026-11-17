@@ -66,9 +66,11 @@ enum QUICPathState: CustomStringConvertible, CaseIterable {
             (.routeEstablished, .cidAssigned),
             (.routeEstablished, .routeUnavailable),
             (.cidAssigned, .probing),
+            (.cidAssigned, .routeEstablished),
             (.cidAssigned, .routeUnavailable),
             (.probing, .validated),
             (.probing, .unreachable),
+            (.probing, .routeEstablished),
             (.probing, .routeUnavailable),
             (.validated, .unreachable),
             (.validated, .probing),
@@ -86,6 +88,12 @@ enum QUICPathState: CustomStringConvertible, CaseIterable {
 
     var isOpenForSending: Bool {
         self == .cidAssigned || self == .probing || self == .validated
+    }
+
+    // A path holds one of the peer's CIDs exactly while it can send, and gives it up on leaving
+    // these states.
+    var holdsCID: Bool {
+        isOpenForSending
     }
 
     var isInvalid: Bool {
@@ -184,7 +192,6 @@ public final class QUICPath: MultiplexingDatagramPath<
         static let spinValue = Flags(rawValue: 1 << 3)
         static let useSlowProbeInterval = Flags(rawValue: 1 << 4)
         static let isPreferredAddress = Flags(rawValue: 1 << 5)
-        static let migrationPending = Flags(rawValue: 1 << 6)
         static let isLossy = Flags(rawValue: 1 << 7)
         static let hasPreAssignedCIDs = Flags(rawValue: 1 << 8)
         static let isFlowControlled = Flags(rawValue: 1 << 9)
@@ -218,11 +225,6 @@ public final class QUICPath: MultiplexingDatagramPath<
         set { if newValue { flags.insert(.isPreferredAddress) } else { flags.remove(.isPreferredAddress) } }
     }
 
-    // Pending validation, should migrate once validated
-    var migrationPending: Bool {
-        get { flags.contains(.migrationPending) }
-        set { if newValue { flags.insert(.migrationPending) } else { flags.remove(.migrationPending) } }
-    }
     var isLossy: Bool {
         get { flags.contains(.isLossy) }
         set { if newValue { flags.insert(.isLossy) } else { flags.remove(.isLossy) } }
@@ -279,7 +281,22 @@ public final class QUICPath: MultiplexingDatagramPath<
             return
         }
         log.debug("Path state change: \(state) -> \(newState)")
+        let releasesCID = state.holdsCID && !newState.holdsCID
         state = newState
+        if releasesCID {
+            releaseDCID()
+        }
+    }
+
+    // Gives the peer's CID back once the path can no longer send with it. The connection retires
+    // it, unless the peer already has. A zero-length CID is not something the peer can run out
+    // of, and a pre-assigned one belongs to the path, so those are kept.
+    private func releaseDCID() {
+        guard let dcid, dcid.length > 0, !hasPreAssignedCIDs else {
+            return
+        }
+        parentProtocol.retireOutboundCID(dcid)
+        self.dcid = nil
     }
 
     func set(
@@ -423,6 +440,8 @@ public final class QUICPath: MultiplexingDatagramPath<
                     event: .init(quicEvent: .pathCIDAssigned(pathInfo)),
                     in: &eventContext
                 )
+            } else {
+                log.error("Path \(pathIdentifier) is missing endpoints, not delivering pathCIDAssigned")
             }
         }
         log.datapath(
@@ -599,8 +618,10 @@ public final class QUICPath: MultiplexingDatagramPath<
         // Save the challenge, to schedule a response
         pendingInboundChallenges.append(challenge)
 
-        // Initiate probing if needed
-        beginValidation(in: &eventContext)
+        // A server's migration strategy decides whether to validate a path the peer probes.
+        if !parentProtocol.isServer {
+            beginValidation(in: &eventContext)
+        }
     }
 
     func beginValidation(ifNecessary: Bool = true, in eventContext: inout NetworkContext.EventContext) {
@@ -621,6 +642,17 @@ public final class QUICPath: MultiplexingDatagramPath<
             lastChallengeSentTime = .zero
             nextChallengeDuration = .zero
         }
+    }
+
+    // The handshake validates the peer's address on the path it ran on (RFC 9000 8.1), so that
+    // path is never probed. Takes it through probing to validated as if it had been, so that it
+    // reads as a path the connection can use and go back to like any other.
+    func handshakeValidated() {
+        guard state == .cidAssigned else {
+            return
+        }
+        changeState(to: .probing)
+        changeState(to: .validated)
     }
 
     var shouldSendPathResponses: Bool {
@@ -661,15 +693,8 @@ public final class QUICPath: MultiplexingDatagramPath<
         guard shouldSendPathChallenge(now: now) else { return }
 
         guard challengesSent < QUICPath.maximumPendingChallenges else {
-            // Exceeded limit, move to unreachable, and retire the CID
+            // Exceeded limit, move to unreachable, which gives up the CID
             changeState(to: .unreachable)
-            if let dcid, !hasPreAssignedCIDs {
-                if let sequenceNumber = parentProtocol.retireConnectionID(dcid, in: &eventContext) {
-                    pendingItems.addRetireConnectionID(
-                        FrameRetireConnectionID(sequence: sequenceNumber)
-                    )
-                }
-            }
             if let localEndpoint, let remoteEndpoint,
                 case .address(let localAddress) = localEndpoint.type,
                 case .address(let remoteAddress) = remoteEndpoint.type
@@ -684,6 +709,8 @@ public final class QUICPath: MultiplexingDatagramPath<
                     event: .init(quicEvent: .pathUnreachable(pathInfo)),
                     in: &eventContext
                 )
+            } else {
+                log.error("Path \(pathIdentifier) is missing endpoints, not delivering pathUnreachable")
             }
             return
         }
@@ -731,6 +758,7 @@ public final class QUICPath: MultiplexingDatagramPath<
             return
         }
         log.debug("Valid path challenge response received: \(data)")
+        let before = parentProtocol.migrationPathStates
         let now = parentProtocol.now
         let responseDuration = pendingOutboundChallenge.sentTime.duration(to: now)
         pendingOutboundChallenges.removeAll()
@@ -755,11 +783,13 @@ public final class QUICPath: MultiplexingDatagramPath<
                 event: .init(quicEvent: .pathValidated(pathInfo)),
                 in: &eventContext
             )
+        } else {
+            log.error("Path \(pathIdentifier) is missing endpoints, not delivering pathValidated")
         }
-        if migrationPending {
-            migrationPending = false
-            parentProtocol.migration.migrate(to: self, connection: parentProtocol, in: &eventContext)
-        }
+        parentProtocol.runMigrationStrategy(
+            events: parentProtocol.migrationEvents(since: before),
+            in: &eventContext
+        )
     }
 
 }

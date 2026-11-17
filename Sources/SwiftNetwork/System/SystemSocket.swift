@@ -65,15 +65,30 @@ class SystemSocket {
     /// Socket file descriptor
     private var sockfd: CInt = -1
 
-    init(
+    convenience init(
         protocolFamily: AddressFamily,
+        sockType: SocketType,
+        protocolSubType: Int32,
+        nonBlocking: Bool = false
+    ) throws(NetworkError) {
+        try self.init(
+            rawProtocolFamily: CInt(protocolFamily.rawValue),
+            sockType: sockType,
+            protocolSubType: protocolSubType,
+            nonBlocking: nonBlocking
+        )
+    }
+
+    /// Creates a socket in a protocol family that AddressFamily has no case for.
+    init(
+        rawProtocolFamily: CInt,
         sockType: SocketType,
         protocolSubType: Int32,
         nonBlocking: Bool = false
     ) throws(NetworkError) {
 
         self.sockfd = try SystemSocket.createSocket(
-            protocolFamily: protocolFamily,
+            protocolFamily: rawProtocolFamily,
             sockType: sockType,
             protocolSubType: protocolSubType
         )
@@ -90,18 +105,66 @@ class SystemSocket {
         #endif
     }
 
+    /// Takes ownership of a socket that's already connected, such as one a listener accepted. The
+    /// socket closes when this object goes away, and also when this initializer throws after it
+    /// has taken the socket.
+    init(adopting descriptor: CInt) throws(NetworkError) {
+        // The rest of this class treats descriptor 0 as invalid.
+        guard descriptor > 0 else { throw NetworkError.posix(EBADF) }
+        self.sockfd = descriptor
+        #if !NETWORK_STANDALONE
+        try self.setSocketAsNonBlocking()
+        #endif
+    }
+
+    #if canImport(Darwin)
+    /// Returns the IP address and port the socket is bound to, or nil if it has none.
+    func boundIPAddress() -> (address: any IPAddress, port: UInt16)? {
+        var storage = sockaddr_storage()
+        var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let result = withUnsafeMutablePointer(to: &storage) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(self.sockfd, $0, &length) }
+        }
+        guard result == 0 else { return nil }
+        return withUnsafePointer(to: &storage) { pointer -> (address: any IPAddress, port: UInt16)? in
+            switch CInt(pointer.pointee.ss_family) {
+            // Both address types take their bytes in network order.
+            case AF_INET:
+                return pointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                    let bytes = withUnsafeBytes(of: $0.pointee.sin_addr) { Array($0) }
+                    guard let address = IPv4Address(bytes) else { return nil }
+                    return (address, UInt16(bigEndian: $0.pointee.sin_port))
+                }
+            case AF_INET6:
+                return pointer.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) {
+                    let bytes = withUnsafeBytes(of: $0.pointee.sin6_addr) { Array($0) }
+                    guard let address = IPv6Address(bytes) else { return nil }
+                    return (address, UInt16(bigEndian: $0.pointee.sin6_port))
+                }
+            default:
+                return nil
+            }
+        }
+    }
+    #endif
+
     /// Creates the actual cross-platform descriptor.
     private static func createSocket(
-        protocolFamily: AddressFamily,
+        protocolFamily: CInt,
         sockType: SocketType,
         protocolSubType: Int32
     ) throws(NetworkError) -> CInt {
         #if os(Linux)
         return try System.syscall(blocking: false) {
-            sysSocket(CInt(protocolFamily.rawValue), sockType.socketType, protocolSubType)
+            sysSocket(protocolFamily, sockType.socketType, protocolSubType)
         }.result
         #elseif !NETWORK_STANDALONE
-        return socket(Int32(protocolFamily.rawValue), sockType.socketType, protocolSubType)
+        let descriptor = socket(protocolFamily, sockType.socketType, protocolSubType)
+        if descriptor < 0 {
+            // Report what socket returned, such as EPROTONOSUPPORT for a family the kernel lacks.
+            throw NetworkError.posix(errno)
+        }
+        return descriptor
         #else  // Embedded case - TODO
         return 0
         #endif
@@ -127,18 +190,90 @@ class SystemSocket {
     /// - Parameters:
     ///   - address: The remote `IPAddress` to connect to.
     ///   - port: The remote port to connect to.
-    public func connectSocket(to address: any IPAddress, port: UInt16) throws(NetworkError) -> Bool {
+    ///   - interfaceIndex: On Darwin, the source interface for connectx, which scopes the
+    ///     connection to that interface. Zero means any interface.
+    ///   - scopeID: The IPv6 scope ID for a link-local or interface-local address. Zero means none.
+    ///   - source: On Darwin, the local address and port for connectx to bind. Nil leaves the
+    ///     choice to the kernel. Elsewhere, bind the socket before you connect instead.
+    ///   - flags: On Darwin, the connectx flags, such as CONNECT_RESUME_ON_READ_WRITE for TCP Fast
+    ///     Open.
+    public func connectSocket(
+        to address: any IPAddress,
+        port: UInt16,
+        interfaceIndex: Int,
+        scopeID: UInt32,
+        source: (address: any IPAddress, port: UInt16)? = nil,
+        flags: UInt32 = 0
+    ) throws(NetworkError) -> Bool {
         guard self.sockfd > 0 else {
             Logger.system.error("File descriptor is bad, cannot connect socket")
             throw NetworkError.posix(EINVAL)
         }
-        return try address.withSockAddr(port: port) { (ptr, size) in
+        return try address.withSockAddr(port: port, scopeID: scopeID) { (ptr, size) in
             #if canImport(Darwin)
-            return try System.connectx(descriptor: self.sockfd, addr: ptr, size: socklen_t(size))
+            guard let source else {
+                return try System.connectx(
+                    descriptor: self.sockfd,
+                    addr: ptr,
+                    size: socklen_t(size),
+                    interfaceIndex: UInt32(truncatingIfNeeded: interfaceIndex),
+                    flags: flags
+                )
+            }
+            return try source.address.withSockAddr(port: source.port) { (sourcePtr, sourceSize) in
+                try System.connectx(
+                    descriptor: self.sockfd,
+                    addr: ptr,
+                    size: socklen_t(size),
+                    interfaceIndex: UInt32(truncatingIfNeeded: interfaceIndex),
+                    flags: flags,
+                    sourceAddr: sourcePtr,
+                    sourceSize: socklen_t(sourceSize)
+                )
+            }
             #else
             return try System.connect(descriptor: self.sockfd, addr: ptr, size: socklen_t(size))
             #endif
         }
+    }
+
+    /// Connects the socket to the Unix-domain socket at `path`.
+    ///
+    /// Returns false when the connect is still in progress.
+    public func connectSocket(toPath path: String) throws(NetworkError) -> Bool {
+        guard self.sockfd > 0 else {
+            Logger.system.error("File descriptor is bad, cannot connect socket")
+            throw NetworkError.posix(EINVAL)
+        }
+        var address = sockaddr_un()
+        #if canImport(Darwin)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
+        address.sun_family = sa_family_t(AF_UNIX)
+        // withUTF8 is mutating, so it needs a variable. It copies straight from the string's
+        // storage, and sun_path needs room for the terminating NUL.
+        var path = path
+        let pathFits = path.withUTF8 { utf8 in
+            guard utf8.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+            withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: utf8) }
+            return true
+        }
+        guard pathFits else {
+            throw NetworkError.posix(ENAMETOOLONG)
+        }
+        let descriptor = self.sockfd
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                Result { () throws(NetworkError) in
+                    try System.connect(
+                        descriptor: descriptor,
+                        addr: socketAddress,
+                        size: socklen_t(MemoryLayout<sockaddr_un>.size)
+                    )
+                }
+            }
+        }
+        return try result.get()
     }
 
     /// Binds the socket to an address and port.
@@ -218,6 +353,17 @@ class SystemSocket {
         return try System.write(descriptor: self.sockfd, pointer: buffer, size: size)
     }
 
+    /// Writes a buffer to the socket, and tells a write that would block apart from one that wrote
+    /// zero bytes. `write(buffer:size:)` returns 0 for both.
+    func writeIOResult(buffer: UnsafeRawPointer, size: Int) throws(NetworkError) -> IOResult<Int> {
+        guard self.sockfd > 0 else {
+            throw NetworkError.posix(EINVAL)
+        }
+        return try System.syscall(blocking: true) {
+            sysWrite(self.sockfd, buffer, size)
+        }
+    }
+
     /// Performs a basic write on a socket. Use this only for control or routing sockets, not for data sent to the actual network.
     public func platformWrite(buffer: UnsafeRawPointer, size: Int) throws -> Int {
         guard self.sockfd > 0 else {
@@ -247,6 +393,24 @@ class SystemSocket {
         return try System.recvmsg(descriptor: self.sockfd, msgHdr: msgHdr, flags: flags).result
     }
 
+    /// Receives one message, and tells a receive that would block apart from an empty datagram.
+    /// `recvmsg(msgHdr:flags:)` returns 0 for both.
+    func recvmsgIOResult(msgHdr: UnsafeMutablePointer<msghdr>) throws(NetworkError) -> IOResult<Int> {
+        guard self.sockfd > 0 else {
+            throw NetworkError.posix(EINVAL)
+        }
+        return try System.recvmsg(descriptor: self.sockfd, msgHdr: msgHdr, flags: 0)
+    }
+
+    /// Sends one message, and tells a send that would block apart from one that sent zero bytes.
+    /// `sendmsg(msgHdr:flags:)` returns 0 for both.
+    func sendmsgIOResult(msgHdr: UnsafePointer<msghdr>) throws(NetworkError) -> IOResult<Int> {
+        guard self.sockfd > 0 else {
+            throw NetworkError.posix(EINVAL)
+        }
+        return try System.sendmsg(descriptor: self.sockfd, msgHdr: msgHdr, flags: 0)
+    }
+
     // MARK: - Socket options
 
     /// Set a fixed-size socket option value.
@@ -258,6 +422,18 @@ class SystemSocket {
             ptr.withMemoryRebound(to: UInt8.self, capacity: Int(size)) { rebound in
                 setsockopt(self.sockfd, level, name, rebound, size)
             }
+        }
+        if result != 0 {
+            throw NetworkError.posix(errno)
+        }
+    }
+
+    /// Set a socket option to the bytes of `bytes`, for an option whose value isn't a fixed-size
+    /// type, such as a list of TLVs.
+    public func setSocketOption(level: CInt, name: CInt, bytes: [UInt8]) throws(NetworkError) {
+        guard self.sockfd > 0 else { throw NetworkError.posix(EINVAL) }
+        let result = bytes.withUnsafeBytes { buffer in
+            setsockopt(self.sockfd, level, name, buffer.baseAddress, socklen_t(buffer.count))
         }
         if result != 0 {
             throw NetworkError.posix(errno)
@@ -376,6 +552,14 @@ class SystemSocket {
     }
 
     #if canImport(Darwin)
+    /// SO_NOSIGPIPE — fail a write to a closed peer with EPIPE instead of raising SIGPIPE.
+    /// Darwin-only. Linux has no such socket option. It needs MSG_NOSIGNAL on each send, which
+    /// this package doesn't pass.
+    public func setNoSigPipe(_ enabled: Bool) throws(NetworkError) {
+        let value: CInt = enabled ? 1 : 0
+        try setSocketOption(level: SOL_SOCKET, name: SO_NOSIGPIPE, value: value)
+    }
+
     /// TCP_NOPUSH — delay sending small segments (Darwin-only; Linux has TCP_CORK
     /// with different semantics, not wired here).
     public func setNoPush(_ enabled: Bool) throws(NetworkError) {
@@ -422,7 +606,11 @@ extension IPAddress {
         try self.withSockAddr(port: 0, body)
     }
 
-    func withSockAddr<T>(port: UInt16, _ body: (UnsafePointer<sockaddr>, Int) throws -> T) throws(NetworkError) -> T {
+    func withSockAddr<T>(
+        port: UInt16,
+        scopeID: UInt32 = 0,
+        _ body: (UnsafePointer<sockaddr>, Int) throws -> T
+    ) throws(NetworkError) -> T {
         do {
             if self.addressFamily == .ipv4, let v4Address = self as? IPv4Address {
                 var sockaddr4 = sockaddr_in()
@@ -454,6 +642,7 @@ extension IPAddress {
                 #endif
                 sockaddr6.sin6_family = sa_family_t(AF_INET6)
                 sockaddr6.sin6_port = port.bigEndian
+                sockaddr6.sin6_scope_id = scopeID
                 return try withUnsafeBytes(of: sockaddr6) { p in
                     try p.withMemoryRebound(
                         to: sockaddr.self,

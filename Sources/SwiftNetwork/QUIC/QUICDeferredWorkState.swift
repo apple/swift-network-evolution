@@ -52,7 +52,7 @@
 ///
 /// The state is two bytes, so each check or transition is one small access.
 @available(Network 0.1.0, *)
-struct QUICConnectionStateMachine {
+struct QUICDeferredWorkState {
     // The bits of `status`: which send blockers are set and which requests are waiting.
     fileprivate struct Status: OptionSet {
         var rawValue: UInt16
@@ -111,7 +111,7 @@ struct QUICConnectionStateMachine {
 
     /// What the connection should do now that a flow borrow has ended. Never empty: when there is
     /// nothing to do, `endFlowBorrow` returns `nil` instead.
-    struct DeferredWork {
+    struct ReadyWork {
         fileprivate var requests: Status
         /// Sends that waited are ready, because nothing else is holding them back.
         var replaysSends: Bool
@@ -170,14 +170,14 @@ struct QUICConnectionStateMachine {
     ///     the flow borrowed; the enclosing borrow collects everything when it ends.
     /// - Returns: The work to do, or `nil` if there is none.
     @inline(always)
-    mutating func endFlowBorrow(of table: Table, wasFlowBorrowed: Bool) -> DeferredWork? {
+    mutating func endFlowBorrow(of table: Table, wasFlowBorrowed: Bool) -> ReadyWork? {
         endTableBorrow(table)
         guard !wasFlowBorrowed else { return nil }
         let requests = status.intersection(.afterBorrow)
         let replaysSends = !status.contains(.sendActive) && !status.isDisjoint(with: .pendingSends)
         status.subtract([.afterBorrow, .flowBorrowed])
         guard !requests.isEmpty || replaysSends else { return nil }
-        return DeferredWork(requests: requests, replaysSends: replaysSends)
+        return ReadyWork(requests: requests, replaysSends: replaysSends)
     }
 
     // MARK: Which table is borrowed
@@ -315,26 +315,26 @@ struct QUICConnectionStateMachine {
 extension QUICConnection {
     /// Remembers a send on one path that has to wait. Sends on the same path merge their flags.
     func deferPathSend(_ path: QUICPath, ignoreCongestionWindow: Bool, retransmission: Bool) {
-        // This function just edits an entry in the stateMachine's pathSends dictionary.
+        // This function just edits an entry in deferredWork's pathSends dictionary.
         // It does not just edit it directly on the keyed value for performance reason.
-        var sends: [MultiplexingPathIdentifier: QUICConnectionStateMachine.PathSend] = [:]
-        stateMachine.exchangePathSends(with: &sends)
+        var sends: [MultiplexingPathIdentifier: QUICDeferredWorkState.PathSend] = [:]
+        deferredWork.exchangePathSends(with: &sends)
         var send =
             sends[path.pathIdentifier]
-            ?? QUICConnectionStateMachine.PathSend(path: path, ignoreCongestionWindow: false, retransmission: false)
+            ?? QUICDeferredWorkState.PathSend(path: path, ignoreCongestionWindow: false, retransmission: false)
         send.ignoreCongestionWindow = send.ignoreCongestionWindow || ignoreCongestionWindow
         send.retransmission = send.retransmission || retransmission
         sends[path.pathIdentifier] = send
-        stateMachine.exchangePathSends(with: &sends)
-        stateMachine.requestPathSends()
+        deferredWork.exchangePathSends(with: &sends)
+        deferredWork.requestPathSends()
     }
 
     /// Takes the sends waiting on particular paths, if there are any.
-    func takePathSends() -> [QUICConnectionStateMachine.PathSend]? {
-        guard stateMachine.takePathSendsRequest() else { return nil }
-        var sends: [MultiplexingPathIdentifier: QUICConnectionStateMachine.PathSend] = [:]
-        // After this the state machine no longer has any pathSends values
-        stateMachine.exchangePathSends(with: &sends)
+    func takePathSends() -> [QUICDeferredWorkState.PathSend]? {
+        guard deferredWork.takePathSendsRequest() else { return nil }
+        var sends: [MultiplexingPathIdentifier: QUICDeferredWorkState.PathSend] = [:]
+        // After this deferredWork no longer has any pathSends values
+        deferredWork.exchangePathSends(with: &sends)
         return Array(sends.values)
     }
 }

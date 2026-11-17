@@ -211,7 +211,7 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
         }
     }
 
-    public private(set) var outboundRoomAvailableCount = 0
+    private(set) var outboundRoomAvailableCount = 0
 
     public func handleOutboundRoomAvailableEvent(in eventContext: inout NetworkContext.EventContext) {
         outboundRoomAvailableCount += 1
@@ -246,11 +246,15 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
         completions.outboundRoomAvailable = completion
     }
 
+    /// Every network protocol event the lower protocol delivered, in order.
+    var receivedNetworkProtocolEvents: [NetworkProtocolEvent] = []
+
     public func handleNetworkProtocolEvent(
         _ event: NetworkProtocolEvent,
         in eventContext: inout NetworkContext.EventContext
     ) {
         log.debug("Received network protocol event: \(event)")
+        receivedNetworkProtocolEvents.append(event)
         if let quicEvent = event.quicEvent {
             switch quicEvent {
             case .earlyDataRejected:

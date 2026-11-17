@@ -92,4 +92,57 @@ final class SwiftNetworkEndpointTests: NetTestCase {
         XCTAssertEqual(appSrvEndpoint.serviceID, serviceID)
         XCTAssertEqual(appSrvEndpoint.name, name)
     }
+
+    // MARK: -- Unix domain address serialization --
+
+    private func unixPath(of endpoint: Endpoint?) -> String? {
+        guard let endpoint, case .address(let address) = endpoint.type, case .unix(let path) = address.type else {
+            return nil
+        }
+        return path
+    }
+
+    private func roundTripUnixPath(_ path: String) -> String? {
+        guard let address = AddressEndpoint(path), var bytes = Endpoint(address).serialize() else {
+            return nil
+        }
+        return unixPath(of: Endpoint(serializedData: &bytes))
+    }
+
+    func testUnixAddressSerialization() {
+        let path = "/var/run/test.sock"
+        guard let bytes = AddressEndpoint(path)?.serialize() else {
+            XCTFail("could not serialize a unix address")
+            return
+        }
+        // sa_len, AF_UNIX, then the path with no terminator
+        XCTAssertEqual(bytes, [UInt8(path.utf8.count + 2), AddressFamily.unix.rawValue] + Array(path.utf8))
+        XCTAssertEqual(roundTripUnixPath(path), path)
+        let longestPath = "/" + String(repeating: "m", count: 103)
+        XCTAssertEqual(roundTripUnixPath(longestPath), longestPath)
+    }
+
+    func testUnixAddressSerializationOfEmptyPath() {
+        // sa_len covers at least one byte of sun_path
+        XCTAssertEqual(AddressEndpoint("")?.serialize(), [3, AddressFamily.unix.rawValue, 0])
+        XCTAssertEqual(roundTripUnixPath(""), "")
+    }
+
+    // A sockaddr_un from another encoder can carry the terminator, or be zero-filled out to its full 106 bytes.
+    // Neither is part of the path.
+    func testUnixAddressDeserializationStopsAtTerminator() {
+        let path = "/var/run/test.sock"
+        var terminated: [UInt8] = [UInt8(path.utf8.count + 3), AddressFamily.unix.rawValue] + Array(path.utf8) + [0]
+        XCTAssertEqual(unixPath(of: Endpoint(serializedData: &terminated)), path)
+
+        var padded: [UInt8] = [106, AddressFamily.unix.rawValue] + Array(path.utf8)
+        padded += [UInt8](repeating: 0, count: 106 - padded.count)
+        XCTAssertEqual(unixPath(of: Endpoint(serializedData: &padded)), path)
+    }
+
+    func testUnixAddressDeserializationRejectsTruncatedPath() {
+        // sa_len claims more bytes than were given
+        var truncated: [UInt8] = [20, AddressFamily.unix.rawValue] + Array("/tmp/x".utf8)
+        XCTAssertNil(Endpoint(serializedData: &truncated))
+    }
 }

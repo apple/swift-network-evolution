@@ -376,6 +376,12 @@ public struct StreamDeserializer<
         return extractValueAndReset()
     }
 
+    /// Runs `body` on the value that has been parsed so far, between calls that feed the deserializer, such
+    /// as to take out the parts of a message that are already complete.
+    public mutating func withPartialValue<R: ~Copyable>(_ body: (inout T) -> R) -> R {
+        body(&value)
+    }
+
     /// Ends deserialization, returning the partially parsed value, such as to release resources it
     /// holds when the deserializer is discarded before a message completes.
     public consuming func takePartialValue() -> T {

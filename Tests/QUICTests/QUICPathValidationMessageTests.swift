@@ -168,24 +168,24 @@ class QUICPathValidationMessageTests: XCTestCase {
     // as borrowed, because nothing it does can defer work, so only the send path keeps sends out.
     func testBuilderBorrowRunsUnderTheClaimedSendPathWithoutMarkingAFlowBorrowed() {
         withStream { streamID in
-            let wasActive = connection.stateMachine.claimSendPath()
+            let wasActive = connection.deferredWork.claimSendPath()
             var ran = false
             let borrowed: Void? = connection.withStreamBorrowed(streamID) { (_: inout QUICStreamInstance) in
                 ran = true
-                XCTAssertTrue(connection.stateMachine.isSendActive)
-                XCTAssertFalse(connection.stateMachine.isFlowBorrowed)
+                XCTAssertTrue(connection.deferredWork.isSendActive)
+                XCTAssertFalse(connection.deferredWork.isFlowBorrowed)
                 #if DEBUG
-                XCTAssertTrue(connection.stateMachine.isBorrowed(.streams))
+                XCTAssertTrue(connection.deferredWork.isBorrowed(.streams))
                 #endif
             }
             XCTAssertNotNil(borrowed)
             XCTAssertTrue(ran)
             #if DEBUG
-            XCTAssertFalse(connection.stateMachine.isBorrowed(.streams))
+            XCTAssertFalse(connection.deferredWork.isBorrowed(.streams))
             #endif
             // Nothing waited, so releasing the send path has nothing to replay
-            XCTAssertFalse(connection.stateMachine.releaseSendPath(wasActive: wasActive))
-            XCTAssertFalse(connection.stateMachine.isSendActive)
+            XCTAssertFalse(connection.deferredWork.releaseSendPath(wasActive: wasActive))
+            XCTAssertFalse(connection.deferredWork.isSendActive)
         }
     }
 
@@ -193,7 +193,7 @@ class QUICPathValidationMessageTests: XCTestCase {
     // no flow is marked borrowed, and nothing reaches the stream table. It is ready when the path is released.
     func testSendRequestedInsideBuilderBorrowIsHeldBackBySendPath() {
         withStream { streamID in
-            let wasActive = connection.stateMachine.claimSendPath()
+            let wasActive = connection.deferredWork.claimSendPath()
             var sent = true
             _ = connection.withStreamBorrowed(streamID) { (_: inout QUICStreamInstance) in
                 sent = connection.fromExternal { eventContext in
@@ -201,9 +201,9 @@ class QUICPathValidationMessageTests: XCTestCase {
                 }
             }
             XCTAssertFalse(sent)
-            XCTAssertTrue(connection.stateMachine.hasDeferredSends)
-            XCTAssertTrue(connection.stateMachine.releaseSendPath(wasActive: wasActive))
-            XCTAssertEqual(connection.stateMachine.takePlainSend()?.ignoreCongestionWindow, true)
+            XCTAssertTrue(connection.deferredWork.hasDeferredSends)
+            XCTAssertTrue(connection.deferredWork.releaseSendPath(wasActive: wasActive))
+            XCTAssertEqual(connection.deferredWork.takePlainSend()?.ignoreCongestionWindow, true)
         }
     }
 
@@ -214,17 +214,17 @@ class QUICPathValidationMessageTests: XCTestCase {
         withStream { streamID in
             var released = true
             _ = connection.performOnStream(streamID) { (_: inout QUICStreamInstance) in
-                let wasActive = connection.stateMachine.claimSendPath()
-                XCTAssertTrue(connection.stateMachine.isSendBlocked)
-                connection.stateMachine.deferSend(ignoreCongestionWindow: false, delayedACK: false)
-                released = connection.stateMachine.releaseSendPath(wasActive: wasActive)
-                XCTAssertTrue(connection.stateMachine.isFlowBorrowed)
+                let wasActive = connection.deferredWork.claimSendPath()
+                XCTAssertTrue(connection.deferredWork.isSendBlocked)
+                connection.deferredWork.deferSend(ignoreCongestionWindow: false, delayedACK: false)
+                released = connection.deferredWork.releaseSendPath(wasActive: wasActive)
+                XCTAssertTrue(connection.deferredWork.isFlowBorrowed)
             }
             XCTAssertFalse(released)
             // The borrow's own end replayed the send, so nothing is left waiting
-            XCTAssertFalse(connection.stateMachine.hasDeferredSends)
-            XCTAssertFalse(connection.stateMachine.isFlowBorrowed)
-            XCTAssertFalse(connection.stateMachine.isSendActive)
+            XCTAssertFalse(connection.deferredWork.hasDeferredSends)
+            XCTAssertFalse(connection.deferredWork.isFlowBorrowed)
+            XCTAssertFalse(connection.deferredWork.isSendActive)
         }
     }
 
@@ -232,13 +232,13 @@ class QUICPathValidationMessageTests: XCTestCase {
     // leaves the replay to the release.
     func testFlowBorrowEndingInsideAClaimedSendPathLeavesTheReplayToTheRelease() {
         withStream { streamID in
-            let wasActive = connection.stateMachine.claimSendPath()
-            let wasFlowBorrowed = connection.stateMachine.beginFlowBorrow(of: .streams)
-            connection.stateMachine.deferSend(ignoreCongestionWindow: false, delayedACK: true)
-            let work = connection.stateMachine.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
+            let wasActive = connection.deferredWork.claimSendPath()
+            let wasFlowBorrowed = connection.deferredWork.beginFlowBorrow(of: .streams)
+            connection.deferredWork.deferSend(ignoreCongestionWindow: false, delayedACK: true)
+            let work = connection.deferredWork.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
             XCTAssertNil(work)
-            XCTAssertTrue(connection.stateMachine.releaseSendPath(wasActive: wasActive))
-            XCTAssertEqual(connection.stateMachine.takePlainSend()?.delayedACK, true)
+            XCTAssertTrue(connection.deferredWork.releaseSendPath(wasActive: wasActive))
+            XCTAssertEqual(connection.deferredWork.takePlainSend()?.delayedACK, true)
             _ = streamID
         }
     }

@@ -297,11 +297,6 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
             in eventContext: inout NetworkContext.EventContext
         ) throws(NetworkError) {
             let remotePort = remoteEndpoint!.port
-            guard let remoteInstance = BridgeInstance.instances[remotePort] else {
-                log.error("Unable to find instance for port: \(remotePort)")
-                datagrams.finalizeAllFramesAsFailed()
-                return
-            }
             if datagramDrops != nil, !(datagramDrops?.blockPacketGeneration ?? false) {
                 var remainingDatagrams = FrameArray()
                 let datagramCount = datagrams.count
@@ -332,6 +327,12 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
                     }
                     return true
                 }
+            }
+            // Observers see what was sent even when nothing is listening on the remote port.
+            guard let remoteInstance = BridgeInstance.instances[remotePort] else {
+                log.error("Unable to find instance for port: \(remotePort)")
+                datagrams.finalizeAllFramesAsFailed()
+                return
             }
             remoteInstance.incomingFrames.add(frames: datagrams)
             remoteInstance.deliverInboundDataAvailableEvent(in: &eventContext)
