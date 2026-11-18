@@ -141,7 +141,9 @@ final class SwiftNetworkMultiplexedPathTableTests: XCTestCase {
         XCTAssertEqual(seen, [1, 3])
     }
 
-    // An iteration covers each live path once, skips a removed one, and does not hold the table between steps
+    // An iteration covers each live path once, skips one removed before it gets there, visits one that takes
+    // the place of a removed path, and does not visit one added past the end it started with. It does not
+    // hold the table between steps.
     func testIterationSkipsRemovedPathsAndStopsAtItsEnd() {
         var table = MultiplexedPathTable<TestPath>()
         for id in 1...4 { table.insert(TestPath(value: id), for: id) }
@@ -150,11 +152,14 @@ final class SwiftNetworkMultiplexedPathTableTests: XCTestCase {
         var seen: [Int] = []
         while let id = table.nextPathIdentifier(from: &position, before: end) {
             seen.append(id)
+            // 3 is gone before the iteration reaches it
             if id == 1 { _ = table.remove(3) }
+            // 9 takes the entry 3 left, which is still ahead of the iteration
             if id == 2 { table.insert(TestPath(value: 9), for: 9) }
+            // 10 goes past the end the iteration started with
+            if id == 4 { table.insert(TestPath(value: 10), for: 10) }
         }
-        // 3 was removed before the iteration got to it, and 9 went past the end the iteration started with
-        XCTAssertEqual(seen, [1, 2, 4])
-        XCTAssertEqual(table.pathIdentifiers.sorted(), [1, 2, 4, 9].filter { $0 != 3 })
+        XCTAssertEqual(seen, [1, 2, 9, 4])
+        XCTAssertEqual(table.pathIdentifiers.sorted(), [1, 2, 4, 9, 10])
     }
 }
