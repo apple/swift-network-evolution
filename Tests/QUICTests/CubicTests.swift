@@ -874,11 +874,11 @@ final class CubicTests: XCTestCase {
         let after = max(firstStart, secondStart) + .milliseconds(1)
 
         let sentTimes = [beforeRecovery, after, after, beforeRecovery, after]
-        var batch = Recovery.InnerState.AckedBytesBatch()
+        var batch = Recovery.InnerState.AckedBytesBatch(path: batched)
         batched.congestionControlAckBegin()
         perPacket.congestionControlAckBegin()
         for sentTime in sentTimes {
-            batch.add(bytes: 1000, sentTime: sentTime, path: batched)
+            batch.add(bytes: 1000, sentTime: sentTime)
             perPacket.congestionControlPacketsAcked(bytesAcked: 1000, sentTime: sentTime)
         }
         // Nothing is reported until the flush.
@@ -910,9 +910,9 @@ final class CubicTests: XCTestCase {
             path.congestionControlPacketsSent(bytesSent: 1000)
         }
         // No recovery yet: the packet counts, and the flush releases it.
-        var batch = Recovery.InnerState.AckedBytesBatch()
+        var batch = Recovery.InnerState.AckedBytesBatch(path: path)
         path.congestionControlAckBegin()
-        batch.add(bytes: 1000, sentTime: sent, path: path)
+        batch.add(bytes: 1000, sentTime: sent)
         batch.flush()
 
         // Recovery starts now. A packet sent at the recovery start time no longer counts.
@@ -926,45 +926,11 @@ final class CubicTests: XCTestCase {
         XCTAssertGreaterThan(recoveryStart, .zero)
         let window = path.congestionControlWindow
         path.congestionControlAckBegin()
-        batch.add(bytes: 1000, sentTime: recoveryStart, path: path)
+        batch.add(bytes: 1000, sentTime: recoveryStart)
         batch.flush()
         path.congestionControlAckEnd(rtt: rtt, path: path, mss: path.mss, packetsLost: false)
         XCTAssertEqual(path.congestionControlWindow, window)
         XCTAssertEqual(path.congestionControlBytesInFlight, 1000)
-    }
-
-    /// Bytes acked for packets sent on different paths go to the controller of the path they were
-    /// sent on, even when they arrive in one ACK.
-    func testAckedBytesBatchKeepsEachPathsBytesSeparate() {
-        let connection = NetworkContext.implicitContext.onQueue {
-            QUICConnection(context: NetworkContext.implicitContext)
-        }
-        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
-        let first = connection.context.onQueue { QUICPath.makeFromExternalTest(parent: connection) }
-        defer { connection.context.onQueue { first.destroyFromExternalTest() } }
-        let second = connection.context.onQueue { QUICPath.makeFromExternalTest(parent: connection) }
-        defer { connection.context.onQueue { second.destroyFromExternalTest() } }
-        for path in [first, second] {
-            path.set(interface: nil, priority: 1, isInitial: true)
-            for _ in 0..<4 {
-                path.congestionControlPacketsSent(bytesSent: 1000)
-            }
-            path.congestionControlAckBegin()
-        }
-
-        let sent = NetworkClock.Instant.testBase
-        var batch = Recovery.InnerState.AckedBytesBatch()
-        // first, second, first: three switches, the last a return to a path flushed earlier.
-        batch.add(bytes: 1000, sentTime: sent, path: first)
-        batch.add(bytes: 2000, sentTime: sent, path: second)
-        batch.add(bytes: 1000, sentTime: sent, path: first)
-        // Only the switches have reported so far; the last run is still held.
-        XCTAssertEqual(first.congestionControlBytesInFlight, 3000)
-        XCTAssertEqual(second.congestionControlBytesInFlight, 2000)
-        batch.flush()
-
-        XCTAssertEqual(first.congestionControlBytesInFlight, 2000)
-        XCTAssertEqual(second.congestionControlBytesInFlight, 2000)
     }
 }
 

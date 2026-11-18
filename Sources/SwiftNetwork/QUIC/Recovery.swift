@@ -480,27 +480,22 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
 
         /// Bytes acked on one path during an ACK frame, reported to its congestion controller in one
-        /// call instead of one per packet.
+        /// call instead of one per packet. The path is the one the ACK arrived on; packets sent on
+        /// any other path are not added, see `packetAcked`.
         struct AckedBytesBatch {
-            private var path: QUICPath?
-            private var recoveryStartTime = NetworkClock.Instant.zero
+            let path: QUICPath
             private var bytesAcked = 0
             private var creditedBytes = 0
 
-            mutating func add(
-                bytes: Int,
-                sentTime: NetworkClock.Instant,
-                path sentPath: QUICPath
-            ) {
-                if let path, path !== sentPath {
-                    flush()
-                }
-                if path == nil {
-                    path = sentPath
-                    recoveryStartTime = sentPath.congestionControlRecoveryStartTime
-                }
+            init(path: QUICPath) {
+                self.path = path
+            }
+
+            /// Whether a packet grows the window depends on its sent time against the recovery start
+            /// time, which a spurious-loss undo can change mid-ACK, so it is read for every packet.
+            mutating func add(bytes: Int, sentTime: NetworkClock.Instant) {
                 bytesAcked += bytes
-                if sentTime > recoveryStartTime {
+                if sentTime > path.congestionControlRecoveryStartTime {
                     creditedBytes += bytes
                 }
             }
@@ -508,9 +503,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             /// Must run before anything that can read or change the controller mid-ACK, and before
             /// the ACK bracket closes.
             mutating func flush() {
-                guard let path else { return }
+                guard bytesAcked != 0 || creditedBytes != 0 else { return }
                 path.congestionControlPacketsAcked(bytesAcked: bytesAcked, creditedBytes: creditedBytes)
-                self.path = nil
                 bytesAcked = 0
                 creditedBytes = 0
             }
@@ -547,11 +541,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     log.datapath("Non-Ack eliciting packet \(number) acked")
                 }
                 if let sentPath {
-                    ackedBytes.add(
-                        bytes: sentEntry.packet.isInFlightEligible ? sentEntry.packet.totalLength : 0,
-                        sentTime: sentEntry.sentTime,
-                        path: sentPath
-                    )
+                    let bytes = sentEntry.packet.isInFlightEligible ? sentEntry.packet.totalLength : 0
+                    if sentPath === ackedBytes.path {
+                        ackedBytes.add(bytes: bytes, sentTime: sentEntry.sentTime)
+                    } else {
+                        // An ACK is expected to cover only packets sent on the path it arrived on. If
+                        // that ever changes, credit the other path directly and continue on.
+                        sentPath.congestionControlPacketsAcked(bytesAcked: bytes, sentTime: sentEntry.sentTime)
+                    }
                 }
             }
 
@@ -655,7 +652,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         ) -> Bool {
             let packetNumberSpace = ackFrame.packetNumberSpace
             var newlyECTAcked: UInt64 = 0
-            var ackedBytes = AckedBytesBatch()
+            var ackedBytes = AckedBytesBatch(path: path)
 
             let newlyAckedPacketNumbers = findNewlyAckedPackets(ackFrame: ackFrame, path: path)
 
