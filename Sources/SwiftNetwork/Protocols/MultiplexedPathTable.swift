@@ -16,16 +16,24 @@
 import BasicContainers
 #endif
 
-// The identifier of a free entry. A path is never given it.
-private let freePathIdentifier: Int = 0
-
-// A path and its identifier. A free entry has no path and the identifier 0.
+// A path and its identifier. A free entry has no path and the identifier `.none`.
 @available(Network 0.1.0, *)
 @_spi(ProtocolProvider)
 @usableFromInline
 struct MultiplexedPathTableEntry<Path: ~Copyable>: ~Copyable {
     @usableFromInline var identifier: MultiplexingPathIdentifier
     @usableFromInline var path: Path?
+}
+
+// Where an iteration over the paths is. The table is not held between steps, so what the iteration does can look
+// paths up, remove them or add them. A path that is removed before the iteration reaches it is not visited,
+// and a path added during the iteration is only visited if it takes the place of a removed one.
+@available(Network 0.1.0, *)
+@_spi(ProtocolProvider)
+public struct PathCursor {
+    @usableFromInline var position = 0
+    @usableFromInline var end: Int
+    @usableFromInline init(end: Int) { self.end = end }
 }
 
 // A table of the paths a many-to-many protocol multiplexes, keyed by path identifier.
@@ -51,7 +59,7 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
 
     // The position of the entry for `pathID`, if it is in the table.
     //
-    // Time: average O(p) for p paths, which is small.
+    // Time: average O(p) for p paths
     @inline(always)
     public func find(_ pathID: MultiplexingPathIdentifier) -> Int? {
         var position = 0
@@ -70,8 +78,26 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
     // An arbitrary path identifier, if there is one. It is the first path that was added of those
     // that remain.
     public var firstPathIdentifier: MultiplexingPathIdentifier? {
-        for position in 0..<entries.count where entries[position].identifier != freePathIdentifier {
+        for position in 0..<entries.count where entries[position].identifier != MultiplexingPathIdentifier.none {
             return entries[position].identifier
+        }
+        return nil
+    }
+
+    // The number of entries, live or free. An iteration over the identifiers covers the entries up to this
+    // number (see `nextPathIdentifier`).
+    public var entryCount: Int { entries.count }
+
+    // The identifier of the next path at or after `position`, before `end`, moving `position` past it.
+    // An iteration that is not holding the table, so that what it does between steps can reach the table, uses
+    // this in place of a snapshot of the identifiers, which would allocate.
+    @inline(always)
+    public func nextPathIdentifier(from position: inout Int, before end: Int) -> MultiplexingPathIdentifier? {
+        let end = min(end, entries.count)
+        while position < end {
+            let identifier = entries[position].identifier
+            position &+= 1
+            if identifier != MultiplexingPathIdentifier.none { return identifier }
         }
         return nil
     }
@@ -80,16 +106,16 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
     public var pathIdentifiers: [MultiplexingPathIdentifier] {
         var identifiers: [MultiplexingPathIdentifier] = []
         identifiers.reserveCapacity(liveCount)
-        for position in 0..<entries.count where entries[position].identifier != freePathIdentifier {
+        for position in 0..<entries.count where entries[position].identifier != MultiplexingPathIdentifier.none {
             identifiers.append(entries[position].identifier)
         }
         return identifiers
     }
 
     public mutating func insert(_ path: consuming Path, for pathID: MultiplexingPathIdentifier) {
-        assert(pathID != freePathIdentifier, "A path cannot have the identifier that means no path")
+        assert(pathID != MultiplexingPathIdentifier.none, "A path cannot have the identifier that means no path")
         assert(find(pathID) == nil, "Path \(pathID) is already in the table")
-        for position in 0..<entries.count where entries[position].identifier == freePathIdentifier {
+        for position in 0..<entries.count where entries[position].identifier == MultiplexingPathIdentifier.none {
             entries[position].identifier = pathID
             entries[position].path = consume path
             liveCount += 1
@@ -102,7 +128,7 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
     // Removes the path and hands it to the caller.
     public mutating func remove(_ pathID: MultiplexingPathIdentifier) -> Path? {
         guard let entry = find(pathID) else { return nil }
-        entries[entry].identifier = freePathIdentifier
+        entries[entry].identifier = MultiplexingPathIdentifier.none
         liveCount -= 1
         return entries[entry].path.take()
     }
@@ -121,7 +147,7 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
 
     // Lends out every path in turn.
     public mutating func forEachPath(_ body: (inout Path) -> Void) {
-        for position in 0..<entries.count where entries[position].identifier != freePathIdentifier {
+        for position in 0..<entries.count where entries[position].identifier != MultiplexingPathIdentifier.none {
             body(&entries[position].path!)
         }
     }

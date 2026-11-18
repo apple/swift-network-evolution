@@ -1116,6 +1116,53 @@ final class MigrationTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
+    // A reset of the migration timer after a packet sends the challenges that are due. If that is more than a
+    // probing path may send, the path becomes unreachable, and when it is the current path the
+    // strategy has to be told, or the connection stays on a dead path with the timer disarmed.
+    func testTimerResetAfterAPacketReportsAPathItMadeUnreachable() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let deadPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
+            let standbyPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
+            self.connection.currentPathID = deadPath
+            self.connection.testPath(deadPath) { $0.changeState(to: .probing) }
+            self.connection.testPath(standbyPath) { $0.pathIsPrimary = true }
+
+            // Use up every challenge the path may send, and then ask for one more, which is what the send
+            // inside the timer reset does: the path gives up and becomes unreachable. The send builds
+            // packets, where the strategy cannot run, so nothing has reported it.
+            var now = self.connection.now
+            for _ in 0...QUICPath.maximumPendingChallenges {
+                now = now.advanced(by: .seconds(60))
+                var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+                self.connection.fromExternal { eventContext in
+                    self.connection.testPath(deadPath) {
+                        $0.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    }
+                }
+            }
+            XCTAssertEqual(self.connection.testPath(deadPath) { $0.state }, .unreachable)
+            XCTAssertEqual(self.connection.currentPathID, deadPath)
+
+            // The timer reset that follows a packet has to report the dead path
+            now = now.advanced(by: .seconds(60))
+            self.connection.migrationWork.migrationTimerResetPending = true
+            self.connection.migrationWork.migrationTimerResetNow = now
+            self.connection.fromExternal { eventContext in
+                self.connection.resetMigrationTimerIfPending(in: &eventContext)
+            }
+
+            XCTAssertEqual(
+                self.connection.currentPathID,
+                standbyPath,
+                "Stayed on a path the timer reset made unreachable"
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
     // MARK: - Connection IDs
 
     static func cid(_ value: UInt8) -> QUICConnectionID {

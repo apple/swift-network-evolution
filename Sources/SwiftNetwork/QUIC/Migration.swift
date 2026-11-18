@@ -159,8 +159,17 @@ struct Migration: ~Copyable {
         // The timer must be re-armed even when no challenge is due: `Timer` fires up to
         // `Timer.timerThreshold` early and has already disabled the entry, so an early wakeup would
         // otherwise stall probing. `resetTimer` sends whatever is due before arming.
+        resetTimerAndReportPaths(now: firedAt, connection: connection, in: &eventContext)
+    }
+
+    /// Resets the timer, and runs the migration strategy for what the reset found out.
+    func resetTimerAndReportPaths(
+        now: NetworkClock.Instant,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         let before = connection.migrationPathStates
-        resetTimer(now: firedAt, connection: connection, in: &eventContext)
+        resetTimer(now: now, connection: connection, in: &eventContext)
 
         // Sending a challenge can find a path has run out of probes and mark it unreachable.
         // That happens while frames are being built, where the strategy cannot run, so report it
@@ -231,13 +240,15 @@ struct Migration: ~Copyable {
         }
         connection.recovery.resetTimer(now: connection.now, connection: connection, in: &eventContext)
         // PMTUD sends probes, so the new current path is borrowed for work while it starts
-        _ = connection.withPathForWork(pathID, replayingSendsIn: &eventContext) { (path: inout QUICPath, ctx) in
+        _ = connection.withPathWork(pathID, replayingSendsIn: &eventContext) { (path: inout QUICPath, ctx) in
             path.resetPacer()
             path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                 state.start(on: &path, in: &ctx)
             }
         }
-        for otherPathID in connection.pathIdentifiersNow where otherPathID != pathID {
+        var cursor = connection.startPathIteration()
+        while let otherPathID = connection.nextPathIdentifier(&cursor) {
+            if otherPathID == pathID { continue }
             _ = connection.withPath(otherPathID) { (otherPath: inout QUICPath) in
                 otherPath.pmtudState.stop(connection: connection)
             }
@@ -522,9 +533,21 @@ extension QUICConnection {
     // The timer looks at every path, which a path cannot do from inside its own update, so the path asks
     // for the reset and it runs here, once the paths are all back in the table.
     func resetMigrationTimerIfPending(in eventContext: inout NetworkContext.EventContext) {
-        guard let resetNow = migrationWork.takeTimerReset() else { return }
+        guard var resetNow = migrationWork.takeTimerReset() else { return }
         guard migration.timerID != nil else { return }
-        migration.resetTimer(now: resetNow == .zero ? now : resetNow, connection: self, in: &eventContext)
+        // Resetting the timer sends the challenges that are due, which can find that a path has run out of
+        // probes, so the strategy is run for that, as it is when the timer fires. It can ask for another reset.
+        var remainingResets = Self.maximumMigrationEvents
+        while true {
+            migration.resetTimerAndReportPaths(
+                now: resetNow == .zero ? now : resetNow,
+                connection: self,
+                in: &eventContext
+            )
+            remainingResets -= 1
+            guard remainingResets > 0, let again = migrationWork.takeTimerReset() else { return }
+            resetNow = again
+        }
     }
 
     private func applyMigrationStrategy(

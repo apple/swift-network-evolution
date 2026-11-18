@@ -170,6 +170,29 @@ final class RecoveryTests: XCTestCase {
         }
     }
 
+    // The packet builder charges the path's congestion control for a packet when it builds it. A packet that
+    // Recovery then refuses, for being sent out of order, must not stay charged: nothing would ever
+    // acknowledge or lose it.
+    func testOutOfOrderSentPacketIsNotLeftInFlight() {
+        connection.context.onQueue {
+            for number: Int64 in [5, 3] {
+                var packet = SentPacketRecord()
+                packet.identifier = .init(space: .applicationData, number: PacketNumber(number))
+                packet.isInFlightEligible = true
+                packet.isAckEliciting = true
+                packet.totalLength = Int(number) * 100
+                packet.sentPath = connection.currentPathID ?? .none
+                sentPacket(packet, connection: connection)
+            }
+        }
+        XCTAssertEqual(connection.recovery.getLargestSentPN(packetNumberSpace: .applicationData), 5)
+        // Only packet 5 (500 bytes) is in flight; packet 3 (300 bytes) was refused and refunded
+        XCTAssertEqual(connection.testPath(pathID) { $0.congestionControlBytesInFlight }, 500)
+        connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) { innerState in
+            XCTAssertEqual(innerState.ackElicitingPacketsInFlight, 1)
+        }
+    }
+
     func testResetInitialSpace() throws {
         let space = connection.context.onQueue {
             var packet = SentPacketRecord()

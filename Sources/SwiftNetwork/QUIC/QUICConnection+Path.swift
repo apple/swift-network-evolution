@@ -76,13 +76,25 @@ extension QUICConnection {
         return true
     }
 
+    /// Takes back what a send charged a path's congestion control for a packet that Recovery then refused to
+    /// track. The charge is made when the packet is built, so it would otherwise stay in flight for good.
+    func refundCongestionControlCharge(bytes: Int, on pathID: MultiplexingPathIdentifier) {
+        let refunded: Void? = withPath(pathID) { (path: inout QUICPath) in
+            path.congestionControlPacketDiscarded(bytesSent: bytes, qlog: qLog)
+        }
+        if refunded == nil {
+            log.fault("Could not refund \(bytes) bytes charged to path \(pathID): the path is busy or gone")
+        }
+    }
+
     // MARK: Borrowing for work
 
-    /// Borrows the path, in place, for a long piece of work that sends nothing of its own. A send that
-    /// is asked for while it runs waits, and is replayed by whoever finishes the work.
+    /// Borrows the path, in place, for a long piece of work that sends nothing of its own, for callers that
+    /// are in the middle of Recovery. A send that is asked for while it runs waits, and is replayed by whoever
+    /// finishes the work, once Recovery is free.
     ///
     /// Returns `nil` without running `body` if there is no such path, or it is already borrowed.
-    func withPathForWork<R: ~Copyable>(
+    func withPathWorkFromRecovery<R: ~Copyable>(
         _ pathID: MultiplexingPathIdentifier,
         _ body: (inout QUICPath) -> R
     ) -> R? {
@@ -99,9 +111,9 @@ extension QUICConnection {
         }
     }
 
-    /// Like `withPathForWork`, and replays the sends that waited once the path is back. Only for callers
+    /// Like `withPathWorkFromRecovery`, and replays the sends that waited once the path is back. Only for callers
     /// that are not in the middle of Recovery, which sending reaches.
-    func withPathForWork<R: ~Copyable>(
+    func withPathWork<R: ~Copyable>(
         _ pathID: MultiplexingPathIdentifier,
         replayingSendsIn eventContext: inout NetworkContext.EventContext,
         _ body: (inout QUICPath, inout NetworkContext.EventContext) -> R

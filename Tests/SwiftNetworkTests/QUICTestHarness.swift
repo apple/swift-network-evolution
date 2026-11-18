@@ -2354,7 +2354,7 @@ class QUICTestHarness {
             onContext {
                 clientConnection.fromExternal { eventContext in
                     guard let currentPathID = clientConnection.currentPathID,
-                        clientConnection.withPathForWork(
+                        clientConnection.withPathWorkFromRecovery(
                             currentPathID,
                             { (path: inout QUICPath) in
                                 path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
@@ -2880,7 +2880,7 @@ class QUICTestHarness {
                 }
 
                 var discardInitialRecoveryState = false
-                _ = clientConnection.withPathForWork(currentPathID) { (path: inout QUICPath) in
+                _ = clientConnection.withPathWorkFromRecovery(currentPathID) { (path: inout QUICPath) in
                     clientConnection.sendFramesFromRecovery(
                         on: &path,
                         discardInitialRecoveryState: &discardInitialRecoveryState,

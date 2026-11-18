@@ -49,7 +49,7 @@ public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol whe
     /// Adds a flow to the table. Conformers implement this by inserting into their stored table.
     func insertFlow(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier)
 
-    /// Lends out the table that holds this protocol's paths.
+    /// Provides access to the paths for this protocol
     ///
     /// Conformers implement this by passing their stored table to `body`. The table is exclusively
     /// accessed while `body` runs.
@@ -346,9 +346,10 @@ where UpperProtocol: InboundDataLinkage, ParentProtocol: ManyToManyDatapathProto
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public typealias MultiplexingPathIdentifier = Int
+@_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 extension MultiplexingPathIdentifier {
-    static var none: Self {
+    @usableFromInline static var none: Self {
         0
     }
 
@@ -528,7 +529,7 @@ extension ManyToManyProtocolHandler {
     where Path.ParentProtocol == Self {
         var newPath = Path(parent: self, in: &eventContext)
         _ = try newPath.attachLowerProtocol(lowerProtocol)
-        let isFirstPath = hasNoPaths
+        let isFirstPath = !hasPaths
         if isFirstPath { newPath.pathIsPrimary = true }
         if path?.hasMigrationInfo == true { newPath.pathHasMigrationInfo = true }
         let newPathID = newPath.pathIdentifier
@@ -684,17 +685,12 @@ extension ManyToManyProtocolHandler {
         return try withMultiplexedPaths(body)
     }
 
-    /// The identifiers of the paths, or none while a path is being borrowed.
-    public var pathIdentifiersNow: [MultiplexingPathIdentifier] {
-        withUnborrowedPaths { $0.pathIdentifiers } ?? []
-    }
-
     public func hasPath(_ pathID: MultiplexingPathIdentifier) -> Bool {
         withUnborrowedPaths { $0.contains(pathID) } ?? false
     }
 
-    public var hasNoPaths: Bool {
-        withUnborrowedPaths { $0.isEmpty } ?? false
+    public var hasPaths: Bool {
+        withUnborrowedPaths { !$0.isEmpty } ?? true
     }
 
     public var pathCount: Int {
@@ -716,10 +712,30 @@ extension ManyToManyProtocolHandler {
         withUnborrowedPaths { $0.firstPathIdentifier } ?? nil
     }
 
-    /// Calls `closure` with the identifier of each path in turn. The identifiers are collected first,
-    /// so `closure` can look paths up or remove them.
+    /// Starts an iteration over the paths. It has nothing to iterate while a path is being borrowed.
+    @inline(always)
+    public func startPathIteration() -> PathCursor {
+        PathCursor(end: withUnborrowedPaths { $0.entryCount } ?? 0)
+    }
+
+    /// The next path of the iteration, or `nil` at the end. Does not allocate.
+    @inline(always)
+    public func nextPathIdentifier(_ cursor: inout PathCursor) -> MultiplexingPathIdentifier? {
+        guard cursor.position < cursor.end else { return nil }
+        var position = cursor.position
+        let end = cursor.end
+        let next: MultiplexingPathIdentifier?? = withUnborrowedPaths { (table: inout MultiplexedPathTable<Path>) in
+            table.nextPathIdentifier(from: &position, before: end)
+        }
+        cursor.position = position
+        return next ?? nil
+    }
+
+    /// Calls `closure` with the identifier of each path in turn. `closure` can look paths up or remove them.
+    @inline(always)
     public func allPathIdentifiers(_ closure: (MultiplexingPathIdentifier) -> Void) {
-        for pathID in pathIdentifiersNow {
+        var cursor = startPathIteration()
+        while let pathID = nextPathIdentifier(&cursor) {
             closure(pathID)
         }
     }
@@ -727,13 +743,15 @@ extension ManyToManyProtocolHandler {
     /// Lends out each path in turn, skipping one that is already being borrowed. The table is not held
     /// while `closure` runs.
     public func applyToAllPaths(_ closure: (inout Path) -> Void) {
-        for pathID in pathIdentifiersNow {
+        var cursor = startPathIteration()
+        while let pathID = nextPathIdentifier(&cursor) {
             _ = withPath(pathID, closure)
         }
     }
 
     public func somePathIsConnected(in eventContext: inout NetworkContext.EventContext) -> Bool {
-        for pathID in pathIdentifiersNow {
+        var cursor = startPathIteration()
+        while let pathID = nextPathIdentifier(&cursor) {
             if withPath(pathID, { (path: inout Path) in path.lower.protocolIsConnected(in: &eventContext) }) == true {
                 return true
             }
@@ -754,7 +772,8 @@ extension ManyToManyProtocolHandler {
     ) {
         // Don't validate upper, can pass through
         if self.handleApplicationEvent(event, in: &eventContext) == .consumed { return }
-        for pathID in pathIdentifiersNow {
+        var cursor = startPathIteration()
+        while let pathID = nextPathIdentifier(&cursor) {
             guard let lower = withPath(pathID, { (path: inout Path) in path.lower }) else { continue }
             lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
         }
@@ -867,7 +886,8 @@ extension ManyToManyProtocolHandler {
     ) {
         // Don't validate upper, can pass through
         if handleApplicationEvent(flow: flowID, event: event, in: &eventContext) == .consumed { return }
-        for pathID in pathIdentifiersNow {
+        var cursor = startPathIteration()
+        while let pathID = nextPathIdentifier(&cursor) {
             guard let lower = withPath(pathID, { (path: inout Path) in path.lower }) else { continue }
             lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
         }
@@ -1580,7 +1600,8 @@ extension MultiplexedFlow where Self: ~Copyable {
         if parentProtocol.handleApplicationEvent(flow: flowIdentifier, event: event, in: &eventContext) == .consumed {
             return
         }
-        for pathID in parentProtocol.pathIdentifiersNow {
+        var cursor = parentProtocol.startPathIteration()
+        while let pathID = parentProtocol.nextPathIdentifier(&cursor) {
             guard let lower = parentProtocol.withPath(pathID, { (path: inout ParentProtocol.Path) in path.lower })
             else { continue }
             lower.invokeApplicationEvent(event: event, for: instance, in: &eventContext)
@@ -2370,7 +2391,7 @@ extension ManyToManyProtocolHandler {
         _ = withUnborrowedPaths { $0.removeAll() }
         // A path that is being borrowed is left to whoever is borrowing it, which is not expected here: nothing
         // that borrows a path calls back into the stack to tear it down.
-        assert(hasNoPaths, "A path was still being borrowed when the protocol released its paths")
+        assert(!hasPaths, "A path was still being borrowed when the protocol released its paths")
     }
 
     public func handleConnectedEvent(
@@ -2698,7 +2719,7 @@ extension HeterogeneousManyToManyProtocolHandler {
 /// A path's queued datagrams, taken from it so they can be handed to its lower protocol once the path is
 /// no longer borrowed.
 @available(Network 0.1.0, *)
-struct QueuedLowerDatagrams<Lower: LowerProtocolLinkage>: ~Copyable {
+private struct QueuedLowerDatagrams<Lower: LowerProtocolLinkage>: ~Copyable {
     let lower: Lower
     let identifier: InstanceIdentifier
     var datagrams: FrameArray

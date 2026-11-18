@@ -162,7 +162,7 @@ struct PMTUDState: ~Copyable {
                 in: &eventContext
             ) { firedAt, timerState in
                 // The timer fires with nothing else holding the path, so it is borrowed for the work
-                _ = connection.withPathForWork(pathID, replayingSendsIn: &timerState) { (path: inout QUICPath, ctx) in
+                _ = connection.withPathWork(pathID, replayingSendsIn: &timerState) { (path: inout QUICPath, ctx) in
                     path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                         state.timerFired(at: firedAt, path: &path, in: &ctx)
                     }

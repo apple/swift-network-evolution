@@ -754,6 +754,14 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 log.fault(
                     "Should not send \(packetNumber) after \(largestSentPacketNumber)"
                 )
+                // The send that built the packet has already charged the path for it, and nothing will ever
+                // acknowledge or lose it, so take the charge back.
+                if sentPacket.isInFlightEligible {
+                    connection.refundCongestionControlCharge(
+                        bytes: sentPacket.totalLength,
+                        on: sentPacket.sentPath
+                    )
+                }
                 return
             }
 
@@ -1170,7 +1178,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     ) {
         guard let pathID = pathID ?? connection.currentPathID else { return }
         var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
-        let probed: Void? = connection.withPathForWork(pathID) { (path: inout QUICPath) in
+        let probed: Void? = connection.withPathWorkFromRecovery(pathID) { (path: inout QUICPath) in
             path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                 state.tryToSend(on: &path, sentPackets: &sentPackets, in: &eventContext)
             }
@@ -1540,7 +1548,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             // The PTO sends packets, so the current path is borrowed for work while it does. Sends that waited for
             // the path are replayed by whoever claimed the send path around the recovery timer.
             if let currentPathID = connection.currentPathID {
-                let sentPTO: Void? = connection.withPathForWork(currentPathID) { (path: inout QUICPath) in
+                let sentPTO: Void? = connection.withPathWorkFromRecovery(currentPathID) { (path: inout QUICPath) in
                     sendPTO(connection: connection, path: &path, in: &eventContext)
                 }
                 if sentPTO == nil {

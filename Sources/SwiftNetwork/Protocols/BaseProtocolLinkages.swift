@@ -63,7 +63,6 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case demux(NetworkStateIndex)
         case datagramEndpointFlow(ProtocolInstanceBox<DatagramEndpointFlowProtocol>)
         #if !NETWORK_NO_SWIFT_QUIC
-        // A path of a QUIC connection, found in the connection's path table by its identifier
         case quicPath(QUICConnection, MultiplexingPathIdentifier)
         #endif
         // A protocol from outside the framework, reached through one class call.

@@ -1527,7 +1527,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         // Set up the initial path
         if currentPathID == nil, let initialPathID = self.somePathIdentifier {
-            _ = withPathForWork(initialPathID, replayingSendsIn: &eventContext) {
+            _ = withPathWork(initialPathID, replayingSendsIn: &eventContext) {
                 (initialPath: inout QUICPath, eventContext) in
                 initialPath.pacePackets = pacingEnabled
                 initialPath.set(interface: self.initialInterface, priority: 0, isInitial: true)
@@ -5043,7 +5043,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         in eventContext: inout NetworkContext.EventContext
     ) -> NetworkUniqueDeque<SentPacketRecord> {
         if let pmtudProbeMSS = packet.transmittedItems.pmtudProbeMSS {
-            _ = withPathForWork(packet.sentPath) { (path: inout QUICPath) in
+            _ = withPathWorkFromRecovery(packet.sentPath) { (path: inout QUICPath) in
                 guard path.pmtudState.enabled else { return }
                 path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                     state.probeLost(
@@ -5071,7 +5071,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         guard let currentPathID else {
             return .init()
         }
-        return withPathForWork(currentPathID) { (path: inout QUICPath) -> NetworkUniqueDeque<SentPacketRecord> in
+        return withPathWorkFromRecovery(currentPathID) {
+            (path: inout QUICPath) -> NetworkUniqueDeque<SentPacketRecord> in
             sendFramesFromRecovery(
                 on: &path,
                 discardInitialRecoveryState: &discardInitialRecoveryState,
@@ -5632,7 +5633,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         // Starting PMTUD sends a probe, so the path is borrowed for work while it starts
         if let currentPathID {
-            _ = withPathForWork(currentPathID, replayingSendsIn: &eventContext) { (path: inout QUICPath, ctx) in
+            _ = withPathWork(currentPathID, replayingSendsIn: &eventContext) { (path: inout QUICPath, ctx) in
                 path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                     state.start(on: &path, in: &ctx)
                 }
@@ -6484,7 +6485,7 @@ extension QUICConnection {
         let probeWaiting =
             withPath(pathID) { (path: inout QUICPath) in path.pmtudState.hasPendingTransmission } ?? false
         if probeWaiting {
-            _ = withPathForWork(pathID) { (path: inout QUICPath) in
+            _ = withPathWorkFromRecovery(pathID) { (path: inout QUICPath) in
                 path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                     state.tryToSend(on: &path, sentPackets: &sentPackets, in: &eventContext)
                 }
@@ -7372,7 +7373,7 @@ extension QUICConnection {
         guard mss > 0 else { return }
         // Acknowledging the probe can set the path's MSS and start another probe, which sends
         // packets, so the path is borrowed for work.
-        _ = withPathForWork(pathID) { (path: inout QUICPath) in
+        _ = withPathWorkFromRecovery(pathID) { (path: inout QUICPath) in
             guard path.pmtudState.enabled else { return }
             path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                 state.probeAcked(
