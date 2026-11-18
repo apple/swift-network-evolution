@@ -846,6 +846,18 @@ extension QUICPath {
         congestionControl.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
     }
 
+    /// Reports the packets acked since the last flush in one call, within the ack bracket.
+    @inline(always)
+    func congestionControlPacketsAcked(bytesAcked: Int, creditedBytes: Int) {
+        congestionControl.packetsAcked(bytesAcked: bytesAcked, creditedBytes: creditedBytes)
+    }
+
+    /// Packets sent at or before this time do not grow the window.
+    @inline(always)
+    var congestionControlRecoveryStartTime: NetworkClock.Instant {
+        congestionControl.state.recoveryStartTime
+    }
+
     @inline(always)
     func congestionControlPacketsLost(
         bytesLost: Int,

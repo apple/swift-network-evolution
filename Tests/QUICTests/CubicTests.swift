@@ -757,6 +757,181 @@ final class CubicTests: XCTestCase {
         // acked takes the window to 13000, slow start doubles it, and the 100ms fallback divides.
         XCTAssertEqual(path.pacer.rate, 26000 * System.Time.USEC_PER_SEC / 100_000)
     }
+
+    // MARK: Aggregated ack accounting
+
+    /// Puts `controlState` into recovery, with one packet in flight sent before it and ten after.
+    /// Returns the sent time of a packet from before recovery and one from after.
+    private func enterRecovery(
+        cubic: inout Cubic,
+        state controlState: inout CongestionControlState
+    ) -> (before: NetworkClock.Instant, after: NetworkClock.Instant) {
+        let before = NetworkClock.Instant.testBase
+        let detectedAt = before + .milliseconds(10)
+        for _ in 0..<11 {
+            cubic.packetSent(state: &controlState, bytesSent: 1000)
+        }
+        cubic.packetLost(
+            state: &controlState,
+            path: noPath,
+            bytesLost: 1000,
+            largestLostSentTime: before,
+            mss: mss,
+            smoothedRTT: .microseconds(0),
+            now: detectedAt
+        )
+        return (before, detectedAt + .milliseconds(1))
+    }
+
+    /// One aggregate call must leave the same state as a call per packet, for packets sent both
+    /// before and after recovery started.
+    func testCubicAggregateAckMatchesPerPacketAcks() {
+        let logPrefixer = LogPrefixer("[CubicTests]")
+        var perPacketState = CongestionControlState()
+        var perPacketPacer = Pacer(enabled: true)
+        var perPacket = Cubic(state: &perPacketState, pacer: &perPacketPacer, mss: mss, logPrefixer: logPrefixer)
+        var aggregateState = CongestionControlState()
+        var aggregatePacer = Pacer(enabled: true)
+        var aggregate = Cubic(state: &aggregateState, pacer: &aggregatePacer, mss: mss, logPrefixer: logPrefixer)
+
+        let times = enterRecovery(cubic: &perPacket, state: &perPacketState)
+        _ = enterRecovery(cubic: &aggregate, state: &aggregateState)
+        XCTAssertEqual(perPacketState.recoveryStartTime, aggregateState.recoveryStartTime)
+
+        // Three packets from before recovery, which must not grow the window, and five from after.
+        let sentTimes = [
+            times.before, times.after, times.after, times.before, times.after, times.after, times.before, times.after,
+        ]
+        perPacket.ackBegin(state: &perPacketState)
+        for sentTime in sentTimes {
+            perPacket.packetsAcked(state: &perPacketState, bytesAcked: 1000, sentTime: sentTime)
+        }
+        let credited = sentTimes.filter { !aggregateState.packetInRecovery(sentTime: $0) }.count * 1000
+        XCTAssertEqual(credited, 5000)
+        aggregate.ackBegin(state: &aggregateState)
+        aggregateState.packetsAcked(
+            bytesAcked: sentTimes.count * 1000,
+            creditedBytes: credited,
+            log: logPrefixer
+        )
+
+        XCTAssertEqual(aggregateState.bytesInFlight, perPacketState.bytesInFlight)
+        XCTAssertEqual(aggregateState.bytesAcked, perPacketState.bytesAcked)
+        XCTAssertEqual(aggregateState.bytesAcked, 5000)
+
+        let now = times.after + .milliseconds(5)
+        perPacket.ackEnd(state: &perPacketState, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: now)
+        aggregate.ackEnd(state: &aggregateState, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: now)
+        XCTAssertEqual(aggregateState.congestionWindow, perPacketState.congestionWindow)
+        XCTAssertEqual(aggregateState.slowStartThreshold, perPacketState.slowStartThreshold)
+        XCTAssertEqual(aggregateState.availableCongestionWindow, perPacketState.availableCongestionWindow)
+    }
+
+    /// Packets sent only before recovery leave flight but add nothing to the window.
+    func testCubicAggregateAckOfPreRecoveryPacketsOnlyReleasesBytesInFlight() {
+        let times = enterRecovery(cubic: &cubic, state: &state)
+        let inFlight = state.bytesInFlight
+        let window = state.congestionWindow
+        cubic.ackBegin(state: &state)
+        state.packetsAcked(bytesAcked: 3000, creditedBytes: 0, log: LogPrefixer("[CubicTests]"))
+        cubic.ackEnd(state: &state, rtt: rtt, path: noPath, mss: mss, packetsLost: false, now: times.after)
+        XCTAssertEqual(state.bytesInFlight, inFlight - 3000)
+        XCTAssertEqual(state.congestionWindow, window)
+    }
+
+    /// The batch reports once, and splits credit by sent time against the recovery start time.
+    func testAckedBytesBatchMatchesPerPacketAcksOnAPath() {
+        let connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+        let batched = connection.context.onQueue { QUICPath.makeFromExternalTest(parent: connection) }
+        defer { connection.context.onQueue { batched.destroyFromExternalTest() } }
+        let perPacket = connection.context.onQueue { QUICPath.makeFromExternalTest(parent: connection) }
+        defer { connection.context.onQueue { perPacket.destroyFromExternalTest() } }
+        for path in [batched, perPacket] {
+            path.set(interface: nil, priority: 1, isInitial: true)
+        }
+
+        let before = NetworkClock.Instant.testBase
+        for path in [batched, perPacket] {
+            for _ in 0..<6 {
+                path.congestionControlPacketsSent(bytesSent: 1000)
+            }
+            _ = path.congestionControlPacketsLost(
+                bytesLost: 1000,
+                largestLostSentTime: before,
+                mss: path.mss,
+                smoothedRTT: .microseconds(0)
+            )
+        }
+        // The paths lost their packet at slightly different clock readings, so pick sent times
+        // that fall on the same side of both recovery start times.
+        let firstStart = batched.congestionControlRecoveryStartTime
+        let secondStart = perPacket.congestionControlRecoveryStartTime
+        XCTAssertGreaterThan(min(firstStart, secondStart), .zero)
+        let beforeRecovery = min(firstStart, secondStart) - .milliseconds(1)
+        let after = max(firstStart, secondStart) + .milliseconds(1)
+
+        let sentTimes = [beforeRecovery, after, after, beforeRecovery, after]
+        var batch = Recovery.InnerState.AckedBytesBatch(path: batched)
+        batched.congestionControlAckBegin()
+        perPacket.congestionControlAckBegin()
+        for sentTime in sentTimes {
+            batch.add(bytes: 1000, sentTime: sentTime)
+            perPacket.congestionControlPacketsAcked(bytesAcked: 1000, sentTime: sentTime)
+        }
+        // Nothing is reported until the flush.
+        XCTAssertEqual(batched.congestionControlBytesInFlight, 5000)
+        batch.flush()
+        // A second flush has nothing left to report.
+        batch.flush()
+
+        XCTAssertEqual(batched.congestionControlBytesInFlight, perPacket.congestionControlBytesInFlight)
+        XCTAssertEqual(batched.congestionControlBytesInFlight, 0)
+        batched.congestionControlAckEnd(rtt: rtt, path: batched, mss: batched.mss, packetsLost: false)
+        perPacket.congestionControlAckEnd(rtt: rtt, path: perPacket, mss: perPacket.mss, packetsLost: false)
+        XCTAssertEqual(batched.congestionControlWindow, perPacket.congestionControlWindow)
+    }
+
+    /// A flush after the recovery start time changed, as a spurious-loss undo does, judges later
+    /// packets against the restored time.
+    func testAckedBytesBatchJudgesPacketsAgainstTheRecoveryStartAtFlush() {
+        let connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+        let path = connection.context.onQueue { QUICPath.makeFromExternalTest(parent: connection) }
+        defer { connection.context.onQueue { path.destroyFromExternalTest() } }
+        path.set(interface: nil, priority: 1, isInitial: true)
+
+        let sent = NetworkClock.Instant.testBase
+        for _ in 0..<4 {
+            path.congestionControlPacketsSent(bytesSent: 1000)
+        }
+        // No recovery yet: the packet counts, and the flush releases it.
+        var batch = Recovery.InnerState.AckedBytesBatch(path: path)
+        path.congestionControlAckBegin()
+        batch.add(bytes: 1000, sentTime: sent)
+        batch.flush()
+
+        // Recovery starts now. A packet sent at the recovery start time no longer counts.
+        _ = path.congestionControlPacketsLost(
+            bytesLost: 1000,
+            largestLostSentTime: sent,
+            mss: path.mss,
+            smoothedRTT: .microseconds(0)
+        )
+        let recoveryStart = path.congestionControlRecoveryStartTime
+        XCTAssertGreaterThan(recoveryStart, .zero)
+        let window = path.congestionControlWindow
+        path.congestionControlAckBegin()
+        batch.add(bytes: 1000, sentTime: recoveryStart)
+        batch.flush()
+        path.congestionControlAckEnd(rtt: rtt, path: path, mss: path.mss, packetsLost: false)
+        XCTAssertEqual(path.congestionControlWindow, window)
+        XCTAssertEqual(path.congestionControlBytesInFlight, 1000)
+    }
 }
 
 #endif
