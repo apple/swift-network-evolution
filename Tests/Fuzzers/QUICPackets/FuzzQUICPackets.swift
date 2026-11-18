@@ -99,6 +99,12 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
 
     context.queue.sync {
         let path = QUICPath.makeFromExternalTest(parent: connection)
+        // What `setup` does to the state, without the timers and metadata handlers it registers,
+        // which the teardown below does not take down again. Then through the handshake states to
+        // connected, without running the handshake.
+        connection.state = .idle
+        connection.state = .initialSent
+        connection.state = .handshake
         connection.state = .connected
         for keyState in PacketKeyState.allCases {
             connection.protector.installNullProtector(for: keyState)

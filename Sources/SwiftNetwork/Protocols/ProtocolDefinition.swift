@@ -207,7 +207,7 @@ public struct ProtocolIdentifier: Hashable, Sendable {
 @available(Network 0.1.0, *)
 public protocol NetworkProtocol: Sendable {
     associatedtype Options: PerProtocolOptions
-    associatedtype Metadata: PerProtocolMetadata
+    associatedtype Metadata: PerProtocolMetadata & ~Copyable
 
     init()
     func newPerProtocolOptions() -> Options?

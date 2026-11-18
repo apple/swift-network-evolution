@@ -22,11 +22,11 @@ jobs:
       # Linux
       linux_swift_versions: '["6.4"]'
       linux_command: &linux_command |
-        Build: swift build --build-tests --quiet
-        Build-Additive-Traits: swift build --build-tests --quiet --traits DatapathLogging,QlogOutput,SignpostOutput
-        Build-Reductive-Traits: swift build --build-tests --quiet --traits DisableDebugLogging,DisableErrorLogging
-        Test-Debug: swift test --quiet
-        Test-Release: swift test --quiet -c release
+        Build: swift build --build-tests
+        Build-Additive-Traits: swift build --build-tests --traits DatapathLogging,QlogOutput,SignpostOutput
+        Build-Reductive-Traits: swift build --build-tests --traits DisableDebugLogging,DisableErrorLogging
+        Test-Debug: swift test
+        Test-Release: swift test -c release
       linux_static_sdk_versions: '["6.4"]'
 
       # Android
