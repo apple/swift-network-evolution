@@ -305,6 +305,7 @@ public protocol MultiplexedFlow: ~Copyable, LowerProtocolHandler, LoggableProtoc
     var upperReceiveQueue: FrameArray { get set }
     var upperSendQueue: FrameArray { get set }
     func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage
+    var parentAnnouncesHandshake: Bool { get }
 }
 
 @_spi(ProtocolProvider)
@@ -1401,6 +1402,8 @@ extension HeterogeneousManyToManyProtocolHandler {
 
 @available(Network 0.1.0, *)
 extension MultiplexedFlow where Self: ~Copyable {
+    public var parentAnnouncesHandshake: Bool { false }
+
     internal func validate(
         upper upperProtocol: InstanceIdentifier,
         _ label: String
@@ -1554,20 +1557,30 @@ extension MultiplexedFlow where Self: ~Copyable {
         )
     }
 
-    func deliverConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
-        let handshakeEvent = parentProtocol.protocolEstablishmentReport.map {
-            NetworkProtocolEvent.handshakeComplete($0.tagged(.instance(parentProtocol.identifier)))
+    func deliverHandshakeComplete(in eventContext: inout NetworkContext.EventContext) {
+        guard let report = parentProtocol.protocolEstablishmentReport else { return }
+        let handshakeEvent = NetworkProtocolEvent.handshakeComplete(report.tagged(.instance(parentProtocol.identifier)))
+        if upper.isDetached {
+            let selfInstance = self.identifier
+            selfInstance.enqueuePendingEventForUpperProtocol(
+                event: .networkProtocolEvent(selfInstance, upper.identifier, event: handshakeEvent, { _, _, _ in }),
+                in: &eventContext
+            )
+        } else {
+            upper.deliverNetworkProtocolEvent(
+                originalInstance: self.identifier,
+                selfInstance: self.identifier,
+                event: handshakeEvent,
+                in: &eventContext
+            )
         }
+    }
+
+    func deliverConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
         if upper.isDetached {
             // Enqueue pending event instead of delivering immediately.
             // Inbound multiplexed flows may get attached after creation.
             let selfInstance = self.identifier
-            if let handshakeEvent {
-                selfInstance.enqueuePendingEventForUpperProtocol(
-                    event: .networkProtocolEvent(selfInstance, upper.identifier, event: handshakeEvent, { _, _, _ in }),
-                    in: &eventContext
-                )
-            }
             selfInstance.enqueuePendingEventForUpperProtocol(
                 event: .connected(
                     selfInstance,
@@ -1579,14 +1592,6 @@ extension MultiplexedFlow where Self: ~Copyable {
                 in: &eventContext
             )
         } else {
-            if let handshakeEvent {
-                upper.deliverNetworkProtocolEvent(
-                    originalInstance: self.identifier,
-                    selfInstance: self.identifier,
-                    event: handshakeEvent,
-                    in: &eventContext
-                )
-            }
             // Deliver connected event *followed by* any events which were buffered while detached
             upper.deliverConnectedEvent(from: self.identifier, in: &eventContext)
             drainQueuedEventsForUpperProtocol(in: &eventContext)
@@ -2385,6 +2390,11 @@ extension ManyToManyProtocolHandler {
                     flow.canCallConnect(requested: false, in: &eventContext)
                 }
                 if canConnect == true {
+                    withFlow(flowID) { (flow: inout Flow) in
+                        if !flow.parentAnnouncesHandshake {
+                            flow.deliverHandshakeComplete(in: &eventContext)
+                        }
+                    }
                     connect(flow: flowID, in: &eventContext)
                 }
             }
@@ -2465,6 +2475,11 @@ extension HeterogeneousManyToManyProtocolHandler {
                     flow.canCallConnect(requested: false, in: &eventContext)
                 }
                 if canConnect == true {
+                    withFlow(flowID) { (flow: inout Flow) in
+                        if !flow.parentAnnouncesHandshake {
+                            flow.deliverHandshakeComplete(in: &eventContext)
+                        }
+                    }
                     connect(flow: flowID, in: &eventContext)
                 }
             }
@@ -2473,6 +2488,11 @@ extension HeterogeneousManyToManyProtocolHandler {
                     flow.canCallConnect(requested: false, in: &eventContext)
                 }
                 if canConnect == true {
+                    withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
+                        if !flow.parentAnnouncesHandshake {
+                            flow.deliverHandshakeComplete(in: &eventContext)
+                        }
+                    }
                     connect(flow: flowID, in: &eventContext)
                 }
             }
