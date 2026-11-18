@@ -492,6 +492,9 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 sentTime: NetworkClock.Instant,
                 path sentPath: QUICPath
             ) {
+                if let path, path !== sentPath {
+                    flush()
+                }
                 if path == nil {
                     path = sentPath
                     recoveryStartTime = sentPath.congestionControlRecoveryStartTime
