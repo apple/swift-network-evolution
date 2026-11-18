@@ -127,6 +127,10 @@ public struct QUICStreamProtocol: NetworkProtocol {
             var sourceConnectionIDLength: UInt8 = 0
             var sourceConnectionIDData: [UInt8] = []
 
+            #if !NETWORK_EMBEDDED
+            var trafficAnalysisDefensesBytes: [UInt8] = []
+            #endif
+
             // Step 1: Extract all of the values
             let result = Deserializer.deserialize(serializedBytes.span) { read throws(DeserializationError) in
                 try read.uint16(&maxUDPPayloadSize)
@@ -146,6 +150,11 @@ public struct QUICStreamProtocol: NetworkProtocol {
                 try read.buffer(&destinationConnectionIDData, length: Int(destinationConnectionIDLength))
                 try read.uint8(&sourceConnectionIDLength)
                 try read.buffer(&sourceConnectionIDData, length: Int(sourceConnectionIDLength))
+
+                // Traffic analysis defenses
+                #if !NETWORK_EMBEDDED
+                try read.buffer(&trafficAnalysisDefensesBytes, length: TrafficAnalysisDefenses.serializedLength)
+                #endif
             }
 
             self.init()
@@ -171,6 +180,11 @@ public struct QUICStreamProtocol: NetworkProtocol {
                 if sourceConnectionIDLength > 0 {
                     connectionOptions.sourceConnectionID = sourceConnectionIDData
                 }
+
+                #if !NETWORK_EMBEDDED
+                connectionOptions.trafficAnalysisDefenses =
+                    TrafficAnalysisDefenses(serializedBytes: trafficAnalysisDefensesBytes)
+                #endif
 
                 // Step 3: Set the QUICConnectionOptions flags to a local variable so that internal state can be setup correctly
                 let parsedConnectionFlags: QUICConnectionProtocol.QUICConnectionOptions.Flags = QUICConnectionProtocol
@@ -214,6 +228,10 @@ public struct QUICStreamProtocol: NetworkProtocol {
             let destinationConnectionIDLength = UInt8(destinationConnectionIDData.count)
             let sourceConnectionIDLength = UInt8(sourceConnectionIDData.count)
 
+            #if !NETWORK_EMBEDDED
+            let trafficAnalysisDefensesBytes = connectionOptions.trafficAnalysisDefenses.serializedBytes
+            #endif
+
             // nil = default = 0
             // true = enabled = 1
             // false = disabled = 2
@@ -244,6 +262,11 @@ public struct QUICStreamProtocol: NetworkProtocol {
                 write.buffer(destinationConnectionIDData)
                 write.uint8(sourceConnectionIDLength)
                 write.buffer(sourceConnectionIDData)
+
+                // Traffic analysis defenses
+                #if !NETWORK_EMBEDDED
+                write.buffer(trafficAnalysisDefensesBytes)
+                #endif
 
                 #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
                 write.buffer(privateStorageData)
