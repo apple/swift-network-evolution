@@ -230,12 +230,15 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
 
     public var multiplexedPaths = MultiplexedPathTable<Path>()
 
-    public var isPathBorrowed = false
+    var isPathBorrowed = false
 
-    public func withMultiplexedPaths<R: ~Copyable, E: Error>(
+    public func withUnborrowedPaths<R: ~Copyable, E: Error>(
         _ body: (inout MultiplexedPathTable<Path>) throws(E) -> R
-    ) throws(E) -> R {
-        try body(&multiplexedPaths)
+    ) throws(E) -> R? {
+        guard !isPathBorrowed else { return nil }
+        isPathBorrowed = true
+        defer { isPathBorrowed = false }
+        return try body(&multiplexedPaths)
     }
 
     public func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier) {

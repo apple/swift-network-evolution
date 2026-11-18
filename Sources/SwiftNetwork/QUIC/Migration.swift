@@ -391,16 +391,14 @@ extension QUICConnection {
                         )
                     )
                     setupL4S(on: &path)
-                    path.changeState(to: .routeAvailable)
+                    path.state = .routeAvailable
                 }
             case .established:
                 if !path.isRouteEstablished {
-                    path.changeState(to: .routeEstablished)
+                    path.state = .routeEstablished
                 }
             case .unavailable:
-                if path.state.isValidStateChange(to: .routeUnavailable) {
-                    path.changeState(to: .routeUnavailable)
-                }
+                path.state = .routeUnavailable
             }
             return path.isValidated
         }
@@ -668,9 +666,7 @@ extension QUICConnection {
             return
         }
         log.notice("Tearing down path \(pathID) (\(path.state))")
-        if path.state.isValidStateChange(to: .routeUnavailable) {
-            path.changeState(to: .routeUnavailable)
-        }
+        path.state = .routeUnavailable
         path.destroy(in: &eventContext)
         sendFrames(in: &eventContext)
     }

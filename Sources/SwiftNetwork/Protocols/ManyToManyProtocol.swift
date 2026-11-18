@@ -49,22 +49,21 @@ public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol whe
     /// Adds a flow to the table. Conformers implement this by inserting into their stored table.
     func insertFlow(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier)
 
-    /// Provides access to the paths for this protocol
+    /// Lends out the path table, or returns `nil` if a path is being borrowed from it.
     ///
-    /// Conformers implement this by passing their stored table to `body`. The table is exclusively
-    /// accessed while `body` runs.
-    func withMultiplexedPaths<R: ~Copyable, E: Error>(
+    /// Conformers implement this by passing their stored table to `body`. A borrowed path holds the table
+    /// exclusively, so reaching the table from inside the borrow would conflict with it. Everything that
+    /// reaches the table goes through here, so a conformer keeps a flag for the time `body` runs, and a
+    /// lookup that finds it set gets no table, which callers treat as no path.
+    ///
+    /// The flag is the conformer's own, rather than a requirement of this protocol: a stored property that
+    /// is not visible outside the module has its accesses checked at compile time, not at run time.
+    func withUnborrowedPaths<R: ~Copyable, E: Error>(
         _ body: (inout MultiplexedPathTable<Path>) throws(E) -> R
-    ) throws(E) -> R
+    ) throws(E) -> R?
 
     /// Adds a path to the table. Conformers implement this by inserting into their stored table.
     func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier)
-
-    /// Whether a path is being borrowed from the table. Conformers store the flag; `withPath` sets it.
-    ///
-    /// Borrowing a path holds the table exclusively, so a lookup from inside a borrow would conflict with it.
-    /// The flag lets the lookup see that and get no path, instead.
-    var isPathBorrowed: Bool { get nonmutating set }
 
     // MARK: Connection-wide calls to implement
     func setup(
@@ -668,21 +667,6 @@ extension ManyToManyProtocolHandler {
             try table.withPath(pathID, body)
         }
         return result ?? nil
-    }
-
-    /// Lends out the path table, or returns `nil` if a path is being borrowed from it.
-    ///
-    /// A borrowed path holds the table exclusively, so reaching the table from inside the borrow would
-    /// conflict with it. Everything that reaches the table goes through here, so that it finds the
-    /// borrow and gets nothing, which callers treat as no path.
-    @inline(always)
-    public func withUnborrowedPaths<R: ~Copyable, E: Error>(
-        _ body: (inout MultiplexedPathTable<Path>) throws(E) -> R
-    ) throws(E) -> R? {
-        guard !isPathBorrowed else { return nil }
-        isPathBorrowed = true
-        defer { isPathBorrowed = false }
-        return try withMultiplexedPaths(body)
     }
 
     public func hasPath(_ pathID: MultiplexingPathIdentifier) -> Bool {
@@ -1662,10 +1646,19 @@ extension MultiplexedFlow where Self: ~Copyable {
     }
 
     func deliverConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
+        let handshakeEvent = parentProtocol.protocolEstablishmentReport.map {
+            NetworkProtocolEvent.handshakeComplete($0.tagged(.instance(parentProtocol.identifier)))
+        }
         if upper.isDetached {
             // Enqueue pending event instead of delivering immediately.
             // Inbound multiplexed flows may get attached after creation.
             let selfInstance = self.identifier
+            if let handshakeEvent {
+                selfInstance.enqueuePendingEventForUpperProtocol(
+                    event: .networkProtocolEvent(selfInstance, upper.identifier, event: handshakeEvent, { _, _, _ in }),
+                    in: &eventContext
+                )
+            }
             selfInstance.enqueuePendingEventForUpperProtocol(
                 event: .connected(
                     selfInstance,
@@ -1677,6 +1670,14 @@ extension MultiplexedFlow where Self: ~Copyable {
                 in: &eventContext
             )
         } else {
+            if let handshakeEvent {
+                upper.deliverNetworkProtocolEvent(
+                    originalInstance: self.identifier,
+                    selfInstance: self.identifier,
+                    event: handshakeEvent,
+                    in: &eventContext
+                )
+            }
             // Deliver connected event *followed by* any events which were buffered while detached
             upper.deliverConnectedEvent(from: self.identifier, in: &eventContext)
             drainQueuedEventsForUpperProtocol(in: &eventContext)

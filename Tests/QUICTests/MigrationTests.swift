@@ -145,8 +145,8 @@ final class MigrationTests: XCTestCase {
             }
         }
         if validated {
-            path.changeState(to: .probing)
-            path.changeState(to: .validated)
+            path.state = .probing
+            path.state = .validated
         }
         // The path is a framework protocol, so it is bound through the base form of the
         // harness's linkage.
@@ -236,7 +236,7 @@ final class MigrationTests: XCTestCase {
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
             let probedPath = self.makePath(dcid: Self.otherCID, sequenceNumber: 3, validated: false)
-            self.connection.testPath(probedPath) { $0.changeState(to: .probing) }
+            self.connection.testPath(probedPath) { $0.state = .probing }
             self.connection.currentPathID = oldPath
             for _ in [oldPath, newPath, probedPath] {}
 
@@ -587,7 +587,7 @@ final class MigrationTests: XCTestCase {
         let expectation = XCTestExpectation()
         connection.context.async {
             let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
-            self.connection.testPath(path) { $0.changeState(to: .probing) }
+            self.connection.testPath(path) { $0.state = .probing }
             self.connection.currentPathID = path
             XCTAssertNil(
                 self.connection.testPath(path) {
@@ -739,7 +739,7 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.testPath(newPath) { $0.changeState(to: .probing) }
+            self.connection.testPath(newPath) { $0.state = .probing }
             self.connection.currentPathID = oldPath
             self.connection.testPath(newPath) { $0.pathIsPrimary = true }
 
@@ -829,8 +829,8 @@ final class MigrationTests: XCTestCase {
             self.becomeServer()
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let failedPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.testPath(failedPath) { $0.changeState(to: .probing) }
-            self.connection.testPath(failedPath) { $0.changeState(to: .unreachable) }
+            self.connection.testPath(failedPath) { $0.state = .probing }
+            self.connection.testPath(failedPath) { $0.state = .unreachable }
             self.connection.currentPathID = currentPath
 
             self.connection.receivingPathID = failedPath
@@ -1075,7 +1075,7 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
             self.connection.currentPathID = path
-            self.connection.testPath(path) { $0.changeState(to: .probing) }
+            self.connection.testPath(path) { $0.state = .probing }
 
             // Send the first challenge, which sets the next challenge deadline and arms the timer.
             let base = NetworkClock.Instant.testBase
@@ -1125,7 +1125,7 @@ final class MigrationTests: XCTestCase {
             let deadPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
             let standbyPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
             self.connection.currentPathID = deadPath
-            self.connection.testPath(deadPath) { $0.changeState(to: .probing) }
+            self.connection.testPath(deadPath) { $0.state = .probing }
             self.connection.testPath(standbyPath) { $0.pathIsPrimary = true }
 
             // Use up every challenge the path may send, and then ask for one more, which is what the send
@@ -1215,24 +1215,22 @@ final class MigrationTests: XCTestCase {
                 let cid = Self.cid(UInt8(sequence))
                 let path = self.makePath(dcid: cid, sequenceNumber: sequence, validated: false)
                 if transition.from != .cidAssigned {
-                    self.connection.testPath(path) { $0.changeState(to: .probing) }
+                    self.connection.testPath(path) { $0.state = .probing }
                 }
                 if transition.from == .validated {
-                    self.connection.testPath(path) { $0.changeState(to: .validated) }
+                    self.connection.testPath(path) { $0.state = .validated }
                 }
                 XCTAssertEqual(self.connection.testPath(path) { $0.state }, transition.from)
                 XCTAssertTrue(self.queuedRetirements.isEmpty, "Retired a CID while holding it")
 
-                self.connection.testPath(path) { $0.changeState(to: transition.to) }
+                self.connection.testPath(path) { $0.state = transition.to }
                 let label = "\(transition.from) -> \(transition.to)"
                 XCTAssertEqual(self.queuedRetirements, [sequence], label)
                 XCTAssertNil(self.connection.testPath(path) { $0.dcid }, label)
                 XCTAssertNil(self.connection.remoteCIDs.find(connectionID: cid), label)
 
                 // The CID is gone, so leaving the next state retires nothing more.
-                if transition.to.isValidStateChange(to: .routeUnavailable) {
-                    self.connection.testPath(path) { $0.changeState(to: .routeUnavailable) }
-                }
+                self.connection.testPath(path) { $0.state = .routeUnavailable }
                 XCTAssertEqual(self.queuedRetirements, [sequence], label)
 
                 self.connection.queuedRetireConnectionIDSequences.removeAll()
@@ -1251,7 +1249,7 @@ final class MigrationTests: XCTestCase {
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let path = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
             self.connection.currentPathID = currentPath
-            self.connection.testPath(path) { $0.changeState(to: .probing) }
+            self.connection.testPath(path) { $0.state = .probing }
 
             var now = self.connection.now
             for _ in 0...QUICPath.maximumPendingChallenges {

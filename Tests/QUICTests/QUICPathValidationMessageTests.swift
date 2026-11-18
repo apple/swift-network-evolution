@@ -70,7 +70,7 @@ class QUICPathValidationMessageTests: XCTestCase {
         XCTAssertEqual(connection.testPath(pathID) { $0.pendingOutboundChallenges.count }, 0)
 
         // challenge received on a path that is validated, should just generate response
-        connection.testPath(pathID) { $0.changeState(to: .validated) }
+        connection.testPath(pathID) { $0.state = .validated }
         let challenge2 = FramePathChallenge(data: 2)
         let _ = connection.context.onQueue {
             connection.fromExternal { eventContext in
