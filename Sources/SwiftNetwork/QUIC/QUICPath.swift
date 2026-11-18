@@ -211,8 +211,7 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
         }
         var rawValue: UInt16
         static let pacePackets = Flags(rawValue: 1 << 0)
-        static let isInitialPath = Flags(rawValue: 1 << 1)
-        static let isPrimaryPath = Flags(rawValue: 1 << 2)
+        static let isInitial = Flags(rawValue: 1 << 1)
         static let spinValue = Flags(rawValue: 1 << 3)
         static let useSlowProbeInterval = Flags(rawValue: 1 << 4)
         static let isPreferredAddress = Flags(rawValue: 1 << 5)
@@ -228,13 +227,9 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
         get { flags.contains(.pacePackets) }
         set { if newValue { flags.insert(.pacePackets) } else { flags.remove(.pacePackets) } }
     }
-    var isInitialPath: Bool {
-        get { flags.contains(.isInitialPath) }
-        set { if newValue { flags.insert(.isInitialPath) } else { flags.remove(.isInitialPath) } }
-    }
-    var isPrimaryPath: Bool {
-        get { flags.contains(.isPrimaryPath) }
-        set { if newValue { flags.insert(.isPrimaryPath) } else { flags.remove(.isPrimaryPath) } }
+    var isInitial: Bool {
+        get { flags.contains(.isInitial) }
+        set { if newValue { flags.insert(.isInitial) } else { flags.remove(.isInitial) } }
     }
     var spinValue: Bool {
         get { flags.contains(.spinValue) }
@@ -248,7 +243,6 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
         get { flags.contains(.isPreferredAddress) }
         set { if newValue { flags.insert(.isPreferredAddress) } else { flags.remove(.isPreferredAddress) } }
     }
-
     var isLossy: Bool {
         get { flags.contains(.isLossy) }
         set { if newValue { flags.insert(.isLossy) } else { flags.remove(.isLossy) } }
@@ -298,6 +292,10 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
     public var pathIsPrimary: Bool {
         @inline(always) get { base.pathIsPrimary }
         @inline(always) set { base.pathIsPrimary = newValue }
+    }
+    public var pathIsInjected: Bool {
+        @inline(always) get { base.pathIsInjected }
+        @inline(always) set { base.pathIsInjected = newValue }
     }
     public var pathHasMigrationInfo: Bool {
         @inline(always) get { base.pathHasMigrationInfo }
@@ -389,7 +387,7 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
         isInitial: Bool,
         inheriting: Inheritance = .none
     ) {
-        self.isInitialPath = isInitial
+        self.isInitial = isInitial
         self.priority = priority
         self.interface = interface
 
@@ -478,7 +476,7 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
             PMTUDState.minimumMTU - (IPProtocol.ipv6HeaderLength + UDPProtocol.headerLength)
 
         self.mss = parentProtocol.initialMSS
-        if !self.isInitialPath, let interface, let shared = sharedInterfaceMSS {
+        if !self.isInitial, let interface, let shared = sharedInterfaceMSS {
             // Another path on the same interface has calculated another MSS
             self.mss = shared.mss
             log.debug(

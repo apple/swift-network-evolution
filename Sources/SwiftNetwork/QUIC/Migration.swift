@@ -354,7 +354,7 @@ extension QUICConnection {
     public func handlePathChanged(
         path pathID: MultiplexingPathIdentifier,
         event: MultiplexingPathEvent,
-        isPrimary: Bool,
+        pathProperties: MultiplexingPathProperties,
         in eventContext: inout NetworkContext.EventContext
     ) {
         // A path that is gone is marked unavailable whether or not active migration is enabled
@@ -363,7 +363,7 @@ extension QUICConnection {
             return
         }
 
-        log.debug("Path \(pathID.description) changed to \(event), primary: \(isPrimary)")
+        log.debug("Path \(pathID.description) changed to \(event), primary: \(pathProperties.isPrimary)")
 
         guard hasPath(pathID) else {
             log.error("Path \(pathID.description) not found, ignoring")
@@ -575,12 +575,14 @@ extension QUICConnection {
         }
     }
 
+    // A client keeps the paths that come from the system and only tears down injected ones. A
+    // server's paths follow the peer, so it has no use for unusable ones.
     private func tearDownUnusablePaths(in eventContext: inout NetworkContext.EventContext) {
         var unusablePathIDs: [MultiplexingPathIdentifier] = []
         let currentPathID = self.currentPathID
+        let isServer = self.isServer
         applyToAllPaths { (path: inout QUICPath) in
-            if path.state.isUnusable, path.pathIdentifier != currentPathID {
-                // TODO: paths that come from the system and are unreachable CANNOT be torn down
+            if path.state.isUnusable, path.pathIdentifier != currentPathID, isServer || path.pathIsInjected {
                 unusablePathIDs.append(path.pathIdentifier)
             }
         }

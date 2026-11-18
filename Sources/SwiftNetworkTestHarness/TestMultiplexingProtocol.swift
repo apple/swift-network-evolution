@@ -143,6 +143,10 @@ public struct TestDatagramPath: ~Copyable, MultiplexingDatapathPath, AutomaticLo
         get { base.pathIsPrimary }
         set { base.pathIsPrimary = newValue }
     }
+    public var pathIsInjected: Bool {
+        get { base.pathIsInjected }
+        set { base.pathIsInjected = newValue }
+    }
     public var pathHasMigrationInfo: Bool {
         get { base.pathHasMigrationInfo }
         set { base.pathHasMigrationInfo = newValue }
@@ -374,6 +378,20 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
 
     public func handleDisconnectedEvent(path: MultiplexingPathIdentifier, error: NetworkError?) {
         log.debug("Multiplexing protocol disconnected connected for path \(path.description)")
+    }
+
+    // Every path change reported to the protocol, in order.
+    public var pathChanges:
+        [(path: MultiplexingPathIdentifier, event: MultiplexingPathEvent, properties: MultiplexingPathProperties)] = []
+
+    public func handlePathChanged(
+        path pathID: MultiplexingPathIdentifier,
+        event: MultiplexingPathEvent,
+        pathProperties: MultiplexingPathProperties,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        log.debug("Multiplexing protocol path \(pathID.description) changed to \(event)")
+        pathChanges.append((pathID, event, pathProperties))
     }
 
     public func triggerNewFlowCreation() {

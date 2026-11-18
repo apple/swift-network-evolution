@@ -105,20 +105,23 @@ final class MigrationTests: XCTestCase {
     // registered in `remoteCIDs` so it can be retired. `validated` drives it to the
     // validated state so `migrate(to:)` will accept it. Without `assignCID` the path stays in
     // `routeEstablished` and its CID is left in `remoteCIDs` for the connection to hand out, unless
-    // `registerCID` is false, in which case the peer never issued it.
+    // `registerCID` is false, in which case the peer never issued it. Paths are injected unless
+    // `injected` is false, in which case they stand for paths that come from the system.
     private func makePath(
         dcid: QUICConnectionID,
         sequenceNumber: UInt64,
         validated: Bool,
         assignCID: Bool = true,
-        registerCID: Bool = true
+        registerCID: Bool = true,
+        injected: Bool = true
     ) -> MultiplexingPathIdentifier {
         makePathWithLower(
             dcid: dcid,
             sequenceNumber: sequenceNumber,
             validated: validated,
             assignCID: assignCID,
-            registerCID: registerCID
+            registerCID: registerCID,
+            injected: injected
         ).path
     }
 
@@ -127,7 +130,8 @@ final class MigrationTests: XCTestCase {
         sequenceNumber: UInt64,
         validated: Bool,
         assignCID: Bool = true,
-        registerCID: Bool = true
+        registerCID: Bool = true,
+        injected: Bool = true
     ) -> (path: MultiplexingPathIdentifier, lower: DatagramLowerHarness<TestDatagramLinkageFamily>) {
         let (lower, lowerLinkage) = storage.createDatagramLowerHarness(
             identifier: "\(sequenceNumber)",
@@ -139,6 +143,8 @@ final class MigrationTests: XCTestCase {
         // Every caller builds its paths from inside `context.async`, so this runs on the context.
         var path = QUICPath.makeFromExternalTest(parent: self.connection)
         path.set(interface: nil, priority: 1, isInitial: true)  // -> .routeEstablished
+        // A client tears down only injected paths once they become unusable.
+        path.pathIsInjected = injected
         if assignCID {
             connection.fromExternal { eventContext in
                 path.assignDCID(dcid, in: &eventContext)  // -> .cidAssigned (open for sending)
@@ -642,7 +648,7 @@ final class MigrationTests: XCTestCase {
                 self.connection.handlePathChanged(
                     path: newPath,
                     event: .established,
-                    isPrimary: true,
+                    pathProperties: MultiplexingPathProperties(isPrimary: true, isInjected: true),
                     in: &eventContext
                 )
             }
@@ -681,7 +687,7 @@ final class MigrationTests: XCTestCase {
                 self.connection.handlePathChanged(
                     path: newPath,
                     event: .established,
-                    isPrimary: true,
+                    pathProperties: MultiplexingPathProperties(isPrimary: true, isInjected: true),
                     in: &eventContext
                 )
             }
@@ -769,7 +775,7 @@ final class MigrationTests: XCTestCase {
             self.connection.handlePathChanged(
                 path: otherPath,
                 event: .unavailable,
-                isPrimary: false,
+                pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: true),
                 in: &eventContext
             )
         }
@@ -780,7 +786,7 @@ final class MigrationTests: XCTestCase {
             self.connection.handlePathChanged(
                 path: currentPath,
                 event: .unavailable,
-                isPrimary: false,
+                pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: true),
                 in: &eventContext
             )
         }
@@ -818,6 +824,134 @@ final class MigrationTests: XCTestCase {
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
+    }
+
+    // Paths that come from the system stay with the connection when they become unusable; only
+    // injected paths are torn down.
+    func testClientKeepsSystemPathThatGoesAway() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            let systemPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true, injected: false)
+            let injectedPath = self.makePath(dcid: Self.otherCID, sequenceNumber: 3, validated: true)
+            self.connection.currentPathID = currentPath
+
+            for path in [systemPath, injectedPath] {
+                self.sendPathEvent(.unavailable, on: path)
+            }
+
+            XCTAssertTrue(self.connection.hasPath(systemPath), "System path torn down")
+            XCTAssertEqual(self.connection.testPath(systemPath) { $0.state }, .routeUnavailable)
+            XCTAssertFalse(self.connection.hasPath(injectedPath), "Injected path kept")
+            XCTAssertEqual(self.connection.currentPathID, currentPath)
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // A system path that runs out of probes is reported by the migration timer like any other,
+    // but is not torn down.
+    func testClientKeepsSystemPathThatRunsOutOfProbes() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            let systemPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false, injected: false)
+            self.connection.currentPathID = currentPath
+            self.connection.testPath(systemPath) { $0.state = .probing }
+
+            var now = self.connection.now
+            for _ in 0...QUICPath.maximumPendingChallenges {
+                now = now.advanced(by: .seconds(60))
+                var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+                self.connection.fromExternal { eventContext in
+                    self.connection.testPath(systemPath) {
+                        $0.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    }
+                }
+            }
+            XCTAssertEqual(self.connection.testPath(systemPath) { $0.state }, .unreachable)
+
+            self.connection.fromExternal { eventContext in
+                self.connection.migration.timerFired(at: now, connection: self.connection, in: &eventContext)
+            }
+            XCTAssertTrue(self.connection.hasPath(systemPath), "System path torn down")
+            XCTAssertEqual(self.connection.currentPathID, currentPath)
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // A path that failed validation is not brought back by its route being announced again.
+    func testUnreachablePathIgnoresAvailableEvent() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            let systemPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true, injected: false)
+            self.connection.currentPathID = currentPath
+            self.connection.testPath(systemPath) { $0.state = .unreachable }
+
+            self.sendPathEvent(.available(local: nil, remote: nil, path: nil, parameters: nil), on: systemPath)
+            XCTAssertEqual(self.connection.testPath(systemPath) { $0.state }, .unreachable)
+            XCTAssertTrue(self.connection.hasPath(systemPath), "System path torn down")
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // A server tears down unusable paths whether or not they were injected.
+    func testServerTearsDownSystemPathThatGoesAway() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            self.becomeServer()
+            let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            let systemPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true, injected: false)
+            self.connection.currentPathID = currentPath
+
+            self.sendPathEvent(.unavailable, on: systemPath)
+            XCTAssertFalse(self.connection.hasPath(systemPath), "System path kept")
+            XCTAssertEqual(self.connection.currentPathID, currentPath)
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    func testPathPropertiesReflectPath() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true, injected: false)
+            XCTAssertEqual(
+                self.connection.testPath(path) { $0.pathProperties },
+                MultiplexingPathProperties(isPrimary: false, isInjected: false)
+            )
+            self.connection.testPath(path) { (path: inout QUICPath) in
+                path.pathIsPrimary = true
+                path.pathIsInjected = true
+            }
+            XCTAssertEqual(
+                self.connection.testPath(path) { $0.pathProperties },
+                MultiplexingPathProperties(isPrimary: true, isInjected: true)
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // Reports `event` on `path` the way the path itself does.
+    private func sendPathEvent(_ event: MultiplexingPathEvent, on path: MultiplexingPathIdentifier) {
+        let properties = connection.testPath(path) { $0.pathProperties }
+        connection.fromExternal { eventContext in
+            self.connection.handlePathChanged(
+                path: path,
+                event: event,
+                pathProperties: properties,
+                in: &eventContext
+            )
+        }
     }
 
     // The peer sends a non-probing packet on a path that already failed validation. The path is
@@ -973,7 +1107,7 @@ final class MigrationTests: XCTestCase {
                 self.connection.handlePathChanged(
                     path: path,
                     event: .unavailable,
-                    isPrimary: false,
+                    pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: true),
                     in: &eventContext
                 )
             }
@@ -1027,7 +1161,7 @@ final class MigrationTests: XCTestCase {
                 self.connection.handlePathChanged(
                     path: newPath,
                     event: .established,
-                    isPrimary: true,
+                    pathProperties: MultiplexingPathProperties(isPrimary: true, isInjected: true),
                     in: &eventContext
                 )
             }
@@ -1053,7 +1187,7 @@ final class MigrationTests: XCTestCase {
                 self.connection.handlePathChanged(
                     path: lostPath,
                     event: .unavailable,
-                    isPrimary: false,
+                    pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: true),
                     in: &eventContext
                 )
             }
@@ -1337,7 +1471,7 @@ final class MigrationTests: XCTestCase {
                 self.connection.handlePathChanged(
                     path: wifi,
                     event: .unavailable,
-                    isPrimary: false,
+                    pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: true),
                     in: &eventContext
                 )
             }
