@@ -2964,7 +2964,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         if case .allFlows = flowID {
             let metadata = QUICProtocol.metadata()
-            metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
+            metadata.mutablePerProtocolMetadata { metadata in
+                metadata?.replaceConnectionMetadata(self.connectionMetadata)
+            }
             return metadata as? ProtocolMetadata<P>
         }
 
@@ -2973,32 +2975,35 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         if let datagramInfo {
             let metadata = QUICProtocol.metadata()
-            metadata.perProtocolMetadata?.datagramFlowID = datagramInfo.flowID
-            metadata.perProtocolMetadata?.usableDatagramFrameSize = UInt16(
-                datagramInfo.usableSize
-            )
-            metadata.perProtocolMetadata?.isDatagramFlow = true
-            metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
+            metadata.mutablePerProtocolMetadata { metadata in
+                metadata?.datagramFlowID = datagramInfo.flowID
+                metadata?.usableDatagramFrameSize = UInt16(
+                    datagramInfo.usableSize
+                )
+                metadata?.isDatagramFlow = true
+                metadata?.replaceConnectionMetadata(self.connectionMetadata)
+            }
             return metadata as? ProtocolMetadata<P>
         }
 
         let streamInfo = withFlow(flowID) {
             (
                 stream: inout Flow
-            ) -> (metadata: QUICStreamProtocol.QUICStreamMetadata, id: QUICStreamID, type: QUICStreamType?)? in
+            ) -> (metadata: ProtocolMetadata<QUICStreamProtocol>, id: QUICStreamID, type: QUICStreamType?)? in
             guard let streamID = stream.streamID else { return nil }
-            return (stream.streamMetadata, streamID, stream.streamType)
+            return (stream.streamMetadata(), streamID, stream.streamType)
         }
         guard let streamInfo = streamInfo ?? nil else {
             return nil
         }
 
-        let metadata = QUICProtocol.metadata()
-        metadata.perProtocolMetadata = streamInfo.metadata
-        metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
-        metadata.perProtocolMetadata?.streamID = streamInfo.id.value
-        if let streamType = streamInfo.type {
-            metadata.perProtocolMetadata?.streamType = streamType
+        let metadata = streamInfo.metadata
+        metadata.mutablePerProtocolMetadata { metadata in
+            metadata?.replaceConnectionMetadata(self.connectionMetadata)
+            metadata?.streamID = streamInfo.id.value
+            if let streamType = streamInfo.type {
+                metadata?.streamType = streamType
+            }
         }
         return metadata as? ProtocolMetadata<P>
     }
@@ -6872,16 +6877,12 @@ extension QUICConnection {
             // The stream is fully set up before it joins the flow table, where it can only be
             // borrowed from then on.
             let newStreamInstance = newStream.identifier
-            let newStreamMetadata = newStream.streamMetadata
+            let newStreamMetadata = newStream.streamMetadata(messageIdentifier: inboundStreamMessageIdentifier)
             insertFlow(newStream, for: newFlowIdentifier)
 
             // The message identifier names a message; a stream's metadata is not one, so inbound
             // streams share one, which saves the locked counter a fresh insecure identifier takes.
-            let abstractMetadata: AbstractProtocolMetadata = ProtocolMetadata<QUICStreamProtocol>(
-                protocolIdentifier: QUICStreamProtocol.identifier,
-                perProtocolMetadata: newStreamMetadata,
-                messageIdentifier: inboundStreamMessageIdentifier
-            )
+            let abstractMetadata: AbstractProtocolMetadata = newStreamMetadata
             deliverNewInboundFlowEvent(
                 newStreamInstance,
                 flowMetadata: abstractMetadata,
@@ -7053,10 +7054,12 @@ extension QUICConnection {
                 newFlow.updateUsableDatagramFrameSize(connection: self, path: path)
             }
             let datagramMetadata = QUICProtocol.metadata()
-            datagramMetadata.perProtocolMetadata?.datagramFlowID = newFlow.flowID
-            datagramMetadata.perProtocolMetadata?.isDatagramFlow = true
-            datagramMetadata.perProtocolMetadata?.usableDatagramFrameSize = UInt16(newFlow.usableDatagramSize)
-            datagramMetadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
+            datagramMetadata.mutablePerProtocolMetadata { metadata in
+                metadata?.datagramFlowID = newFlow.flowID
+                metadata?.isDatagramFlow = true
+                metadata?.usableDatagramFrameSize = UInt16(newFlow.usableDatagramSize)
+                metadata?.replaceConnectionMetadata(self.connectionMetadata)
+            }
             newFlow.log.debug("Created inbound datagram flow for \(newFlowIdentifier)")
             insertSecondaryFlow(newFlow, for: newFlowIdentifier)
             secondaryInboundFlowLinkage.deliverNewInboundFlowEvent(
