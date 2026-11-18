@@ -67,11 +67,30 @@ extension XCTestCase {
         var upperHarness: StreamUpperHarness<TestStreamLinkageFamily>?
         let setUp = XCTestExpectation(description: "connection set up with a pending stream")
         connection.context.async {
+            // A stream opened while the handshake is in flight has no stream ID yet, so it is one
+            // of the pending streams that completion has to ready. Attaching the first upper protocol
+            // is what sets the connection up, as it does in a real stack.
+            let (harness, harnessLinkage) = storage.createStreamUpperHarness(
+                identifier: "Client",
+                local: local,
+                remote: remote,
+                parameters: parameters,
+                path: path,
+                context: .implicitContext
+            )
+            upperHarness = harness
             do {
-                try connection.setup(remote: remote, local: local, parameters: parameters, path: path)
+                try streamListener.invokeAttachUpperProtocolToNewFlow(
+                    harnessLinkage,
+                    remote: remote,
+                    local: local,
+                    parameters: parameters,
+                    path: path
+                )
             } catch {
-                XCTFail("Failed to set up the connection: \(error)")
+                XCTFail("Failed to attach an upper harness to a new flow: \(error)")
             }
+
             // What `crypto.start` wires up, without starting a handshake: the events under test only
             // need the parent reference, but closing the connection tears the TLS linkage down, so
             // that has to be bound too.
@@ -123,29 +142,6 @@ extension XCTestCase {
             connection.currentPath = quicPath
             connection.multiplexingPaths[quicPath.pathIdentifier] = quicPath
 
-            // A stream opened while the handshake is in flight has no stream ID yet, so it is one
-            // of the pending streams that completion has to ready.
-            let (harness, harnessLinkage) = storage.createStreamUpperHarness(
-                identifier: "Client",
-                local: local,
-                remote: remote,
-                parameters: parameters,
-                path: path,
-                context: .implicitContext
-            )
-            upperHarness = harness
-            do {
-                try streamListener.invokeAttachUpperProtocolToNewFlow(
-                    harnessLinkage,
-                    remote: remote,
-                    local: local,
-                    parameters: parameters,
-                    path: path
-                )
-            } catch {
-                XCTFail("Failed to attach an upper harness to a new flow: \(error)")
-            }
-
             // The peer's transport parameters arrive with its handshake data, so the connection
             // has them before verification finishes.
             var peerTransportParameters = TransportParameters(logPrefixer: LogPrefixer())
@@ -163,6 +159,10 @@ extension XCTestCase {
                     in: &eventContext
                 )
             }
+            // The client's Initial has arrived and the handshake keys are installed, as they are
+            // by the time verification can finish.
+            connection.state = .initialReceived
+            connection.updateSecretForHandshakeLevel()
             setUp.fulfill()
         }
         wait(for: [setUp], timeout: 5.0)
