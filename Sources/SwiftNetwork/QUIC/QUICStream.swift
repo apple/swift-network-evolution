@@ -1299,6 +1299,8 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
 
 @available(Network 0.1.0, *)
 extension QUICStreamInstance {
+    public var parentAnnouncesHandshake: Bool { true }
+
     static func isValid(isServer: Bool, streamID: QUICStreamID) -> Bool {
         if !isServer && streamID.isClientInitiated {
             // Note that this is client reasoning about a peer streamID

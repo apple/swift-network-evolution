@@ -162,7 +162,7 @@ public struct NetworkProtocolEvent: Sendable, Equatable, CustomStringConvertible
         case .linkCongestion(let info):
             return
                 "Link Congestion (congestion: \(info.congestionCount), CE: \(info.congestionExperiencedCount), packets: \(info.packetCount))"
-        case .handshakeComplete(let report): return "Handshake Complete (\(report.protocolIdentifier))"
+        case .handshakeComplete(let report): return "Handshake Complete (\(report.protocolIdentifier.name))"
         case .doNotReuse: return "Do Not Reuse"
         case .delayStartChildFlow(let delay): return delay ? "Delay Start Child Flow" : "Start Child Flow"
         case .viabilityChanged(let viable):

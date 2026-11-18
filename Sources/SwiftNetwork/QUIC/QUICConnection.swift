@@ -5506,7 +5506,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         // This function should only be called when conn state changed to connected
         // Setup all streams and tell all flows that they are ready
-        readyAllOutboundStreams(in: &eventContext)
+        readyAllOutboundStreams(announcingHandshake: true, in: &eventContext)
 
         log.notice("Delivering connected")
         deliverConnectedEvent(flow: .allFlows, in: &eventContext)
@@ -6700,9 +6700,15 @@ extension QUICConnection {
 
     // This function should only be called when the connection is ready,
     // or we are sending early data
-    func readyAllOutboundStreams(in eventContext: inout NetworkContext.EventContext) {
+    func readyAllOutboundStreams(
+        announcingHandshake: Bool,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         applyToAllStreams(in: &eventContext) { (stream: inout Flow, eventContext: inout NetworkContext.EventContext) in
             let flowID = stream.flowIdentifier
+            if announcingHandshake {
+                stream.deliverHandshakeComplete(in: &eventContext)
+            }
             if stream.sendState == .invalid && stream.receiveState == .invalid {
                 if !readyPendingStream(&stream, flowID: flowID, in: &eventContext) {
                     log.error("Could not ready pending stream")
