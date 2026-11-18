@@ -936,7 +936,8 @@ extension SwiftNetworkSocketTests {
     private func connectedStreamHarness(
         to remote: Endpoint,
         storage: TestNetworkProtocolStorage,
-        parameters: Parameters
+        parameters: Parameters,
+        prepare: ((SocketStreamProtocol) -> Void)? = nil
     ) throws -> StreamUpperHarness<TestStreamLinkageFamily> {
         let context = parameters.context
         let path = PathProperties(parameters: parameters)
@@ -950,9 +951,15 @@ extension SwiftNetworkSocketTests {
                 parameters: parameters,
                 path: path
             )
+            let lower = storage.createTestSocketStreamInstance()
+            if let prepare {
+                storage.socketStreamInstances.forEachElement { instance in
+                    if instance.identifier == lower.identifier { prepare(instance) }
+                }
+            }
             do {
                 try TestInboundStreamLinkage(harness: upper).invokeAttachLowerProtocol(
-                    storage.createTestSocketStreamInstance(),
+                    lower,
                     remote: remote,
                     local: local,
                     parameters: parameters,
@@ -981,7 +988,8 @@ extension SwiftNetworkSocketTests {
         local: Endpoint,
         remote: Endpoint,
         storage: TestNetworkProtocolStorage,
-        parameters: Parameters
+        parameters: Parameters,
+        prepare: ((SocketDatagramProtocol) -> Void)? = nil
     ) throws -> DatagramUpperHarness<TestDatagramLinkageFamily> {
         let context = parameters.context
         let path = PathProperties(parameters: parameters)
@@ -994,9 +1002,15 @@ extension SwiftNetworkSocketTests {
                 parameters: parameters,
                 path: path
             )
+            let lower = storage.createTestSocketDatagramInstance()
+            if let prepare {
+                storage.socketDatagramInstances.forEachElement { instance in
+                    if instance.identifier == lower.identifier { prepare(instance) }
+                }
+            }
             do {
                 try TestInboundDatagramLinkage(harness: upper).invokeAttachLowerProtocol(
-                    storage.createTestSocketDatagramInstance(),
+                    lower,
                     remote: remote,
                     local: local,
                     parameters: parameters,
@@ -2425,6 +2439,419 @@ extension SwiftNetworkSocketTests {
         var buffer = [UInt8](repeating: 0, count: 16)
         XCTAssertEqual(read(peer.fd, &buffer, buffer.count), 3)
         XCTAssertEqual(Array(buffer.prefix(3)), [7, 8, 9])
+    }
+
+    // MARK: - Connected endpoint
+
+    /// The stream protocol reports the local endpoint the kernel assigned once it connects.
+    func testStreamSocketReportsTheConnectedLocalEndpoint() throws {
+        let listener = loopbackListener()
+        defer { close(listener.fd) }
+        let parameters = Parameters()
+        let context = parameters.context
+        let storage = TestNetworkProtocolStorage(context: context)
+        defer { onContext(context) { storage.releaseHeldInstances() } }
+        var socketProtocol: SocketStreamProtocol?
+        let harness = try connectedStreamHarness(
+            to: Endpoint(address: IPv4Address.loopback, port: listener.port),
+            storage: storage,
+            parameters: parameters
+        ) { socketProtocol = $0 }
+        defer { stopAndTearDown(harness, on: context) }
+        let accepted = acceptWithTimeout(listener.fd)
+        XCTAssertGreaterThanOrEqual(accepted, 0)
+        defer { close(accepted) }
+
+        let reported = onContext(context) { socketProtocol?.connectedLocalEndpoint }
+        XCTAssertNotNil(reported)
+        XCTAssertEqual(reported?.port, peerPort(of: accepted))
+    }
+
+    // MARK: - Adopting and resetting sockets
+
+    /// The stream protocol adopts a socket that's already connected, and carries data both ways
+    /// on it.
+    func testStreamSocketAdoptsAConnectedSocket() throws {
+        let listener = loopbackListener()
+        defer { close(listener.fd) }
+        let client = socket(AF_INET, SOCK_STREAM, 0)
+        var address = loopbackAddress(port: listener.port)
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(connected, 0)
+        let accepted = acceptWithTimeout(listener.fd)
+        XCTAssertGreaterThanOrEqual(accepted, 0)
+        defer { close(accepted) }
+        setReceiveTimeout(accepted)
+
+        let parameters = Parameters()
+        let context = parameters.context
+        let storage = TestNetworkProtocolStorage(context: context)
+        defer { onContext(context) { storage.releaseHeldInstances() } }
+        // The protocol owns the client socket from here, and closes it.
+        let harness = try connectedStreamHarness(
+            to: Endpoint(address: IPv4Address.loopback, port: listener.port),
+            storage: storage,
+            parameters: parameters
+        ) { $0.adoptConnectedSocket(client) }
+        defer { stopAndTearDown(harness, on: context) }
+
+        onContext(context) { XCTAssertTrue(harness.write([1, 2, 3])) }
+        var buffer = [UInt8](repeating: 0, count: 16)
+        XCTAssertEqual(read(accepted, &buffer, buffer.count), 3)
+        XCTAssertEqual(Array(buffer.prefix(3)), [1, 2, 3])
+
+        var reply: [UInt8] = [4, 5]
+        XCTAssertEqual(write(accepted, &reply, reply.count), 2)
+        var received: [UInt8] = []
+        let deadline = Date().addingTimeInterval(5)
+        while received.count < 2, Date() < deadline {
+            received += onContext(context) { harness.read() } ?? []
+            if received.count < 2 { Thread.sleep(forTimeInterval: 0.01) }
+        }
+        XCTAssertEqual(received, [4, 5])
+    }
+
+    /// A reset closes the stream protocol's socket and opens a new one, which connects again from
+    /// a port the kernel picks.
+    func testStreamSocketResetConnectsAgainFromANewPort() throws {
+        let listener = loopbackListener()
+        defer { close(listener.fd) }
+        let parameters = Parameters()
+        let context = parameters.context
+        let storage = TestNetworkProtocolStorage(context: context)
+        defer { onContext(context) { storage.releaseHeldInstances() } }
+        var socketProtocol: SocketStreamProtocol?
+        let harness = try connectedStreamHarness(
+            to: Endpoint(address: IPv4Address.loopback, port: listener.port),
+            storage: storage,
+            parameters: parameters
+        ) { socketProtocol = $0 }
+        defer { stopAndTearDown(harness, on: context) }
+        let first = acceptWithTimeout(listener.fd)
+        XCTAssertGreaterThanOrEqual(first, 0)
+        defer { close(first) }
+        let firstPort = try XCTUnwrap(peerPort(of: first))
+
+        let instance = try XCTUnwrap(socketProtocol)
+        onContext(context) {
+            do {
+                try instance.reset()
+                instance.fromExternal { eventContext in
+                    instance.connect(in: &eventContext)
+                }
+            } catch {
+                XCTFail("reset failed: \(error)")
+            }
+        }
+        let second = acceptWithTimeout(listener.fd)
+        XCTAssertGreaterThanOrEqual(second, 0)
+        defer { close(second) }
+        let secondPort = try XCTUnwrap(peerPort(of: second))
+        XCTAssertNotEqual(secondPort, firstPort)
+        let deadline = Date().addingTimeInterval(5)
+        while onContext(context, { instance.connectedLocalEndpoint?.port }) != secondPort, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(onContext(context) { instance.connectedLocalEndpoint?.port }, secondPort)
+
+        // The new socket's sources watch the new socket, so data flows both ways on it.
+        setReceiveTimeout(second)
+        onContext(context) { XCTAssertTrue(harness.write([1, 2, 3])) }
+        var buffer = [UInt8](repeating: 0, count: 16)
+        XCTAssertEqual(read(second, &buffer, buffer.count), 3)
+        XCTAssertEqual(Array(buffer.prefix(3)), [1, 2, 3])
+        var reply: [UInt8] = [4, 5]
+        XCTAssertEqual(write(second, &reply, reply.count), 2)
+        var received: [UInt8] = []
+        let readDeadline = Date().addingTimeInterval(5)
+        while received.count < 2, Date() < readDeadline {
+            received += onContext(context) { harness.read() } ?? []
+            if received.count < 2 { Thread.sleep(forTimeInterval: 0.01) }
+        }
+        XCTAssertEqual(received, [4, 5])
+    }
+
+    /// A reset datagram protocol opens a new socket, and data flows both ways on it.
+    func testDatagramSocketResetCarriesDataOnTheNewSocket() throws {
+        let peer = boundUDPPeer()
+        defer { close(peer.fd) }
+        setReceiveTimeout(peer.fd)
+        let parameters = Parameters()
+        let context = parameters.context
+        let storage = TestNetworkProtocolStorage(context: context)
+        defer { onContext(context) { storage.releaseHeldInstances() } }
+        var socketProtocol: SocketDatagramProtocol?
+        let harness = try connectedDatagramHarness(
+            local: Endpoint(address: IPv4Address.loopback, port: 0),
+            remote: Endpoint(address: IPv4Address.loopback, port: peer.port),
+            storage: storage,
+            parameters: parameters
+        ) { socketProtocol = $0 }
+        defer { stopAndTearDown(harness, on: context) }
+        let instance = try XCTUnwrap(socketProtocol)
+        let firstPort = try XCTUnwrap(onContext(context) { instance.connectedLocalEndpoint?.port })
+
+        onContext(context) {
+            do {
+                try instance.reset()
+                instance.fromExternal { eventContext in
+                    instance.connect(in: &eventContext)
+                }
+            } catch {
+                XCTFail("reset failed: \(error)")
+            }
+        }
+        let secondPort = try XCTUnwrap(onContext(context) { instance.connectedLocalEndpoint?.port })
+        XCTAssertNotEqual(secondPort, firstPort)
+
+        onContext(context) { XCTAssertTrue(harness.write([1, 2, 3])) }
+        var buffer = [UInt8](repeating: 0, count: 16)
+        XCTAssertEqual(recv(peer.fd, &buffer, buffer.count, 0), 3)
+        XCTAssertEqual(Array(buffer.prefix(3)), [1, 2, 3])
+
+        var reply: [UInt8] = [4]
+        var address = loopbackAddress(port: secondPort)
+        let sent = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                sendto(peer.fd, &reply, reply.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(sent, 1)
+        var received: [UInt8]? = nil
+        let deadline = Date().addingTimeInterval(5)
+        while received == nil, Date() < deadline {
+            received = onContext(context) { harness.read() }
+            if received == nil { Thread.sleep(forTimeInterval: 0.01) }
+        }
+        XCTAssertEqual(received, [4])
+    }
+
+    /// The datagram protocol delivers the data queued with addInitialInboundData before anything
+    /// it reads from the socket, and counts it in the transfer snapshot.
+    func testDatagramSocketDeliversInitialInboundData() throws {
+        let peer = boundUDPPeer()
+        defer { close(peer.fd) }
+        let parameters = Parameters()
+        let context = parameters.context
+        let storage = TestNetworkProtocolStorage(context: context)
+        defer { onContext(context) { storage.releaseHeldInstances() } }
+        var socketProtocol: SocketDatagramProtocol?
+        let harness = try connectedDatagramHarness(
+            local: Endpoint(address: IPv4Address.loopback, port: 0),
+            remote: Endpoint(address: IPv4Address.loopback, port: peer.port),
+            storage: storage,
+            parameters: parameters
+        ) {
+            $0.addInitialInboundData([9, 8, 7])
+            socketProtocol = $0
+        }
+        defer { stopAndTearDown(harness, on: context) }
+        let instance = try XCTUnwrap(socketProtocol)
+
+        // The peer's datagram reaches the socket before the upper protocol reads anything.
+        let localPort = try XCTUnwrap(onContext(context) { instance.connectedLocalEndpoint?.port })
+        var datagram: [UInt8] = [1]
+        var address = loopbackAddress(port: localPort)
+        let sent = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                sendto(peer.fd, &datagram, datagram.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(sent, 1)
+        Thread.sleep(forTimeInterval: 0.1)
+
+        XCTAssertEqual(onContext(context) { harness.read() }, [9, 8, 7])
+        var second: [UInt8]? = nil
+        let deadline = Date().addingTimeInterval(5)
+        while second == nil, Date() < deadline {
+            second = onContext(context) { harness.read() }
+            if second == nil { Thread.sleep(forTimeInterval: 0.01) }
+        }
+        XCTAssertEqual(second, [1])
+        let snapshot = onContext(context) { () -> DataTransferSnapshot in
+            var snapshot = DataTransferSnapshot()
+            instance.updateDataTransferSnapshot(&snapshot)
+            return snapshot
+        }
+        XCTAssertEqual(snapshot.receivedTransportByteCount, 4)
+        XCTAssertEqual(snapshot.receivedIPPacketCount, 2)
+    }
+
+    /// A datagram read that fails with ECONNREFUSED reports a soft error, and the next datagram
+    /// that arrives clears it. The flow stays up throughout.
+    func testDatagramSocketReportsASoftErrorAndClearsIt() throws {
+        let ports = discoverFreeLoopbackPorts(2)
+        let peerPort = ports[0]
+        let localPort = ports[1]
+        let parameters = Parameters()
+        let context = parameters.context
+        let storage = TestNetworkProtocolStorage(context: context)
+        defer { onContext(context) { storage.releaseHeldInstances() } }
+        let harness = try connectedDatagramHarness(
+            local: Endpoint(address: IPv4Address.loopback, port: localPort),
+            remote: Endpoint(address: IPv4Address.loopback, port: peerPort),
+            storage: storage,
+            parameters: parameters
+        )
+        defer { stopAndTearDown(harness, on: context) }
+
+        func socketEvents() -> [SocketProtocolEvent] {
+            onContext(context) {
+                harness.receivedNetworkProtocolEvents.compactMap { event in
+                    guard case .custom(let custom) = event.internalEvent else { return nil }
+                    return custom as? SocketProtocolEvent
+                }
+            }
+        }
+
+        // Nothing listens on the peer port, so this datagram draws a port unreachable.
+        onContext(context) { XCTAssertTrue(harness.write([1])) }
+        var deadline = Date().addingTimeInterval(2)
+        while !socketEvents().contains(.softError(.posix(ECONNREFUSED))), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        try XCTSkipUnless(
+            socketEvents().contains(.softError(.posix(ECONNREFUSED))),
+            "control: the kernel didn't report ECONNREFUSED: \(socketEvents())"
+        )
+
+        let peer = socket(AF_INET, SOCK_DGRAM, 0)
+        defer { close(peer) }
+        var peerAddress = loopbackAddress(port: peerPort)
+        let bound = withUnsafePointer(to: &peerAddress) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(peer, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(bound, 0)
+        var reply: [UInt8] = [2]
+        var connectionAddress = loopbackAddress(port: localPort)
+        let sent = withUnsafePointer(to: &connectionAddress) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                sendto(peer, &reply, reply.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(sent, 1)
+        deadline = Date().addingTimeInterval(2)
+        while socketEvents().last != .softErrorCleared, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(socketEvents().last, .softErrorCleared)
+    }
+
+    // MARK: - Source addressing
+
+    /// The stream protocol connects from the local endpoint's port. connectx binds it as the
+    /// source address.
+    func testTCPConnectsFromTheLocalEndpointsPort() throws {
+        let server = TCPEchoServer()
+        try server.start()
+        defer { server.stop() }
+        let localPort = discoverFreeLoopbackPort()
+
+        let (connection, cancelled) = readyTCPConnection(
+            server: server,
+            parameters: makeTCPParams(localPort: localPort)
+        )
+        let fd = try XCTUnwrap(descriptors(connectedTo: server.listeningPort, type: SOCK_STREAM).first)
+        XCTAssertEqual(boundPortOfDescriptor(fd), localPort)
+
+        connection.cancel()
+        XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 5), .completed)
+    }
+
+    /// When the TCP options reset the local port, the stream protocol connects from the local
+    /// endpoint's address and a port the kernel picks. It doesn't set SO_REUSEPORT for it.
+    func testTCPResetLocalPortConnectsFromANewPort() throws {
+        let server = TCPEchoServer()
+        try server.start()
+        defer { server.stop() }
+        let localPort = discoverFreeLoopbackPort()
+
+        let parameters = makeTCPParams(localPort: localPort)
+        let tcpOptions = TCPProtocol.options()
+        tcpOptions.resetLocalPort = true
+        parameters.parameters.defaultStack.transport = .tcp(tcpOptions)
+        let (connection, cancelled) = readyTCPConnection(server: server, parameters: parameters)
+        let fd = try XCTUnwrap(descriptors(connectedTo: server.listeningPort, type: SOCK_STREAM).first)
+        XCTAssertNotEqual(boundPortOfDescriptor(fd), localPort)
+        XCTAssertEqual(intOption(fd, SOL_SOCKET, SO_REUSEPORT), 0)
+
+        connection.cancel()
+        XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 5), .completed)
+    }
+
+    /// The stream protocol sets TCP_NOTSENT_LOWAT for reduced buffering, and TCP_MAXSEG, once the
+    /// connection is up.
+    func testTCPConnectedOptionsReachTheSocket() throws {
+        let server = TCPEchoServer()
+        try server.start()
+        defer { server.stop() }
+
+        let parameters = makeTCPParams()
+        let tcpOptions = TCPProtocol.options()
+        tcpOptions.reduceBuffering = true
+        tcpOptions.modifyPerProtocolOptions { $0.maximumSegmentSize = 1200 }
+        parameters.parameters.defaultStack.transport = .tcp(tcpOptions)
+        let (connection, cancelled) = readyTCPConnection(server: server, parameters: parameters)
+        let fds = descriptors(connectedTo: server.listeningPort, type: SOCK_STREAM)
+        XCTAssertFalse(fds.isEmpty, "found no socket connected to the test server")
+        for fd in fds {
+            XCTAssertEqual(intOption(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT), 16 * 1024, "TCP_NOTSENT_LOWAT on fd \(fd)")
+            XCTAssertEqual(intOption(fd, IPPROTO_TCP, TCP_MAXSEG), 1200, "TCP_MAXSEG on fd \(fd)")
+        }
+
+        connection.cancel()
+        XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 5), .completed)
+    }
+
+    /// The datagram protocol applies the temporary-address preference to an IPv6 socket.
+    func testUDPLocalAddressPreferenceReachesTheSocket() throws {
+        let peer = socket(AF_INET6, SOCK_DGRAM, 0)
+        XCTAssertGreaterThanOrEqual(peer, 0)
+        defer { close(peer) }
+        var peerAddress = sockaddr_in6()
+        peerAddress.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+        peerAddress.sin6_family = sa_family_t(AF_INET6)
+        peerAddress.sin6_addr = in6addr_loopback
+        _ = withUnsafePointer(to: &peerAddress) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(peer, $0, socklen_t(MemoryLayout<sockaddr_in6>.size))
+            }
+        }
+        let peerPort = boundPortOfDescriptor(peer)
+
+        for preference in [IPProtocol.AddressPreference.stable, .temporary] {
+            let parameters = ParametersBuilder<UDP>.parameters {
+                UDP {
+                    IP().localAddressPreference(preference)
+                }
+            }
+            let ready = XCTestExpectation(description: "ready")
+            let cancelled = XCTestExpectation(description: "cancelled")
+            let connection = NetworkConnection(
+                to: Endpoint(address: IPv6Address.loopback, port: peerPort),
+                using: parameters
+            )
+            connection.onStateUpdate { _, state in
+                if case .ready = state { ready.fulfill() }
+                if case .cancelled = state { cancelled.fulfill() }
+            }
+            connection.start()
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+            let fds = descriptors(connectedTo: peerPort, type: SOCK_DGRAM)
+            XCTAssertFalse(fds.isEmpty, "found no socket connected to the peer")
+            for fd in fds {
+                // 63 is IPV6_PREFER_TEMPADDR, which the Darwin overlay doesn't surface.
+                XCTAssertEqual(intOption(fd, IPPROTO_IPV6, 63), preference == .temporary ? 1 : 0, "fd \(fd)")
+            }
+            connection.cancel()
+            XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 5), .completed)
+        }
     }
 }
 

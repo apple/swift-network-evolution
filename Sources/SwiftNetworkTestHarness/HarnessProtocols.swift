@@ -246,11 +246,20 @@ public class UpperHarness<LinkageFamily: DataLinkageFamily>: UpperHarnessProtoco
         completions.outboundRoomAvailable = completion
     }
 
+    /// Every network protocol event the lower protocol delivered, in order.
+    var receivedNetworkProtocolEvents: [NetworkProtocolEvent] = []
+
+    /// The handshakes the protocols beneath announced, in the order they arrived.
+    public var handshakeReports: [ProtocolEstablishmentReport] {
+        receivedNetworkProtocolEvents.compactMap(\.handshakeReport)
+    }
+
     public func handleNetworkProtocolEvent(
         _ event: NetworkProtocolEvent,
         in eventContext: inout NetworkContext.EventContext
     ) {
         log.debug("Received network protocol event: \(event)")
+        receivedNetworkProtocolEvents.append(event)
         if let quicEvent = event.quicEvent {
             switch quicEvent {
             case .earlyDataRejected:

@@ -317,7 +317,7 @@ public struct QUICStreamProtocol: NetworkProtocol {
 
     // QUICStreamMetadata -
 
-    public final class QUICStreamMetadata: PerProtocolMetadata {
+    public struct QUICStreamMetadata: ~Copyable, PerProtocolMetadata {
 
         var streamID: UInt64 = 0
 
@@ -343,15 +343,11 @@ public struct QUICStreamProtocol: NetworkProtocol {
 
         public init() {}
 
-        public func isEqual(to other: QUICStreamMetadata, for: ProtocolCompareMode) -> Bool {
+        public func isEqual(to other: borrowing QUICStreamMetadata, for: ProtocolCompareMode) -> Bool {
             true
         }
 
-        func deepCopy() -> Self {
-            self
-        }
-
-        static public func == (lhs: QUICStreamMetadata, rhs: QUICStreamMetadata) -> Bool {
+        static public func == (lhs: borrowing QUICStreamMetadata, rhs: borrowing QUICStreamMetadata) -> Bool {
             if lhs.streamID == rhs.streamID && lhs.datagramFlowID == rhs.datagramFlowID
                 && lhs.applicationError == rhs.applicationError
                 && lhs.quicConnectionMetadata == rhs.quicConnectionMetadata
@@ -361,50 +357,34 @@ public struct QUICStreamProtocol: NetworkProtocol {
             }
             return false
         }
+
+        mutating func replaceConnectionMetadata(_ connectionMetadata: QUICConnectionProtocol.QUICConnectionMetadata?) {
+            self.quicConnectionMetadata = connectionMetadata
+        }
+
         #if !NETWORK_EMBEDDED
         func copyConnectionMetadata() -> ProtocolMetadata<QUICConnectionProtocol>? {
-            mutex.withLock { _ in
-                guard let connectionMetadata = self.quicConnectionMetadata else {
-                    return nil
-                }
-                var protocolMetadata: ProtocolMetadata<QUICConnectionProtocol>
-                protocolMetadata = ProtocolMetadata<QUICConnectionProtocol>(
-                    protocolIdentifier: QUICConnectionProtocol.identifier,
-                    perProtocolMetadata: connectionMetadata,
-                    messageIdentifier: SystemUUID()
-                )
-                return protocolMetadata
+            guard let connectionMetadata = self.quicConnectionMetadata else {
+                return nil
             }
+            return ProtocolMetadata<QUICConnectionProtocol>(
+                protocolIdentifier: QUICConnectionProtocol.identifier,
+                perProtocolMetadata: connectionMetadata,
+                messageIdentifier: SystemUUID()
+            )
         }
 
-        func setConnectionMetadata(connectionMetadata: QUICConnectionProtocol.QUICConnectionMetadata) {
-            mutex.withLock { _ in
-                self.quicConnectionMetadata = connectionMetadata
-            }
+        mutating func setConnectionMetadata(connectionMetadata: QUICConnectionProtocol.QUICConnectionMetadata) {
+            self.quicConnectionMetadata = connectionMetadata
         }
 
-        func setApplicationError(_ applicationError: UInt64) {
-            mutex.withLock { _ in
-                guard let setApplicationError = self.setApplicationErrorHandler else {
-                    return
-                }
-                setApplicationError(applicationError)
-            }
+        func copyApplicationErrorHandler() -> QUICMetadataSetterHandler? {
+            self.setApplicationErrorHandler
         }
 
-        func setApplicationError(handler: @escaping QUICMetadataSetterHandler) {
-            mutex.withLock { _ in
-                self.setApplicationErrorHandler = handler
-            }
+        mutating func setApplicationError(handler: @escaping QUICMetadataSetterHandler) {
+            self.setApplicationErrorHandler = handler
         }
-
-        func executeLocked(block: (@convention(c) () -> Void)) {
-            mutex.withLock { _ in
-                block()
-            }
-        }
-
-        let mutex = NetworkMutex(())
         #endif
     }
 
@@ -478,16 +458,20 @@ extension ProtocolOptions<QUICProtocol> {
 
 @available(Network 0.1.0, *)
 extension ProtocolMetadata<QUICProtocol> {
-    public var streamID: UInt64? { perProtocolMetadata?.streamID }
-    public var datagramFlowID: UInt64? { perProtocolMetadata?.datagramFlowID }
+    public var streamID: UInt64? { mutablePerProtocolMetadata { metadata in metadata?.streamID } }
+    public var datagramFlowID: UInt64? { mutablePerProtocolMetadata { metadata in metadata?.datagramFlowID } }
     public var applicationError: UInt64? {
-        get { perProtocolMetadata?.applicationError }
-        set { perProtocolMetadata?.applicationError = newValue }
+        get { mutablePerProtocolMetadata { metadata in metadata?.applicationError } }
+        set { mutablePerProtocolMetadata { metadata in metadata?.applicationError = newValue } }
     }
-    public var isDatagram: Bool { perProtocolMetadata?.isDatagramFlow ?? false }
-    public var isBidirectional: Bool { !isDatagram && perProtocolMetadata?.streamType == .bidirectional }
-    public var isUnidirectional: Bool { !isDatagram && perProtocolMetadata?.streamType == .unidirectional }
+    public var isDatagram: Bool { mutablePerProtocolMetadata { metadata in metadata?.isDatagramFlow ?? false } }
+    public var isBidirectional: Bool {
+        !isDatagram && (mutablePerProtocolMetadata { metadata in metadata?.streamType == .bidirectional })
+    }
+    public var isUnidirectional: Bool {
+        !isDatagram && (mutablePerProtocolMetadata { metadata in metadata?.streamType == .unidirectional })
+    }
     public var connectionMetadata: QUICConnectionProtocol.QUICConnectionMetadata? {
-        perProtocolMetadata?.quicConnectionMetadata
+        mutablePerProtocolMetadata { metadata in metadata?.quicConnectionMetadata }
     }
 }

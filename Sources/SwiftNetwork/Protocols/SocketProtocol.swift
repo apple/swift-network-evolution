@@ -52,10 +52,46 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     private var pendingOutputFrames = FrameArray()
     var localEndpoint: Endpoint?
     var remoteEndpoint: Endpoint?
-    // setup fills this from Endpoint.sourceInterfaceIndex(parameters:), and connect passes it to
-    // connectx.
+    // setup fills this from Endpoint.sourceInterfaceIndex(parameters:path:), and connect passes it
+    // to connectx.
     private var sourceInterfaceIndex = 0
     private var isUnixDomain = false
+    // A UDP flow attaches UDP metadata to each datagram it receives, unless its options say not to.
+    private var attachesUDPMetadata = false
+    // A send that fails with ENOBUFS tells the upper protocol that the flow is flow controlled. The
+    // next send that goes through tells it that the flow is allowed again.
+    private var isFlowControlled = false
+    // A send or receive that fails without ending the flow reports a soft error each time. The
+    // next send or receive that goes through, in the same direction, clears it.
+    private var hasSendSoftError = false
+    private var hasReceiveSoftError = false
+    // adoptConnectedSocket(_:) sets this, and setup takes the descriptor instead of opening a socket.
+    private var adoptedDescriptor: CInt? = nil
+    private var isAdopted = false
+    // reset() runs setup again with these. A reset socket connects without its old source address.
+    private var setupParameters: Parameters? = nil
+    private var setupPath: PathProperties? = nil
+    private var wasReset = false
+    // addInitialInboundData(_:ecn:) queues these. The protocol delivers them before anything it reads.
+    private var initialInboundFrames = FrameArray()
+    #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+    // This is the traffic class the socket has now. A new socket has the parameters' class.
+    private var lastTrafficClass: UInt32 = 0
+    #endif
+
+    /// The local address and port the kernel assigned to the flow. It's nil until the flow is
+    /// connected.
+    public private(set) var connectedLocalEndpoint: Endpoint? = nil
+    /// The index of the interface the flow sends on, once it's connected. Zero means the protocol
+    /// doesn't know it.
+    public private(set) var connectedInterfaceIndex = 0
+    /// The largest datagram the upper protocol should send. For UDP it's the path's largest
+    /// datagram, when that's smaller than the kernel's default maximum.
+    public private(set) var maximumMessageSize = SocketDatagramProtocol.maximumDatagramSize
+    /// A datagram socket delivers each datagram as its own message.
+    public var receivesSingleMessage: Bool { false }
+    /// Each frame is one datagram.
+    public var framesAreMessages: Bool { true }
 
     private var counts = SocketTransferCounts()
     // configuredDSCP is the DSCP from the IP options. lastTypeOfService holds the ECN and DSCP bits
@@ -78,6 +114,8 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
         socket = nil
         incomingFrames.finalizeAllFramesAsFailed()
         pendingOutputFrames.finalizeAllFramesAsFailed()
+        initialInboundFrames.finalizeAllFramesAsFailed()
+        closeAdoptedDescriptor()
     }
 
     public func setup(
@@ -92,7 +130,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
 
         self.localEndpoint = local
         self.remoteEndpoint = remote
-        self.sourceInterfaceIndex = remote.sourceInterfaceIndex(parameters: parameters)
+        self.sourceInterfaceIndex = remote.sourceInterfaceIndex(parameters: parameters, path: path)
 
         guard case .address(let address) = remote.type else {
             throw NetworkError.posix(EINVAL)
@@ -100,22 +138,62 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
         guard let family = address.addressFamily else {
             throw NetworkError.posix(EAFNOSUPPORT)
         }
-        let socket = try SystemSocket(
-            protocolFamily: family,
-            sockType: .datagram,
-            protocolSubType: 0,
-            nonBlocking: true
-        )
-        self.socket = socket
+        let socket: SystemSocket
+        if let adoptedDescriptor {
+            self.adoptedDescriptor = nil
+            socket = try SystemSocket(adopting: adoptedDescriptor)
+            isAdopted = true
+        } else {
+            socket = try SystemSocket(
+                protocolFamily: family,
+                sockType: .datagram,
+                protocolSubType: 0,
+                nonBlocking: true
+            )
+            isAdopted = false
+        }
         // Reset what belongs to the previous socket, in case setup runs again.
         isUnixDomain = family == .unix
         configuredDSCP = 0
         lastTypeOfService = 0
+        attachesUDPMetadata = false
+        isFlowControlled = false
+        hasSendSoftError = false
+        hasReceiveSoftError = false
+        connectedLocalEndpoint = nil
+        connectedInterfaceIndex = 0
+        setupParameters = parameters
+        setupPath = path
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        // Setup sets the parameters' class on a socket it opens, and leaves an adopted one as it is.
+        lastTrafficClass = isAdopted ? 0 : parameters?.trafficClass ?? 0
+        #endif
+        maximumMessageSize = SocketDatagramProtocol.maximumDatagramSize
+        if case .udp? = parameters?.defaultStack.transport, let path {
+            maximumMessageSize = min(maximumMessageSize, Self.maximumUDPDatagramSize(path: path))
+        }
 
         applyDefaultSocketOptions(socket: socket)
         if let parameters {
+            // The socket closes if a required option fails, because nothing keeps it. An adopted
+            // socket is already connected, so it takes only the options that still matter.
+            if isAdopted {
+                #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+                try socket.applyPrivateConnectedSocketOptions(from: parameters, remote: remote, path: path, log)
+                #endif
+            } else {
+                try socket.applySocketOptions(
+                    from: parameters,
+                    remote: remote,
+                    path: path,
+                    context: context,
+                    isReset: wasReset,
+                    log
+                )
+            }
             applyParameterOptions(socket: socket, parameters: parameters)
         }
+        self.socket = socket
 
         setupReadSource()
         setupWriteSource()
@@ -124,9 +202,12 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     public func teardown() {
         cancelReadSource()
         cancelWriteSource()
+        sourceDescriptor = nil
         socket = nil
         incomingFrames.finalizeAllFramesAsFailed()
         pendingOutputFrames.finalizeAllFramesAsFailed()
+        initialInboundFrames.finalizeAllFramesAsFailed()
+        closeAdoptedDescriptor()
     }
 
     public func connect(in eventContext: inout NetworkContext.EventContext) {
@@ -138,19 +219,158 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
             return
         }
 
-        do {
-            // A Unix-domain socket has no local IP address to bind.
-            if !isUnixDomain, let localEndpoint, case .address(let localAddress) = localEndpoint.type {
-                try socket.bind(to: localAddress, port: localEndpoint.port)
+        if !isAdopted {
+            do {
+                // A reset socket connects without its old source address, so the kernel picks a new
+                // port.
+                _ = try socket.connect(
+                    to: remoteEndpoint,
+                    address: address,
+                    local: isUnixDomain || wasReset ? nil : localEndpoint,
+                    sourceInterfaceIndex: sourceInterfaceIndex
+                )
+            } catch {
+                log.error("Failed to connect: \(error)")
+                deliverDisconnectedEvent(error: error, in: &eventContext)
+                return
             }
-            _ = try socket.connect(to: remoteEndpoint, address: address, sourceInterfaceIndex: sourceInterfaceIndex)
-        } catch {
-            log.error("Failed to connect: \(error)")
-            deliverDisconnectedEvent(error: error, in: &eventContext)
-            return
         }
 
+        if !isUnixDomain {
+            #if canImport(Darwin)
+            if let bound = socket.boundIPAddress() {
+                connectedLocalEndpoint = endpoint(address: bound.address, port: bound.port)
+            }
+            #endif
+            #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+            let interfaceIndex = socket.withFileDescriptor { connectedOutputInterfaceIndex(descriptor: $0) }
+            connectedInterfaceIndex = interfaceIndex ?? sourceInterfaceIndex
+            #else
+            connectedInterfaceIndex = sourceInterfaceIndex
+            #endif
+        }
         deliverConnectedEvent(in: &eventContext)
+        deliverInitialInboundData(in: &eventContext)
+    }
+
+    // MARK: - Adopting and resetting the socket
+
+    /// Takes a socket that's already connected, such as one a listener accepted. Call this before
+    /// setup. Setup then uses this socket instead of opening one, and connect reports the flow as
+    /// up at once. The protocol closes the socket when it's done with it, even if setup never
+    /// runs. If you call this again before setup, the protocol closes the socket you gave it first.
+    public func adoptConnectedSocket(_ descriptor: CInt) {
+        closeAdoptedDescriptor()
+        adoptedDescriptor = descriptor
+    }
+
+    private func closeAdoptedDescriptor() {
+        guard let adoptedDescriptor else { return }
+        self.adoptedDescriptor = nil
+        close(adoptedDescriptor)
+    }
+
+    /// Queues a datagram that arrived before the flow existed, such as the first datagram a
+    /// listener received for it. The protocol delivers it before anything it reads from the
+    /// socket.
+    public func addInitialInboundData(_ bytes: [UInt8], ecn: IPProtocol.ECN? = nil) {
+        bytes.withUnsafeBytes { buffer in
+            var frame = Frame(copyBuffer: buffer)
+            if let ecn, ecn != .nonECT {
+                frame.ecnFlag = ecn
+            }
+            initialInboundFrames.add(frame: frame)
+        }
+    }
+
+    // Setup has run by now, so the frames get the UDP metadata the options ask for, as the frames
+    // the socket delivers do.
+    private func deliverInitialInboundData(in eventContext: inout NetworkContext.EventContext) {
+        guard !initialInboundFrames.isEmpty else { return }
+        while var frame = initialInboundFrames.popFirst() {
+            #if !NETWORK_EMBEDDED
+            if attachesUDPMetadata {
+                frame.setMetadata(metadata: UDPProtocol.definition.protocolMetadata(), isInput: true, isComplete: true)
+            }
+            #endif
+            counts.receivedBytes += frame.unclaimedLength
+            counts.receivedDatagrams += 1
+            incomingFrames.add(frame: frame)
+        }
+        inputUnacknowledged = true
+        upper.deliverInboundDataAvailableEvent(from: identifier, in: &eventContext)
+    }
+
+    /// Closes the socket and opens a new one from the same parameters, so you can connect again.
+    /// The new socket connects from a port the kernel picks. The datagrams that
+    /// addInitialInboundData(_:ecn:) queued are dropped. Call this on the context's queue.
+    public func reset() throws(NetworkError) {
+        guard let remoteEndpoint else { throw NetworkError.posix(EINVAL) }
+        cancelReadSource()
+        cancelWriteSource()
+        // The old sources close their descriptor once they finish cancelling, so the new socket
+        // gets its own.
+        sourceDescriptor = nil
+        socket = nil
+        incomingFrames.finalizeAllFramesAsFailed()
+        pendingOutputFrames.finalizeAllFramesAsFailed()
+        initialInboundFrames.finalizeAllFramesAsFailed()
+        isAdopted = false
+        wasReset = true
+        try setup(remote: remoteEndpoint, local: localEndpoint, parameters: setupParameters, path: setupPath)
+    }
+
+    // MARK: - Path updates
+
+    /// Applies a new path to the socket. The socket follows the path's effective traffic class,
+    /// and a UDP flow whose path limits its datagrams follows the path's largest datagram. Call
+    /// this on the context's queue.
+    public func updatePath(_ path: PathProperties) {
+        setupPath = path
+        // Only a limit that came from a path follows a new path.
+        if maximumMessageSize != SocketDatagramProtocol.maximumDatagramSize {
+            maximumMessageSize = Self.maximumUDPDatagramSize(path: path)
+        }
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        let trafficClass = path.effectiveTrafficClass
+        guard let socket, trafficClass != lastTrafficClass else { return }
+        if socket.setTrafficClass(trafficClass, log) {
+            lastTrafficClass = trafficClass
+        }
+        #endif
+    }
+
+    // This is the largest UDP payload that fits in one packet on the path.
+    private static func maximumUDPDatagramSize(path: PathProperties) -> Int {
+        let packetSize = path.maximumPacketSize
+        return packetSize > UDPProtocol.headerLength ? packetSize - UDPProtocol.headerLength : packetSize
+    }
+
+    private enum Direction {
+        case send
+        case receive
+    }
+
+    // A failure reports a soft error each time. A success clears it once, and only when the same
+    // direction reported it.
+    private func reportSoftError(
+        _ error: NetworkError?,
+        _ direction: Direction,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        #if !NETWORK_EMBEDDED
+        let hadError = direction == .send ? hasSendSoftError : hasReceiveSoftError
+        let hasError = error != nil
+        switch direction {
+        case .send: hasSendSoftError = hasError
+        case .receive: hasReceiveSoftError = hasError
+        }
+        if let error {
+            deliverNetworkProtocolEvent(.init(custom: SocketProtocolEvent.softError(error)), in: &eventContext)
+        } else if hadError {
+            deliverNetworkProtocolEvent(.init(custom: SocketProtocolEvent.softErrorCleared), in: &eventContext)
+        }
+        #endif
     }
 
     // MARK: - Socket options
@@ -164,8 +384,6 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     // This applies the options from the parameters to a datagram socket. It logs a failure and
     // goes on.
     private func applyParameterOptions(socket: SystemSocket, parameters: Parameters) {
-        socket.applySocketOptions(from: parameters, log)
-
         let stack = parameters.defaultStack
         let ipOptions = stack.internetOptionsAsIPOptions(mutable: false)?.perProtocolOptions
         let isQUIC =
@@ -184,6 +402,25 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
                 configuredDSCP = dscpValue
                 lastTypeOfService = dscpValue << 2
             }
+        }
+
+        if case .udp(let options) = stack.transport, case .address(let address)? = remoteEndpoint?.type {
+            let udpOptions = options.perProtocolOptions
+            attachesUDPMetadata = udpOptions?.contains(.noMetadata) != true
+            var addressOptions: [SocketOption] = []
+            if address.isMulticast, let isIPv6 = remoteEndpoint?.isIPv6Address {
+                // Set the loopback either way, so the socket doesn't depend on the kernel default.
+                let loopback: CInt = ipOptions?.disableMulticastLoopback == true ? 0 : 1
+                addressOptions.append(
+                    isIPv6
+                        ? (CInt(IPPROTO_IPV6), IPV6_MULTICAST_LOOP, loopback, "IPV6_MULTICAST_LOOP")
+                        : (CInt(IPPROTO_IP), IP_MULTICAST_LOOP, loopback, "IP_MULTICAST_LOOP")
+                )
+            }
+            if address.isBroadcast {
+                addressOptions.append((SOL_SOCKET, SO_BROADCAST, 1, "SO_BROADCAST"))
+            }
+            socket.apply(addressOptions, log)
         }
 
         #if canImport(Darwin)
@@ -276,40 +513,28 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     // MARK: - Read source
 
     // Read and write sources share one dup'd fd, closed once both have cancelled.
-    // See the note in SocketStreamProtocol for why (Linux epoll fd-keying + EPOLLFREE).
-    private var sourceFD: CInt = -1
-    private var sourceFDRefCount = 0
+    // See SharedSourceDescriptor for why (Linux epoll fd-keying + EPOLLFREE).
+    private var sourceDescriptor: SharedSourceDescriptor? = nil
 
-    private func makeSharedSourceFDIfNeeded() -> CInt {
-        if sourceFD >= 0 { return sourceFD }
-        let dupFD = socket?.withFileDescriptor { dup($0) } ?? -1
-        guard dupFD >= 0 else {
+    private func makeSharedSourceFDIfNeeded() -> SharedSourceDescriptor? {
+        if let sourceDescriptor { return sourceDescriptor }
+        guard let socket, let descriptor = SharedSourceDescriptor(duplicating: socket) else {
             log.error("Failed to dup fd for dispatch sources: \(errno)")
-            return -1
+            return nil
         }
-        sourceFD = dupFD
-        return dupFD
-    }
-
-    private func releaseSharedSourceFD(_ fd: CInt) {
-        sourceFDRefCount -= 1
-        if sourceFDRefCount <= 0 {
-            close(fd)
-            sourceFD = -1
-            sourceFDRefCount = 0
-        }
+        sourceDescriptor = descriptor
+        return descriptor
     }
 
     private func setupReadSource() {
-        let fd = makeSharedSourceFDIfNeeded()
-        guard fd >= 0 else { return }
-        sourceFDRefCount += 1
-        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: context.queue)
+        guard let shared = makeSharedSourceFDIfNeeded() else { return }
+        shared.addSource()
+        let source = DispatchSource.makeReadSource(fileDescriptor: shared.descriptor, queue: context.queue)
         source.setEventHandler {
             self.handleSocketReadEvent()
         }
         source.setCancelHandler {
-            self.releaseSharedSourceFD(fd)
+            shared.removeSource()
         }
         dispatchReadSource = source
         source.resume()
@@ -347,6 +572,18 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
                 if let hopLimit = packetInfo.hopLimit, hopLimit != 0 {
                     frame.hopLimit = hopLimit
                 }
+                if let receiveTime = packetInfo.receiveTime {
+                    frame.timestamp = .receiveTime(receiveTime)
+                }
+                #if !NETWORK_EMBEDDED
+                if attachesUDPMetadata {
+                    frame.setMetadata(
+                        metadata: UDPProtocol.definition.protocolMetadata(),
+                        isInput: true,
+                        isComplete: true
+                    )
+                }
+                #endif
                 incomingFrames.add(frame: frame)
                 counts.receivedBytes += bytesRead
                 counts.receivedDatagrams += 1
@@ -356,6 +593,7 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
             if receivedAny {
                 inputUnacknowledged = true
                 fromExternal { eventContext in
+                    reportSoftError(nil, .receive, in: &eventContext)
                     upper.deliverInboundDataAvailableEvent(from: identifier, in: &eventContext)
                 }
                 // If the upper protocol consumed data synchronously during the
@@ -371,9 +609,11 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
                 // A connected UDP socket reports an ICMP error, such as ECONNREFUSED after a port
                 // unreachable, on its next read. The read consumes the error, so the source doesn't
                 // fire again for it. The flow and its input source stay up, because UDP can recover
-                // once the peer comes back. Bottom protocols have no event for an error that doesn't
-                // disconnect, so this only logs.
+                // once the peer comes back, and the upper protocol gets a soft error.
                 log.error("Datagram read failed: \(readError)")
+                fromExternal { eventContext in
+                    reportSoftError(readError, .receive, in: &eventContext)
+                }
             }
         }
     }
@@ -403,16 +643,15 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
 
     // Shares the read source's dup'd fd.
     private func setupWriteSource() {
-        let fd = makeSharedSourceFDIfNeeded()
-        guard fd >= 0 else { return }
-        sourceFDRefCount += 1
-        let source = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: context.queue)
+        guard let shared = makeSharedSourceFDIfNeeded() else { return }
+        shared.addSource()
+        let source = DispatchSource.makeWriteSource(fileDescriptor: shared.descriptor, queue: context.queue)
         source.setEventHandler {
             self.serviceWrites()
             self.triggerOutboundRoomAvailable()
         }
         source.setCancelHandler {
-            self.releaseSharedSourceFD(fd)
+            shared.removeSource()
         }
         dispatchWriteSource = source
         // Starts suspended — only resumed when we get EAGAIN
@@ -456,6 +695,9 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
     private func serviceWrites(in eventContext: inout NetworkContext.EventContext) {
         var fatalError: NetworkError? = nil
         var remaining = FrameArray()
+        var sentAny = false
+        var becameFlowControlled = false
+        var softError: NetworkError? = nil
 
         while var frame = pendingOutputFrames.popFirst() {
             if fatalError != nil {
@@ -464,12 +706,18 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
             }
 
             let length = frame.unclaimedLength
-            switch writeFrameToSocket(&frame) {
+            let result = writeFrameToSocket(&frame)
+            switch result {
             case .written:
                 counts.sentBytes += length
                 counts.sentDatagrams += 1
+                sentAny = true
                 frame.finalize(success: true)
-            case .wouldBlock:
+            case .wouldBlock, .flowControlled:
+                if case .flowControlled = result, !isFlowControlled {
+                    isFlowControlled = true
+                    becameFlowControlled = true
+                }
                 // Keep this datagram and every one after it, in order, for the next writable
                 // event.
                 self.log.datapath("Send buffer full, waiting for writable event")
@@ -482,14 +730,35 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
                 // send buffer. Drop it and keep the flow. The peer never receives it.
                 self.log.info("Datagram too large to send, dropping it: \(error)")
                 frame.finalize(success: false)
-            case .failed(let error):
+            case .failed(let error) where error == .posix(EIO) || error == .posix(ENOTCONN):
+                // The socket is gone, or a write went out short.
                 self.log.datapath("Datagram write failed: \(error)")
                 fatalError = error
+                frame.finalize(success: false)
+            case .failed(let error):
+                // A send can fail with an ICMP error from an earlier datagram, such as
+                // ECONNREFUSED, or with a policy error. UDP can recover from either, so drop this
+                // datagram and keep the flow.
+                self.log.info("Datagram write failed, dropping it: \(error)")
+                softError = error
                 frame.finalize(success: false)
             }
         }
 
         pendingOutputFrames = remaining
+
+        if let softError {
+            reportSoftError(softError, .send, in: &eventContext)
+        } else if sentAny {
+            reportSoftError(nil, .send, in: &eventContext)
+        }
+
+        if becameFlowControlled {
+            deliverNetworkProtocolEvent(.flowControlled, in: &eventContext)
+        } else if isFlowControlled && sentAny {
+            isFlowControlled = false
+            deliverNetworkProtocolEvent(.flowAllowed, in: &eventContext)
+        }
 
         if !pendingOutputFrames.isEmpty {
             if !waitingForWritable {
@@ -510,7 +779,10 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
 
     private enum DatagramWriteResult {
         case written
+        // The send buffer is full.
         case wouldBlock
+        // The interface's queue is full, so the kernel returned ENOBUFS.
+        case flowControlled
         case failed(NetworkError)
     }
 
@@ -556,8 +828,9 @@ public final class SocketDatagramProtocol: BottomDatagramProtocol {
             return .failed(.posix(EIO))
         case .failure(let error):
             if error == .posix(ENOBUFS) {
-                // The interface queue is full. Wait for room, as for EAGAIN.
-                return .wouldBlock
+                // The interface queue is full. Wait for room, as for EAGAIN, and tell the upper
+                // protocol.
+                return .flowControlled
             }
             return .failed(error)
         }
@@ -643,20 +916,66 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     private var socket: SystemSocket? = nil
     private var dispatchReadSource: (any DispatchSourceRead)? = nil
     private var dispatchWriteSource: (any DispatchSourceWrite)? = nil
+    #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+    private var dispatchEventSource: (any DispatchSourceProtocol)? = nil
+    #endif
     private var waitingForWritable = false
     private var isConnecting = false
     private var inputSourceSuspended = false
     private var inputFinished = false
     private var outputFinished = false
     private var pendingDisconnect = false
+    // The socket side has reported the disconnect, after an error or after the peer closed.
+    private var connectionEnded = false
+    // The event source saw the peer close before the read source reached the end of the data.
+    private var peerClosed = false
     private var incomingFrames = FrameArray()
     private var pendingOutputFrames = FrameArray()
     var localEndpoint: Endpoint?
     var remoteEndpoint: Endpoint?
-    // setup fills this from Endpoint.sourceInterfaceIndex(parameters:), and connect passes it to
-    // connectx.
+    // setup fills this from Endpoint.sourceInterfaceIndex(parameters:path:), and connect passes it
+    // to connectx.
     private var sourceInterfaceIndex = 0
     private var isUnixDomain = false
+    // A multipath socket runs MPTCP. The kernel has no TCP_CONNECTION_INFO for one.
+    private var isMultipath = false
+    // These come from the TCP options. The connect uses them, and so do the options that only take
+    // effect once the connection is up.
+    private var tcpOptions: TCPProtocol.Options? = nil
+    private var resetLocalPort = false
+    // With TCP Fast Open, connectx returns at once, and the first write goes out with the SYN. A
+    // read before any write sends the SYN without data. Either one starts the handshake. The
+    // protocol then holds further writes until the handshake finishes and the socket becomes
+    // writable. The connection counts as connected only then.
+    private var usesFastOpen = false
+    private var awaitingFastOpenHandshake = false
+    private var fastOpenHandshakeStarted = false
+    // A write that fails with ENOBUFS tells the upper protocol that the flow is flow controlled. The
+    // next write that goes through tells it that the flow is allowed again.
+    private var isFlowControlled = false
+    // adoptConnectedSocket(_:) sets this, and setup takes the descriptor instead of opening a socket.
+    private var adoptedDescriptor: CInt? = nil
+    private var isAdopted = false
+    // reset() runs setup again with these. A reset socket connects without its old source address,
+    // so the kernel picks a new port.
+    private var setupParameters: Parameters? = nil
+    private var setupPath: PathProperties? = nil
+    private var wasReset = false
+    #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+    // The socket event source watches these, along with the events that end the connection.
+    private var watchedEvents: SocketEvents = []
+    private var adaptiveReadTimeoutProbes = 0
+    private var adaptiveWriteTimeoutProbes = 0
+    // This is the traffic class the socket has now. A new socket has the parameters' class.
+    private var lastTrafficClass: UInt32 = 0
+    #endif
+
+    /// The local address and port the kernel assigned to the connection. It's nil until the
+    /// connection is up.
+    public private(set) var connectedLocalEndpoint: Endpoint? = nil
+    /// The index of the interface the connection sends on, once it's up. Zero means the protocol
+    /// doesn't know it.
+    public private(set) var connectedInterfaceIndex = 0
 
     // updateDataTransferSnapshot reports these when the kernel's TCP statistics aren't available.
     private var counts = SocketTransferCounts()
@@ -693,6 +1012,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         socket = nil
         incomingFrames.finalizeAllFramesAsFailed()
         pendingOutputFrames.finalizeAllFramesAsFailed()
+        closeAdoptedDescriptor()
     }
 
     public func setup(
@@ -707,7 +1027,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
 
         self.localEndpoint = local
         self.remoteEndpoint = remote
-        self.sourceInterfaceIndex = remote.sourceInterfaceIndex(parameters: parameters)
+        self.sourceInterfaceIndex = remote.sourceInterfaceIndex(parameters: parameters, path: path)
 
         guard case .address(let address) = remote.type else {
             throw NetworkError.posix(EINVAL)
@@ -715,20 +1035,92 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         guard let family = address.addressFamily else {
             throw NetworkError.posix(EAFNOSUPPORT)
         }
-        let socket = try SystemSocket(
-            protocolFamily: family,
-            sockType: .stream,
-            protocolSubType: 0,
-            nonBlocking: true
-        )
-        self.socket = socket
+        // Reset what belongs to the previous socket, in case setup runs again.
         isUnixDomain = family == .unix
+        isMultipath = false
+        tcpOptions = nil
+        resetLocalPort = false
+        usesFastOpen = false
+        awaitingFastOpenHandshake = false
+        fastOpenHandshakeStarted = false
+        isFlowControlled = false
+        connectionEnded = false
+        peerClosed = false
         sendLowWaterMark = 1
+        connectedLocalEndpoint = nil
+        connectedInterfaceIndex = 0
+        setupParameters = parameters
+        setupPath = path
+        if !isUnixDomain, case .tcp(let options)? = parameters?.defaultStack.transport {
+            tcpOptions = options.perProtocolOptions
+        }
+
+        let socket: SystemSocket
+        if let adoptedDescriptor {
+            // An adopted socket is already connected, so it takes only the options that still
+            // apply once the connection is up. The low-water marks that the dispatch sources need
+            // come from applyDefaultSocketOptions.
+            self.adoptedDescriptor = nil
+            socket = try SystemSocket(adopting: adoptedDescriptor)
+            isAdopted = true
+            #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+            lastTrafficClass = 0
+            #endif
+            applyDefaultSocketOptions(socket: socket)
+            #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+            if let parameters {
+                try socket.applyPrivateConnectedSocketOptions(from: parameters, remote: remote, path: path, log)
+            }
+            #endif
+            if let tcpOptions {
+                try applyTCPOptions(socket: socket, opts: tcpOptions, parameters: parameters, socketIsConnected: true)
+            }
+            self.socket = socket
+            setupProtocolMetadata(socket: socket)
+            setupReadSource()
+            setupWriteSource()
+            return
+        }
+        isAdopted = false
+
+        var multipathSocket: SystemSocket? = nil
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        if !isUnixDomain, let multipathFamily = parameters?.multipathProtocolFamily(path: path) {
+            do throws(NetworkError) {
+                multipathSocket = try SystemSocket(
+                    rawProtocolFamily: multipathFamily,
+                    sockType: .stream,
+                    protocolSubType: 0,
+                    nonBlocking: true
+                )
+            } catch let error where error == .posix(EPROTONOSUPPORT) {
+                // This kernel has no MPTCP, so the flow runs over TCP.
+                log.info("Multipath sockets aren't supported, using TCP")
+            }
+        }
+        #endif
+        isMultipath = multipathSocket != nil
+        if let multipathSocket {
+            socket = multipathSocket
+        } else {
+            socket = try SystemSocket(protocolFamily: family, sockType: .stream, protocolSubType: 0, nonBlocking: true)
+        }
 
         applyDefaultSocketOptions(socket: socket)
         if let parameters {
-            socket.applySocketOptions(from: parameters, log)
+            // The socket closes if a required option fails, because nothing keeps it.
+            try socket.applySocketOptions(
+                from: parameters,
+                remote: remote,
+                path: path,
+                context: context,
+                isReset: wasReset,
+                log
+            )
         }
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        lastTrafficClass = parameters?.trafficClass ?? 0
+        #endif
 
         if let stack = parameters?.defaultStack {
             if let ipOptions = stack.internetOptionsAsIPOptions(mutable: false)?.perProtocolOptions,
@@ -736,11 +1128,26 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             {
                 socket.applyIPOptions(ipOptions, isIPv6: isIPv6, log)
             }
-            // A Unix-domain socket skips the TCP options. Setting them would fail on it.
-            if !isUnixDomain, case .tcp(let options) = stack.transport, let tcpOptions = options.perProtocolOptions {
-                applyTCPOptions(socket: socket, opts: tcpOptions)
-            }
         }
+        // A Unix-domain socket skips the TCP options. Setting them would fail on it.
+        if let tcpOptions {
+            try applyTCPOptions(socket: socket, opts: tcpOptions, parameters: parameters)
+            resetLocalPort = tcpOptions.resetLocalPort
+            #if canImport(Darwin)
+            // The TCP options turn on Fast Open only when a protocol above TCP, such as TLS,
+            // supplies the first data. The app can supply it itself only when the parameters allow
+            // Fast Open.
+            let hasProtocolAboveTCP = parameters?.defaultStack.applicationProtocols.isEmpty == false
+            usesFastOpen =
+                parameters?.fastOpenEnabled == true || (tcpOptions.enableFastOpen && hasProtocolAboveTCP)
+            #endif
+        }
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        if isMultipath, let parameters, let tcpOptions {
+            try socket.applyPrivateMultipathOptions(from: tcpOptions, parameters: parameters, remote: remote, log)
+        }
+        #endif
+        self.socket = socket
 
         setupProtocolMetadata(socket: socket)
 
@@ -760,10 +1167,15 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         }
         cancelReadSource()
         cancelWriteSource()
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        cancelSocketEventSource()
+        #endif
+        sourceDescriptor = nil
         releaseSocketHandle()
         socket = nil
         incomingFrames.finalizeAllFramesAsFailed()
         pendingOutputFrames.finalizeAllFramesAsFailed()
+        closeAdoptedDescriptor()
     }
 
     public func connect(in eventContext: inout NetworkContext.EventContext) {
@@ -776,28 +1188,68 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         }
 
         connectStartTime = context.now
+        if isAdopted {
+            // An adopted socket is already connected.
+            markConnected()
+            applyConnectedOptions()
+            #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+            startSocketEventSource()
+            #endif
+            recordConnectedAddresses()
+            deliverConnectedEvent(in: &eventContext)
+            startReadSource()
+            return
+        }
         do {
-            let isIPv6Dst = address.addressFamily == .ipv6
-            if !isUnixDomain, let localEndpoint, case .address(let localAddress) = localEndpoint.type,
-                !isIPv6Dst || localAddress.addressFamily == .ipv6
-            {
-                try socket.bind(to: localAddress, port: localEndpoint.port)
+            // A reset socket connects without its old source address, so the kernel picks a new
+            // port.
+            let local = isUnixDomain || wasReset ? nil : localEndpoint
+            let hasSourceAddress: Bool
+            if case .address(let localAddress)? = local?.type, localAddress.addressFamily == address.addressFamily {
+                hasSourceAddress = true
+            } else {
+                hasSourceAddress = false
             }
-            if case .v6 = address.type {
+            if case .v6 = address.type, !hasSourceAddress, !isMultipath {
                 // connectx(2) on Darwin requires the socket to be bound before
                 // connecting an IPv6 socket with no explicit source address.
                 try socket.bindSocket(address: IPv6Address.any, port: 0)
             }
+
+            var flags: UInt32 = 0
+            #if canImport(Darwin)
+            if usesFastOpen {
+                flags = UInt32(CONNECT_RESUME_ON_READ_WRITE | CONNECT_DATA_IDEMPOTENT)
+                if tcpOptions?.noFastOpenCookie == true {
+                    flags |= UInt32(CONNECT_DATA_AUTHENTICATED)
+                }
+            }
+            #endif
 
             // A non-blocking connect returns false on EINPROGRESS. Wait for the socket to
             // become writable, then treat it as connected.
             let connectedNow = try socket.connect(
                 to: remoteEndpoint,
                 address: address,
-                sourceInterfaceIndex: sourceInterfaceIndex
+                local: local,
+                resetLocalPort: resetLocalPort,
+                sourceInterfaceIndex: sourceInterfaceIndex,
+                flags: flags
             )
+            #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+            startSocketEventSource()
+            #endif
             if connectedNow {
-                markConnected()
+                if usesFastOpen {
+                    // The handshake starts with the first write, which carries data in the SYN,
+                    // or with a read. The connection counts as connected once the socket becomes
+                    // writable after that.
+                    awaitingFastOpenHandshake = true
+                } else {
+                    markConnected()
+                    applyConnectedOptions()
+                }
+                recordConnectedAddresses()
                 deliverConnectedEvent(in: &eventContext)
                 startReadSource()
             } else {
@@ -826,6 +1278,14 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         serviceWrites(in: &eventContext)
     }
 
+    #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+    // The kernel defers work for a connection that the app marks idle.
+    public func handleApplicationEvent(_ event: ApplicationEvent, in eventContext: inout NetworkContext.EventContext) {
+        guard case .connectionIdle(let idle) = event.internalEvent, let socket, !isUnixDomain else { return }
+        socket.setConnectionIdle(idle, log)
+    }
+    #endif
+
     // MARK: - BottomStreamProtocol
 
     public func receiveStreamData(
@@ -833,6 +1293,11 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         maximumBytes: Int,
         in eventContext: inout NetworkContext.EventContext
     ) throws(NetworkError) -> FrameArray? {
+        #if canImport(Darwin)
+        if awaitingFastOpenHandshake && !fastOpenHandshakeStarted {
+            startFastOpenHandshakeForRead(in: &eventContext)
+        }
+        #endif
         guard !incomingFrames.isEmpty,
             incomingFrames.unclaimedLength >= minimumBytes || incomingFrames.connectionComplete
         else {
@@ -883,13 +1348,205 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         }
     }
 
-    // On Darwin, TCP_CONNECTION_INFO fills the snapshot, because TCP_INFO is private there. It has
-    // no minimum RTT, duplicate byte count or ECN packet counts, so those stay at zero. On Linux
-    // and Android, TCP_INFO fills it. When the call fails, the snapshot has the byte counts this
-    // protocol keeps.
-    public func updateDataTransferSnapshot(_ snapshot: inout DataTransferSnapshot) {
+    #if canImport(Darwin)
+    // The upper protocol reads before it has written anything, so the peer may speak first. A read
+    // makes the kernel send the Fast Open SYN without data (soreceive calls pru_preconnect), and
+    // the socket becomes writable once the handshake finishes. MSG_PEEK leaves any data for the
+    // read source.
+    private func startFastOpenHandshakeForRead(in eventContext: inout NetworkContext.EventContext) {
+        guard let socket else { return }
+        var byte: UInt8 = 0
+        let error: CInt = socket.withFileDescriptor { descriptor in
+            recv(descriptor, &byte, 1, MSG_PEEK | MSG_DONTWAIT) < 0 ? errno : 0
+        }
+        if error != 0 && error != EWOULDBLOCK {
+            log.error("Fast Open connect failed: \(error)")
+            fail(with: .posix(error), in: &eventContext)
+            return
+        }
+        fastOpenHandshakeStarted = true
+        if !waitingForWritable {
+            waitingForWritable = true
+            dispatchWriteSource?.resume()
+        }
+    }
+    #endif
+
+    // These options take effect only once the connection is up. TCP_NOTSENT_LOWAT would hold back
+    // the data a Fast Open SYN carries. The kernel can reset TCP_MAXSEG during the handshake, so
+    // this sets it again.
+    private func applyConnectedOptions() {
+        guard let socket, let tcpOptions else { return }
+        if tcpOptions.reduceBuffering {
+            // Cap the unsent bytes at 16 KiB.
+            do { try socket.setNotSentLowWatermark(16 * 1024) } catch {
+                log.info("Failed to set TCP_NOTSENT_LOWAT: \(error)")
+            }
+        }
+        if tcpOptions.maximumSegmentSize > 0 {
+            do { try socket.setMaximumSegmentSize(tcpOptions.maximumSegmentSize) } catch {
+                log.info("Failed to set TCP_MAXSEG: \(error)")
+            }
+        }
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        applyAdaptiveTimeouts()
+        #endif
+    }
+
+    // The kernel picks the local port, and sometimes the address, so the protocol reads them back
+    // once the connection is up. A multipath socket has no single local address.
+    private func recordConnectedAddresses() {
+        guard let socket, !isUnixDomain else { return }
         #if canImport(Darwin)
+        if !isMultipath, let bound = socket.boundIPAddress() {
+            connectedLocalEndpoint = endpoint(address: bound.address, port: bound.port)
+        }
+        #endif
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        let interfaceIndex = socket.withFileDescriptor { connectedOutputInterfaceIndex(descriptor: $0) }
+        connectedInterfaceIndex = interfaceIndex ?? sourceInterfaceIndex
+        #else
+        connectedInterfaceIndex = sourceInterfaceIndex
+        #endif
+    }
+
+    // MARK: - Adopting and resetting the socket
+
+    /// Takes a socket that's already connected, such as one a listener accepted. Call this before
+    /// setup. Setup then uses this socket instead of opening one, and connect reports the
+    /// connection as up at once. The protocol closes the socket when it's done with it, even if
+    /// setup never runs. If you call this again before setup, the protocol closes the socket you
+    /// gave it first.
+    public func adoptConnectedSocket(_ descriptor: CInt) {
+        closeAdoptedDescriptor()
+        adoptedDescriptor = descriptor
+    }
+
+    private func closeAdoptedDescriptor() {
+        guard let adoptedDescriptor else { return }
+        self.adoptedDescriptor = nil
+        close(adoptedDescriptor)
+    }
+
+    /// Closes the socket and opens a new one from the same parameters, so you can connect again.
+    /// The new socket connects from a port the kernel picks. It watches only the events that end
+    /// the connection, so turn the keepalive and adaptive-timeout notifications on again if you
+    /// need them. Call this on the context's queue.
+    public func reset() throws(NetworkError) {
+        guard let remoteEndpoint else { throw NetworkError.posix(EINVAL) }
+        cancelReadSource()
+        cancelWriteSource()
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        cancelSocketEventSource()
+        watchedEvents = []
+        adaptiveReadTimeoutProbes = 0
+        adaptiveWriteTimeoutProbes = 0
+        #endif
+        // The old sources close their descriptor once they finish cancelling, so the new socket
+        // gets its own.
+        sourceDescriptor = nil
+        releaseSocketHandle()
+        socket = nil
+        incomingFrames.finalizeAllFramesAsFailed()
+        pendingOutputFrames.finalizeAllFramesAsFailed()
+        readSourceStarted = false
+        inputSourceSuspended = false
+        inputFinished = false
+        outputFinished = false
+        isConnecting = false
+        isConnected = false
+        isDisconnectRequested = false
+        pendingDisconnect = false
+        connectStartTime = nil
+        handshakeDuration = nil
+        isAdopted = false
+        wasReset = true
+        try setup(remote: remoteEndpoint, local: localEndpoint, parameters: setupParameters, path: setupPath)
+    }
+
+    // MARK: - Path updates
+
+    /// Applies a new path to the socket. The socket follows the path's effective traffic class.
+    /// Call this on the context's queue.
+    public func updatePath(_ path: PathProperties) {
+        setupPath = path
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        let trafficClass = path.effectiveTrafficClass
+        guard let socket, trafficClass != lastTrafficClass else { return }
+        if socket.setTrafficClass(trafficClass, log) {
+            lastTrafficClass = trafficClass
+        }
+        #endif
+    }
+
+    // MARK: - Message properties
+
+    /// A stream socket has no message boundaries, so a message can be any size. It reports
+    /// UINT32_MAX, clamped to Int.max where Int has 32 bits.
+    public var maximumMessageSize: Int { Int(clamping: UInt32.max) }
+    /// A stream socket delivers its data as one message, so a read returns only that message.
+    public var receivesSingleMessage: Bool { true }
+    /// A stream socket's frames are pieces of the stream, not messages.
+    public var framesAreMessages: Bool { false }
+
+    // MARK: - Notifications
+
+    #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+    /// Reports SocketProtocolEvent.keepalive each time the kernel sends a keepalive probe. Call
+    /// this, and the two calls below, on the context's queue.
+    public func watchKeepalives(_ enabled: Bool) {
+        updateWatchedEvents(.keepalive, enabled)
+    }
+
+    /// Reports SocketProtocolEvent.readTimeout when the kernel's adaptive read timeout fires after
+    /// probeCount probes. Zero probes means 5. Nil turns it off.
+    public func setAdaptiveReadTimeout(probeCount: Int?) {
+        adaptiveReadTimeoutProbes = probeCount.map { $0 == 0 ? 5 : $0 } ?? 0
+        updateWatchedEvents(.adaptiveReadTimeout, probeCount != nil)
+    }
+
+    /// Reports SocketProtocolEvent.writeTimeout when the kernel's adaptive write timeout fires
+    /// after probeCount probes. Zero probes means 5. Nil turns it off.
+    public func setAdaptiveWriteTimeout(probeCount: Int?) {
+        adaptiveWriteTimeoutProbes = probeCount.map { $0 == 0 ? 5 : $0 } ?? 0
+        updateWatchedEvents(.adaptiveWriteTimeout, probeCount != nil)
+    }
+
+    private func updateWatchedEvents(_ events: SocketEvents, _ enabled: Bool) {
+        if enabled { watchedEvents.insert(events) } else { watchedEvents.remove(events) }
+        applyAdaptiveTimeouts()
+        // The event source watches a fixed set of events, so a change needs a new source.
+        guard dispatchEventSource != nil else { return }
+        cancelSocketEventSource()
+        startSocketEventSource()
+    }
+
+    private func applyAdaptiveTimeouts() {
+        guard let socket, isConnected, !isUnixDomain else { return }
+        socket.setAdaptiveTimeouts(
+            readProbes: adaptiveReadTimeoutProbes,
+            writeProbes: adaptiveWriteTimeoutProbes,
+            log
+        )
+    }
+    #endif
+
+    // On Darwin, TCP_CONNECTION_INFO fills the snapshot, because TCP_INFO is private there. It has
+    // no minimum RTT, duplicate byte count or ECN packet counts, so those stay at zero, and a
+    // multipath socket has none. On Linux and Android, TCP_INFO fills it. When the call fails, the
+    // snapshot has the byte counts this protocol keeps.
+    public func updateDataTransferSnapshot(_ snapshot: inout DataTransferSnapshot) {
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
         if let socket, !isUnixDomain {
+            let multipath = isMultipath
+            let filled = socket.withFileDescriptor {
+                fillPrivateDataTransferSnapshot(&snapshot, descriptor: $0, isMultipath: multipath)
+            }
+            if filled { return }
+        }
+        #endif
+        #if canImport(Darwin)
+        if let socket, !isUnixDomain, !isMultipath {
             do {
                 let info = try socket.getSocketOption(
                     level: CInt(IPPROTO_TCP),
@@ -929,6 +1586,21 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     // TCP_CONNECTION_INFO has no accurate ECN states, so this report leaves them unset.
     public var protocolEstablishmentReport: ProtocolEstablishmentReport? {
         guard let handshakeDuration else { return nil }
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        if let socket, !isUnixDomain,
+            let state = socket.withFileDescriptor({ privateEstablishmentECNState(descriptor: $0) })
+        {
+            var report = ProtocolEstablishmentReport(
+                handshakeDuration: handshakeDuration,
+                handshakeRTT: handshakeDuration,
+                protocolIdentifier: TCPProtocol.identifier,
+                clientAccurateECNState: state.client,
+                serverAccurateECNState: state.server
+            )
+            report.l4sEnabled = state.l4sEnabled
+            return report
+        }
+        #endif
         return ProtocolEstablishmentReport(
             handshakeDuration: handshakeDuration,
             handshakeRTT: handshakeDuration,
@@ -938,40 +1610,18 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
 
     // MARK: - Read source
 
-    // Read and write sources share ONE dup'd fd, closed only after both have
-    // cancelled (tracked by sourceFDRefCount). Two reasons, both Linux/epoll:
-    //  - Two separate dups alias the same socket as distinct epoll registrations,
-    //    which drop events (the read source silently stops delivering).
-    //  - The socket's own fd must not be registered: cancel() unregisters
-    //    asynchronously, so if SystemSocket.deinit closes it first, libdispatch
-    //    hits EPOLLFREE and aborts.
-    // Darwin doesn't need this but is unaffected. I/O always uses the SystemSocket's
-    // own fd; the shared dup only arms the sources.
-    private var sourceFD: CInt = -1
-    private var sourceFDRefCount = 0
+    // The read, write and event sources share one dup'd fd. See SharedSourceDescriptor.
+    private var sourceDescriptor: SharedSourceDescriptor? = nil
 
-    // Lazily create the single shared dup fd used by both sources, if not already
-    // created. Returns -1 on failure.
-    private func makeSharedSourceFDIfNeeded() -> CInt {
-        if sourceFD >= 0 { return sourceFD }
-        let dupFD = socket?.withFileDescriptor { dup($0) } ?? -1
-        guard dupFD >= 0 else {
+    // Lazily create the single shared dup fd used by the sources, if not already created.
+    private func makeSharedSourceFDIfNeeded() -> SharedSourceDescriptor? {
+        if let sourceDescriptor { return sourceDescriptor }
+        guard let socket, let descriptor = SharedSourceDescriptor(duplicating: socket) else {
             log.error("Failed to dup fd for dispatch sources: \(errno)")
-            return -1
+            return nil
         }
-        sourceFD = dupFD
-        return dupFD
-    }
-
-    // Called from each source's cancel handler; closes the shared fd once the
-    // last source has released it (so libdispatch is done with it).
-    private func releaseSharedSourceFD(_ fd: CInt) {
-        sourceFDRefCount -= 1
-        if sourceFDRefCount <= 0 {
-            close(fd)
-            sourceFD = -1
-            sourceFDRefCount = 0
-        }
+        sourceDescriptor = descriptor
+        return descriptor
     }
 
     // Created in setup() but resumed only after connect completes: arming the read
@@ -981,15 +1631,14 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     private var readSourceStarted = false
 
     private func setupReadSource() {
-        let fd = makeSharedSourceFDIfNeeded()
-        guard fd >= 0 else { return }
-        sourceFDRefCount += 1
-        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: context.queue)
+        guard let shared = makeSharedSourceFDIfNeeded() else { return }
+        shared.addSource()
+        let source = DispatchSource.makeReadSource(fileDescriptor: shared.descriptor, queue: context.queue)
         source.setEventHandler {
             self.handleSocketReadEvent()
         }
         source.setCancelHandler {
-            self.releaseSharedSourceFD(fd)
+            shared.removeSource()
         }
         dispatchReadSource = source
         // Starts suspended — resumed by startReadSource() once connect completes.
@@ -1079,11 +1728,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             }
 
             if let fatalError {
-                // A read error finishes the input and stops the read source. A reset socket stays
-                // readable and returns EOF next, which would deliver input after the disconnect.
-                inputFinished = true
-                cancelReadSource()
-                deliverDisconnectedEvent(error: fatalError)
+                // A read error finishes the input and stops the read source.
+                fail(with: socketError(preferredTo: fatalError))
                 return
             }
 
@@ -1091,6 +1737,10 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
                 fromExternal { eventContext in
                     upper.deliverInboundDataAvailableEvent(from: identifier, in: &eventContext)
                 }
+            }
+            // The event source saw the peer close before this read reached the end of the data.
+            if reachedEOF && peerClosed {
+                endAfterPeerClosed()
             }
             // Backpressure on buffered volume: suspend whenever we're over the
             // limit, regardless of whether new frames arrived this call. The
@@ -1142,21 +1792,23 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
 
     // Shares the read source's dup'd fd (see note above).
     private func setupWriteSource() {
-        let fd = makeSharedSourceFDIfNeeded()
-        guard fd >= 0 else { return }
-        sourceFDRefCount += 1
-        let source = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: context.queue)
+        guard let shared = makeSharedSourceFDIfNeeded() else { return }
+        shared.addSource()
+        let source = DispatchSource.makeWriteSource(fileDescriptor: shared.descriptor, queue: context.queue)
         source.setEventHandler {
             self.handleSocketWriteEvent()
         }
         source.setCancelHandler {
-            self.releaseSharedSourceFD(fd)
+            shared.removeSource()
         }
         dispatchWriteSource = source
         // Starts suspended — resumed on EINPROGRESS connect or EAGAIN on write.
     }
 
     private func handleSocketWriteEvent() {
+        // The event source can end the connection first, for example on a refused connect. The
+        // socket is then writable too, and its SO_ERROR is already read and cleared.
+        guard !connectionEnded else { return }
         if isConnecting {
             isConnecting = false
             if waitingForWritable {
@@ -1166,10 +1818,12 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             let connectError = socket?.getSocketError() ?? 0
             if connectError != 0 {
                 log.error("Async connect failed: \(connectError)")
-                deliverDisconnectedEvent(error: .posix(connectError))
+                fail(with: .posix(connectError))
                 return
             }
             markConnected()
+            applyConnectedOptions()
+            recordConnectedAddresses()
             deliverConnectedEvent()
 
             // Connected now — arm the read source (deferred to avoid the spurious
@@ -1184,9 +1838,142 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             handleSocketReadEvent()
             return
         }
+        // Before the Fast Open handshake starts, the kernel reports the socket writable so that
+        // the first write can go out with the SYN. Only once a write or a read has started the
+        // handshake does writable mean that the handshake finished.
+        if awaitingFastOpenHandshake && fastOpenHandshakeStarted {
+            awaitingFastOpenHandshake = false
+            let connectError = socket?.getSocketError() ?? 0
+            if connectError != 0 {
+                log.error("Fast Open connect failed: \(connectError)")
+                fail(with: .posix(connectError))
+                return
+            }
+            markConnected()
+            applyConnectedOptions()
+            recordConnectedAddresses()
+        }
         serviceWrites()
         triggerOutboundRoomAvailable()
     }
+
+    // When a read or write fails, the pending socket error says why the connection failed, such as
+    // ETIMEDOUT for a connection that the kernel dropped. It wins over the error from the call.
+    private func socketError(preferredTo error: NetworkError) -> NetworkError {
+        let pendingError = socket?.getSocketError() ?? 0
+        return pendingError != 0 ? .posix(pendingError) : error
+    }
+
+    // Ends the connection with an error, once. The read, write and event sources can each see the
+    // same failure, so whichever runs later finds connectionEnded set and does nothing.
+    private func fail(with error: NetworkError) {
+        guard stopForFailure() else { return }
+        deliverDisconnectedEvent(error: error)
+    }
+
+    // A caller that already holds the event context must use this one.
+    private func fail(with error: NetworkError, in eventContext: inout NetworkContext.EventContext) {
+        guard stopForFailure() else { return }
+        deliverDisconnectedEvent(error: error, in: &eventContext)
+    }
+
+    // Returns false if the connection has already ended.
+    private func stopForFailure() -> Bool {
+        guard !connectionEnded else { return false }
+        connectionEnded = true
+        isConnecting = false
+        awaitingFastOpenHandshake = false
+        pendingDisconnect = false
+        // A reset socket stays readable and returns EOF next, which would deliver input after the
+        // disconnect.
+        inputFinished = true
+        cancelReadSource()
+        if waitingForWritable {
+            waitingForWritable = false
+            dispatchWriteSource?.suspend()
+        }
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        cancelSocketEventSource()
+        #endif
+        return true
+    }
+
+    // The peer closed the connection, and the read source has delivered the end of its data. A
+    // pending SO_ERROR says why, if the close wasn't clean.
+    private func endAfterPeerClosed() {
+        guard !connectionEnded else { return }
+        connectionEnded = true
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        cancelSocketEventSource()
+        #endif
+        let pendingError = socket?.getSocketError() ?? 0
+        deliverDisconnectedEvent(error: pendingError != 0 ? .posix(pendingError) : nil)
+    }
+
+    #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+    // The kernel reports a reset, a timeout or a disconnect on the socket event source, so the
+    // connection fails even when nothing reads or writes.
+    private func startSocketEventSource() {
+        guard dispatchEventSource == nil, let shared = makeSharedSourceFDIfNeeded(),
+            let source = makeSocketEventSource(
+                descriptor: shared.descriptor,
+                events: watchedEvents,
+                queue: context.queue,
+                handler: { events in self.handleSocketEvents(events) }
+            )
+        else { return }
+        shared.addSource()
+        source.setCancelHandler {
+            shared.removeSource()
+        }
+        dispatchEventSource = source
+        source.resume()
+    }
+
+    private func cancelSocketEventSource() {
+        dispatchEventSource?.cancel()
+        dispatchEventSource = nil
+    }
+
+    private func handleSocketEvents(_ events: SocketEvents) {
+        guard socket != nil, !connectionEnded else { return }
+        // disconnect() has already reported the disconnect unless it's still sending what it has
+        // queued. While it does, a reset or a timeout still fails the connection.
+        if isDisconnectRequested && !pendingDisconnect { return }
+        var error: NetworkError? = nil
+        if events.contains(.connectionReset) {
+            error = .posix(ECONNRESET)
+        } else if events.contains(.timeout) {
+            error = .posix(ETIMEDOUT)
+        }
+        if let error {
+            fail(with: socketError(preferredTo: error))
+            return
+        }
+        // A connection that closes cleanly still has data for the read source to deliver. If the
+        // read source hasn't delivered the end of it yet, it ends the connection once it does. A
+        // disconnect() that is still sending reports the disconnect itself.
+        let closed = events.contains(.disconnected) || (events.contains(.readClosed) && events.contains(.writeClosed))
+        if closed && !isDisconnectRequested {
+            if inputFinished {
+                endAfterPeerClosed()
+                return
+            }
+            peerClosed = true
+        }
+        #if !NETWORK_EMBEDDED
+        if events.contains(.keepalive) {
+            deliverNetworkProtocolEvent(.init(custom: SocketProtocolEvent.keepalive))
+        }
+        if events.contains(.adaptiveReadTimeout) {
+            deliverNetworkProtocolEvent(.init(custom: SocketProtocolEvent.readTimeout))
+        }
+        if events.contains(.adaptiveWriteTimeout) {
+            deliverNetworkProtocolEvent(.init(custom: SocketProtocolEvent.writeTimeout))
+        }
+        #endif
+    }
+    #endif
 
     private func triggerOutboundRoomAvailable() {
         fromExternal { eventContext in
@@ -1223,11 +2010,15 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
     }
 
     private func serviceWrites(in eventContext: inout NetworkContext.EventContext) {
-        guard !isConnecting else { return }
+        guard !isConnecting, !connectionEnded else { return }
 
         var shouldShutdownWrite = false
         var fatalError: NetworkError? = nil
         var remaining = FrameArray()
+        var sentAny = false
+        var becameFlowControlled = false
+        // Before the Fast Open handshake finishes, only the first write can go out, in the SYN.
+        var holdForHandshake = awaitingFastOpenHandshake && fastOpenHandshakeStarted
 
         while var frame = pendingOutputFrames.popFirst() {
             // Once we've hit backpressure or a fatal error, preserve the remaining
@@ -1237,17 +2028,27 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
                 continue
             }
 
-            var madeProgress = true
-            while frame.unclaimedLength > 0 {
+            var madeProgress = !holdForHandshake
+            while madeProgress && frame.unclaimedLength > 0 {
                 let length = frame.unclaimedLength
                 let bytesWritten = writeFrameToSocket(&frame, length: length)
                 if bytesWritten > 0 {
                     counts.sentBytes += bytesWritten
+                    sentAny = true
+                    if awaitingFastOpenHandshake {
+                        fastOpenHandshakeStarted = true
+                        holdForHandshake = true
+                    }
                 }
                 if bytesWritten == length {
                     break
                 }
                 if bytesWritten > 0 {
+                    if holdForHandshake {
+                        _ = frame.claim(fromStart: bytesWritten)
+                        madeProgress = false
+                        break
+                    }
                     // Partial write — claim the bytes that made it out and retry.
                     _ = frame.claim(fromStart: bytesWritten)
                     continue
@@ -1264,18 +2065,26 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
                 }
                 let err = CInt(-bytesWritten)
                 switch err {
-                case EAGAIN, EWOULDBLOCK, ENOBUFS:
+                case EAGAIN, EWOULDBLOCK:
                     self.log.datapath("Send buffer full, waiting for writable event")
+                    madeProgress = false
+                case ENOBUFS:
+                    // The interface's queue is full. Wait for room, and tell the upper protocol.
+                    self.log.datapath("Interface queue full, waiting for writable event")
+                    if !isFlowControlled {
+                        isFlowControlled = true
+                        becameFlowControlled = true
+                    }
                     madeProgress = false
                 case EPIPE:
                     self.log.info("Socket has been closed")
-                    fatalError = .posix(EPIPE)
+                    fatalError = socketError(preferredTo: .posix(EPIPE))
                 case ECONNRESET:
                     self.log.info("Connection reset")
-                    fatalError = .posix(ECONNRESET)
+                    fatalError = socketError(preferredTo: .posix(ECONNRESET))
                 default:
                     self.log.datapath("write failed: \(err)")
-                    fatalError = .posix(err)
+                    fatalError = socketError(preferredTo: .posix(err))
                 }
                 break
             }
@@ -1286,8 +2095,12 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             }
 
             if !madeProgress {
-                // Wait until the socket has room for the rest of this frame.
-                setSendLowWaterMark(UInt32(clamping: frame.unclaimedLength))
+                // Wait until the socket has room for the rest of this frame. A Fast Open socket
+                // skips this until it connects, because the low-water mark doesn't work before
+                // then.
+                if !awaitingFastOpenHandshake {
+                    setSendLowWaterMark(UInt32(clamping: frame.unclaimedLength))
+                }
                 // Keep this frame (and any still-queued frames) for a later attempt.
                 remaining.add(frame: frame)
                 while let next = pendingOutputFrames.popFirst() {
@@ -1306,16 +2119,20 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
 
         pendingOutputFrames = remaining
 
+        if becameFlowControlled {
+            deliverNetworkProtocolEvent(.flowControlled, in: &eventContext)
+        } else if isFlowControlled && sentAny {
+            isFlowControlled = false
+            deliverNetworkProtocolEvent(.flowAllowed, in: &eventContext)
+        }
+
         if let fatalError {
-            if waitingForWritable {
-                waitingForWritable = false
-                dispatchWriteSource?.suspend()
-            }
-            deliverDisconnectedEvent(error: fatalError, in: &eventContext)
+            fail(with: fatalError, in: &eventContext)
             return
         }
 
-        if !pendingOutputFrames.isEmpty {
+        // The socket becomes writable once the Fast Open handshake finishes.
+        if !pendingOutputFrames.isEmpty || holdForHandshake {
             if !waitingForWritable {
                 waitingForWritable = true
                 dispatchWriteSource?.resume()
@@ -1399,7 +2216,14 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         #endif
     }
 
-    private func applyTCPOptions(socket: SystemSocket, opts: TCPProtocol.Options) {
+    // An adopted socket is already connected, so it skips the options that only shape the connect
+    // and the handshake, such as the connection timeout.
+    private func applyTCPOptions(
+        socket: SystemSocket,
+        opts: TCPProtocol.Options,
+        parameters: Parameters?,
+        socketIsConnected: Bool = false
+    ) throws(NetworkError) {
         if opts.noDelay {
             do { try socket.setNoDelay(true) } catch { log.info("Failed to set TCP_NODELAY: \(error)") }
         }
@@ -1420,15 +2244,8 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
                 log.info("Failed to set TCP_MAXSEG: \(error)")
             }
         }
-        if opts.reduceBuffering {
-            // Match the C++ reduce_buffering behavior: cap unsent bytes at 16 KiB.
-            do { try socket.setNotSentLowWatermark(16 * 1024) } catch {
-                log.info("Failed to set TCP_NOTSENT_LOWAT: \(error)")
-            }
-        }
-        if opts.resetLocalPort {
-            do { try socket.setReusableLocalPort(true) } catch { log.info("Failed to set SO_REUSEPORT: \(error)") }
-        }
+        // applyConnectedOptions sets TCP_NOTSENT_LOWAT for reduceBuffering. connect handles
+        // resetLocalPort.
         #if canImport(Darwin)
         if opts.noPush {
             do { try socket.setNoPush(true) } catch { log.info("Failed to set TCP_NOPUSH: \(error)") }
@@ -1442,15 +2259,22 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
         if opts.retransmitFinDrop {
             do { try socket.setRetransmitFinDrop(true) } catch { log.info("Failed to set TCP_RXT_FINDROP: \(error)") }
         }
-        #if NETWORK_PRIVATE
-        socket.applyPrivateTCPOptions(from: opts, log)
+        #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+        try socket.applyPrivateTCPOptions(
+            from: opts,
+            parameters: parameters,
+            socketIsConnected: socketIsConnected,
+            log
+        )
         #endif
         // Zero means the option isn't set, so the kernel default applies.
-        let timeouts: [(name: CInt, label: String, seconds: UInt32)] = [
-            (TCP_CONNECTIONTIMEOUT, "TCP_CONNECTIONTIMEOUT", opts.connectionTimeout),
+        var timeouts: [(name: CInt, label: String, seconds: UInt32)] = [
             (TCP_RXT_CONNDROPTIME, "TCP_RXT_CONNDROPTIME", opts.retransmitConnectionDropTime),
             (PERSIST_TIMEOUT, "PERSIST_TIMEOUT", opts.persistTimeout),
         ]
+        if !socketIsConnected {
+            timeouts.append((TCP_CONNECTIONTIMEOUT, "TCP_CONNECTIONTIMEOUT", opts.connectionTimeout))
+        }
         for timeout in timeouts where timeout.seconds != 0 {
             do {
                 try socket.setSocketOption(
@@ -1481,7 +2305,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
             reset_keepalives: socketResetKeepalives,
             set_no_delay: socketSetNoDelay,
             set_no_push: socketSetNoPush,
-            set_no_wake_from_sleep: nil,
+            set_no_wake_from_sleep: socketSetNoWakeFromSleep,
             set_max_pacing_rate: socketSetMaxPacingRate
         )
         protocolMetadata = ProtocolMetadata<TCPProtocol>(
@@ -1512,6 +2336,7 @@ public final class SocketStreamProtocol: BottomStreamProtocol {
 struct ReceivedPacketInfo {
     var ecn: IPProtocol.ECN?
     var hopLimit: UInt8?
+    var receiveTime: NetworkClock.Instant?
 }
 
 #if canImport(Darwin)
@@ -1588,12 +2413,53 @@ enum ControlMessages {
                 if let typeOfService = value() { info.ecn = IPProtocol.ECN(rawValue: UInt8(typeOfService & 0x3)) }
             case (CInt(IPPROTO_IP), IP_RECVTTL), (CInt(IPPROTO_IPV6), SystemSocket.socketOptionIPV6HopLimit):
                 if let hopLimit = value() { info.hopLimit = UInt8(truncatingIfNeeded: hopLimit) }
+            #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+            case (SOL_SOCKET, SystemSocket.continuousTimestampMessageType):
+                guard dataLength == MemoryLayout<UInt64>.size else { break }
+                let continuous = base.loadUnaligned(fromByteOffset: dataOffset, as: UInt64.self)
+                if continuous != 0 {
+                    let microseconds = System.Time.continuousToMicroseconds(continuous)
+                    info.receiveTime = NetworkClock.Instant(microseconds: Int64(clamping: microseconds))
+                }
+            #endif
             default:
                 break
             }
             offset += aligned(length)
         }
         return info
+    }
+}
+#endif
+
+#if !NETWORK_EMBEDDED
+/// SocketProtocolEvent is an event the socket protocols report to the protocol above them: a
+/// notification from the kernel, or an error that doesn't end the flow.
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+public enum SocketProtocolEvent: DomainSpecificNetworkProtocolEvent {
+    /// A send or receive failed, and the flow goes on. A datagram socket reports this for an
+    /// ICMP error such as ECONNREFUSED.
+    case softError(NetworkError)
+    /// A send or receive went through after a soft error.
+    case softErrorCleared
+    /// The kernel sent a keepalive probe.
+    case keepalive
+    /// The kernel's adaptive read timeout fired.
+    case readTimeout
+    /// The kernel's adaptive write timeout fired.
+    case writeTimeout
+
+    public var domain: NetworkEventDomain { .init(domain: "Socket") }
+
+    public var description: String {
+        switch self {
+        case .softError(let error): "Socket soft error \(error)"
+        case .softErrorCleared: "Socket soft error cleared"
+        case .keepalive: "Socket keepalive"
+        case .readTimeout: "Socket read timeout"
+        case .writeTimeout: "Socket write timeout"
+        }
     }
 }
 #endif
@@ -1694,11 +2560,25 @@ struct SocketTransferCounts {
 
 // MARK: - Connect addressing
 
+/// Makes an address endpoint from an address the socket reported.
+@available(Network 0.1.0, *)
+private func endpoint(address: any IPAddress, port: UInt16) -> Endpoint? {
+    switch address {
+    case let address as IPv4Address: Endpoint(address: address, port: port)
+    case let address as IPv6Address: Endpoint(address: address, port: port)
+    default: nil
+    }
+}
+
 @available(Network 0.1.0, *)
 extension Endpoint {
-    /// Returns the source interface to pass to connectx, or 0 for any interface. It's the required
-    /// interface, or else this endpoint's interface.
-    fileprivate func sourceInterfaceIndex(parameters: Parameters?) -> Int {
+    /// Returns the source interface to pass to connectx, or 0 for any interface. It's the
+    /// interface the path scopes the flow to, or else the required interface, or else this
+    /// endpoint's interface.
+    fileprivate func sourceInterfaceIndex(parameters: Parameters?, path: PathProperties?) -> Int {
+        if let interface = path?.scopedInterface {
+            return interface.index
+        }
         if let interface = parameters?.requiredInterface ?? self.interface {
             return interface.index
         }
@@ -1728,6 +2608,43 @@ extension Endpoint {
 
 // MARK: - Socket helpers shared by both protocols
 
+/// SharedSourceDescriptor is the dup of one socket's descriptor that the socket's dispatch sources
+/// watch. The last source to finish cancelling closes it. The sources share one dup for two
+/// reasons, both from Linux epoll:
+///  - Two separate dups alias the same socket as distinct epoll registrations, which drop events
+///    (the read source silently stops delivering).
+///  - The socket's own fd must not be registered: cancel() unregisters asynchronously, so if
+///    SystemSocket.deinit closes it first, libdispatch hits EPOLLFREE and aborts.
+/// Darwin doesn't need this but is unaffected. I/O always uses the SystemSocket's own fd; the dup
+/// only arms the sources.
+///
+/// Each socket gets its own. reset() replaces the socket while the old sources are still
+/// cancelling, and the new sources must watch the new socket.
+@available(Network 0.1.0, *)
+private final class SharedSourceDescriptor {
+    let descriptor: CInt
+    private var sourceCount = 0
+
+    init?(duplicating socket: SystemSocket) {
+        let descriptor = socket.withFileDescriptor { dup($0) }
+        guard descriptor >= 0 else { return nil }
+        self.descriptor = descriptor
+    }
+
+    // Each source calls this when it's made, and removeSource() from its cancel handler, which
+    // runs on the context queue once libdispatch is done with the descriptor.
+    func addSource() {
+        sourceCount += 1
+    }
+
+    func removeSource() {
+        sourceCount -= 1
+        if sourceCount == 0 {
+            close(descriptor)
+        }
+    }
+}
+
 /// SocketOption describes one integer socket option to set. The label names the option in the
 /// log.
 typealias SocketOption = (level: CInt, name: CInt, value: CInt, label: String)
@@ -1739,27 +2656,66 @@ extension SystemSocket {
     // and the xnu socket headers.
     fileprivate static let socketOptionIPV6UseMinMTU: CInt = 42  // IPV6_USE_MIN_MTU
     fileprivate static let socketOptionIPV6DontFrag: CInt = 62  // IPV6_DONTFRAG
+    fileprivate static let socketOptionIPV6PreferTemporaryAddress: CInt = 63  // IPV6_PREFER_TEMPADDR
     // <netinet6/in6.h> defines these two only with __APPLE_USE_RFC_3542.
     fileprivate static let socketOptionIPV6ReceiveHopLimit: CInt = 37  // IPV6_RECVHOPLIMIT
     fileprivate static let socketOptionIPV6HopLimit: CInt = 47  // IPV6_HOPLIMIT (IPV6_3542HOPLIMIT)
     #endif
 
-    /// Connects to `address`, which belongs to `remote`. Returns false when the connect is still
-    /// in progress.
+    /// Connects to `address`, which belongs to `remote`, from the local endpoint if there is one.
+    /// Returns false when the connect is still in progress.
+    ///
+    /// On Darwin, connectx binds the local address as part of the connect. Elsewhere this binds it
+    /// first. A reset of the local port connects from port 0, so the kernel picks a new one.
     fileprivate func connect(
         to remote: Endpoint,
         address: AddressEndpoint,
-        sourceInterfaceIndex: Int
+        local: Endpoint?,
+        resetLocalPort: Bool = false,
+        sourceInterfaceIndex: Int,
+        flags: UInt32 = 0
     ) throws(NetworkError) -> Bool {
+        var source: (address: any IPAddress, port: UInt16)? = nil
+        if let local, case .address(let localAddress) = local.type {
+            let port = resetLocalPort ? 0 : local.port
+            switch (localAddress.type, address.type) {
+            case (.v4(let ip, _), .v4):
+                source = (ip, port)
+            case (.v6(let ip, _), .v6):
+                source = (ip, port)
+            default:
+                // A local address of the other family can't be the source, so the kernel picks one.
+                break
+            }
+        }
+        #if !canImport(Darwin)
+        if let source {
+            do {
+                try bindSocket(address: source.address, port: source.port)
+            } catch {
+                // Report what bind returned, such as EADDRINUSE.
+                throw (error as? NetworkError) ?? .posix(EADDRNOTAVAIL)
+            }
+        }
+        #endif
         switch address.type {
         case .v4(let ip, _):
-            return try connectSocket(to: ip, port: remote.port, interfaceIndex: sourceInterfaceIndex, scopeID: 0)
+            return try connectSocket(
+                to: ip,
+                port: remote.port,
+                interfaceIndex: sourceInterfaceIndex,
+                scopeID: 0,
+                source: source,
+                flags: flags
+            )
         case .v6(let ip, _):
             return try connectSocket(
                 to: ip,
                 port: remote.port,
                 interfaceIndex: sourceInterfaceIndex,
-                scopeID: remote.socketScopeID
+                scopeID: remote.socketScopeID,
+                source: source,
+                flags: flags
             )
         case .unix(let path):
             return try connectSocket(toPath: path)
@@ -1768,34 +2724,36 @@ extension SystemSocket {
         }
     }
 
-    /// Binds to a local IP address and port. Any other kind of address is left unbound.
-    fileprivate func bind(to address: AddressEndpoint, port: UInt16) throws(NetworkError) {
-        do {
-            switch address.type {
-            case .v4(let ip, _):
-                try bindSocket(address: ip, port: port)
-            case .v6(let ip, _):
-                try bindSocket(address: ip, port: port)
-            default:
-                break
-            }
-        } catch {
-            // Report what bind returned, such as EADDRINUSE.
-            throw (error as? NetworkError) ?? .posix(EADDRNOTAVAIL)
-        }
-    }
-
-    /// Sets the socket-level options from the parameters, and logs each one it couldn't set.
-    fileprivate func applySocketOptions(from parameters: Parameters, _ log: borrowing NetworkLoggerState) {
-        var options: [SocketOption] = []
+    /// Sets the socket-level options from the parameters. It throws if it couldn't set an option
+    /// the flow requires, such as the reuse options the parameters ask for.
+    fileprivate func applySocketOptions(
+        from parameters: Parameters,
+        remote: Endpoint,
+        path: PathProperties?,
+        context: NetworkContext,
+        isReset: Bool = false,
+        _ log: borrowing NetworkLoggerState
+    ) throws(NetworkError) {
         if parameters.reuseLocalAddress {
-            options.append((SOL_SOCKET, SO_REUSEADDR, 1, "SO_REUSEADDR"))
-            options.append((SOL_SOCKET, SO_REUSEPORT, 1, "SO_REUSEPORT"))
+            for option in [(SO_REUSEADDR, "SO_REUSEADDR"), (SO_REUSEPORT, "SO_REUSEPORT")] {
+                do {
+                    try setSocketOption(level: SOL_SOCKET, name: option.0, value: CInt(1))
+                } catch {
+                    log.error("Failed to set \(option.1): \(error)")
+                    throw error
+                }
+            }
         }
-        apply(options, log)
         #if NETWORK_PRIVATE
         // SocketProtocol_C.swift supplies this helper on the internal side of the mirror.
-        applyPrivateSocketOptions(from: parameters, log)
+        try applyPrivateSocketOptions(
+            from: parameters,
+            remote: remote,
+            path: path,
+            context: context,
+            isReset: isReset,
+            log
+        )
         #endif
     }
 
@@ -1836,6 +2794,19 @@ extension SystemSocket {
         }
 
         #if canImport(Darwin)
+        if isIPv6 && opts.localAddressPreference != .any {
+            let preferTemporary: CInt = opts.localAddressPreference == .temporary ? 1 : 0
+            do {
+                try setSocketOption(
+                    level: CInt(IPPROTO_IPV6),
+                    name: SystemSocket.socketOptionIPV6PreferTemporaryAddress,
+                    value: preferTemporary
+                )
+            } catch {
+                log.info("Failed to set IPV6_PREFER_TEMPADDR: \(error)")
+            }
+        }
+
         if isIPv6 && opts.flags.contains(.useMinimumMTU) {
             do {
                 try setSocketOption(
@@ -1952,6 +2923,25 @@ private let socketSetNoPush: @convention(c) (UnsafeMutableRawPointer?, Bool) -> 
     }
     #else
     _ = box
+    return -1
+    #endif
+}
+
+// The public SDK doesn't declare the no-wake-from-sleep option, so the public package can't set it.
+@available(Network 0.1.0, *)
+private let socketSetNoWakeFromSleep: @convention(c) (UnsafeMutableRawPointer?, Bool) -> Int32 = { handle, enabled in
+    guard let handle else { return -1 }
+    let box = Unmanaged<SocketHandleBox>.fromOpaque(handle).takeUnretainedValue()
+    #if NETWORK_PRIVATE && !NETWORK_DRIVERKIT
+    do {
+        try box.socket.setNoWakeFromSleep(enabled)
+        return 0
+    } catch {
+        return -1
+    }
+    #else
+    _ = box
+    _ = enabled
     return -1
     #endif
 }
