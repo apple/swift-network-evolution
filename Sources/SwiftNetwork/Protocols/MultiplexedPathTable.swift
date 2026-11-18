@@ -51,6 +51,10 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
 
     private var liveCount = 0
 
+    // The position of the entry `withPath` that was last used because withPath / find
+    // operations can several times during packet processing
+    @usableFromInline var lastCachedPosition = 0
+
     public init() {}
 
     public var count: Int { liveCount }
@@ -59,11 +63,13 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
 
     // The position of the entry for `pathID`, if it is in the table.
     //
-    // Time: average O(p) for p paths
+    // Time: O(1) for a path that matches the last cached position, otherwise average O(p) for p paths
     @inline(always)
     public func find(_ pathID: MultiplexingPathIdentifier) -> Int? {
-        var position = 0
         let end = entries.count
+        let hint = lastCachedPosition
+        if hint < end, entries[hint].identifier == pathID { return hint }
+        var position = 0
         while position < end {
             if entries[position].identifier == pathID { return position }
             position &+= 1
@@ -142,6 +148,9 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
         _ body: (inout Path) throws(E) -> R
     ) throws(E) -> R? {
         guard let entry = find(pathID) else { return nil }
+        if lastCachedPosition != entry {
+            lastCachedPosition = entry
+        }
         return try body(&entries[entry].path!)
     }
 
@@ -156,6 +165,7 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
     // state to unregister (`destroy(in:)`) has to be destroyed before this is called.
     public mutating func removeAll() {
         entries = NetworkUniqueArray<MultiplexedPathTableEntry<Path>>()
+        lastCachedPosition = 0
         liveCount = 0
     }
 }

@@ -513,6 +513,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     private(set) var tlsOptions: SwiftTLSProtocol.Options?
     private(set) var testSendingShortPackets = false
     private(set) var migrationSupported = false
+    #if !NETWORK_EMBEDDED
+    var trafficAnalysis = TrafficAnalysisState()
+    #endif
 
     private var pendOutboundData = false  // Don't immediately process application sends
 
@@ -732,6 +735,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
             testSendingShortPackets =
                 quicConnectionOptions.testSendingShortPackets
+
+            #if !NETWORK_EMBEDDED
+            trafficAnalysis.configure(quicConnectionOptions.trafficAnalysisDefenses)
+            #endif
 
             forceUnsupportedClientVersion = quicConnectionOptions.forceUnsupportedClientVersion
 
@@ -3093,7 +3100,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         if case .allFlows = flowID {
             let metadata = QUICProtocol.metadata()
-            metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
+            metadata.mutablePerProtocolMetadata { metadata in
+                metadata?.replaceConnectionMetadata(self.connectionMetadata)
+            }
             return metadata as? ProtocolMetadata<P>
         }
 
@@ -3102,32 +3111,35 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         if let datagramInfo {
             let metadata = QUICProtocol.metadata()
-            metadata.perProtocolMetadata?.datagramFlowID = datagramInfo.flowID
-            metadata.perProtocolMetadata?.usableDatagramFrameSize = UInt16(
-                datagramInfo.usableSize
-            )
-            metadata.perProtocolMetadata?.isDatagramFlow = true
-            metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
+            metadata.mutablePerProtocolMetadata { metadata in
+                metadata?.datagramFlowID = datagramInfo.flowID
+                metadata?.usableDatagramFrameSize = UInt16(
+                    datagramInfo.usableSize
+                )
+                metadata?.isDatagramFlow = true
+                metadata?.replaceConnectionMetadata(self.connectionMetadata)
+            }
             return metadata as? ProtocolMetadata<P>
         }
 
         let streamInfo = withFlow(flowID) {
             (
                 stream: inout Flow
-            ) -> (metadata: QUICStreamProtocol.QUICStreamMetadata, id: QUICStreamID, type: QUICStreamType?)? in
+            ) -> (metadata: ProtocolMetadata<QUICStreamProtocol>, id: QUICStreamID, type: QUICStreamType?)? in
             guard let streamID = stream.streamID else { return nil }
-            return (stream.streamMetadata, streamID, stream.streamType)
+            return (stream.streamMetadata(), streamID, stream.streamType)
         }
         guard let streamInfo = streamInfo ?? nil else {
             return nil
         }
 
-        let metadata = QUICProtocol.metadata()
-        metadata.perProtocolMetadata = streamInfo.metadata
-        metadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
-        metadata.perProtocolMetadata?.streamID = streamInfo.id.value
-        if let streamType = streamInfo.type {
-            metadata.perProtocolMetadata?.streamType = streamType
+        let metadata = streamInfo.metadata
+        metadata.mutablePerProtocolMetadata { metadata in
+            metadata?.replaceConnectionMetadata(self.connectionMetadata)
+            metadata?.streamID = streamInfo.id.value
+            if let streamType = streamInfo.type {
+                metadata?.streamType = streamType
+            }
         }
         return metadata as? ProtocolMetadata<P>
     }
@@ -4817,6 +4829,23 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 now: self.now
             )
         }
+        #if !NETWORK_EMBEDDED
+        let packetPadding: TrafficAnalysisDefenses.Padding?
+        if trafficAnalysis.isPaddingEnabled {
+            packetPadding = trafficAnalysis.padding(
+                for: packetNumberSpace,
+                isPMTUDProbe: pendingItems.pmtudProbeMSS != nil,
+                isUnvalidatedServer: isServer && !receivedHandshakePacket
+            )
+        } else {
+            packetPadding = nil
+        }
+        pendingItems.trafficAnalysisPadding = packetPadding
+        // Cleared on return so that later packets do not inherit it.
+        defer { pendingItems.trafficAnalysisPadding = nil }
+        // Read once, not for each packet below.
+        let isChaffEnabled = trafficAnalysis.isChaffEnabled
+        #endif
 
         // Request a full size frame, up to the available congestion window,
         // to be able to greedy fill without pre-calculating size
@@ -5014,7 +5043,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 path.congestionControlPacketsSent(bytesSent: sentLength, qlog: qLog)
             }
 
+            // Read before the record is consumed.
             let carriesAck = sentPacketRecord.transmittedItems.ackFrame != nil
+            #if !NETWORK_EMBEDDED
+            let carriesChaff = isChaffEnabled && sentPacketRecord.transmittedItems.isChaff
+            #endif
             sentPackets.append(sentPacketRecord)
             // Account for the ACK here, where it is known to be sent, rather
             // than when it is built: an ACK can be built and then held back,
@@ -5022,6 +5055,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             if carriesAck {
                 ack.sent(self.now)
             }
+
+            #if !NETWORK_EMBEDDED
+            if isChaffEnabled, packetNumberSpace == .applicationData,
+                let delay = trafficAnalysis.notePacketSent(
+                    isActivity: pendingItems.wroteNonPingAckElicitingFrame,
+                    carriesChaff: carriesChaff,
+                    now: self.now
+                ),
+                let chaffTimerID = trafficAnalysis.chaffTimerID
+            {
+                timer.reschedule(identifier: chaffTimerID, fromNow: delay, timerNow: self.now, in: &eventContext)
+            }
+            #endif
 
             if isInFlightEligible {
                 totalSendBytes += UInt64(totalPacketLength)
@@ -5658,7 +5704,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
         // This function should only be called when conn state changed to connected
         // Setup all streams and tell all flows that they are ready
-        readyAllOutboundStreams(in: &eventContext)
+        readyAllOutboundStreams(announcingHandshake: true, in: &eventContext)
 
         log.notice("Delivering connected")
         deliverConnectedEvent(flow: .allFlows, in: &eventContext)
@@ -5672,6 +5718,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Configure a keep alive timer that was set up before we were connected.
             keepaliveConfigure(duration: keepaliveDuration, in: &eventContext)
         }
+        #if !NETWORK_EMBEDDED
+        chaffStart(in: &eventContext)
+        #endif
 
         // Starting PMTUD sends a probe, so the path is borrowed for work while it starts
         if let currentPathID {
@@ -6867,9 +6916,15 @@ extension QUICConnection {
 
     // This function should only be called when the connection is ready,
     // or we are sending early data
-    func readyAllOutboundStreams(in eventContext: inout NetworkContext.EventContext) {
+    func readyAllOutboundStreams(
+        announcingHandshake: Bool,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         applyToAllStreams(in: &eventContext) { (stream: inout Flow, eventContext: inout NetworkContext.EventContext) in
             let flowID = stream.flowIdentifier
+            if announcingHandshake {
+                stream.deliverHandshakeComplete(in: &eventContext)
+            }
             if stream.sendState == .invalid && stream.receiveState == .invalid {
                 if !readyPendingStream(&stream, flowID: flowID, in: &eventContext) {
                     log.error("Could not ready pending stream")
@@ -7088,16 +7143,12 @@ extension QUICConnection {
             // The stream is fully set up before it joins the flow table, where it can only be
             // borrowed from then on.
             let newStreamInstance = newStream.identifier
-            let newStreamMetadata = newStream.streamMetadata
+            let newStreamMetadata = newStream.streamMetadata(messageIdentifier: inboundStreamMessageIdentifier)
             insertFlow(newStream, for: newFlowIdentifier)
 
             // The message identifier names a message; a stream's metadata is not one, so inbound
             // streams share one, which saves the locked counter a fresh insecure identifier takes.
-            let abstractMetadata: AbstractProtocolMetadata = ProtocolMetadata<QUICStreamProtocol>(
-                protocolIdentifier: QUICStreamProtocol.identifier,
-                perProtocolMetadata: newStreamMetadata,
-                messageIdentifier: inboundStreamMessageIdentifier
-            )
+            let abstractMetadata: AbstractProtocolMetadata = newStreamMetadata
             deliverNewInboundFlowEvent(
                 newStreamInstance,
                 flowMetadata: abstractMetadata,
@@ -7269,10 +7320,12 @@ extension QUICConnection {
                 newFlow.updateUsableDatagramFrameSize(connection: self, path: path)
             }
             let datagramMetadata = QUICProtocol.metadata()
-            datagramMetadata.perProtocolMetadata?.datagramFlowID = newFlow.flowID
-            datagramMetadata.perProtocolMetadata?.isDatagramFlow = true
-            datagramMetadata.perProtocolMetadata?.usableDatagramFrameSize = UInt16(newFlow.usableDatagramSize)
-            datagramMetadata.perProtocolMetadata?.quicConnectionMetadata = self.connectionMetadata
+            datagramMetadata.mutablePerProtocolMetadata { metadata in
+                metadata?.datagramFlowID = newFlow.flowID
+                metadata?.isDatagramFlow = true
+                metadata?.usableDatagramFrameSize = UInt16(newFlow.usableDatagramSize)
+                metadata?.replaceConnectionMetadata(self.connectionMetadata)
+            }
             newFlow.log.debug("Created inbound datagram flow for \(newFlowIdentifier)")
             insertSecondaryFlow(newFlow, for: newFlowIdentifier)
             secondaryInboundFlowLinkage.deliverNewInboundFlowEvent(

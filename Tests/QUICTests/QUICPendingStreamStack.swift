@@ -36,6 +36,11 @@ extension XCTestCase {
         let storage: TestNetworkProtocolStorage
         let connection: QUICConnection
         let harness: StreamUpperHarness<TestStreamLinkageFamily>
+        let streamListener: TestStreamListenerLinkage
+        let parameters: Parameters
+        let path: PathProperties
+        let local: Endpoint
+        let remote: Endpoint
     }
 
     /// Builds a connection as it stands while a handshake is still in flight: a path to send on, and
@@ -44,7 +49,7 @@ extension XCTestCase {
     /// The connection is a server, so the peer's transport parameters only have to carry the
     /// connection ID of the path they arrived on; a client would also check the original destination
     /// connection ID it generated, which it keeps to itself.
-    func makeAsynchronousHandshakeStack() -> AsynchronousHandshakeStack? {
+    func makeAsynchronousHandshakeStack(peerMaxBidirectionalStreams: UInt64 = 4) -> AsynchronousHandshakeStack? {
         let storage = TestNetworkProtocolStorage(context: .implicitContext)
         let (streamListener, _, _) = NetworkContext.implicitContext.onQueue {
             storage.createTestQUICInstance()
@@ -148,7 +153,7 @@ extension XCTestCase {
             // has them before verification finishes.
             var peerTransportParameters = TransportParameters(logPrefixer: LogPrefixer())
             peerTransportParameters.append(.initialSCID(connectionID: peerConnectionID))
-            peerTransportParameters.append(.initialMaxStreamsBidirectional(value: 4))
+            peerTransportParameters.append(.initialMaxStreamsBidirectional(value: peerMaxBidirectionalStreams))
             peerTransportParameters.append(.initialMaxStreamsUnidirectional(value: 4))
             peerTransportParameters.append(.initialMaxData(value: 1 << 20))
             peerTransportParameters.append(.initialMaxStreamDataBidirectionalLocal(value: 1 << 16))
@@ -172,7 +177,16 @@ extension XCTestCase {
             XCTFail("Failed to build an upper harness")
             return nil
         }
-        return .init(storage: storage, connection: connection, harness: upperHarness)
+        return .init(
+            storage: storage,
+            connection: connection,
+            harness: upperHarness,
+            streamListener: streamListener,
+            parameters: parameters,
+            path: path,
+            local: local,
+            remote: remote
+        )
     }
 
     func destroy(_ stack: AsynchronousHandshakeStack) {

@@ -162,4 +162,33 @@ final class SwiftNetworkMultiplexedPathTableTests: XCTestCase {
         XCTAssertEqual(seen, [1, 2, 9, 4])
         XCTAssertEqual(table.pathIdentifiers.sorted(), [1, 2, 4, 9, 10])
     }
+
+    // The entry that was lent out last is looked at first, and a hint that no longer fits is never trusted
+    func testLookupFollowsTheLastPathLentAndSurvivesAStaleHint() {
+        var table = MultiplexedPathTable<TestPath>()
+        for id in 1...3 { table.insert(TestPath(value: id * 10), for: id) }
+        XCTAssertEqual(value(&table, 3), 30)
+        XCTAssertEqual(table.lastCachedPosition, 2)
+        XCTAssertEqual(table.find(3), 2)
+        XCTAssertEqual(value(&table, 1), 10)
+        XCTAssertEqual(table.lastCachedPosition, 0)
+        XCTAssertEqual(value(&table, 3), 30)
+
+        // The hinted entry is removed and reused by another path: the old identifier is not found there
+        XCTAssertEqual(table.lastCachedPosition, 2)
+        _ = table.remove(3)
+        XCTAssertNil(value(&table, 3))
+        XCTAssertNil(table.find(3))
+        table.insert(TestPath(value: 40), for: 4)
+        XCTAssertEqual(table.find(4), 2)
+        XCTAssertEqual(value(&table, 4), 40)
+        XCTAssertEqual(value(&table, 2), 20)
+
+        // A hint past the end of an emptied table is ignored
+        XCTAssertEqual(table.lastCachedPosition, 1)
+        table.removeAll()
+        XCTAssertNil(table.find(2))
+        table.insert(TestPath(value: 5), for: 5)
+        XCTAssertEqual(value(&table, 5), 5)
+    }
 }

@@ -155,6 +155,9 @@ extension Packet {
         } else {
             shorthandFrames = nil
         }
+        #if !NETWORK_EMBEDDED
+        pendingItems.headerAndTagLength = reservedHeaderAndTagLength
+        #endif
         do throws(QUICError) {
             try pendingItems.write(
                 into: &outboundFrame,

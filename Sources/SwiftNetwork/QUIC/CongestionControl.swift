@@ -121,15 +121,21 @@ struct CongestionControlState {
     }
 
     mutating func packetsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant, log: LogPrefixer) {
-        let bytesAcked = UInt64(bytesAcked)
-        decrementBytesInFlight(bytesAcked, log: log)
         if packetInRecovery(sentTime: sentTime) {
             // Dont update the congestion window
             log.datapath("Packet was sent before recovery, ignore")
+            packetsAcked(bytesAcked: bytesAcked, creditedBytes: 0, log: log)
             return
         }
+        packetsAcked(bytesAcked: bytesAcked, creditedBytes: bytesAcked, log: log)
+    }
+
+    /// Aggregate form of the per-packet call. `bytesAcked` leave flight; only `creditedBytes`, the
+    /// share sent after recovery started, count towards the window growth done later in ackEnd.
+    mutating func packetsAcked(bytesAcked: Int, creditedBytes: Int, log: LogPrefixer) {
+        decrementBytesInFlight(UInt64(bytesAcked), log: log)
         // Congestion window is updated later in ackEnd
-        self.bytesAcked += bytesAcked
+        self.bytesAcked += UInt64(creditedBytes)
     }
 
     mutating func packetSent(bytesSent: Int, log: LogPrefixer, qlog: QLog? = nil) {
@@ -312,6 +318,10 @@ struct CongestionControl: ~Copyable {
 
     mutating func packetsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant) {
         state.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime, log: log)
+    }
+
+    mutating func packetsAcked(bytesAcked: Int, creditedBytes: Int) {
+        state.packetsAcked(bytesAcked: bytesAcked, creditedBytes: creditedBytes, log: log)
     }
 
     mutating func packetDiscarded(bytesSent: Int, qlog: QLog? = nil) {
