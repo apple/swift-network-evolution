@@ -404,7 +404,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         let quicFrame = try FrameResetStream(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 55)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(55))
         XCTAssertEqual(quicFrame.code, 41)
         XCTAssertEqual(quicFrame.finalSize, 33344)
         frame.finalize(success: true)
@@ -435,7 +435,7 @@ class QUICFrameTests: XCTestCase {
             0x80, 0x00, 0x82, 0x40,
         ]
         var frame = Frame(count: 7)
-        try FrameResetStream.write(frame: &frame, id: 55, code: 41, finalSize: 33344, stats: &stats)
+        try FrameResetStream.write(frame: &frame, id: QUICStreamID(55), code: 41, finalSize: 33344, stats: &stats)
         XCTAssertTrue(frame.allBytesCopy!.elementsEqual(expectedBytes))
         frame.finalize(success: true)
     }
@@ -445,7 +445,7 @@ class QUICFrameTests: XCTestCase {
         XCTAssertThrowsError(
             try FrameResetStream.write(
                 frame: &frame,
-                id: 55,
+                id: QUICStreamID(55),
                 code: 41,
                 finalSize: 33344,
                 stats: &stats
@@ -464,7 +464,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         let quicFrame = try FrameStopSending(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 92)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(92))
         XCTAssertEqual(quicFrame.code, 11111)
         frame.finalize(success: true)
     }
@@ -492,7 +492,7 @@ class QUICFrameTests: XCTestCase {
             0x5c, 0x6b, 0x67,
         ]
         var frame = Frame(count: expectedBytes.count)
-        try FrameStopSending.write(frame: &frame, id: 92, code: 11111, stats: &stats)
+        try FrameStopSending.write(frame: &frame, id: QUICStreamID(92), code: 11111, stats: &stats)
         XCTAssertTrue(frame.allBytesCopy!.elementsEqual(expectedBytes))
         frame.finalize(success: true)
     }
@@ -500,7 +500,7 @@ class QUICFrameTests: XCTestCase {
     func testStopSendingShortBuffer() throws {
         var frame = Frame(count: 4)
         XCTAssertThrowsError(
-            try FrameStopSending.write(frame: &frame, id: 92, code: 11111, stats: &stats)
+            try FrameStopSending.write(frame: &frame, id: QUICStreamID(92), code: 11111, stats: &stats)
         )
         frame.finalize(success: true)
     }
@@ -640,7 +640,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 6)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(6))
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
@@ -656,7 +656,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 4)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(4))
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, false)
@@ -690,7 +690,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 6)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(6))
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
@@ -706,7 +706,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 4)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(4))
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, true)
@@ -741,7 +741,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 6)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(6))
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
@@ -758,7 +758,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 4)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(4))
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, false)
@@ -917,7 +917,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 6)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(6))
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
@@ -934,7 +934,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 4)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(4))
         XCTAssertEqual(quicFrame.offset, 0)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, true)
@@ -1112,7 +1112,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 6)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(6))
         XCTAssertEqual(quicFrame.offset, 10)
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
@@ -1129,7 +1129,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 4)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(4))
         XCTAssertEqual(quicFrame.offset, 10)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, false)
@@ -1165,7 +1165,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 6)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(6))
         XCTAssertEqual(quicFrame.offset, 10)
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
@@ -1182,7 +1182,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 4)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(4))
         XCTAssertEqual(quicFrame.offset, 10)
         XCTAssertEqual(quicFrame.length, 0)
         XCTAssertEqual(quicFrame.isFinal, true)
@@ -1219,7 +1219,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 6)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(6))
         XCTAssertEqual(quicFrame.offset, 10)
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
@@ -1236,7 +1236,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 4)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(4))
         XCTAssertEqual(quicFrame.offset, 1)
         XCTAssertEqual(quicFrame.length, 0)
         quicFrame.frame.finalize(success: true)
@@ -1674,7 +1674,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 6)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(6))
         XCTAssertEqual(quicFrame.offset, 10)
         XCTAssertEqual(quicFrame.length, 4)
         XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
@@ -1691,7 +1691,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         var quicFrame = try FrameStreamReceived(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 4)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(4))
         XCTAssertEqual(quicFrame.offset, 1)
         XCTAssertEqual(quicFrame.length, 0)
         quicFrame.frame.finalize(success: true)
@@ -2035,7 +2035,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         let quicFrame = try FrameMaxStreamData(frame: &frame)
-        XCTAssertEqual(quicFrame.id, 333)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(333))
         XCTAssertEqual(quicFrame.max, 1_987_573)
         frame.finalize(success: true)
     }
@@ -2063,14 +2063,14 @@ class QUICFrameTests: XCTestCase {
             0x80, 0x1e, 0x53, 0xf5,
         ]
         var frame = Frame(count: expectedBytes.count)
-        try FrameMaxStreamData.write(frame: &frame, id: 333, max: 1_987_573)
+        try FrameMaxStreamData.write(frame: &frame, id: QUICStreamID(333), max: 1_987_573)
         XCTAssertTrue(frame.allBytesCopy!.elementsEqual(expectedBytes))
         frame.finalize(success: true)
     }
 
     func testMaxStreamDataShortBuffer() throws {
         var frame = Frame(count: 6)
-        XCTAssertThrowsError(try FrameMaxStreamData.write(frame: &frame, id: 333, max: 1_987_573))
+        XCTAssertThrowsError(try FrameMaxStreamData.write(frame: &frame, id: QUICStreamID(333), max: 1_987_573))
         frame.finalize(success: true)
     }
 
@@ -2194,7 +2194,7 @@ class QUICFrameTests: XCTestCase {
         ]
         var frame = Frame(copyBuffer: bytes)
         let quicFrame = try FrameStreamDataBlocked(frame: &frame, stats: &stats)
-        XCTAssertEqual(quicFrame.id, 92)
+        XCTAssertEqual(quicFrame.id, QUICStreamID(92))
         XCTAssertEqual(quicFrame.limit, 8_883_883)
         frame.finalize(success: true)
     }
@@ -2222,7 +2222,7 @@ class QUICFrameTests: XCTestCase {
             0x80, 0x87, 0x8e, 0xab,
         ]
         var frame = Frame(count: expectedBytes.count)
-        try FrameStreamDataBlocked.write(frame: &frame, id: 92, limit: 8_883_883, stats: &stats)
+        try FrameStreamDataBlocked.write(frame: &frame, id: QUICStreamID(92), limit: 8_883_883, stats: &stats)
         XCTAssertTrue(frame.allBytesCopy!.elementsEqual(expectedBytes))
         frame.finalize(success: true)
     }
@@ -2230,7 +2230,7 @@ class QUICFrameTests: XCTestCase {
     func testStreamDataBlockedShortBuffer() throws {
         var frame = Frame(count: 6)
         XCTAssertThrowsError(
-            try FrameStreamDataBlocked.write(frame: &frame, id: 92, limit: 8_883_883, stats: &stats)
+            try FrameStreamDataBlocked.write(frame: &frame, id: QUICStreamID(92), limit: 8_883_883, stats: &stats)
         )
         frame.finalize(success: true)
     }
@@ -3799,12 +3799,12 @@ class QUICFrameTests: XCTestCase {
 
         XCTAssertTrue(
             QUICFrame.resetStream(
-                frame: FrameResetStream(id: 1, code: 2, finalSize: 3)
+                frame: FrameResetStream(id: QUICStreamID(1), code: 2, finalSize: 3)
             ).isAckEliciting
         )
 
         XCTAssertTrue(
-            QUICFrame.stopSending(frame: FrameStopSending(id: 1, code: 2)).isAckEliciting
+            QUICFrame.stopSending(frame: FrameStopSending(id: QUICStreamID(1), code: 2)).isAckEliciting
         )
         XCTAssertTrue(
             QUICFrame.crypto(
@@ -3821,7 +3821,7 @@ class QUICFrameTests: XCTestCase {
         )
 
         XCTAssertTrue(
-            QUICFrame.stream(frame: FrameStreamReceived(id: 0, offset: 0, data: [])).isAckEliciting
+            QUICFrame.stream(frame: FrameStreamReceived(id: QUICStreamID(0), offset: 0, data: [])).isAckEliciting
         )
 
         XCTAssertTrue(
@@ -3830,7 +3830,7 @@ class QUICFrameTests: XCTestCase {
 
         XCTAssertTrue(
             QUICFrame.maxStreamData(
-                frame: FrameMaxStreamData(id: 42, max: 4200)
+                frame: FrameMaxStreamData(id: QUICStreamID(42), max: 4200)
             ).isAckEliciting
         )
 
@@ -3852,7 +3852,7 @@ class QUICFrameTests: XCTestCase {
 
         XCTAssertTrue(
             QUICFrame.streamDataBlocked(
-                frame: FrameStreamDataBlocked(id: 0, limit: 20000)
+                frame: FrameStreamDataBlocked(id: QUICStreamID(0), limit: 20000)
             ).isAckEliciting
         )
 

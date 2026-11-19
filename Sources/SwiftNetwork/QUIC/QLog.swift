@@ -447,12 +447,12 @@ struct EventFrame {
             data["acked_ranges"] = frame.buildAckRanges()
         case .resetStream(let frame):
             data["frame_type"] = "reset_stream"
-            data["stream_id"] = frame.id
+            data["stream_id"] = frame.id.value
             data["final_size"] = frame.finalSize
             data["error_code"] = frame.code
         case .stopSending(let frame):
             data["frame_type"] = "stop_sending"
-            data["stream_id"] = frame.id
+            data["stream_id"] = frame.id.value
             data["error_code"] = frame.code
         case .crypto(let frame):
             data["frame_type"] = "crypto"
@@ -464,14 +464,14 @@ struct EventFrame {
         case .stream(let frame):
             data["frame_type"] = "stream"
             data["offset"] = frame.offset
-            data["stream_id"] = frame.id
+            data["stream_id"] = frame.id.value
             data["length"] = frame.length
         case .maxData(let frame):
             data["frame_type"] = "max_data"
             data["maximum"] = frame.max
         case .maxStreamData(let frame):
             data["frame_type"] = "max_stream_data"
-            data["stream_id"] = frame.id
+            data["stream_id"] = frame.id.value
             data["maximum"] = frame.max
         case .maxStreamsBidirectional(let frame):
             data["frame_type"] = "max_streams"
@@ -486,7 +486,7 @@ struct EventFrame {
             data["limit"] = frame.limit
         case .streamDataBlocked(let frame):
             data["frame_type"] = "stream_data_blocked"
-            data["stream_id"] = frame.id
+            data["stream_id"] = frame.id.value
             data["limit"] = frame.limit
         case .streamsBlockedBidirectional(let frame):
             data["frame_type"] = "streams_blocked"

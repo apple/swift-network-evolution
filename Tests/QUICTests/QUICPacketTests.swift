@@ -61,10 +61,10 @@ final class PacketTests: XCTestCase {
     func testCleanupReceivedFrames_drainsEntireDeque() {
         var parser = PacketParser(logPrefixer: LogPrefixer("[PacketTests]"))
         parser.framesReceived.append(
-            .stream(frame: FrameStreamReceived(id: 0, offset: 0, data: [1, 2, 3]))
+            .stream(frame: FrameStreamReceived(id: QUICStreamID(0), offset: 0, data: [1, 2, 3]))
         )
         parser.framesReceived.append(
-            .stream(frame: FrameStreamReceived(id: 4, offset: 0, data: [4, 5, 6]))
+            .stream(frame: FrameStreamReceived(id: QUICStreamID(4), offset: 0, data: [4, 5, 6]))
         )
 
         parser.cleanupReceivedFrames()

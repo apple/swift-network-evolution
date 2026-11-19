@@ -5704,7 +5704,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         guard let streamID = stream.streamID,
             let _ = knownFlows[streamID]
         else {
-            log.error("Cannot deliver inbound aborted event: no flow for stream \(stream.streamID?.value ?? 0)")
+            log.error(
+                "Cannot deliver inbound aborted event: no flow for stream \(stream.streamID?.description ?? "(unassigned)")"
+            )
             return
         }
         stream.deliverInboundAbortedEvent(error: error, in: &eventContext)
@@ -5743,7 +5745,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         stream.closed = true
         stream.deliverDisconnectedEvent(error: error, in: &eventContext)
         knownFlows.removeValue(forKey: streamID)
-        log.datapath("Closed stream \(streamID.value)")
+        log.datapath("Closed stream \(streamID)")
 
         if let streamID = stream.streamID {
             if streamID.isReceiveOnly(server: self.isServer) {
@@ -5866,29 +5868,29 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // We were unable to look up the stream ID and it's not
             // a stream ID that should have been opened by the peer.
             // Check if it's a stream that we already closed.
-            if streamID.value < largestOutboundStreamID.value {
-                log.info("[\(streamID)] already closed - last : \(largestOutboundStreamID.value)")
+            if streamID < largestOutboundStreamID {
+                log.info("[\(streamID)] already closed - last : \(largestOutboundStreamID)")
                 return true
             } else {
                 let peer = isServer ? "server" : "client"
                 let streamIntention = isServer ? "client" : "server"
                 log.error(
-                    "Peer (\(peer) trying to open \(streamIntention) stream - last : \(largestOutboundStreamID.value)"
+                    "Peer (\(peer) trying to open \(streamIntention) stream - last : \(largestOutboundStreamID)"
                 )
                 self.closeError = QUICTransportError(.streamStateError, "invalid stream ID")
                 return false
             }
         }
         if self.streamIDBlocked(streamID: streamID) {
-            log.error("Stream ID \(streamID.value) exceeded the maximum allowed")
+            log.error("Stream ID \(streamID) exceeded the maximum allowed")
             self.closeError = QUICTransportError(.streamLimitError, "exceeded maximum stream ID")
             return false
         }
         // Check if the stream is already closed.  If we got here, it was
         // because the lookup failed.  Don't re-create streams that are
         // already closed.
-        if streamID.value < nextInboundStreamID.value {
-            log.info("Not recreating closed stream \(streamID.value)")
+        if streamID < nextInboundStreamID {
+            log.info("Not recreating closed stream \(streamID)")
             return true
         } else {
             return false
@@ -5950,11 +5952,7 @@ extension QUICConnection {
         log.datapath(
             "Received STREAM frame with id: \(frame.id), offset: \(frame.offset) data length: \(frame.length)"
         )
-        guard let streamID = QUICStreamID(frame.id) else {
-            log.error("Stream frame with invalid stream ID \(frame.id)")
-            frame.frame.finalize(success: true)
-            return false
-        }
+        let streamID = frame.id
 
         /*
          * An endpoint that receives a STREAM frame for a send-only stream MUST
@@ -6084,29 +6082,20 @@ extension QUICConnection {
     ) -> Bool {
         log.datapath("Process MAX_STREAM_DATA")
 
-        // 1. check streamID against the protocol streamID
-        //    - if is recv only, close STREAM_STATE_ERROR
-        let streamID = QUICStreamID(frame.id)
-        guard let streamID else {
-            close(with: .streamStateError, "Invalid stream ID", in: &eventContext)
-            return false
-        }
-        /*
-         * An endpoint that receives a MAX_STREAM_DATA frame for a receive-only
-         * stream MUST terminate the connection with error STREAM_STATE_ERROR
-         */
+        let streamID = frame.id
+
+        // An endpoint that receives a MAX_STREAM_DATA frame for a receive-only
+        // stream MUST terminate the connection with error STREAM_STATE_ERROR
         if streamID.isReceiveOnly(server: self.isServer) {
             log.error(
-                "Received MAX_STREAM_DATA for receive-only stream [S\(streamID.value)]"
+                "Received MAX_STREAM_DATA for receive-only stream [S\(streamID)]"
             )
             close(with: .streamStateError, "MAX_STREAM_DATA for receive-only stream", in: &eventContext)
             return false
         }
 
-        // 2. Lookup stream
         let knownFlowID = knownFlows[streamID]
 
-        // 3. If new stream
         if knownFlowID == nil {
             if streamID.isSendOnly(server: isServer) {
                 // client is sending an update for a stream we haven't (yet) opened
@@ -6122,15 +6111,12 @@ extension QUICConnection {
                 return false
             }
         }
-        // Only act on MAX_STREAM_DATA for a flow that is already set in knownFlows
         guard let flowID = knownFlowID else {
             log.error(
-                "MAX_STREAM_DATA for unknown stream [S\(streamID.value)] is not yet supported"
+                "MAX_STREAM_DATA for unknown stream [S\(streamID)] is not yet supported"
             )
             return false
         }
-
-        // 4. Find stream and 5. process max stream data
         let remoteMaxStreamData = frame.max
         let processed: Void? = performOnStream(flowID, in: &eventContext) {
             (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
@@ -6141,7 +6127,7 @@ extension QUICConnection {
         }
         if processed == nil {
             log.error(
-                "MAX_STREAM_DATA for client state on flow \(flowID.debugDescription) and [S\(streamID.value)] is not a QUICStreamInstance"
+                "MAX_STREAM_DATA for client state on flow \(flowID.debugDescription) and [S\(streamID)] is not a QUICStreamInstance"
             )
         }
         return true
@@ -6161,7 +6147,7 @@ extension QUICConnection {
     @inline(never)
     func processStreamDataBlocked(frame: consuming FrameStreamDataBlocked) -> Bool {
         guard let flowID = flowIdentifier(forStreamID: frame.id) else {
-            log.datapath("Invalid streamID: \(frame.id)")
+            log.datapath("STREAM_DATA_BLOCKED for unknown stream \(frame.id)")
             return false
         }
         let frameID = frame.id
@@ -6444,7 +6430,7 @@ extension QUICConnection {
             errorCode = applicationErrorCode
         }
         stream.log.notice("Sending STOP_SENDING, error: \(errorCode)")
-        applicationPendingItems.addStreamStopSending(streamID: streamID.value, code: errorCode)
+        applicationPendingItems.addStreamStopSending(streamID: streamID, code: errorCode)
     }
 
     // Mark stream FIN and trigger servicing
@@ -6468,7 +6454,7 @@ extension QUICConnection {
         // byte that we would write, so we use that for
         // RESET_STREAM's Final Size.
         applicationPendingItems.addStreamReset(
-            streamID: streamID.value,
+            streamID: streamID,
             code: errorCode,
             finalSize: stream.sendOffset
         )
@@ -6863,12 +6849,12 @@ extension QUICConnection {
             // Send STOP_SENDING (and RESET_STREAM for bidirectional streams)
             // so the peer knows we are refusing this stream.
             applicationPendingItems.addStreamStopSending(
-                streamID: streamID.value,
+                streamID: streamID,
                 code: 0
             )
             if streamID.isBidirectional {
                 applicationPendingItems.addStreamReset(
-                    streamID: streamID.value,
+                    streamID: streamID,
                     code: 0,
                     finalSize: 0
                 )
@@ -7266,20 +7252,20 @@ extension QUICConnection {
         migration.checkForKeepaliveLoss(outstandingCount: unackedKeepaliveCount)
     }
 
-    func acknowledgedResetStream(id: UInt64, in eventContext: inout NetworkContext.EventContext) {
-        guard let flowID = flowIdentifier(forStreamID: id) else {
-            log.error("Stream frame with invalid stream ID \(id)")
+    func acknowledgedResetStream(streamID: QUICStreamID, in eventContext: inout NetworkContext.EventContext) {
+        guard let flowID = flowIdentifier(forStreamID: streamID) else {
+            log.error("RESET_STREAM acknowledged for unknown stream \(streamID)")
             return
         }
 
         performOnStream(flowID, in: &eventContext) { (stream: inout Flow, ctx: inout NetworkContext.EventContext) in
             guard stream.sendState != .resetReceived else {
-                stream.log.debug("[S\(stream.streamID?.value ?? 0)] duplicate RESET_STREAM ACK ignored")
+                stream.log.debug("[S\(streamID)] duplicate RESET_STREAM ACK ignored")
                 return
             }
             if stream.sendState == .send {
                 stream.log.error(
-                    "[S\(stream.streamID?.value ?? 0)] in state send (resetSent? \(stream.resetSent))"
+                    "[S\(streamID)] in state send (resetSent? \(stream.resetSent))"
                 )
             }
             stream.sendState = .resetReceived
@@ -7293,13 +7279,6 @@ extension QUICConnection {
     }
 
     /// The flow for a stream ID, if the connection knows the stream and still holds it.
-    func flowIdentifier(forStreamID id: UInt64) -> MultiplexedFlowIdentifier? {
-        guard let streamID = QUICStreamID(id) else {
-            return nil
-        }
-        return flowIdentifier(forStreamID: streamID)
-    }
-
     func flowIdentifier(forStreamID streamID: QUICStreamID) -> MultiplexedFlowIdentifier? {
         guard let flowID = knownFlows[streamID], hasFlow(flowID) else {
             return nil
