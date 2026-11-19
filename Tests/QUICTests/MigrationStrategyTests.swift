@@ -60,6 +60,10 @@ final class MigrationStrategyTests: XCTestCase {
             Migration(strategy: .followPeer(FollowPeerStrategy())).strategy,
             .followPeer(FollowPeerStrategy())
         )
+        XCTAssertEqual(
+            Migration(strategy: .followPriority(FollowPriorityStrategy())).strategy,
+            .followPriority(FollowPriorityStrategy())
+        )
     }
 
     // MARK: - Client
@@ -133,6 +137,338 @@ final class MigrationStrategyTests: XCTestCase {
         let wifi = PathSnapshot(identifier: Self.wifi, state: .validated)
         let cell = PathSnapshot(identifier: Self.cell, state: .unreachable, isPrimary: true)
         XCTAssertEqual(decide(.pathChanged(Self.cell), current: wifi, others: [cell]), [])
+    }
+
+    // MARK: - Priority
+
+    private func decideByPriority(
+        _ event: MigrationEvent,
+        current: PathSnapshot,
+        others: [PathSnapshot]
+    ) -> [MigrationDecision] {
+        let context = MigrationContext(currentPath: current, otherPaths: others)
+        return FollowPriorityStrategy().pathEvent(event, now: .zero, context: context)
+    }
+
+    func testPriorityFollowsAHigherPriorityPathUntilItMigrates() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 1)
+        let steps: [(state: QUICPathState, expected: [MigrationDecision])] = [
+            (.routeAvailable, [.bringUp(Self.cell)]),
+            (.routeEstablished, [.assignCID(Self.cell)]),
+            (.cidAssigned, [.probe(Self.cell)]),
+            (.probing, []),
+            (.validated, [.migrateTo(Self.cell)]),
+        ]
+        for step in steps {
+            let cell = PathSnapshot(identifier: Self.cell, state: step.state, priority: 2)
+            XCTAssertEqual(
+                decideByPriority(.pathChanged(Self.cell), current: wifi, others: [cell]),
+                step.expected,
+                "Higher-priority path in \(step.state)"
+            )
+        }
+    }
+
+    // Neither an equal nor a lower priority is worth moving for, and being primary does not count.
+    func testPriorityIgnoresPathsThatDoNotRankAbove() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 2)
+        for state in [QUICPathState.routeAvailable, .routeEstablished, .cidAssigned, .validated] {
+            let cell = PathSnapshot(identifier: Self.cell, state: state, isPrimary: true, priority: 2)
+            let other = PathSnapshot(identifier: Self.other, state: state, priority: 1)
+            XCTAssertEqual(
+                decideByPriority(.pathChanged(Self.cell), current: wifi, others: [cell, other]),
+                [],
+                "Other paths in \(state)"
+            )
+        }
+    }
+
+    // A path without a priority sits between the positive priorities, which take over from it, and
+    // the negative ones, which it takes over from. Once the current path is gone, though, any path
+    // with a priority, even a negative one, ranks above one without.
+    func testPriorityPlacesNoPriorityBetweenPositiveAndNegative() {
+        let unranked = PathSnapshot(identifier: Self.wifi, state: .validated)
+        let positive = PathSnapshot(identifier: Self.cell, state: .validated, priority: 1)
+        let negative = PathSnapshot(identifier: Self.cell, state: .validated, priority: -1)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.cell), current: unranked, others: [positive]),
+            [.migrateTo(Self.cell)]
+        )
+        XCTAssertEqual(decideByPriority(.pathChanged(Self.cell), current: unranked, others: [negative]), [])
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.wifi), current: negative, others: [unranked]),
+            [.migrateTo(Self.wifi)]
+        )
+
+        let lost = PathSnapshot(identifier: Self.other, state: .routeUnavailable, priority: 1)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: lost, others: [unranked, negative]),
+            [.migrateTo(Self.cell)]
+        )
+    }
+
+    func testPriorityMovesToTheBestValidatedPath() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 1)
+        let cell = PathSnapshot(identifier: Self.cell, state: .validated, priority: 2)
+        let other = PathSnapshot(identifier: Self.other, state: .validated, priority: 3)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.cell), current: wifi, others: [cell, other]),
+            [.migrateTo(Self.other)]
+        )
+
+        let tiedOther = PathSnapshot(identifier: Self.other, state: .validated, priority: 2)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: wifi, others: [cell, tiedOther]),
+            [.migrateTo(Self.cell)]
+        )
+    }
+
+    // A validated path that is better than the current one is worth moving to now, even while an
+    // even better one is still being validated.
+    func testPriorityMovesToAValidatedPathWhileABetterOneComesUp() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 1)
+        let cell = PathSnapshot(identifier: Self.cell, state: .validated, priority: 2)
+        let other = PathSnapshot(identifier: Self.other, state: .probing, priority: 3)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: wifi, others: [cell, other]),
+            [.migrateTo(Self.cell)]
+        )
+    }
+
+    func testPriorityValidatesEveryEstablishedCandidate() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 1)
+        let cell = PathSnapshot(identifier: Self.cell, state: .routeEstablished, priority: 2)
+        let other = PathSnapshot(identifier: Self.other, state: .cidAssigned, priority: 3)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.cell), current: wifi, others: [cell, other]),
+            [.assignCID(Self.cell), .probe(Self.other)]
+        )
+    }
+
+    // Losing the current path makes every usable path a candidate, whatever its priority.
+    func testPriorityFailsOverWhenTheCurrentPathGoesAway() {
+        let lostWifi = PathSnapshot(identifier: Self.wifi, state: .routeUnavailable, priority: 3)
+        let validatedCell = PathSnapshot(identifier: Self.cell, state: .validated, priority: 1)
+        let unreachable = PathSnapshot(identifier: Self.other, state: .unreachable, priority: 2)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.wifi), current: lostWifi, others: [validatedCell, unreachable]),
+            [.migrateTo(Self.cell)]
+        )
+
+        let availableCell = PathSnapshot(identifier: Self.cell, state: .routeAvailable, priority: 1)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.wifi), current: lostWifi, others: [availableCell, unreachable]),
+            [.bringUp(Self.cell)]
+        )
+    }
+
+    func testPriorityBringsUpTheBestAvailablePath() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 1)
+        let cell = PathSnapshot(identifier: Self.cell, state: .routeAvailable, priority: 2)
+        let other = PathSnapshot(identifier: Self.other, state: .routeAvailable, priority: 3)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: wifi, others: [cell, other]),
+            [.bringUp(Self.other)]
+        )
+    }
+
+    // Another route being announced is no reason to connect the best one again, but a change to the
+    // current path or to the best route is.
+    func testPriorityBringsUpOnlyForEventsThatCanChangeTheChoice() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 1)
+        let cell = PathSnapshot(identifier: Self.cell, state: .routeAvailable, priority: 2)
+        let other = PathSnapshot(identifier: Self.other, state: .routeAvailable, priority: 3)
+        XCTAssertEqual(decideByPriority(.pathChanged(Self.cell), current: wifi, others: [cell, other]), [])
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.wifi), current: wifi, others: [cell, other]),
+            [.bringUp(Self.other)]
+        )
+
+        let lowerRoute = PathSnapshot(identifier: Self.cell, state: .routeAvailable)
+        XCTAssertEqual(decideByPriority(.pathChanged(Self.cell), current: wifi, others: [lowerRoute, other]), [])
+    }
+
+    // A failed candidate lets the next one come up.
+    func testPriorityBringsUpTheNextPathWhenACandidateFails() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 1)
+        let cell = PathSnapshot(identifier: Self.cell, state: .routeAvailable, priority: 2)
+        let other = PathSnapshot(identifier: Self.other, state: .unreachable, priority: 3)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: wifi, others: [cell, other]),
+            [.bringUp(Self.cell)]
+        )
+    }
+
+    // One priority comes up at a time, even when a better one is announced meanwhile.
+    func testPriorityWaitsForTheCandidateComingUp() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 1)
+        let other = PathSnapshot(identifier: Self.other, state: .routeAvailable, priority: 3)
+        for state in [QUICPathState.cidAssigned, .probing] {
+            let cell = PathSnapshot(identifier: Self.cell, state: state, priority: 2)
+            let expected: [MigrationDecision] = state == .cidAssigned ? [.probe(Self.cell)] : []
+            XCTAssertEqual(
+                decideByPriority(.pathChanged(Self.other), current: wifi, others: [cell, other]),
+                expected,
+                "Candidate in \(state)"
+            )
+        }
+    }
+
+    func testPriorityBringsUpEqualPrioritiesTogether() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 1)
+        let cell = PathSnapshot(identifier: Self.cell, state: .routeAvailable, priority: 2)
+        let other = PathSnapshot(identifier: Self.other, state: .routeAvailable, priority: 2)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: wifi, others: [cell, other]),
+            [.bringUp(Self.cell), .bringUp(Self.other)]
+        )
+    }
+
+    // A path announced while another of the same priority is being probed joins it.
+    func testPriorityBringsUpAnEqualPriorityPathWhileOneComesUp() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated, priority: 1)
+        let cell = PathSnapshot(identifier: Self.cell, state: .probing, priority: 2)
+        let other = PathSnapshot(identifier: Self.other, state: .routeAvailable, priority: 2)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: wifi, others: [cell, other]),
+            [.bringUp(Self.other)]
+        )
+    }
+
+    // The connection starts on AWDL, which has no priority, with injected Wi-Fi and a relay as
+    // fallbacks at negative priorities. Nothing comes up until AWDL goes away; then the client works
+    // down the fallbacks in order.
+    func testPriorityFailsOverThroughNegativePrioritiesInOrder() {
+        let awdlID: MultiplexingPathIdentifier = 1
+        let wifiID: MultiplexingPathIdentifier = 2
+        let relayID: MultiplexingPathIdentifier = 3
+        let awdl = PathSnapshot(identifier: awdlID, state: .validated)
+        let wifi = PathSnapshot(identifier: wifiID, state: .routeAvailable, priority: -10)
+        let relay = PathSnapshot(identifier: relayID, state: .routeAvailable, priority: -20)
+        for event in [MigrationEvent.pathChanged(awdlID), .pathChanged(wifiID), .pathChanged(relayID)] {
+            XCTAssertEqual(decideByPriority(event, current: awdl, others: [wifi, relay]), [], "\(event)")
+        }
+
+        let lostAWDL = PathSnapshot(identifier: awdlID, state: .routeUnavailable)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(awdlID), current: lostAWDL, others: [wifi, relay]),
+            [.bringUp(wifiID)]
+        )
+        let validatedWiFi = PathSnapshot(identifier: wifiID, state: .validated, priority: -10)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(wifiID), current: lostAWDL, others: [validatedWiFi, relay]),
+            [.migrateTo(wifiID)]
+        )
+
+        let lostWiFi = PathSnapshot(identifier: wifiID, state: .routeUnavailable, priority: -10)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(wifiID), current: lostWiFi, others: [lostAWDL, relay]),
+            [.bringUp(relayID)]
+        )
+        let validatedRelay = PathSnapshot(identifier: relayID, state: .validated, priority: -20)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(relayID), current: lostWiFi, others: [lostAWDL, validatedRelay]),
+            [.migrateTo(relayID)]
+        )
+    }
+
+    // System routes have no priority, so once the current path is gone they lose to the injected
+    // ones, and announcing one again does not bring it up while an injected path is being probed.
+    func testPriorityPrefersInjectedPathsToSystemRoutesWhenFailingOver() {
+        let systemWiFiID: MultiplexingPathIdentifier = 1
+        let cellID: MultiplexingPathIdentifier = 2
+        let relayID: MultiplexingPathIdentifier = 3
+        let injectedWiFiID: MultiplexingPathIdentifier = 4
+        let systemWiFi = PathSnapshot(identifier: systemWiFiID, state: .routeAvailable, isPrimary: true)
+        let cell = PathSnapshot(identifier: cellID, state: .routeAvailable)
+        let lostWiFi = PathSnapshot(identifier: injectedWiFiID, state: .routeUnavailable, priority: -10)
+
+        let relay = PathSnapshot(identifier: relayID, state: .routeAvailable, priority: -20)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(injectedWiFiID), current: lostWiFi, others: [systemWiFi, cell, relay]),
+            [.bringUp(relayID)]
+        )
+
+        let probingRelay = PathSnapshot(identifier: relayID, state: .probing, priority: -20)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(systemWiFiID), current: lostWiFi, others: [systemWiFi, cell, probingRelay]),
+            []
+        )
+
+        let validatedSystemWiFi = PathSnapshot(identifier: systemWiFiID, state: .validated, isPrimary: true)
+        let validatedRelay = PathSnapshot(identifier: relayID, state: .validated, priority: -20)
+        XCTAssertEqual(
+            decideByPriority(
+                .pathChanged(relayID),
+                current: lostWiFi,
+                others: [validatedSystemWiFi, cell, validatedRelay]
+            ),
+            [.migrateTo(relayID)]
+        )
+    }
+
+    // Fallbacks of the same priority wait for the current path to go away, then come up together,
+    // and the client moves to whichever validates first and stays there.
+    func testPriorityBringsUpEqualFallbacksTogetherOnceTheCurrentPathGoesAway() {
+        let awdl = PathSnapshot(identifier: Self.wifi, state: .validated)
+        let ethernet = PathSnapshot(identifier: Self.cell, state: .routeAvailable, priority: -10)
+        let wifi = PathSnapshot(identifier: Self.other, state: .routeAvailable, priority: -10)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: awdl, others: [ethernet, wifi]),
+            []
+        )
+
+        let lostAWDL = PathSnapshot(identifier: Self.wifi, state: .routeUnavailable)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.wifi), current: lostAWDL, others: [ethernet, wifi]),
+            [.bringUp(Self.cell), .bringUp(Self.other)]
+        )
+
+        let probingEthernet = PathSnapshot(identifier: Self.cell, state: .probing, priority: -10)
+        let validatedWiFi = PathSnapshot(identifier: Self.other, state: .validated, priority: -10)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: lostAWDL, others: [probingEthernet, validatedWiFi]),
+            [.migrateTo(Self.other)]
+        )
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: validatedWiFi, others: [lostAWDL, probingEthernet]),
+            []
+        )
+    }
+
+    // The best path failed validation, so the next one announced is brought up instead.
+    func testPriorityBringsUpALowerPathAnnouncedAfterTheBestFails() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated)
+        let best = PathSnapshot(identifier: Self.cell, state: .unreachable, priority: 100)
+        let next = PathSnapshot(identifier: Self.other, state: .routeAvailable, priority: 99)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: wifi, others: [best, next]),
+            [.bringUp(Self.other)]
+        )
+        let validatedNext = PathSnapshot(identifier: Self.other, state: .validated, priority: 99)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.other), current: wifi, others: [best, validatedNext]),
+            [.migrateTo(Self.other)]
+        )
+    }
+
+    // A better path announced while another is being probed waits for the client to move, then
+    // comes up.
+    func testPriorityBringsUpABetterPathOnceTheClientHasMoved() {
+        let wifi = PathSnapshot(identifier: Self.wifi, state: .validated)
+        let probingWired = PathSnapshot(identifier: Self.cell, state: .probing, priority: 99)
+        let best = PathSnapshot(identifier: Self.other, state: .routeAvailable, priority: 100)
+        XCTAssertEqual(decideByPriority(.pathChanged(Self.other), current: wifi, others: [probingWired, best]), [])
+
+        let wired = PathSnapshot(identifier: Self.cell, state: .validated, priority: 99)
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.cell), current: wifi, others: [wired, best]),
+            [.migrateTo(Self.cell)]
+        )
+        XCTAssertEqual(
+            decideByPriority(.pathChanged(Self.cell), current: wired, others: [wifi, best]),
+            [.bringUp(Self.other)]
+        )
     }
 
     // MARK: - Server

@@ -24,11 +24,19 @@ struct MigrationContext: Equatable, Sendable {
         let identifier: MultiplexingPathIdentifier
         let state: QUICPathState
         let isPrimary: Bool
+        // Higher is preferred; 0 means the path has no priority.
+        let priority: Int
 
-        init(identifier: MultiplexingPathIdentifier, state: QUICPathState, isPrimary: Bool = false) {
+        init(
+            identifier: MultiplexingPathIdentifier,
+            state: QUICPathState,
+            isPrimary: Bool = false,
+            priority: Int = 0
+        ) {
             self.identifier = identifier
             self.state = state
             self.isPrimary = isPrimary
+            self.priority = priority
         }
     }
 
@@ -92,6 +100,7 @@ protocol MigrationStrategyProtocol: Equatable {
 enum MigrationStrategy: Equatable {
     case followPrimary(FollowPrimaryStrategy)
     case followPeer(FollowPeerStrategy)
+    case followPriority(FollowPriorityStrategy)
 
     func pathEvent(
         _ event: MigrationEvent,
@@ -102,6 +111,8 @@ enum MigrationStrategy: Equatable {
         case .followPrimary(let strategy):
             return strategy.pathEvent(event, now: now, context: context)
         case .followPeer(let strategy):
+            return strategy.pathEvent(event, now: now, context: context)
+        case .followPriority(let strategy):
             return strategy.pathEvent(event, now: now, context: context)
         }
     }
@@ -143,6 +154,100 @@ struct FollowPrimaryStrategy: MigrationStrategyProtocol {
         case .probing, .invalid, .unreachable, .closing, .routeUnavailable:
             return []
         }
+    }
+}
+
+// Keeps a client on the highest-priority path it can use, ignoring which path is primary.
+//
+// - A path is a candidate if its priority is higher than the current path's, or if the current path
+//   is unusable. The comparison is numeric, so a negative priority never takes over from a path
+//   without one, which makes it a fallback for when the current path goes away, while a path
+//   without one does take over from a negative one.
+// - Among candidates, a path with a priority ranks above one without; otherwise the higher priority
+//   wins, and among equals the lowest identifier.
+// - The client moves to the best validated candidate, even when a better one is still coming up:
+//   it can move again once that one validates.
+// - Every candidate whose route is established gets a CID and is probed.
+// - While no candidate is coming up, the client brings up every available candidate of the best
+//   priority, and moves to whichever validates first. One of that priority being announced while
+//   others of it are coming up is brought up too; any other waits.
+// - A validated path the client leaves stays up, so it can go back to it without probing again.
+@available(Network 0.1.0, *)
+struct FollowPriorityStrategy: MigrationStrategyProtocol {
+    private static func ranks(
+        _ path: MigrationContext.PathSnapshot,
+        above other: MigrationContext.PathSnapshot
+    ) -> Bool {
+        if (path.priority == 0) != (other.priority == 0) {
+            return other.priority == 0
+        }
+        return path.priority > other.priority
+    }
+
+    // The first of the highest-ranked paths, so equals go to the lowest identifier.
+    private static func best(_ paths: [MigrationContext.PathSnapshot]) -> MigrationContext.PathSnapshot? {
+        var best: MigrationContext.PathSnapshot?
+        for path in paths {
+            if let current = best, !ranks(path, above: current) {
+                continue
+            }
+            best = path
+        }
+        return best
+    }
+
+    func pathEvent(
+        _ event: MigrationEvent,
+        now: NetworkClock.Instant,
+        context: MigrationContext
+    ) -> [MigrationDecision] {
+        let currentPath = context.currentPath
+        let candidates = context.otherPaths.filter {
+            !$0.state.isUnusable && (currentPath.state.isUnusable || $0.priority > currentPath.priority)
+        }
+        guard !candidates.isEmpty else {
+            return []
+        }
+
+        if let validated = Self.best(candidates.filter { $0.state.isValidated }) {
+            return [.migrateTo(validated.identifier)]
+        }
+
+        var decisions: [MigrationDecision] = []
+        var comingUp: [MigrationContext.PathSnapshot] = []
+        for path in candidates {
+            switch path.state {
+            case .routeEstablished:
+                decisions.append(.assignCID(path.identifier))
+                comingUp.append(path)
+            case .cidAssigned:
+                decisions.append(.probe(path.identifier))
+                comingUp.append(path)
+            case .probing:
+                comingUp.append(path)
+            default:
+                break
+            }
+        }
+
+        let available = candidates.filter { $0.state == .routeAvailable }
+        guard let target = Self.best(available) else {
+            return decisions
+        }
+        if let leading = Self.best(comingUp), leading.priority != target.priority {
+            return decisions
+        }
+        let targets = available.filter { $0.priority == target.priority }
+
+        // Another route being announced again cannot change which path to bring up, and asking
+        // again cannot help a route that is still coming up.
+        let identifier = event.pathIdentifier
+        if !targets.contains(where: { $0.identifier == identifier }),
+            context.otherPaths.contains(where: { $0.identifier == identifier && $0.state == .routeAvailable })
+        {
+            return decisions
+        }
+        return decisions + targets.map { .bringUp($0.identifier) }
     }
 }
 
