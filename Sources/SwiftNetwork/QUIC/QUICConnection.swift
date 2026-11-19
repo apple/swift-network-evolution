@@ -207,17 +207,17 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         multiplexedSecondaryFlows.insert(flow, for: flowID)
     }
 
-    var multiplexedPaths = MultiplexedPathTable<Path>()
+    var multiplexedPaths = MultiplexedPathEntries<Path>()
 
     public func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier) {
         multiplexedPaths.insert(path, for: pathID)
     }
 
-    // Whether a path is being borrowed from the table. See `withUnborrowedPaths`.
+    // Whether a path is being borrowed from the entries. See `withUnborrowedPaths`.
     var isPathBorrowed = false
 
     public func withUnborrowedPaths<R: ~Copyable, E: Error>(
-        _ body: (inout MultiplexedPathTable<Path>) throws(E) -> R
+        _ body: (inout MultiplexedPathEntries<Path>) throws(E) -> R
     ) throws(E) -> R? {
         guard !isPathBorrowed else { return nil }
         isPathBorrowed = true
@@ -443,12 +443,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     // MARK: Path
 
-    // The path the connection sends on. A path is only reached by borrowing it from the path table, so
+    // The path the connection sends on. A path is only reached by borrowing it from the path entries, so
     // the connection keeps its identifier, not the path.
     var currentPathID: MultiplexingPathIdentifier?
 
     // Set when a path changed what the migration timer waits for. The timer looks at every path, so
-    // it is reset once they are all in the path table.
+    // it is reset once they are all in the path entries.
     var migrationTimerResetPending: Bool {
         get { migrationWork.migrationTimerResetPending }
         set { migrationWork.migrationTimerResetPending = newValue }
@@ -561,7 +561,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     var errorToReport: NetworkError?
 
     /// Lends out the current path, in place, or returns `nil` if there is none or it is already being
-    /// borrowed. It does not look the path up in the table.
+    /// borrowed. It does not look the path up in the entries.
     func withCurrentPath<R: ~Copyable>(_ block: (inout QUICPath) -> R) -> R? {
         guard let currentPathID else { return nil }
         return withPath(currentPathID, block)

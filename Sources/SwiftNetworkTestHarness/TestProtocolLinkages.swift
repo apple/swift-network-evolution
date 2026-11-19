@@ -346,7 +346,7 @@ public struct TestStreamLinkageFamily: StreamLinkageFamily {
 final class TestExternalInboundDatagram: ExternalInboundDatagramLinkage {
     enum Target {
         case harness(DatagramUpperHarness<TestDatagramLinkageFamily>)
-        // A path of a multiplexing protocol, found in its path table by identifier
+        // A path of a multiplexing protocol, found in its path entries by identifier
         case path(TestMultiplexingProtocol, MultiplexingPathIdentifier, InstanceIdentifier)
     }
 

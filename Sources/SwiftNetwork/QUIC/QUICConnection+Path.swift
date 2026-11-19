@@ -79,7 +79,7 @@ extension QUICConnection {
     /// Takes back what a send charged a path's congestion control for a packet that Recovery then refused to
     /// track. The charge is made when the packet is built, so it would otherwise stay in flight for good.
     ///
-    /// Kept out of line: inlined into Recovery's loop over sent packets, the optimizer hoists the path table
+    /// Kept out of line: inlined into Recovery's loop over sent packets, the optimizer hoists the path entries
     /// access above the check for a borrowed path, and the access then conflicts with the borrow that is open
     /// around the send.
     @inline(never)

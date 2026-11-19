@@ -49,20 +49,20 @@ public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol whe
     /// Adds a flow to the table. Conformers implement this by inserting into their stored table.
     func insertFlow(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier)
 
-    /// Lends out the path table, or returns `nil` if a path is being borrowed from it.
+    /// Lends out the path entries, or returns `nil` if a path is being borrowed from them.
     ///
-    /// Conformers implement this by passing their stored table to `body`. A borrowed path holds the table
-    /// exclusively, so reaching the table from inside the borrow would conflict with it. Everything that
-    /// reaches the table goes through here, so a conformer keeps a flag for the time `body` runs, and a
-    /// lookup that finds it set gets no table, which callers treat as no path.
+    /// Conformers implement this by passing their stored entries to `body`. A borrowed path holds the entries
+    /// exclusively, so reaching the entries from inside the borrow would conflict with it. Everything that
+    /// reaches the entries goes through here, so a conformer keeps a flag for the time `body` runs, and a
+    /// lookup that finds it set gets no entries, which callers treat as no path.
     ///
     /// The flag is the conformer's own, rather than a requirement of this protocol: a stored property that
     /// is not visible outside the module has its accesses checked at compile time, not at run time.
     func withUnborrowedPaths<R: ~Copyable, E: Error>(
-        _ body: (inout MultiplexedPathTable<Path>) throws(E) -> R
+        _ body: (inout MultiplexedPathEntries<Path>) throws(E) -> R
     ) throws(E) -> R?
 
-    /// Adds a path to the table. Conformers implement this by inserting into their stored table.
+    /// Adds a path to the entries. Conformers implement this by inserting into their stored entries.
     func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier)
 
     // MARK: Connection-wide calls to implement
@@ -238,7 +238,7 @@ where Path.LowerProtocol: OutboundDatagramLinkage {
 
     /// Reads what the lower protocol of a path has for it, and has the protocol service it.
     ///
-    /// A path is reached by borrowing it from the protocol's path table, so these run on the protocol,
+    /// A path is reached by borrowing it from the protocol's path entries, so these run on the protocol,
     /// which borrows the path only as long as it needs it, instead of on the path.
     func handleInboundDataAvailableEvent(
         path: MultiplexingPathIdentifier,
@@ -671,15 +671,15 @@ extension ManyToManyProtocolHandler {
     /// Lends out the path with the given identifier, in place, or returns `nil` if there is none or a path is
     /// already being borrowed.
     ///
-    /// The table is exclusively accessed while `body` runs, so a lookup of any path from inside `body` gets
+    /// The entries are exclusively accessed while `body` runs, so a lookup of any path from inside `body` gets
     /// `nil`; `body` has to work with the path it is given.
     @inline(always)
     public func withPath<R: ~Copyable, E: Error>(
         _ pathID: MultiplexingPathIdentifier,
         _ body: (inout Path) throws(E) -> R
     ) throws(E) -> R? {
-        let result: R?? = try withUnborrowedPaths { (table: inout MultiplexedPathTable<Path>) throws(E) -> R? in
-            try table.withPath(pathID, body)
+        let result: R?? = try withUnborrowedPaths { (entries: inout MultiplexedPathEntries<Path>) throws(E) -> R? in
+            try entries.withPath(pathID, body)
         }
         return result ?? nil
     }
@@ -696,10 +696,12 @@ extension ManyToManyProtocolHandler {
         withUnborrowedPaths { $0.count } ?? 0
     }
 
-    /// Removes the path from the table and hands it to the caller. A path cannot be removed while a path
+    /// Removes the path from the entries and hands it to the caller. A path cannot be removed while a path
     /// is being borrowed.
     public func removePath(_ pathID: MultiplexingPathIdentifier) -> Path? {
-        guard let removed = withUnborrowedPaths({ (table: inout MultiplexedPathTable<Path>) in table.remove(pathID) })
+        guard
+            let removed = withUnborrowedPaths({ (entries: inout MultiplexedPathEntries<Path>) in entries.remove(pathID)
+                })
         else {
             assertionFailure("Path \(pathID) was removed while a path was borrowed")
             return nil
@@ -723,8 +725,8 @@ extension ManyToManyProtocolHandler {
         guard cursor.position < cursor.end else { return nil }
         var position = cursor.position
         let end = cursor.end
-        let next: MultiplexingPathIdentifier?? = withUnborrowedPaths { (table: inout MultiplexedPathTable<Path>) in
-            table.nextPathIdentifier(from: &position, before: end)
+        let next: MultiplexingPathIdentifier?? = withUnborrowedPaths { (entries: inout MultiplexedPathEntries<Path>) in
+            entries.nextPathIdentifier(from: &position, before: end)
         }
         cursor.position = position
         return next ?? nil
@@ -739,7 +741,7 @@ extension ManyToManyProtocolHandler {
         }
     }
 
-    /// Lends out each path in turn, skipping one that is already being borrowed. The table is not held
+    /// Lends out each path in turn, skipping one that is already being borrowed. The entries are not held
     /// while `closure` runs.
     public func applyToAllPaths(_ closure: (inout Path) -> Void) {
         var cursor = startPathIteration()
@@ -2346,8 +2348,8 @@ extension MultiplexingPath where Self: ~Copyable {
     }
 
     // The events a lower protocol delivers to a path are routed through the protocol, which finds the
-    // path in its table. These forward there so that a path that is held on its own still handles
-    // them; they must not be called while the path is borrowed from the table.
+    // path in its entries. These forward there so that a path that is held on its own still handles
+    // them; they must not be called while the path is borrowed from the entries.
 
     public mutating func handleConnectedEvent(
         for instance: InstanceIdentifier,
@@ -2387,8 +2389,8 @@ extension MultiplexingPath where Self: ~Copyable {
 
 // MARK: Events from a path's lower protocol
 //
-// A path lives in its protocol's table, and the table is exclusively accessed while the path is
-// borrowed. The events below do their work on the protocol, which looks at the table again, so they
+// A path lives in its protocol's path entries, and the entries are exclusively accessed while the path is
+// borrowed. The events below do their work on the protocol, which looks at the entries again, so they
 // run on the protocol and borrow the path only for as long as they need it, never while calling out.
 @available(Network 0.1.0, *)
 extension ManyToManyProtocolHandler {
@@ -2798,7 +2800,7 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
     /// until the lower protocol has no more.
     ///
     /// Each step borrows the path only for as long as it needs it. Servicing the datagrams, and
-    /// sending whatever that queued, reach the protocol and the path table again, so they run with
+    /// sending whatever that queued, reach the protocol and the path entries again, so they run with
     /// nothing borrowed.
     public func resumeReadingInboundDatagrams(
         path pathID: MultiplexingPathIdentifier,
@@ -2901,7 +2903,7 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
     }
 
     /// Lends out the datagrams received on a path. The path is borrowed for the whole of `body`, so
-    /// `body` must not reach the path table again.
+    /// `body` must not reach the path entries again.
     public func accessReceivedDatagrams(path pathID: MultiplexingPathIdentifier, _ body: (inout FrameArray) -> Void) {
         let found: Void? = withPath(pathID) { (path: inout Path) in
             body(&path.lowerReceiveQueue)
@@ -2972,8 +2974,8 @@ public struct MultiplexingDatagramPath<
     public mutating func handleOutboundRoomAvailable(in eventContext: inout NetworkContext.EventContext) {}
 
     // The events a lower protocol delivers to a path for data and room are handled on the protocol, which
-    // finds the path in its table. These forward there so that a path that is held on its own still handles
-    // them; they must not be called while the path is borrowed from the table.
+    // finds the path in its entries. These forward there so that a path that is held on its own still handles
+    // them; they must not be called while the path is borrowed from the entries.
 
     public mutating func handleInboundDataAvailableEvent(
         for instance: InstanceIdentifier,

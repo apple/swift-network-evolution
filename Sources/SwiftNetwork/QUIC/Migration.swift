@@ -529,7 +529,7 @@ extension QUICConnection {
 
     // A path that sent a challenge, or got the answer to one, changed when the migration timer is due.
     // The timer looks at every path, which a path cannot do from inside its own update, so the path asks
-    // for the reset and it runs here, once the paths are all back in the table.
+    // for the reset and it runs here, once the paths are all back in the entries.
     func resetMigrationTimerIfPending(in eventContext: inout NetworkContext.EventContext) {
         guard var resetNow = migrationWork.takeTimerReset() else { return }
         guard migration.timerID != nil else { return }

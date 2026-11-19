@@ -124,7 +124,7 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
             count -= cidLength
         }
 
-        // The path is reached through the connection's path table, like any other path
+        // The path is reached through the connection's paths, like any other path
         let pathID = path.pathIdentifier
         connection.insertPath(path, for: pathID)
 

@@ -179,7 +179,7 @@ public struct TestDatagramPath: ~Copyable, MultiplexingDatapathPath, AutomaticLo
     }
 
     // Hands back a linkage that routes to this path, so its lower protocol can deliver events to
-    // it. The path is found in the protocol's table by its identifier.
+    // it. The path is found in the protocol's path entries by its identifier.
     public func asUpperLinkage() -> TestInboundDatagramLinkage {
         TestInboundDatagramLinkage(multiplexing: parentProtocol, path: pathIdentifier, identifier: identifier)
     }
@@ -232,12 +232,12 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
         multiplexedFlows.insert(flow, for: flowID)
     }
 
-    public var multiplexedPaths = MultiplexedPathTable<Path>()
+    public var multiplexedPaths = MultiplexedPathEntries<Path>()
 
     var isPathBorrowed = false
 
     public func withUnborrowedPaths<R: ~Copyable, E: Error>(
-        _ body: (inout MultiplexedPathTable<Path>) throws(E) -> R
+        _ body: (inout MultiplexedPathEntries<Path>) throws(E) -> R
     ) throws(E) -> R? {
         guard !isPathBorrowed else { return nil }
         isPathBorrowed = true
@@ -268,7 +268,7 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
     }
 
     // The flow is borrowed, so its queue is handed in and nothing here looks a flow up. The datagrams go to
-    // the path, which has a table of its own.
+    // the path, which has its own queues.
     public func serviceDatagramsToSend(
         borrowedFlow flow: MultiplexedFlowIdentifier,
         sendQueue: inout FrameArray,

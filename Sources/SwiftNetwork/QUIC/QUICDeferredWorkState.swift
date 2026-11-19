@@ -27,7 +27,7 @@
 /// 2.   Is the send path active? `sendFrames` and the code that claims the send path around it
 ///    (the timers, `sendFramesFromRecovery`, receiving an ACK) are not re-entrant. A send that
 ///    comes in while one is running has to wait for it to finish.
-/// 3.   Is a path borrowed for work? A path lives in a slot of the path table, and a long piece of work
+/// 3.   Is a path borrowed for work? A path lives in the connection's path entries, and a long piece of work
 ///    on one (probing the path MTU, a probe timeout) borrows it there and passes it along. A send needs
 ///    the current path, so it cannot run while any path is being worked on.
 ///

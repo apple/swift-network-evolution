@@ -679,7 +679,7 @@ extension QUICStreamInstance {
     fileprivate func maximumUnreadOutboundBytesAllowed(connection: QUICConnection) -> UInt64 {
         var minMSS: UInt64 = UInt64(Constants.initialMSS)
         var allowedCCWindow: UInt64 = 0
-        // The current path may be out of the path table, in the middle of a send or an ACK, so this
+        // The current path may be out of the path entries, in the middle of a send or an ACK, so this
         // reads what was true when it was last put back.
         let currentPathState = connection.currentPathState
         if currentPathState.mss > 0 {

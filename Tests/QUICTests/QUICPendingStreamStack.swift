@@ -138,7 +138,7 @@ extension XCTestCase {
             }
             _ = try? quicPath.attachLowerProtocol(lowerLinkage.base)
             let upperLinkage = quicPath.asUpperLinkage()
-            // The path is reached through the connection's table, so it is in the table before its
+            // The path is reached through the connection's paths, so it is in the entries before its
             // lower protocol is given the linkage that leads back to it
             connection.installCurrentPath(quicPath)
             try? lowerLinkage.base.invokeAttachUpperProtocol(

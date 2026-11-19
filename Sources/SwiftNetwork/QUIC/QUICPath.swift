@@ -144,7 +144,7 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
     public typealias LowerProtocol = BaseOutboundDatagramLinkage
 
     // The generic path: identity, lower linkage and the queues shared with the lower protocol. A QUIC
-    // path lives inline in its connection's path table, so nothing here is reference counted.
+    // path lives inline in its connection's path entries, so nothing here is reference counted.
     @usableFromInline
     var base: MultiplexingDatagramPath<QUICConnection, BaseOutboundDatagramLinkage>
 
@@ -333,7 +333,7 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
     }
 
     /// Builds the linkage that reaches this path from its lower protocol. It names the connection and
-    /// the path's place in the connection's table, since the path itself can only be reached by
+    /// the path's place in the connection's paths, since the path itself can only be reached by
     /// borrowing it from there.
     public func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage {
         BaseInboundDatagramLinkage(quicConnection: parentProtocol, path: pathIdentifier, identifier: identifier)
@@ -369,7 +369,7 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
 
     /// What a new path takes from the paths the connection already has.
     ///
-    /// The path is not in the connection's path table when it is set up, so the connection looks
+    /// The path is not in the connection's paths when it is set up, so the connection looks
     /// at its other paths first and hands over what the path needs from them.
     struct Inheritance {
         /// The remote max ack delay of the current path, for a path that is not the initial one.
@@ -814,7 +814,7 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
         challengesSent += 1
 
         // The timer looks at every path, so it is reset once the paths are all in the connection's
-        // table again, measured from the time this challenge was sent.
+        // entries again, measured from the time this challenge was sent.
         migrationTimerResetRequest = now
     }
 

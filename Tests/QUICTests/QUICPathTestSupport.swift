@@ -26,16 +26,16 @@
 
 @available(Network 0.1.0, *)
 extension QUICConnection {
-    /// Lends out a path the test knows is in the connection's path table, and stops the test if it is not.
+    /// Lends out a path the test knows is in the connection's paths, and stops the test if it is not.
     ///
-    /// Paths are non-copyable and live in the table, so a test reads and changes one inside `body`.
+    /// Paths are non-copyable and live in the connection's path entries, so a test reads and changes one inside `body`.
     @discardableResult
     func testPath<R: ~Copyable>(
         _ pathID: MultiplexingPathIdentifier,
         _ body: (inout QUICPath) -> R
     ) -> R {
         guard let result = withPath(pathID, body) else {
-            fatalError("Path \(pathID) is not in the path table, or is checked out")
+            fatalError("Path \(pathID) is not in the path entries, or is checked out")
         }
         return result
     }
@@ -44,12 +44,12 @@ extension QUICConnection {
     @discardableResult
     func testCurrentPath<R: ~Copyable>(_ body: (inout QUICPath) -> R) -> R {
         guard let result = withCurrentPath(body) else {
-            fatalError("There is no current path in the path table")
+            fatalError("There is no current path in the path entries")
         }
         return result
     }
 
-    /// Adds a path built with `QUICPath.makeFromExternalTest(parent:)` to the table and returns its identifier.
+    /// Adds a path built with `QUICPath.makeFromExternalTest(parent:)` to the entries and returns its identifier.
     @discardableResult
     func addTestPath(_ path: consuming QUICPath) -> MultiplexingPathIdentifier {
         let pathID = path.pathIdentifier
@@ -57,7 +57,7 @@ extension QUICConnection {
         return pathID
     }
 
-    /// Builds a path on the connection's queue, lets `configure` set it up, and adds it to the table.
+    /// Builds a path on the connection's queue, lets `configure` set it up, and adds it to the entries.
     func makeTestPath(configure: (inout QUICPath) -> Void = { _ in }) -> MultiplexingPathIdentifier {
         context.onQueue {
             var path = QUICPath.makeFromExternalTest(parent: self)
@@ -85,7 +85,7 @@ extension QUICConnection {
         }
     }
 
-    /// Adds a path to the table, makes it the current path and refreshes what the rest of the connection
+    /// Adds a path to the entries, makes it the current path and refreshes what the rest of the connection
     /// reads about the current path, so a test that has set up the path's MSS or window sees it used.
     @discardableResult
     func installCurrentPath(_ path: consuming QUICPath) -> MultiplexingPathIdentifier {

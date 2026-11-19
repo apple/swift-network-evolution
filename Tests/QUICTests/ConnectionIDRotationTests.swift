@@ -56,7 +56,7 @@ final class ConnectionIDRotationTests: XCTestCase {
 
     // Builds a path with `dcid` assigned and registered in `remoteCIDs`, so it mirrors an active
     // path using that CID. Processing NEW_CONNECTION_ID frames doesn't send anything, so the path
-    // needs no lower protocol. The path is registered in the connection's path table so `tearDown`
+    // needs no lower protocol. The path is registered in the connection's paths so `tearDown`
     // releases it.
     private func makePath(dcid: QUICConnectionID, sequenceNumber: UInt64, used: Bool) -> MultiplexingPathIdentifier {
         // Every caller builds its paths from inside `context.async`, so this runs on the context.

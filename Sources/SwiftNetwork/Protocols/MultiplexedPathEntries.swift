@@ -20,12 +20,12 @@ import BasicContainers
 @available(Network 0.1.0, *)
 @_spi(ProtocolProvider)
 @usableFromInline
-struct MultiplexedPathTableEntry<Path: ~Copyable>: ~Copyable {
+struct MultiplexedPathEntry<Path: ~Copyable>: ~Copyable {
     @usableFromInline var identifier: MultiplexingPathIdentifier
     @usableFromInline var path: Path?
 }
 
-// Where an iteration over the paths is. The table is not held between steps, so what the iteration does can look
+// Where an iteration over the paths is. The entries are not held between steps, so what the iteration does can look
 // paths up, remove them or add them. A path that is removed before the iteration reaches it is not visited,
 // and a path added during the iteration is only visited if it takes the place of a removed one.
 @available(Network 0.1.0, *)
@@ -36,18 +36,18 @@ public struct PathCursor {
     @usableFromInline init(end: Int) { self.end = end }
 }
 
-// A table of the paths a many-to-many protocol multiplexes, keyed by path identifier.
+// The paths a many-to-many protocol multiplexes, kept in order of arrival and found by path identifier.
 //
 // A connection has a handful of paths. The paths live inline in `entries`, each next to its identifier,
 // and a removed path leaves a free entry that the next insert reuses.
 //
 // Paths are only ever reached by borrowing: `withPath` lends out the stored path, in place, for the
-// duration of a closure. The table is exclusively accessed for the whole of a borrow, so the closure
-// must not reach the table again.
+// duration of a closure. The entries are exclusively accessed for the whole of a borrow, so the closure
+// must not reach them again.
 @available(Network 0.1.0, *)
 @_spi(ProtocolProvider)
-public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
-    @usableFromInline var entries = NetworkUniqueArray<MultiplexedPathTableEntry<Path>>()
+public struct MultiplexedPathEntries<Path: ~Copyable>: ~Copyable {
+    @usableFromInline var entries = NetworkUniqueArray<MultiplexedPathEntry<Path>>()
 
     private var liveCount = 0
 
@@ -61,7 +61,7 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
 
     public var isEmpty: Bool { liveCount == 0 }
 
-    // The position of the entry for `pathID`, if it is in the table.
+    // The position of the entry for `pathID`, if it is in the entries.
     //
     // Time: O(1) for a path that matches the last cached position, otherwise average O(p) for p paths
     @inline(always)
@@ -95,7 +95,7 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
     public var entryCount: Int { entries.count }
 
     // The identifier of the next path at or after `position`, before `end`, moving `position` past it.
-    // An iteration that is not holding the table, so that what it does between steps can reach the table, uses
+    // An iteration that is not holding the entries, so that what it does between steps can reach them, uses
     // this in place of a snapshot of the identifiers, which would allocate.
     @inline(always)
     public func nextPathIdentifier(from position: inout Int, before end: Int) -> MultiplexingPathIdentifier? {
@@ -108,7 +108,7 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
         return nil
     }
 
-    // A snapshot of every identifier, safe to iterate while the table is modified.
+    // A snapshot of every identifier, safe to iterate while the entries are modified.
     public var pathIdentifiers: [MultiplexingPathIdentifier] {
         var identifiers: [MultiplexingPathIdentifier] = []
         identifiers.reserveCapacity(liveCount)
@@ -120,14 +120,14 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
 
     public mutating func insert(_ path: consuming Path, for pathID: MultiplexingPathIdentifier) {
         assert(pathID != MultiplexingPathIdentifier.none, "A path cannot have the identifier that means no path")
-        assert(find(pathID) == nil, "Path \(pathID) is already in the table")
+        assert(find(pathID) == nil, "Path \(pathID) is already in the entries")
         for position in 0..<entries.count where entries[position].identifier == MultiplexingPathIdentifier.none {
             entries[position].identifier = pathID
             entries[position].path = consume path
             liveCount += 1
             return
         }
-        entries.append(MultiplexedPathTableEntry(identifier: pathID, path: consume path))
+        entries.append(MultiplexedPathEntry(identifier: pathID, path: consume path))
         liveCount += 1
     }
 
@@ -164,7 +164,7 @@ public struct MultiplexedPathTable<Path: ~Copyable>: ~Copyable {
     // Destroys every path as it is, without any cleanup of its own. A path that holds an event
     // state to unregister (`destroy(in:)`) has to be destroyed before this is called.
     public mutating func removeAll() {
-        entries = NetworkUniqueArray<MultiplexedPathTableEntry<Path>>()
+        entries = NetworkUniqueArray<MultiplexedPathEntry<Path>>()
         lastCachedPosition = 0
         liveCount = 0
     }

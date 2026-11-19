@@ -16,7 +16,7 @@
 #if !NETWORK_NO_SWIFT_QUIC
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import SwiftNetwork
 
-// A path is stored inline in its connection's path table and cannot be copied, so the tests look at one
+// A path is stored inline in its connection's path entries and cannot be copied, so the tests look at one
 // by borrowing it. These read the few things tests ask of a path by its identifier.
 @available(Network 0.1.0, *)
 extension QUICConnection {

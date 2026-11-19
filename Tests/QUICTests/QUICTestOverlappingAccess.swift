@@ -95,7 +95,7 @@ final class QUICTestOverlappingAccessTests: XCTestCase {
         }
         _ = try? path.attachLowerProtocol(lowerLinkage.base)
         let upperLinkage = path.asUpperLinkage()
-        // The path is reached through the connection's table, so it is in the table before its lower
+        // The path is reached through the connection's paths, so it is in the entries before its lower
         // protocol is given the linkage that leads back to it
         let pathID = connection.addTestPath(path)
         try? lowerLinkage.base.invokeAttachUpperProtocol(
