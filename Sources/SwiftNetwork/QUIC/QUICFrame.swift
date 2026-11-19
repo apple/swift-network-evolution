@@ -1364,34 +1364,43 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
             return false
         }
 
-        guard let flowID = connection.knownFlows[streamID] else {
-            return true
-        }
-        guard connection.hasFlow(flowID) else {
-            if connection.streamClosedAlready(streamID: streamID) {
-                return true
-            }
-            if streamID.isLocalBidirectional(server: connection.isServer)
-                || streamID.isSendOnly(server: connection.isServer)
-            {
-                // Receiving a STOP_SENDING frame for a
-                // locally-initiated stream that has not yet been
-                // created MUST be treated as a connection error of type
-                // STREAM_STATE_ERROR.
+        let stopFlowID: MultiplexedFlowIdentifier
+        if let flowID = connection.knownFlows[streamID] {
+            // The stream id is known. The flow object may still be missing
+            // if the stream was torn down without clearing `knownFlows`; in
+            // that case there is no one to deliver the stop to, so drop it.
+            guard connection.hasFlow(flowID) else {
                 Logger.proto.error(
-                    "STOP_SENDING frame received on send stream that does not exist"
+                    "Stream \(streamID.value) has known flow but no QUICStreamInstance; dropping STOP_SENDING"
                 )
-                connection.close(with: .streamStateError, "STOP_SENDING: non-existent stream", in: &eventContext)
-                return false
-            }
-            let inboundStreamResult = connection.createInboundStreams(streamID: streamID, in: &eventContext)
-            // If we are ignoring the stream
-            if !inboundStreamResult.created {
                 return true
             }
-            return false
+            stopFlowID = flowID
+        } else {
+            // STOP_SENDING may be the first frame the peer sends on a
+            // bidirectional stream it opened; createInboundStreams will
+            // register it. For a locally-initiated stream id it either
+            // ignores a stream we already closed or, for one we have not
+            // created yet, closes the connection with STREAM_STATE_ERROR
+            // (RFC 9000, Section 19.5).
+            let inboundStreamResult = connection.createInboundStreams(streamID: streamID, in: &eventContext)
+            if !inboundStreamResult.created {
+                // The stream is being ignored. createInboundStreams already
+                // drove any required peer notification or close, so treat the
+                // frame as handled.
+                return true
+            }
+            guard let flowID = connection.knownFlows[streamID],
+                connection.hasFlow(flowID)
+            else {
+                Logger.proto.error(
+                    "Stream \(streamID.value) is not a QUICStreamInstance after createInboundStreams"
+                )
+                return true
+            }
+            stopFlowID = flowID
         }
-        return connection.performOnStream(flowID, in: &eventContext) {
+        return connection.performOnStream(stopFlowID, in: &eventContext) {
             (stream: inout QUICStreamInstance, ctx: inout NetworkContext.EventContext) -> Bool in
             self.process(stream: &stream, streamID: streamID, connection: connection, in: &ctx)
         } ?? true

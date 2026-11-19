@@ -45,7 +45,6 @@ struct QUICStreamIDState: ~Copyable {
     var largestOutboundStreamID: QUICStreamID?
     var nextInboundStreamID: QUICStreamID?
     var remoteMaxStreamID: QUICStreamID?
-    var localMaxStreamID: QUICStreamID?
     private(set) var activeStreams: Int = 0
     private(set) var pendingStartStreams: [MultiplexedFlowIdentifier] = []
 
@@ -194,55 +193,43 @@ struct QUICStreamIDState: ~Copyable {
         return (valid: true, checkZombie: false)
     }
 
-    // Set window to a non-zero value to check if there are room for N more streamIDs
+    // Whether the peer may not open `streamID` under the limit we advertised. Set window to a
+    // non-zero value to check whether it is within that many streams of being blocked.
+    //
+    // This counts streams rather than comparing stream IDs: the limit is a number of streams
+    // the peer may open, and its streams are numbered by the peer's role, not ours.
     func newStreamIDsAreBlocked(
         _ streamID: QUICStreamID,
-        server: Bool = false,
         window: Int = 0
     ) -> Bool {
-        if localMaxStreams == 0 {
+        guard localMaxStreams > window else {
             return true
         }
+        return streamID.indexAmongSameTypeAndInitiator >= UInt64(localMaxStreams - window)
+    }
 
-        let compareMaxStreamID: QUICStreamID
-        if window == 0 {
-            guard let localMaxStreamID else {
-                // The local Max Stream ID is yet to be determined, so new IDs are blocked
-                return true
-            }
-            compareMaxStreamID = localMaxStreamID
-        } else {
-            guard localMaxStreams > window else {
-                // Local max streams is less than the entire window, so new IDs are blocked
-                return true
-            }
-
-            let adjustedMaxStreams = localMaxStreams - window
-
-            let adjustedMaxStreamID: QUICStreamID?
-            if streamType == .unidirectional {
-                adjustedMaxStreamID = QUICStreamID.computeRemoteMaxStreamIDUnidirectional(
-                    server: server,
-                    streams: UInt64(adjustedMaxStreams)
-                )
-            } else {
-                adjustedMaxStreamID = QUICStreamID.computeRemoteMaxStreamIDBidirectional(
-                    server: server,
-                    streams: UInt64(adjustedMaxStreams)
-                )
-            }
-
-            guard let adjustedMaxStreamID else {
-                return true
-            }
-            compareMaxStreamID = adjustedMaxStreamID
+    // The limit to advertise in MAX_STREAMS so the peer can have at most
+    // `maximumConcurrentStreams` streams of this type open at once, or nil when the
+    // current limit should stand. The limit is cumulative (RFC 9000, Section 4.6), so it is
+    // the streams the peer has opened so far plus the room left under the concurrency cap,
+    // not the old limit plus that room.
+    func localMaxStreamsToAdvertise(maximumConcurrentStreams: Int) -> Int? {
+        guard let nextInboundStreamID, activeStreams < maximumConcurrentStreams else {
+            return nil
         }
-
-        if streamID >= compareMaxStreamID {
-            return true
+        // Wait until the peer is within half the cap of being blocked.
+        guard newStreamIDsAreBlocked(nextInboundStreamID, window: maximumConcurrentStreams / 2) else {
+            return nil
         }
-
-        return false
+        // How many the peer has opened, including any opened implicitly by a higher-numbered
+        // stream.
+        let openedStreams = Int(nextInboundStreamID.indexAmongSameTypeAndInitiator)
+        let newMaxStreams = openedStreams + (maximumConcurrentStreams - activeStreams)
+        // A limit that does not increase has no effect on the peer.
+        guard newMaxStreams > localMaxStreams else {
+            return nil
+        }
+        return newMaxStreams
     }
 
     mutating func resetStreamsState(
@@ -278,24 +265,12 @@ struct QUICStreamIDState: ~Copyable {
         #endif
     }
 
-    mutating func updateLocalMaxStreams(server: Bool, newMaxStreams: Int, logIDString: String) {
+    mutating func updateLocalMaxStreams(newMaxStreams: Int, logIDString: String) {
         localMaxStreams = newMaxStreams
-        if streamType == .unidirectional {
-            localMaxStreamID = QUICStreamID.computeRemoteMaxStreamIDUnidirectional(
-                server: server,
-                streams: UInt64(newMaxStreams)
-            )
-        } else {
-            localMaxStreamID = QUICStreamID.computeRemoteMaxStreamIDBidirectional(
-                server: server,
-                streams: UInt64(newMaxStreams)
-            )
-        }
         #if !DisableDebugLogging
         let logContext = self.logContext
-        let localMaxStreamID = self.localMaxStreamID
         Logger.proto.debug(
-            "\(logIDString) \(logContext) Got newMaxStreams=\(newMaxStreams) which gives localMaxStreamID=\(localMaxStreamID?.description ?? "unknown")"
+            "\(logIDString) \(logContext) Set localMaxStreams=\(newMaxStreams)"
         )
         #endif
     }

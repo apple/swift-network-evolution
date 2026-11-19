@@ -458,6 +458,18 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
         QUICTestHarness().runQUICResetStreamFirstFrameOnNewStream()
     }
 
+    func testQUICStopSendingFirstFrameOnNewStream() {
+        QUICTestHarness().runQUICStopSendingFirstFrameOnNewStream()
+    }
+
+    func testQUICImplicitlyOpenedBidirectionalStreamsCountAsActive() {
+        QUICTestHarness().runQUICImplicitlyOpenedStreamsCountAsActive(unidirectional: false)
+    }
+
+    func testQUICImplicitlyOpenedUnidirectionalStreamsCountAsActive() {
+        QUICTestHarness().runQUICImplicitlyOpenedStreamsCountAsActive(unidirectional: true)
+    }
+
     func testQUICOutboundRoomFollowsQueuedData() {
         QUICTestHarness().runOutboundRoomFollowsQueuedData()
     }
@@ -1263,10 +1275,9 @@ final class SwiftNetworkQUICHarnessTests: NetTestCase {
 
     func testQUICHelloWorldUnidirectionalServerInitiated50() {
         // Make sure that the server is able to initiate 50 outbound unidirectional stream to the client
-        // Server advertises that the client can open 50 unidirectional streams
+        // The client advertises that the server can open exactly 50 unidirectional streams
         let clientOptions = QUICProtocol.options()
-        // Set to 51 because the test starts creating streams at index 0 (not 1 like the other tests)
-        clientOptions.modifyConnectionOptions { $0.initialMaxStreamsUnidirectional = 51 }
+        clientOptions.modifyConnectionOptions { $0.initialMaxStreamsUnidirectional = 50 }
         QUICTestHarness().runQUICServerInitiatedUnidirectionalStreams(
             streamCount: 50,
             dataBlock: Array("Hello World!".utf8),
