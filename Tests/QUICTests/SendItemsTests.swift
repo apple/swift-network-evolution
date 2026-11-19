@@ -393,7 +393,7 @@ final class SendItemsTests: XCTestCase {
         let connection = clock.onQueue {
             QUICConnection(context: clock.context)
         }
-        let flowID: UInt64 = 4
+        let flowID = QUICDatagramFlowID(4)
         let contextID: UInt64 = 0
         let flowIdentifier = clock.onQueue { () -> MultiplexedFlowIdentifier in
             var flow = QUICDatagramFlow(parent: connection, inbound: true)

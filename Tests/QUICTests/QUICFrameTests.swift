@@ -2724,7 +2724,7 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: false,
+                useQuarterStreamID: false,
                 useContextID: false,
                 connection: connection,
                 stats: &connection.stats,
@@ -2747,7 +2747,7 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: false,
+                useQuarterStreamID: false,
                 useContextID: false,
                 connection: connection,
                 stats: &connection.stats,
@@ -2772,14 +2772,14 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: true,
+                useQuarterStreamID: true,
                 useContextID: false,
                 connection: connection,
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
             XCTAssertEqual(quicFrame.contextID, nil)
-            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.flowID?.value, 77)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
             quicFrame.frame.finalize(success: true)
@@ -2796,14 +2796,14 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: true,
+                useQuarterStreamID: true,
                 useContextID: false,
                 connection: connection,
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
             XCTAssertEqual(quicFrame.contextID, nil)
-            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.flowID?.value, 77)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
             quicFrame.frame.finalize(success: true)
@@ -2821,7 +2821,7 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: false,
+                useQuarterStreamID: false,
                 useContextID: true,
                 connection: connection,
                 stats: &connection.stats,
@@ -2845,7 +2845,7 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: false,
+                useQuarterStreamID: false,
                 useContextID: true,
                 connection: connection,
                 stats: &connection.stats,
@@ -2871,14 +2871,14 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: true,
+                useQuarterStreamID: true,
                 useContextID: true,
                 connection: connection,
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
             XCTAssertEqual(quicFrame.contextID, 13)
-            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.flowID?.value, 77)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
             quicFrame.frame.finalize(success: true)
@@ -2896,14 +2896,14 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: true,
+                useQuarterStreamID: true,
                 useContextID: true,
                 connection: connection,
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
             XCTAssertEqual(quicFrame.contextID, 13)
-            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.flowID?.value, 77)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
             quicFrame.frame.finalize(success: true)
@@ -2924,7 +2924,7 @@ class QUICFrameTests: XCTestCase {
                 }
                 _ = try FrameDatagram(
                     frame: &frame,
-                    useFlowID: true,
+                    useQuarterStreamID: true,
                     useContextID: true,
                     connection: connection,
                     stats: &connection.stats,
@@ -2934,6 +2934,112 @@ class QUICFrameTests: XCTestCase {
             }
         } catch {
             // Expect error
+        }
+    }
+
+    // `FrameDatagram` is noncopyable, so it cannot go through `XCTAssertThrowsError`.
+    private func assertDatagramFlowIDParseFails(
+        _ bytes: [UInt8],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        connection.context.onQueue {
+            var frame = Frame(copyBuffer: bytes)
+            defer { frame.finalize(success: true) }
+            do {
+                var quicFrame = try FrameDatagram(
+                    frame: &frame,
+                    useQuarterStreamID: true,
+                    useContextID: false,
+                    connection: connection,
+                    stats: &connection.stats,
+                    in: &connection.context.eventContext
+                )
+                quicFrame.frame.finalize(success: true)
+                XCTFail("Parsed \(bytes) instead of throwing", file: file, line: line)
+            } catch {
+                // Expect error
+            }
+        }
+    }
+
+    // The Length of a DATAGRAM frame covers the flow ID, so a Length shorter than the flow ID is
+    // malformed rather than a negative-length datagram.
+    func testDatagramFlowIDLongerThanLength() {
+        assertDatagramFlowIDParseFails([0x31, 0x00, 0x40, 0x4d, 0xaa])
+        assertDatagramFlowIDParseFails([0x31, 0x01, 0x40, 0x4d, 0xaa])
+    }
+
+    func testDatagramFlowIDWithLength() throws {
+        try connection.context.onQueue {
+            let bytes: [UInt8] = [
+                0x31, 0x03,
+                0x40, 0x4d,
+                0xaa,
+                0x01,
+            ]
+            var frame = Frame(copyBuffer: bytes)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useQuarterStreamID: true,
+                useContextID: false,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.flowID?.value, 77)
+            XCTAssertEqual(quicFrame.length, 1)
+            XCTAssertEqual(quicFrame.data, [0xaa])
+            XCTAssertEqual(frame.unclaimedLength, 1)
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
+    }
+
+    // RFC 9297, Section 2.1: the largest legal Quarter Stream ID is 2^60-1.
+    func testDatagramQuarterStreamIDLimit() throws {
+        try connection.context.onQueue {
+            let largest: [UInt8] = [0x30, 0xcf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xaa]
+            var frame = Frame(copyBuffer: largest)
+            var quicFrame = try FrameDatagram(
+                frame: &frame,
+                useQuarterStreamID: true,
+                useContextID: false,
+                connection: connection,
+                stats: &connection.stats,
+                in: &connection.context.eventContext
+            )
+            XCTAssertEqual(quicFrame.flowID?.value, (1 << 60) - 1)
+            XCTAssertEqual(quicFrame.data, [0xaa])
+            quicFrame.frame.finalize(success: true)
+            frame.finalize(success: true)
+        }
+
+        assertDatagramFlowIDParseFails([0x30, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa])
+    }
+
+    // RFC 9297, Section 2.1: a Quarter Stream ID is at most 2^60-1.
+    func testDatagramFlowIDRange() {
+        XCTAssertEqual(QUICDatagramFlowID.maxValid, (1 << 60) - 1)
+        XCTAssertEqual(QUICDatagramFlowID(0)?.value, 0)
+        XCTAssertEqual(QUICDatagramFlowID(QUICDatagramFlowID.maxValid)?.value, QUICDatagramFlowID.maxValid)
+        XCTAssertNil(QUICDatagramFlowID(QUICDatagramFlowID.maxValid + 1))
+    }
+
+    // Only client-initiated bidirectional streams have a Quarter Stream ID.
+    func testDatagramFlowIDFromAssociatedStreamID() throws {
+        let expected: [(streamID: UInt64, flowID: UInt64?)] = [
+            (0, 0),
+            (8, 2),
+            (QUICStreamID.maxValid - 3, QUICDatagramFlowID.maxValid),
+            (1, nil),
+            (2, nil),
+            (3, nil),
+            (6, nil),
+        ]
+        for (rawStreamID, flowID) in expected {
+            let streamID = try XCTUnwrap(QUICStreamID(rawStreamID))
+            XCTAssertEqual(QUICDatagramFlowID(associatedStreamID: streamID)?.value, flowID, "\(rawStreamID)")
         }
     }
 
@@ -3001,7 +3107,7 @@ class QUICFrameTests: XCTestCase {
         try FrameDatagram.write(
             frame: &frame,
             hasLength: false,
-            flowID: 77,
+            flowID: QUICDatagramFlowID(77),
             contextID: nil,
             data: sendData,
             stats: &stats
@@ -3025,7 +3131,7 @@ class QUICFrameTests: XCTestCase {
         try FrameDatagram.write(
             frame: &frame,
             hasLength: false,
-            flowID: 77,
+            flowID: QUICDatagramFlowID(77),
             contextID: nil,
             data: sendData,
             stats: &stats
@@ -3102,7 +3208,7 @@ class QUICFrameTests: XCTestCase {
         try FrameDatagram.write(
             frame: &frame,
             hasLength: false,
-            flowID: 77,
+            flowID: QUICDatagramFlowID(77),
             contextID: 13,
             data: sendData,
             stats: &stats
@@ -3127,7 +3233,7 @@ class QUICFrameTests: XCTestCase {
         try FrameDatagram.write(
             frame: &frame,
             hasLength: false,
-            flowID: 77,
+            flowID: QUICDatagramFlowID(77),
             contextID: 13,
             data: sendData,
             stats: &stats
@@ -3168,7 +3274,7 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: false,
+                useQuarterStreamID: false,
                 useContextID: false,
                 connection: connection,
                 stats: &connection.stats,
@@ -3192,7 +3298,7 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: false,
+                useQuarterStreamID: false,
                 useContextID: false,
                 connection: connection,
                 stats: &connection.stats,
@@ -3218,14 +3324,14 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: true,
+                useQuarterStreamID: true,
                 useContextID: false,
                 connection: connection,
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
             XCTAssertEqual(quicFrame.contextID, nil)
-            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.flowID?.value, 77)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
             quicFrame.frame.finalize(success: true)
@@ -3243,14 +3349,14 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: true,
+                useQuarterStreamID: true,
                 useContextID: false,
                 connection: connection,
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
             XCTAssertEqual(quicFrame.contextID, nil)
-            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.flowID?.value, 77)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
             quicFrame.frame.finalize(success: true)
@@ -3269,7 +3375,7 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: false,
+                useQuarterStreamID: false,
                 useContextID: true,
                 connection: connection,
                 stats: &connection.stats,
@@ -3294,7 +3400,7 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: false,
+                useQuarterStreamID: false,
                 useContextID: true,
                 connection: connection,
                 stats: &connection.stats,
@@ -3321,14 +3427,14 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: true,
+                useQuarterStreamID: true,
                 useContextID: true,
                 connection: connection,
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
             XCTAssertEqual(quicFrame.contextID, 13)
-            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.flowID?.value, 77)
             XCTAssertEqual(quicFrame.length, 4)
             XCTAssertEqual(quicFrame.data, [0xaa, 0xbb, 0xcc, 0x44])
             quicFrame.frame.finalize(success: true)
@@ -3347,14 +3453,14 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: true,
+                useQuarterStreamID: true,
                 useContextID: true,
                 connection: connection,
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
             XCTAssertEqual(quicFrame.contextID, 13)
-            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.flowID?.value, 77)
             XCTAssertEqual(quicFrame.length, 0)
             XCTAssertEqual(quicFrame.data, [])
             quicFrame.frame.finalize(success: true)
@@ -3376,7 +3482,7 @@ class QUICFrameTests: XCTestCase {
                 }
                 _ = try FrameDatagram(
                     frame: &frame,
-                    useFlowID: true,
+                    useQuarterStreamID: true,
                     useContextID: true,
                     connection: connection,
                     stats: &connection.stats,
@@ -3456,7 +3562,7 @@ class QUICFrameTests: XCTestCase {
         try FrameDatagram.write(
             frame: &frame,
             hasLength: true,
-            flowID: 77,
+            flowID: QUICDatagramFlowID(77),
             contextID: nil,
             data: sendData,
             stats: &stats
@@ -3481,7 +3587,7 @@ class QUICFrameTests: XCTestCase {
         try FrameDatagram.write(
             frame: &frame,
             hasLength: true,
-            flowID: 77,
+            flowID: QUICDatagramFlowID(77),
             contextID: nil,
             data: sendData,
             stats: &stats
@@ -3559,7 +3665,7 @@ class QUICFrameTests: XCTestCase {
         try FrameDatagram.write(
             frame: &frame,
             hasLength: true,
-            flowID: 77,
+            flowID: QUICDatagramFlowID(77),
             contextID: 13,
             data: sendData,
             stats: &stats
@@ -3585,7 +3691,7 @@ class QUICFrameTests: XCTestCase {
         try FrameDatagram.write(
             frame: &frame,
             hasLength: true,
-            flowID: 77,
+            flowID: QUICDatagramFlowID(77),
             contextID: 13,
             data: sendData,
             stats: &stats
@@ -3630,14 +3736,14 @@ class QUICFrameTests: XCTestCase {
             var frame = Frame(copyBuffer: bytes)
             var quicFrame = try FrameDatagram(
                 frame: &frame,
-                useFlowID: true,
+                useQuarterStreamID: true,
                 useContextID: true,
                 connection: connection,
                 stats: &connection.stats,
                 in: &connection.context.eventContext
             )
 
-            XCTAssertEqual(quicFrame.flowID, 77)
+            XCTAssertEqual(quicFrame.flowID?.value, 77)
             XCTAssertEqual(quicFrame.contextID, 13)
             XCTAssertEqual(quicFrame.length, 8)
             XCTAssertEqual(quicFrame.data, data)
@@ -3668,7 +3774,7 @@ class QUICFrameTests: XCTestCase {
                 // Ask to parse flow ID and context ID, even though the length doesn't allow for them
                 var quicFrame = try FrameDatagram(
                     frame: &frame,
-                    useFlowID: true,
+                    useQuarterStreamID: true,
                     useContextID: false,
                     connection: connection,
                     stats: &connection.stats,

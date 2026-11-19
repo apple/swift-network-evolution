@@ -247,7 +247,7 @@ enum QUICFrame: ~Copyable {
         case .datagram:
             return try FrameDatagram.parse(
                 frame: &frame,
-                useFlowID: connection.datagramEnableFlowID,
+                useQuarterStreamID: connection.datagramUseQuarterStreamID,
                 useContextID: connection.datagramUseContextID,
                 connection: connection,
                 stats: &stats,
@@ -3049,13 +3049,13 @@ struct FrameHandshakeDone: ~Copyable, QUICFrameProtocol {
 struct FrameDatagram: ~Copyable, QUICFrameProtocol {
     var type = FrameType.datagram()
 
-    private(set) var flowID: UInt64?
+    private(set) var flowID: QUICDatagramFlowID?
     private(set) var contextID: UInt64?
     private(set) var length: Int = 0
 
     var frame = Frame()
 
-    static func length(dataLength: UInt64, flowID: UInt64?, contextID: UInt64?) -> UInt64 {
+    static func length(dataLength: UInt64, flowID: QUICDatagramFlowID?, contextID: UInt64?) -> UInt64 {
         var length = dataLength
         if let flowID {
             length += UInt64(flowID.variableLengthSize)
@@ -3072,7 +3072,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
 
     static func parse(
         frame: inout Frame,
-        useFlowID: Bool,
+        useQuarterStreamID: Bool,
         useContextID: Bool,
         connection: QUICConnection,
         stats: inout Statistics,
@@ -3081,7 +3081,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
     ) throws(QUICError) -> QUICFrame {
         let frame = try FrameDatagram(
             frame: &frame,
-            useFlowID: useFlowID,
+            useQuarterStreamID: useQuarterStreamID,
             useContextID: useContextID,
             connection: connection,
             stats: &stats,
@@ -3095,7 +3095,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
 
     // For testing only, as this incurs extra copies
     init(
-        flowID: UInt64? = nil,
+        flowID: QUICDatagramFlowID? = nil,
         contextID: UInt64? = nil,
         data: [UInt8],
         hasLength: Bool
@@ -3103,18 +3103,16 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         type = .datagram(hasLength: hasLength)
 
         self.contextID = contextID
+        self.flowID = flowID
         self.length = data.count
         if self.length > 0 {
             self.frame = Frame(copyBuffer: data)
-        }
-        if let flowID {
-            self.flowID = flowID & ~Constants.streamIDDatagramMask
         }
     }
 
     init(
         frame: inout Frame,
-        useFlowID: Bool,
+        useQuarterStreamID: Bool,
         useContextID: Bool,
         connection: QUICConnection,
         stats: inout Statistics,
@@ -3122,7 +3120,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
     ) throws(QUICError) {
         var rawType: UInt64 = 0
         var contextID: UInt64 = 0
-        var flowID: UInt64 = 0
+        var rawFlowID: UInt64 = 0
         var result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
             try read.vle(&rawType)
         }
@@ -3140,10 +3138,10 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
 
         var headerOverhead = 0
         let unclaimedLengthBeforeHeader = frame.unclaimedLength
-        if useFlowID || useContextID {
+        if useQuarterStreamID || useContextID {
             result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
-                if useFlowID {
-                    try read.vle(&flowID)
+                if useQuarterStreamID {
+                    try read.vle(&rawFlowID)
                 }
                 if useContextID {
                     try read.vle(&contextID)
@@ -3155,7 +3153,13 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
                 headerOverhead = unclaimedLengthBeforeHeader - unclaimedLengthAfterHeader
             }
 
-            if useFlowID {
+            if useQuarterStreamID {
+                // RFC 9297, Section 2.1: the largest legal Quarter Stream ID is 2^60-1
+                guard let flowID = QUICDatagramFlowID(rawFlowID) else {
+                    throw QUICError.frameParse(
+                        FrameParseError.invalidValue("Quarter Stream ID \(rawFlowID) exceeds 2^60-1")
+                    )
+                }
                 self.flowID = flowID
             }
 
@@ -3170,8 +3174,9 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         let remainingBytes = unclaimedLengthBeforeHeader - headerOverhead
 
         if hasLength {
-            // If there is a datagram length in the frame, it must be able to fit in the remaining bytes
-            if rawLength > headerOverhead + remainingBytes {
+            // The Length covers the flow and context IDs, so they must fit inside it, and the
+            // datagram must be able to fit in the remaining bytes
+            if rawLength < headerOverhead || rawLength > headerOverhead + remainingBytes {
                 throw QUICError.frameParse(FrameParseError.parsingError)
             }
 
@@ -3233,7 +3238,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
     static func write(
         frame: inout Frame,
         hasLength: Bool,
-        flowID: UInt64?,
+        flowID: QUICDatagramFlowID?,
         contextID: UInt64?,
         data: borrowing Frame,
         stats: inout Statistics
@@ -3252,7 +3257,7 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
                 )
             }
             if let flowID {
-                try write.vle(flowID)
+                try write.vle(flowID.value)
             }
             if let contextID {
                 try write.vle(contextID)

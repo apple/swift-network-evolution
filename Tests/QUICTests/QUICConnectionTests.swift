@@ -487,6 +487,109 @@ final class QUICConnectionTests: XCTestCase {
         }
     }
 
+    /// Sets up a connection with the given DATAGRAM flow ID options, then runs `body` on its queue
+    /// with the connection and the error setup threw, if any.
+    private func withDatagramConnection(
+        enableFlowID: Bool,
+        quarterStreamID: Bool,
+        _ body: (QUICConnection, (any Error)?) -> Void
+    ) {
+        let storage = TestNetworkProtocolStorage(context: .implicitContext)
+        let (streamListener, _, _) = NetworkContext.implicitContext.onQueue {
+            storage.createTestQUICInstance()
+        }
+        guard let connection = storage.quicInstance(for: streamListener.base) else {
+            XCTFail("Failed to create a QUIC connection")
+            return
+        }
+
+        let parameters = Parameters()
+        let quicOptions = QUICStreamProtocol.options()
+        quicOptions.setProtocolInstance(streamListener.identifier)
+        quicOptions.modifyConnectionOptions {
+            $0.datagramEnableFlowID = enableFlowID
+            $0.datagramQuarterStreamID = quarterStreamID
+        }
+        parameters.defaultStack.prepend(applicationProtocol: .quic(quicOptions))
+        let path = PathProperties(parameters: parameters)
+
+        connection.context.onQueue {
+            var setupError: (any Error)? = nil
+            do {
+                try connection.setup(remote: nil, local: nil, parameters: parameters, path: path)
+            } catch {
+                setupError = error
+            }
+            body(connection, setupError)
+            if !connection.identifier.isNone {
+                connection.destroyFromExternalTest()
+            }
+            storage.releaseHeldInstances()
+        }
+    }
+
+    /// Only `datagramQuarterStreamID` decides whether DATAGRAM frames carry a flow ID.
+    /// `datagramEnableFlowID` without it asks for allocated flow IDs, which are not supported.
+    func testDatagramFlowIDRequiresQuarterStreamID() {
+        let cases: [(enableFlowID: Bool, quarterStreamID: Bool)] = [
+            (false, false), (false, true), (true, false), (true, true),
+        ]
+        for (enableFlowID, quarterStreamID) in cases {
+            withDatagramConnection(enableFlowID: enableFlowID, quarterStreamID: quarterStreamID) {
+                connection,
+                error in
+                let label = "datagramEnableFlowID \(enableFlowID), datagramQuarterStreamID \(quarterStreamID)"
+                if enableFlowID && !quarterStreamID {
+                    XCTAssertEqual(error as? NetworkError, NetworkError.posix(EINVAL), label)
+                } else {
+                    XCTAssertNil(error, label)
+                    XCTAssertEqual(connection.datagramUseQuarterStreamID, quarterStreamID, label)
+                }
+            }
+        }
+    }
+
+    /// With Quarter Stream IDs on, a datagram flow takes the Quarter Stream ID of its associated
+    /// stream, and setup fails when there is no client-initiated bidirectional stream to derive it from.
+    func testDatagramFlowSetupRequiresQuarterStreamID() {
+        let cases: [(associatedStreamID: UInt64?, expectedFlowID: UInt64?)] = [
+            (0, 0),
+            (8, 2),
+            (nil, nil),
+            (1, nil),
+            (2, nil),
+            (6, nil),
+            // Not a valid stream ID
+            (QUICStreamID.maxValid + 1, nil),
+        ]
+        withDatagramConnection(enableFlowID: false, quarterStreamID: true) { connection, error in
+            XCTAssertNil(error)
+            for (associatedStreamID, expectedFlowID) in cases {
+                let streamOptions = QUICStreamProtocol.options()
+                streamOptions.modifyPerProtocolOptions {
+                    $0.isDatagram = true
+                    $0.associatedStreamID = associatedStreamID
+                }
+                guard let options = streamOptions.perProtocolOptions else {
+                    XCTFail("No QUIC stream options")
+                    return
+                }
+                var flow = QUICDatagramFlow(parent: connection, inbound: false)
+                let label = "associated stream ID \(String(describing: associatedStreamID))"
+                do {
+                    try connection.setupNewDatagramFlow(&flow, with: options)
+                    XCTAssertEqual(flow.flowID?.value, expectedFlowID, label)
+                } catch {
+                    XCTAssertNil(expectedFlowID, "\(label): \(error)")
+                    XCTAssertEqual(error as? NetworkError, NetworkError.posix(EINVAL), label)
+                }
+                connection.fromExternal { eventContext in
+                    flow.unregisterEventManager(in: &eventContext)
+                }
+            }
+        }
+    }
+
     /// A packet whose header protection can be removed but whose payload fails authentication is
     /// reported as undecryptable, carrying the last 16 bytes of the datagram as a candidate
     /// Stateless Reset token (RFC 9000 Section 10.3.1).

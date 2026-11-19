@@ -781,7 +781,7 @@ extension FrameDatagram {
     }
     static func toShorthandLogEntry(
         outgoing: Bool = true,
-        flowID: UInt64?,
+        flowID: QUICDatagramFlowID?,
         length: UInt64
     ) -> QUICShorthandFrame {
         QUICShorthandFrame.datagram(
@@ -794,7 +794,7 @@ extension FrameDatagram {
 struct ShorthandFrameDatagram: ShorthandLogEntry {
     let outgoing: Bool
     let type: FrameType
-    let flowID: UInt64?
+    let flowID: QUICDatagramFlowID?
     let length: UInt64
 
     init(outgoing: Bool, frame: borrowing FrameDatagram) {
@@ -804,7 +804,7 @@ struct ShorthandFrameDatagram: ShorthandLogEntry {
         length = UInt64(frame.length)
     }
 
-    init(outgoing: Bool, flowID: UInt64?, length: UInt64) {
+    init(outgoing: Bool, flowID: QUICDatagramFlowID?, length: UInt64) {
         self.outgoing = outgoing
         type = FrameType.datagram(hasLength: true)
         self.flowID = flowID

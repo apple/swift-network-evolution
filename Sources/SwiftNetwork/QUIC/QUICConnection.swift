@@ -484,9 +484,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     public var pacingEnabled: Bool = false
 
+    // Whether every DATAGRAM frame carries an RFC 9297 Quarter Stream ID. That is the only DATAGRAM
+    // flow ID supported; the allocated flow IDs of earlier drafts are not.
     private(set) var datagramUseQuarterStreamID = false
     var datagramUseContextID = false
-    var datagramEnableFlowID = false
 
     private(set) var maximumConcurrentBidirectionalStreams: Int?
     private(set) var maximumConcurrentUnidirectionalStreams: Int?
@@ -562,6 +563,18 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         parameters: Parameters?,
         path: PathProperties?
     ) throws(NetworkError) {
+        // `datagramEnableFlowID` without `datagramQuarterStreamID` asks for allocated DATAGRAM flow
+        // IDs, which are not supported. Ignoring it would put frames on the wire that a peer using
+        // allocated flow IDs misparses, so reject it before setting anything up.
+        if let parameters,
+            let quicConnectionOptions = quicOptions(from: parameters, for: .allFlows)?
+                .perProtocolOptions?.quicConnectionOptions,
+            quicConnectionOptions.datagramEnableFlowID, !quicConnectionOptions.datagramQuarterStreamID
+        {
+            log.error("Allocated DATAGRAM flow IDs are not supported, only Quarter Stream IDs")
+            throw NetworkError.posix(EINVAL)
+        }
+
         #if NETWORK_PRIVATE
         self.privateStorage.setupFlowRegistration(path)
         #endif
@@ -703,7 +716,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             datagramUseQuarterStreamID =
                 quicConnectionOptions.datagramQuarterStreamID
             datagramUseContextID = quicConnectionOptions.datagramContextID
-            datagramEnableFlowID = quicConnectionOptions.datagramEnableFlowID
 
             maximumConcurrentBidirectionalStreams =
                 quicConnectionOptions.maximumConcurrentBidirectionalStreams
@@ -771,8 +783,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         if protocolOptions.isDatagram {
-            let didSetup: Void? = performOnDatagramFlow(flowID) { (datagramFlow: inout SecondaryFlow) in
-                setupNewDatagramFlow(&datagramFlow, with: protocolOptions)
+            let didSetup: Void? = try performOnDatagramFlow(flowID) {
+                (datagramFlow: inout SecondaryFlow) throws(NetworkError) in
+                try setupNewDatagramFlow(&datagramFlow, with: protocolOptions)
             }
             guard didSetup != nil else {
                 throw NetworkError.posix(ENOENT)
@@ -2983,7 +2996,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         if let datagramInfo {
             let metadata = QUICProtocol.metadata()
             metadata.mutablePerProtocolMetadata { metadata in
-                metadata?.datagramFlowID = datagramInfo.flowID
+                metadata?.datagramFlowID = datagramInfo.flowID?.value
                 metadata?.usableDatagramFrameSize = UInt16(
                     datagramInfo.usableSize
                 )
@@ -7023,14 +7036,20 @@ extension QUICConnection {
     func setupNewDatagramFlow(
         _ flow: inout QUICDatagramFlow,
         with streamOptions: QUICStreamProtocol.Options
-    ) {
-        let datagramFlowID: UInt64?
-        if datagramEnableFlowID, let associatedStreamID = streamOptions.associatedStreamID,
-            datagramUseQuarterStreamID
-        {
-            datagramFlowID = QUICDatagramFlow.generateFlowID(from: associatedStreamID)
-        } else {
-            datagramFlowID = nil
+    ) throws(NetworkError) {
+        var datagramFlowID: QUICDatagramFlowID? = nil
+        if datagramUseQuarterStreamID {
+            // Every DATAGRAM frame on this connection carries a flow ID, so a flow without one
+            // would send frames the peer misparses.
+            guard let associatedStreamID = streamOptions.associatedStreamID.flatMap({ QUICStreamID($0) }),
+                let quarterStreamID = QUICDatagramFlowID(associatedStreamID: associatedStreamID)
+            else {
+                log.error(
+                    "Cannot create datagram flow without a Quarter Stream ID (associated stream ID \(streamOptions.associatedStreamID.map { "\($0)" } ?? "none"))"
+                )
+                throw NetworkError.posix(EINVAL)
+            }
+            datagramFlowID = quarterStreamID
         }
 
         flow.setup(
@@ -7105,7 +7124,7 @@ extension QUICConnection {
             }
             let datagramMetadata = QUICProtocol.metadata()
             datagramMetadata.mutablePerProtocolMetadata { metadata in
-                metadata?.datagramFlowID = newFlow.flowID
+                metadata?.datagramFlowID = newFlow.flowID?.value
                 metadata?.isDatagramFlow = true
                 metadata?.usableDatagramFrameSize = UInt16(newFlow.usableDatagramSize)
                 metadata?.replaceConnectionMetadata(self.connectionMetadata)
