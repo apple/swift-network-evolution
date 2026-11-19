@@ -26,7 +26,6 @@ enum Constants {
     static let maxStreamLimit: UInt64 = (UInt64.max >> 4) + 1  // UINT60_MAX
     static let minimumPayloadLength = 3
     static let activeCIDLimit: UInt64 = 64
-    static let maxDatagramFrameSize = 65535
     static let minimumPacketSize = 21
     static let maximumAllowedAckDelay = UInt32.max
     static let antiAmplificationFactor = 3

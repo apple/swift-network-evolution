@@ -529,6 +529,24 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
         runLocalCloseTest(payload: payload, expectedCode: .protocolViolation, serverOptions: serverOptions)
     }
 
+    // RFC 9221, Section 3: max_datagram_frame_size covers the frame type, length and payload, so a frame whose
+    // payload alone fits the limit can still be over it.
+    func testDatagramOneByteOverTheMaximumFrameSizeClosesWithProtocolViolation() {
+        let serverOptions = QUICProtocol.options()
+        serverOptions.modifyPerProtocolOptions { streamOptions in
+            streamOptions.modifyQUICConnectionOptions { $0.maxDatagramFrameSize = 100 }
+        }
+        // Type (1) + length (2) + payload (98) = 101.
+        let payload: [UInt8] = [0x31, 0x40, 0x62] + [UInt8](repeating: 0xAA, count: 98)
+        runLocalCloseTest(payload: payload, expectedCode: .protocolViolation, serverOptions: serverOptions)
+    }
+
+    // RFC 9221, Section 3: a DATAGRAM frame sent to an endpoint that didn't advertise max_datagram_frame_size
+    // is a PROTOCOL_VIOLATION. The default server options don't advertise it.
+    func testDatagramWithoutNegotiationClosesWithProtocolViolation() {
+        runLocalCloseTest(payload: [0x31, 0x04, 0xAA, 0xBB, 0xCC, 0xDD], expectedCode: .protocolViolation)
+    }
+
     /// Checks that `payload` makes its receiver close the connection with `expectedCode`, and that the
     /// close reaches the sender.
     private func runLocalCloseTest(
