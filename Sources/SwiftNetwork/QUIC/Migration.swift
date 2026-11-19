@@ -246,7 +246,12 @@ struct MigrationPathStates {
 @available(Network 0.1.0, *)
 extension QUICPath {
     var migrationSnapshot: MigrationContext.PathSnapshot {
-        MigrationContext.PathSnapshot(identifier: pathIdentifier, state: state, isPrimary: pathIsPrimary)
+        MigrationContext.PathSnapshot(
+            identifier: pathIdentifier,
+            state: state,
+            isPrimary: pathIsPrimary,
+            priority: priority
+        )
     }
 }
 
