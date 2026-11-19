@@ -17,7 +17,7 @@ import XCTest
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @testable import SwiftNetwork
 #elseif canImport(Network)
-@_spi(Essentials) import Network
+@_spi(Essentials) @testable import Network
 #endif
 
 #if canImport(SwiftNetworkTestHarness)

@@ -17,7 +17,7 @@ import XCTest
 #if canImport(SwiftNetwork)
 @_spi(Essentials) @testable import SwiftNetwork
 #elseif canImport(Network)
-@_spi(Essentials) import Network
+@_spi(Essentials) @testable import Network
 #endif
 
 #if canImport(SwiftNetworkTestHarness)
@@ -125,11 +125,12 @@ final class SwiftNetworkEndpointOrderingTests: NetTestCase {
         assertIsPermutation(order, count: families.count)
     }
 
-    func testInterleave_preferredCountOneIsBothTheDefaultAndTheFloor() {
-        // The spec's recommended Preferred Address Family Count is 1, and values below 1 are
-        // clamped to it. Pinned as a literal so the default cannot drift silently.
+    func testInterleave_preferredCountTwoIsTheDefaultAndOneIsTheFloor() {
+        // The default Preferred Address Family Count is 2, and values below 1 are clamped to 1.
+        // Pinned as literals so neither can drift silently.
         let families = [Family.v6, .v6, .v6, .v4]
-        XCTAssertEqual(EndpointOrdering.interleaveByFamily(families), [0, 3, 1, 2])
+        XCTAssertEqual(EndpointOrdering.interleaveByFamily(families), [0, 1, 3, 2])
+        XCTAssertEqual(EndpointOrdering.interleaveByFamily(families, preferredFamilyCount: 2), [0, 1, 3, 2])
         XCTAssertEqual(EndpointOrdering.interleaveByFamily(families, preferredFamilyCount: 1), [0, 3, 1, 2])
         XCTAssertEqual(EndpointOrdering.interleaveByFamily(families, preferredFamilyCount: 0), [0, 3, 1, 2])
     }
@@ -139,8 +140,14 @@ final class SwiftNetworkEndpointOrderingTests: NetTestCase {
         XCTAssertEqual(EndpointOrdering.interleaveByFamily([Family.v6, .v4]), [0, 1])
     }
 
-    func testInterleave_threeEntriesPullUpWithDefaultCount() {
-        XCTAssertEqual(EndpointOrdering.interleaveByFamily([Family.v6, .v6, .v4]), [0, 2, 1])
+    func testInterleave_threeEntriesAreUnchangedWithDefaultCount() {
+        // With a preferred count of 2 the second family at index 2 is not past the preferred run.
+        XCTAssertEqual(EndpointOrdering.interleaveByFamily([Family.v6, .v6, .v4]), [0, 1, 2])
+        // Lowering the count to 1 does promote it.
+        XCTAssertEqual(
+            EndpointOrdering.interleaveByFamily([Family.v6, .v6, .v4], preferredFamilyCount: 1),
+            [0, 2, 1]
+        )
     }
 
     func testInterleave_onlyOnePullUpRegardlessOfFamilyCount() {
@@ -148,7 +155,7 @@ final class SwiftNetworkEndpointOrderingTests: NetTestCase {
         // the third family is left where it is.
         enum Three: Equatable { case a, b, c }
         let order = EndpointOrdering.interleaveByFamily([Three.a, .a, .a, .b, .c])
-        XCTAssertEqual(order, [0, 3, 1, 2, 4])
+        XCTAssertEqual(order, [0, 1, 3, 2, 4])
         assertIsPermutation(order, count: 5)
     }
 
@@ -257,19 +264,19 @@ final class SwiftNetworkEndpointOrderingTests: NetTestCase {
         // Plain A/AAAA results carry no priority or weight, so the priority pass is a no-op
         // and the RFC 6724 ordering stands.
         let endpoints = [v4("1.2.3.4"), v6("2001:db8::1"), v4("5.6.7.8"), v6("2001:db8::2")]
-        XCTAssertEqual(EndpointOrdering.orderEndpoints(endpoints).map(\.addressFamily), [.ipv6, .ipv4, .ipv6, .ipv4])
+        XCTAssertEqual(EndpointOrdering.orderEndpoints(endpoints).map(\.addressFamily), [.ipv6, .ipv6, .ipv4, .ipv4])
     }
 
     func testOrderEndpoints_interleavesFamilies() {
         // Four IPv6 and one IPv4 all sort IPv6-first by RFC 6724; interleaving then pulls the
-        // IPv4 address up so it is not tried last. With the default count of 1 it lands second.
+        // IPv4 address up so it is not tried last. With the default count of 2 it lands third.
         let endpoints = [
             v6("2001:db8::1"), v6("2001:db8::2"), v6("2001:db8::3"), v6("2001:db8::4"),
             v4("1.2.3.4"),
         ]
         XCTAssertEqual(
             EndpointOrdering.orderEndpoints(endpoints).map(\.addressFamily),
-            [.ipv6, .ipv4, .ipv6, .ipv6, .ipv6]
+            [.ipv6, .ipv6, .ipv4, .ipv6, .ipv6]
         )
     }
 
@@ -279,8 +286,8 @@ final class SwiftNetworkEndpointOrderingTests: NetTestCase {
             v4("1.2.3.4"),
         ]
         XCTAssertEqual(
-            EndpointOrdering.orderEndpoints(endpoints, preferredFamilyCount: 2).map(\.addressFamily),
-            [.ipv6, .ipv6, .ipv4, .ipv6, .ipv6]
+            EndpointOrdering.orderEndpoints(endpoints, preferredFamilyCount: 1).map(\.addressFamily),
+            [.ipv6, .ipv4, .ipv6, .ipv6, .ipv6]
         )
     }
 
@@ -304,7 +311,7 @@ final class SwiftNetworkEndpointOrderingTests: NetTestCase {
         ]
         let ordered = EndpointOrdering.orderEndpoints(endpoints)
         XCTAssertEqual(ordered.map(\.priority), [10, 10, 10, 10, 20])
-        XCTAssertEqual(ordered.map(\.addressFamily), [.ipv6, .ipv4, .ipv6, .ipv6, .ipv6])
+        XCTAssertEqual(ordered.map(\.addressFamily), [.ipv6, .ipv6, .ipv4, .ipv6, .ipv6])
     }
 
     func testOrderEndpoints_addressSelectionSurvivesAsWithinServiceTiebreak() {
@@ -332,23 +339,248 @@ final class SwiftNetworkEndpointOrderingTests: NetTestCase {
         XCTAssertEqual(ordered.map(\.addressFamily), [.ipv6, .ipv4, .ipv6, .ipv4])
     }
 
-    func testOrderEndpoints_interleavingDoesNotReachAcrossServices() {
+    func testOrderEndpoints_interleavingReachesAcrossServicesSharingAPriority() {
         // Service A is three IPv6 addresses, service B a single IPv4 one, both at priority 10.
-        // Service A has nothing to interleave with, so its block must be left alone — pulling
-        // service B's IPv4 address forward into it would reorder one service relative to
-        // another, which no sorting step is allowed to do.
-        //
-        // This is the case `testOrderEndpoints_equalPriorityServicesStayContiguous` misses:
-        // there the families alternate, so interleaving is a no-op and contiguity holds for
-        // free. Here the pull-up genuinely fires if the run key is priority alone.
+        // The run key is priority alone, so the two services form one run and service B's IPv4
+        // address is pulled forward into service A's block — hedging against a broken family
+        // takes precedence over keeping one service's addresses contiguous.
         let ordered = EndpointOrdering.orderEndpoints([
             v6("2001:db8::a1", priority: 10, weight: 100),
             v6("2001:db8::a2", priority: 10, weight: 100),
             v6("2001:db8::a3", priority: 10, weight: 100),
             v4("10.0.0.9", priority: 10, weight: 200),
         ])
-        XCTAssertEqual(ordered.map(\.weight), [100, 100, 100, 200])
-        XCTAssertEqual(ordered.map(\.addressFamily), [.ipv6, .ipv6, .ipv6, .ipv4])
+        XCTAssertEqual(ordered.map(\.weight), [100, 100, 200, 100])
+        XCTAssertEqual(ordered.map(\.addressFamily), [.ipv6, .ipv6, .ipv4, .ipv6])
+    }
+
+    // MARK: - protocolGroups / orderEndpointGroups
+    //
+    // Groups are alternatives, not one list, and an endpoint usable over two application
+    // protocols belongs to both of their groups. The draft's own example: one endpoint speaks
+    // HTTP/3 and HTTP/2, another only HTTP/2, so the first appears in both groups.
+
+    private enum Protocols { static let h3 = 0, h2 = 1 }
+
+    func testProtocolGroups_ascendingRankAndInputOrderWithinAGroup() {
+        XCTAssertEqual(EndpointOrdering.protocolGroups([[1], [0], [1], [0]]), [[1, 3], [0, 2]])
+    }
+
+    func testProtocolGroups_anEntryInTwoGroupsAppearsInBoth() {
+        XCTAssertEqual(EndpointOrdering.protocolGroups([[0, 1], [1]]), [[0], [0, 1]])
+    }
+
+    func testProtocolGroups_anEntryInNoGroupIsListedNowhere() {
+        XCTAssertEqual(EndpointOrdering.protocolGroups([[0], [], [0]]), [[0, 2]])
+    }
+
+    func testProtocolGroups_ranksNeedNotBeContiguousOrNonNegative() {
+        XCTAssertEqual(EndpointOrdering.protocolGroups([[100], [-7], [3]]), [[1], [2], [0]])
+    }
+
+    func testProtocolGroups_emptyInput() {
+        XCTAssertEqual(EndpointOrdering.protocolGroups([]), [])
+        XCTAssertEqual(EndpointOrdering.protocolGroups([[], []]), [])
+    }
+
+    func testOrderEndpointGroups_sharedEndpointIsOfferedInBothGroups() {
+        // The draft's example. `both` speaks HTTP/3 and HTTP/2; `h2Only` speaks only HTTP/2.
+        let both = v6("2001:db8::2")
+        let h2Only = v6("2001:db8::4")
+        let groups = EndpointOrdering.orderEndpointGroups([both, h2Only]) { endpoint in
+            endpoint == both ? [Protocols.h3, Protocols.h2] : [Protocols.h2]
+        }
+        XCTAssertEqual(groups.count, 2)
+        XCTAssertEqual(groups[0], [both], "the HTTP/3 group holds only the endpoint that speaks it")
+        XCTAssertEqual(groups[1], [both, h2Only], "the HTTP/2 group holds both")
+    }
+
+    func testOrderEndpointGroups_eachGroupIsOrderedIndependently() {
+        // Group 0 is three IPv6 and one IPv4; group 1 a single IPv6. Interleaving applies inside
+        // group 0 only, and cannot pull group 1's endpoint forward.
+        let lone = v6("2001:db8::9")
+        let endpoints = [
+            v6("2001:db8::1"), v6("2001:db8::2"), v6("2001:db8::3"), v4("1.2.3.4"), lone,
+        ]
+        let groups = EndpointOrdering.orderEndpointGroups(endpoints) { $0 == lone ? [1] : [0] }
+        XCTAssertEqual(groups.count, 2)
+        XCTAssertEqual(groups[0].map(\.addressFamily), [.ipv6, .ipv6, .ipv4, .ipv6])
+        XCTAssertEqual(groups[1].map(\.addressFamily), [.ipv6])
+    }
+
+    func testOrderEndpointGroups_oneGroupMatchesOrderEndpoints() {
+        // With every endpoint in a single group the result is just `orderEndpoints`.
+        let endpoints = [
+            v6("2001:db8::1"), v6("2001:db8::2"), v6("2001:db8::3"), v4("1.2.3.4"),
+        ]
+        let groups = EndpointOrdering.orderEndpointGroups(endpoints) { _ in [0] }
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups[0], EndpointOrdering.orderEndpoints(endpoints))
+    }
+
+    // MARK: - orderByServicePriority, SRV origin
+
+    func testPriority_srvOriginTreatsZeroAsTheBestPriority() {
+        // An SRV priority comes off the wire, where 0 is an ordinary and most-preferred value —
+        // the opposite of a service-binding priority, where 0 means no record at all.
+        let entries = [(priority: UInt16(10), weight: UInt16(0)), (priority: UInt16(0), weight: UInt16(0))]
+        XCTAssertEqual(EndpointOrdering.orderByServicePriority(entries, priorityOrigin: .srv), [1, 0])
+        XCTAssertEqual(EndpointOrdering.orderByServicePriority(entries, priorityOrigin: .serviceBinding), [0, 1])
+    }
+
+    func testPriority_srvOriginIgnoresWeight() {
+        // Weight is not an ordering key for SRV; the proportional draw handles it instead, so
+        // equal priorities keep their input order here however the weights compare.
+        let entries = [(priority: UInt16(1), weight: UInt16(200)), (priority: UInt16(1), weight: UInt16(10))]
+        XCTAssertEqual(EndpointOrdering.orderByServicePriority(entries, priorityOrigin: .srv), [0, 1])
+        XCTAssertEqual(EndpointOrdering.orderByServicePriority(entries, priorityOrigin: .serviceBinding), [1, 0])
+    }
+
+    // MARK: - orderBySRVWeight
+    //
+    // RFC 2782: within one priority, the chance of being drawn is the entry's share of the
+    // group's total weight, favouring larger weights. `randomBelow` pins the draw —
+    // `{ _ in 0 }` takes the first remaining non-zero-weight entry, `{ $0 - 1 }` the entry whose
+    // running weight sits last. The input is assumed already grouped by priority.
+
+    func testSRVWeight_groupsAreOrderedIndependently() {
+        let entries = [
+            (priority: UInt16(0), weight: UInt16(1)),
+            (priority: UInt16(0), weight: UInt16(1)),
+            (priority: UInt16(5), weight: UInt16(1)),
+        ]
+        let order = EndpointOrdering.orderBySRVWeight(entries, randomBelow: { _ in 0 })
+        XCTAssertEqual(order, [0, 1, 2])
+        assertIsPermutation(order, count: entries.count)
+    }
+
+    func testSRVWeight_zeroDrawTakesNonZeroWeightsThenZeroWeights() {
+        let entries = [
+            (priority: UInt16(0), weight: UInt16(3)),
+            (priority: UInt16(0), weight: UInt16(0)),
+            (priority: UInt16(0), weight: UInt16(5)),
+        ]
+        XCTAssertEqual(EndpointOrdering.orderBySRVWeight(entries, randomBelow: { _ in 0 }), [0, 2, 1])
+    }
+
+    func testSRVWeight_topDrawTakesTheLastRunningWeightFirst() {
+        let entries = [
+            (priority: UInt16(0), weight: UInt16(3)),
+            (priority: UInt16(0), weight: UInt16(5)),
+        ]
+        XCTAssertEqual(EndpointOrdering.orderBySRVWeight(entries, randomBelow: { $0 - 1 }), [1, 0])
+    }
+
+    func testSRVWeight_allZeroWeightsKeepInputOrder() {
+        let entries = [
+            (priority: UInt16(0), weight: UInt16(0)),
+            (priority: UInt16(0), weight: UInt16(0)),
+        ]
+        XCTAssertEqual(EndpointOrdering.orderBySRVWeight(entries, randomBelow: { _ in 0 }), [0, 1])
+    }
+
+    func testSRVWeight_isAPermutationWithGroupsPreservedUnderRealRandomness() {
+        let entries = [
+            (priority: UInt16(1), weight: UInt16(10)),
+            (priority: UInt16(1), weight: UInt16(20)),
+            (priority: UInt16(1), weight: UInt16(0)),
+            (priority: UInt16(2), weight: UInt16(0)),
+        ]
+        let order = EndpointOrdering.orderBySRVWeight(entries, randomBelow: { UInt32.random(in: 0..<$0) })
+        assertIsPermutation(order, count: entries.count)
+        // The sole priority-2 entry stays last whatever the draw.
+        XCTAssertEqual(order.last, 3)
+    }
+
+    // MARK: - preferConnectedOrder
+
+    func testPreferConnected_mostConnectedFlowsMovesToTheFront() {
+        let uses: [(connectedFlows: UInt32, activeInstances: UInt64)] = [
+            (connectedFlows: 0, activeInstances: 0),
+            (connectedFlows: 3, activeInstances: 0),
+            (connectedFlows: 1, activeInstances: 0),
+        ]
+        XCTAssertEqual(EndpointOrdering.preferConnectedOrder(uses), [1, 0, 2])
+    }
+
+    func testPreferConnected_fallsBackToActiveInstances() {
+        // Nothing is connected, so the entry with the most active instances wins instead.
+        let uses: [(connectedFlows: UInt32, activeInstances: UInt64)] = [
+            (connectedFlows: 0, activeInstances: 1),
+            (connectedFlows: 0, activeInstances: 7),
+        ]
+        XCTAssertEqual(EndpointOrdering.preferConnectedOrder(uses), [1, 0])
+    }
+
+    func testPreferConnected_connectedFlowsOutrankActiveInstances() {
+        let uses: [(connectedFlows: UInt32, activeInstances: UInt64)] = [
+            (connectedFlows: 0, activeInstances: 99),
+            (connectedFlows: 1, activeInstances: 0),
+        ]
+        XCTAssertEqual(EndpointOrdering.preferConnectedOrder(uses), [1, 0])
+    }
+
+    func testPreferConnected_nothingInUseOrAlreadyFirstIsANoOp() {
+        let idle: [(connectedFlows: UInt32, activeInstances: UInt64)] = [
+            (connectedFlows: 0, activeInstances: 0),
+            (connectedFlows: 0, activeInstances: 0),
+        ]
+        XCTAssertEqual(EndpointOrdering.preferConnectedOrder(idle), [0, 1])
+        let alreadyFirst: [(connectedFlows: UInt32, activeInstances: UInt64)] = [
+            (connectedFlows: 5, activeInstances: 0),
+            (connectedFlows: 1, activeInstances: 0),
+        ]
+        XCTAssertEqual(EndpointOrdering.preferConnectedOrder(alreadyFirst), [0, 1])
+    }
+
+    func testPreferConnected_firstOfATieWins() {
+        let uses: [(connectedFlows: UInt32, activeInstances: UInt64)] = [
+            (connectedFlows: 1, activeInstances: 0),
+            (connectedFlows: 2, activeInstances: 0),
+            (connectedFlows: 2, activeInstances: 0),
+        ]
+        XCTAssertEqual(EndpointOrdering.preferConnectedOrder(uses), [1, 0, 2])
+    }
+
+    func testOrderEndpoints_preferConnectedLiftsOutOfItsPriorityGroup() {
+        // Established use is applied to the whole list, so it can lift an endpoint past a better
+        // priority — reusing a live connection outranks a service's stated preference.
+        let better = v6("2001:db8::1", priority: 10)
+        let connected = v6("2001:db8::9", priority: 20)
+        let ordered = EndpointOrdering.orderEndpoints(
+            [better, connected],
+            readingConnectionUse: { endpoint in
+                endpoint.priority == 20
+                    ? (connectedFlows: 4, activeInstances: 0) : (connectedFlows: 0, activeInstances: 0)
+            }
+        )
+        XCTAssertEqual(ordered.map(\.priority), [20, 10])
+    }
+
+    func testOrderEndpoints_srvDrawAndPreferConnectedCombine() {
+        // The two trailing stages had no coverage together, which is how the ordering between
+        // them went unexamined. The draw runs first, over contiguous priority runs, and
+        // prefer-connected then lifts the live endpoint to the front.
+        //
+        // `randomBelow` returning the top of the range always takes the last entry of a group
+        // that still has weight, so the priority-20 group is drawn in reverse.
+        let endpoints = [
+            v6("2001:db8::1", priority: 10),
+            v6("2001:db8::a", priority: 20, weight: 10),
+            v6("2001:db8::b", priority: 20, weight: 20),
+            v6("2001:db8::c", priority: 20, weight: 30),
+        ]
+        let ordered = EndpointOrdering.orderEndpoints(
+            endpoints,
+            priorityOrigin: .srv,
+            readingConnectionUse: { endpoint in
+                endpoint.weight == 30
+                    ? (connectedFlows: 4, activeInstances: 0) : (connectedFlows: 0, activeInstances: 0)
+            },
+            randomBelow: { $0 - 1 }
+        )
+        XCTAssertEqual(ordered.map(\.priority), [20, 10, 20, 20])
+        XCTAssertEqual(ordered.map(\.weight), [30, 0, 20, 10])
     }
 
     func testEndpointAccessors_forwardForHostEndpoints() {
@@ -375,13 +607,13 @@ final class SwiftNetworkEndpointOrderingTests: NetTestCase {
     }
 
     func testOrderEndpoints_unixEndpointDoesNotBlockIPv4Interleaving() {
-        // With a real IPv4 address present, interleaving still happens among the IP endpoints
-        // and the Unix endpoint keeps its slot.
+        // A Unix-domain endpoint is still an address endpoint, so it does not disqualify the run:
+        // interleaving happens among the IP endpoints and the Unix endpoint keeps its slot.
         let unix = Endpoint(AddressEndpoint("/tmp/example.sock")!)
         let ordered = EndpointOrdering.orderEndpoints([
             v6("2001:db8::1"), v6("2001:db8::2"), v6("2001:db8::3"), v4("1.2.3.4"), unix,
         ])
-        XCTAssertEqual(ordered.map(\.addressFamily), [.ipv6, .ipv4, .ipv6, .ipv6, .unix])
+        XCTAssertEqual(ordered.map(\.addressFamily), [.ipv6, .ipv6, .ipv4, .ipv6, .unix])
     }
 
     func testOrderEndpoints_keepsNonAddressEndpoints() {
@@ -405,12 +637,14 @@ final class SwiftNetworkEndpointOrderingTests: NetTestCase {
     }
 
     func testOrderEndpoints_interleavesAroundANonAddressEndpoint() {
-        // The host sits between addresses: it keeps index 1, and the IPv4 address is pulled up
-        // into the first free address slot after the preferred run rather than to index 1.
+        // An endpoint with no address holds its slot and the addresses interleave around it, the
+        // same treatment a Unix-domain endpoint gets. The host keeps index 1, and the IPv4
+        // address is pulled into the first free *address* slot past the preferred run — index 3,
+        // not index 2, because index 1 is not an address slot.
         let host = Endpoint(hostname: "example.com", port: 443)
         let ordered = EndpointOrdering.orderEndpoints([
             v6("2001:db8::1"), host, v6("2001:db8::2"), v6("2001:db8::3"), v4("1.2.3.4"),
         ])
-        XCTAssertEqual(ordered.map(\.addressFamily), [.ipv6, nil, .ipv4, .ipv6, .ipv6])
+        XCTAssertEqual(ordered.map(\.addressFamily), [.ipv6, nil, .ipv6, .ipv4, .ipv6])
     }
 }
