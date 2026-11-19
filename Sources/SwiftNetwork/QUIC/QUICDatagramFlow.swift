@@ -39,7 +39,7 @@ public struct QUICDatagramFlow: ~Copyable, AutomaticUpperDatagramProcessing, Mul
     @usableFromInline
     var base: MultiplexedDatagramFlow<QUICConnection, BaseInboundDatagramLinkage>
 
-    private(set) var flowID: UInt64?
+    private(set) var flowID: QUICDatagramFlowID?
     private(set) var contextID: UInt64?
     var applicationMarkedIdle: Bool = false
 
@@ -121,22 +121,12 @@ public struct QUICDatagramFlow: ~Copyable, AutomaticUpperDatagramProcessing, Mul
     }
 
     mutating func setup(
-        datagramFlowID: UInt64? = nil,
+        datagramFlowID: QUICDatagramFlowID? = nil,
         contextID: UInt64? = nil,
         logPrefixer: LogPrefixer
     ) {
         self.flowID = datagramFlowID
         self.contextID = contextID
-    }
-
-    static func generateFlowID(from associatedStreamID: UInt64) -> UInt64? {
-        guard associatedStreamID % 4 == 0 else {
-            Logger.proto.error(
-                "Cannot create DATAGRAM flow ID with associated stream ID \(associatedStreamID)"
-            )
-            return nil
-        }
-        return (associatedStreamID / 4)
     }
 
     mutating func updateUsableDatagramFrameSize(
