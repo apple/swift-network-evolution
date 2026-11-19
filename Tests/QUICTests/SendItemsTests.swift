@@ -568,28 +568,48 @@ final class SendItemsTests: XCTestCase {
         configure: (inout PendingItems, MultiplexedFlowIdentifier) -> Void,
         inspect: (borrowing TransmittedItems, _ isAckEliciting: Bool) -> Void
     ) -> QUICError? {
+        writeWhileDataBlocked(
+            streamBytes: [bytes],
+            configure: { pendingItems, flowIDs in configure(&pendingItems, flowIDs[0]) },
+            inspect: inspect
+        )
+    }
+
+    // As above, with one client bidirectional stream per entry of `streamBytes` (stream IDs 0, 4,
+    // ...). `prepareStream` runs on each stream, with its index, before the connection takes it.
+    func writeWhileDataBlocked(
+        streamBytes: [Int],
+        prepareStream: (inout QUICStreamInstance, Int) -> Void = { _, _ in },
+        configure: (inout PendingItems, [MultiplexedFlowIdentifier]) -> Void,
+        inspect: (borrowing TransmittedItems, _ isAckEliciting: Bool) -> Void
+    ) -> QUICError? {
         let clock = TestClockContext("SendItemsTests")
         let connection = clock.onQueue {
             QUICConnection(context: clock.context)
         }
-        let flowID = clock.onQueue { () -> MultiplexedFlowIdentifier in
-            var stream = QUICStreamInstance(parent: connection, inbound: false)
-            stream.setup(streamID: QUICStreamID(0), logPrefixer: LogPrefixer())
-            stream.outboundStreamReady()
-            stream.send.buffer.addSendData(
-                Frame(copyBuffer: [UInt8](repeating: 0xAB, count: bytes)),
-                isLast: false
-            )
-            let flowID = stream.flowIdentifier
-            // The connection owns the stream from here on
-            stream.destroyFromExternalTest()
-            connection.insertFlow(stream, for: flowID)
-            return flowID
+        let flowIDs = clock.onQueue { () -> [MultiplexedFlowIdentifier] in
+            streamBytes.indices.map { index in
+                var stream = QUICStreamInstance(parent: connection, inbound: false)
+                stream.setup(streamID: QUICStreamID(UInt64(index) * 4)!, logPrefixer: LogPrefixer())
+                stream.outboundStreamReady()
+                stream.send.buffer.addSendData(
+                    Frame(copyBuffer: [UInt8](repeating: 0xAB, count: streamBytes[index])),
+                    isLast: false
+                )
+                prepareStream(&stream, index)
+                let flowID = stream.flowIdentifier
+                // The connection owns the stream from here on
+                stream.destroyFromExternalTest()
+                connection.insertFlow(stream, for: flowID)
+                return flowID
+            }
         }
         defer {
             clock.onQueue {
-                if var stream = connection.removeFlow(flowID) {
-                    stream.send.buffer.empty()
+                for flowID in flowIDs {
+                    if var stream = connection.removeFlow(flowID) {
+                        stream.send.buffer.empty()
+                    }
                 }
                 connection.destroyFromExternalTest()
             }
@@ -600,7 +620,7 @@ final class SendItemsTests: XCTestCase {
         connection.hasSentDataBlocked = true
 
         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
-        configure(&pendingItems, flowID)
+        configure(&pendingItems, flowIDs)
 
         var frame = Frame(count: 1200)
         defer { frame.finalize(success: true) }
@@ -678,6 +698,49 @@ final class SendItemsTests: XCTestCase {
         )
         XCTAssertNil(error)
         XCTAssertEqual(retransmittedLength, 100, "Lost stream data must be retransmitted while data-blocked")
+    }
+
+    // RFC 9000 Section 13.3: STREAM data is not retransmitted after RESET_STREAM. The reset empties
+    // the send buffer, so a retransmission left queued for the reset stream cannot be written; it
+    // must be dropped rather than stay at the front of the queue and hold up other streams.
+    func testRetransmissionForResetStreamDoesNotHoldUpOtherStreams() {
+        var sentStreamIDs: [UInt64] = []
+        var retransmittedLength: UInt64 = 0
+        let error = writeWhileDataBlocked(
+            streamBytes: [100, 100],
+            prepareStream: { stream, index in
+                guard index == 0 else { return }
+                // What handleStopWrite does when the application aborts a partially sent stream.
+                // The receive side stays open, so the stream is still open.
+                stream.send.buffer.empty()
+                stream.sendState = .send
+                stream.sendState = .resetSent
+                stream.resetSent = true
+            },
+            configure: { pendingItems, flowIDs in
+                for (index, flowID) in flowIDs.enumerated() {
+                    pendingItems.retransmitStreams.append(
+                        TransmittedItems.SentStream(
+                            flowID: flowID,
+                            streamID: QUICStreamID(UInt64(index) * 4)!,
+                            offset: 0,
+                            length: 100,
+                            isFinal: false
+                        )
+                    )
+                }
+                pendingItems.stream = true
+            },
+            inspect: { transmittedItems, _ in
+                for index in 0..<transmittedItems.sentStreams.count {
+                    sentStreamIDs.append(transmittedItems.sentStreams[index].streamID.value)
+                    retransmittedLength += transmittedItems.sentStreams[index].length
+                }
+            }
+        )
+        XCTAssertNil(error, "The live stream's retransmission fits, so the packet is not empty")
+        XCTAssertEqual(sentStreamIDs, [4], "Only the live stream's data is retransmitted")
+        XCTAssertEqual(retransmittedLength, 100)
     }
 
     // A stream that is dropped for lack of credit writes nothing, so a packet that otherwise only

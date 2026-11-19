@@ -786,6 +786,17 @@ extension FrameStreamSendMetadata: SendableItem {
             return false
         }
 
+        // RFC 9000 Section 13.3: STREAM data is not retransmitted once RESET_STREAM has been sent.
+        // The reset emptied the send buffer, so the write below would fail and leave this entry at
+        // the front of the queue, holding up every other stream.
+        guard !stream.resetSent else {
+            connection.log.info(
+                "Not retransmitting data for reset flow \(retransmitStreamFlowID)"
+            )
+            _ = pendingItems.retransmitStreams.popFirst()
+            return false
+        }
+
         guard stream.send.buffer.storageStartOffset <= retransmitStreamOffset else {
             connection.log.datapath(
                 "Not retransmitting data at offset \(retransmitStreamOffset), already acked"
