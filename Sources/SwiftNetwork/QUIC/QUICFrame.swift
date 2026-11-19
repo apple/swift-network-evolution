@@ -1084,7 +1084,7 @@ struct FrameAck: ~Copyable, QUICFrameProtocol {
 struct FrameResetStream: ~Copyable, QUICFrameProtocol {
     let type = FrameType.resetStream
 
-    private(set) var id: UInt64 = 0
+    private(set) var id = QUICStreamID(uncheckedValue: 0)
     private(set) var code: UInt64 = 0
     private(set) var finalSize: UInt64 = 0
 
@@ -1100,7 +1100,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         return QUICFrame.resetStream(frame: frame)
     }
 
-    init(id: UInt64, code: UInt64, finalSize: UInt64) {
+    init(id: QUICStreamID, code: UInt64, finalSize: UInt64) {
         self.id = id
         self.code = code
         self.finalSize = finalSize
@@ -1108,29 +1108,31 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
 
     init(frame: inout Frame, stats: inout Statistics) throws(QUICError) {
         var rawType: UInt64 = 0
+        var rawID: UInt64 = 0
         let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
             try read.vle(&rawType)
-            try read.vle(&id)
+            try read.vle(&rawID)
             try read.vle(&code)
             try read.vle(&finalSize)
         }
 
         try validateDeserializationResult(result)
         try validateType(rawType)
+        id = QUICStreamID(uncheckedValue: rawID)
 
         stats.increment(.rxStreamResetFrames)
     }
 
     static func write(
         frame: inout Frame,
-        id: UInt64,
+        id: QUICStreamID,
         code: UInt64,
         finalSize: UInt64,
         stats: inout Statistics
     ) throws(QUICError) {
         let result = Serializer.serialize(&frame, claim: true) { write throws(SerializationError) in
             try write.vle(FrameType.resetStream.rawValue)
-            try write.vle(id)
+            try write.vle(id.value)
             try write.vle(code)
             try write.vle(finalSize)
         }
@@ -1145,11 +1147,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        guard let streamID = QUICStreamID(self.id) else {
-            let idValue = self.id
-            Logger.proto.error("Stream frame with invalid stream ID \(idValue)")
-            return false
-        }
+        let streamID = self.id
         // An endpoint that receives a RESET_STREAM frame for a
         // send-only stream MUST terminate the connection with error
         // STREAM_STATE_ERROR.
@@ -1224,7 +1222,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
             in: &eventContext
         )
         connection.log.info(
-            "[S\(streamID.value)] received RESET_STREAM; offsets conn (inorder \(stream.receiveState), last \(connection.flowControlState.totalInOrderInboundBytesRead)), stream (inorder \(stream.flowControlState.totalInOrderInboundBytesRead), last \(stream.lastReceivedOffset)), final \(self.finalSize)"
+            "[S\(streamID)] received RESET_STREAM; offsets conn (inorder \(stream.receiveState), last \(connection.flowControlState.totalInOrderInboundBytesRead)), stream (inorder \(stream.flowControlState.totalInOrderInboundBytesRead), last \(stream.lastReceivedOffset)), final \(self.finalSize)"
         )
 
         // If the final size of the stream being reset is beyond the total in-order
@@ -1293,7 +1291,7 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
 struct FrameStopSending: ~Copyable, QUICFrameProtocol {
     let type = FrameType.stopSending
 
-    private(set) var id: UInt64 = 0
+    private(set) var id = QUICStreamID(uncheckedValue: 0)
     private(set) var code: UInt64 = 0
 
     static func parse(
@@ -1308,34 +1306,36 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         return QUICFrame.stopSending(frame: frame)
     }
 
-    init(id: UInt64, code: UInt64) {
+    init(id: QUICStreamID, code: UInt64) {
         self.code = code
         self.id = id
     }
 
     init(frame: inout Frame, stats: inout Statistics) throws(QUICError) {
         var rawType: UInt64 = 0
+        var rawID: UInt64 = 0
         let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
             try read.vle(&rawType)
-            try read.vle(&id)
+            try read.vle(&rawID)
             try read.vle(&code)
         }
 
         try validateDeserializationResult(result)
         try validateType(rawType)
+        id = QUICStreamID(uncheckedValue: rawID)
 
         stats.increment(.rxStreamStopSendingFrames)
     }
 
     static func write(
         frame: inout Frame,
-        id: UInt64,
+        id: QUICStreamID,
         code: UInt64,
         stats: inout Statistics
     ) throws(QUICError) {
         let result = Serializer.serialize(&frame, claim: true) { write throws(SerializationError) in
             try write.vle(FrameType.stopSending.rawValue)
-            try write.vle(id)
+            try write.vle(id.value)
             try write.vle(code)
         }
 
@@ -1349,11 +1349,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        guard let streamID = QUICStreamID(self.id) else {
-            let idValue = self.id
-            Logger.proto.error("Stream frame with invalid stream ID \(idValue)")
-            return false
-        }
+        let streamID = self.id
         // An endpoint that receives a STOP_SENDING frame for a receive-only
         // stream MUST terminate the connection with error STREAM_STATE_ERROR.
         if streamID.isReceiveOnly(server: connection.isServer) {
@@ -1800,7 +1796,7 @@ struct FrameStreamSendMetadata: ~Copyable, QUICFrameProtocol {
         isFinal: Bool
     ) throws(QUICError) -> Int {
 
-        let streamID = stream.streamID!.value
+        let streamID = stream.streamID!
         let roomBeforeAddingHeader = frame.unclaimedLength
 
         // Calculate the mockHeaderLength by defining:
@@ -1829,7 +1825,7 @@ struct FrameStreamSendMetadata: ~Copyable, QUICFrameProtocol {
             )
             let result = Serializer.serialize(&frame, claim: true) { write throws(SerializationError) in
                 try write.vle(FrameType.stream(flag: flag).rawValue)
-                try write.vle(streamID)
+                try write.vle(streamID.value)
                 if offset > 0 {
                     try write.vle(offset)
                 }
@@ -1889,7 +1885,7 @@ struct FrameStreamSendMetadata: ~Copyable, QUICFrameProtocol {
         )
         let result = Serializer.serialize(&frame, claim: true) { write throws(SerializationError) in
             try write.vle(FrameType.stream(flag: flag).rawValue)
-            try write.vle(streamID)
+            try write.vle(streamID.value)
             if offset > 0 {
                 try write.vle(offset)
             }
@@ -1976,7 +1972,7 @@ struct FrameStreamSendMetadata: ~Copyable, QUICFrameProtocol {
 struct FrameStreamReceived: ~Copyable, QUICFrameProtocol {
     var type = FrameType.stream()
 
-    private(set) var id: UInt64 = 0
+    private(set) var id = QUICStreamID(uncheckedValue: 0)
     private(set) var offset: UInt64 = 0
     private(set) var length: Int = 0
 
@@ -1997,7 +1993,7 @@ struct FrameStreamReceived: ~Copyable, QUICFrameProtocol {
     }
 
     // For testing only, as this incurs extra copies
-    init(id: UInt64, offset: UInt64, data: [UInt8], isFinal: Bool = false) {
+    init(id: QUICStreamID, offset: UInt64, data: [UInt8], isFinal: Bool = false) {
         self.id = id
         self.offset = offset
         self.length = data.count
@@ -2067,7 +2063,7 @@ struct FrameStreamReceived: ~Copyable, QUICFrameProtocol {
         stats.increment(.rxStreamFrames)
         stats.increment(.rxStreamBytes, by: streamLength)
 
-        self.id = streamID
+        self.id = QUICStreamID(uncheckedValue: streamID)
         self.offset = offset
         self.length = streamLength
         if shouldCopyBytes {
@@ -2162,7 +2158,7 @@ struct FrameMaxData: ~Copyable, QUICFrameProtocol {
 struct FrameMaxStreamData: ~Copyable, QUICFrameProtocol {
     let type = FrameType.maxStreamData
 
-    private(set) var id: UInt64 = 0
+    private(set) var id = QUICStreamID(uncheckedValue: 0)
     private(set) var max: UInt64 = 0
 
     static func parse(
@@ -2176,27 +2172,29 @@ struct FrameMaxStreamData: ~Copyable, QUICFrameProtocol {
         return QUICFrame.maxStreamData(frame: frame)
     }
 
-    init(id: UInt64, max: UInt64) {
+    init(id: QUICStreamID, max: UInt64) {
         self.id = id
         self.max = max
     }
 
     init(frame: inout Frame) throws(QUICError) {
         var rawType: UInt64 = 0
+        var rawID: UInt64 = 0
         let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
             try read.vle(&rawType)
-            try read.vle(&id)
+            try read.vle(&rawID)
             try read.vle(&max)
         }
 
         try validateDeserializationResult(result)
         try validateType(rawType)
+        id = QUICStreamID(uncheckedValue: rawID)
     }
 
-    static func write(frame: inout Frame, id: UInt64, max: UInt64) throws(QUICError) {
+    static func write(frame: inout Frame, id: QUICStreamID, max: UInt64) throws(QUICError) {
         let result = Serializer.serialize(&frame, claim: true) { write throws(SerializationError) in
             try write.vle(FrameType.maxStreamData.rawValue)
-            try write.vle(id)
+            try write.vle(id.value)
             try write.vle(max)
         }
 
@@ -2351,7 +2349,7 @@ struct FrameDataBlocked: ~Copyable, QUICFrameProtocol {
 struct FrameStreamDataBlocked: ~Copyable, QUICFrameProtocol {
     let type = FrameType.streamDataBlocked
 
-    private(set) var id: UInt64 = 0
+    private(set) var id = QUICStreamID(uncheckedValue: 0)
     private(set) var limit: UInt64 = 0
 
     static func parse(
@@ -2366,34 +2364,36 @@ struct FrameStreamDataBlocked: ~Copyable, QUICFrameProtocol {
         return QUICFrame.streamDataBlocked(frame: frame)
     }
 
-    init(id: UInt64, limit: UInt64) {
+    init(id: QUICStreamID, limit: UInt64) {
         self.id = id
         self.limit = limit
     }
 
     init(frame: inout Frame, stats: inout Statistics) throws(QUICError) {
         var rawType: UInt64 = 0
+        var rawID: UInt64 = 0
         let result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
             try read.vle(&rawType)
-            try read.vle(&id)
+            try read.vle(&rawID)
             try read.vle(&limit)
         }
 
         try validateDeserializationResult(result)
         try validateType(rawType)
+        id = QUICStreamID(uncheckedValue: rawID)
 
         stats.increment(.rxStreamDataBlockedFrames)
     }
 
     static func write(
         frame: inout Frame,
-        id: UInt64,
+        id: QUICStreamID,
         limit: UInt64,
         stats: inout Statistics
     ) throws(QUICError) {
         let result = Serializer.serialize(&frame, claim: true) { write throws(SerializationError) in
             try write.vle(FrameType.streamDataBlocked.rawValue)
-            try write.vle(id)
+            try write.vle(id.value)
             try write.vle(limit)
         }
 
