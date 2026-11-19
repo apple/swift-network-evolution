@@ -701,7 +701,7 @@ extension ManyToManyProtocolHandler {
     public func removePath(_ pathID: MultiplexingPathIdentifier) -> Path? {
         guard
             let removed = withUnborrowedPaths({ (entries: inout MultiplexedPathEntries<Path>) in entries.remove(pathID)
-                })
+            })
         else {
             assertionFailure("Path \(pathID) was removed while a path was borrowed")
             return nil
