@@ -1771,6 +1771,96 @@ class QUICTestHarness {
         stop()
     }
 
+    /// `STOP_SENDING` is the very first frame the server sees for a fresh
+    /// peer-initiated bidi stream — no preceding `STREAM` frame. Receiving it
+    /// opens the stream (RFC 9000, Section 3.5), so the server must create the
+    /// inbound flow and deliver the outbound-aborted event.
+    func runQUICStopSendingFirstFrameOnNewStream(
+        applicationError: UInt64 = 42,
+        timeout: TimeInterval = 4.0
+    ) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        guard let clientStream = createNewStream(identifier: "C1") else {
+            XCTFail("Failed to create client stream")
+            return
+        }
+
+        var serverFlowFinished = false
+        var serverAbortFinished = false
+        var serverStream: StreamUpperHarness<TestStreamLinkageFamily>?
+
+        context.async {
+            self.state?.serverHarness.waitForNewFlow {
+                guard let stream = self.state?.serverHarness.upperHarnesses.last else {
+                    XCTFail("Server flow missing")
+                    serverFlowFinished = true
+                    return
+                }
+                serverStream = stream
+                stream.waitForOutboundAborted { error in
+                    XCTAssertEqual(
+                        error?.quicApplicationError,
+                        Int64(applicationError),
+                        "Application error code should be propagated from STOP_SENDING"
+                    )
+                    serverAbortFinished = true
+                }
+                serverFlowFinished = true
+            }
+        }
+
+        // Stop reading with no prior write so the only frame the client emits
+        // for this stream id is STOP_SENDING.
+        context.async {
+            clientStream.abortInbound(error: .init(quicApplicationError: applicationError))
+        }
+
+        wait(until: { serverFlowFinished }, timeout: timeout, "server sees new flow")
+        wait(until: { serverAbortFinished }, timeout: timeout, "server sees outbound abort event")
+
+        _ = serverStream  // silence unused-warning; harness keeps strong ref
+        stop()
+    }
+
+    /// A frame for a peer-initiated stream above the next expected one also opens every
+    /// lower-numbered stream of that type (RFC 9000, Section 3.2). Each of them is decremented
+    /// from the active count when it closes, so each must be counted when it opens; otherwise the
+    /// count runs low and MAX_STREAMS hands the peer more streams than the concurrency cap.
+    func runQUICImplicitlyOpenedStreamsCountAsActive(unidirectional: Bool) {
+        do {
+            try quicHandshake()
+        } catch {
+            XCTFail("Handshake failed: \(error)")
+            return
+        }
+
+        // The client's third stream of the type: 8 (bidirectional) or 10 (unidirectional).
+        let streamID = QUICStreamID(UInt32(unidirectional ? 10 : 8))
+        onContext {
+            guard let server = self.state?.serverInstance else {
+                XCTFail("Server instance needs to be present to proceed")
+                return
+            }
+            server.fromExternal { eventContext in
+                let result = server.createInboundStreams(streamID: streamID, in: &eventContext)
+                XCTAssertTrue(result.created, "Stream \(streamID) should be created")
+            }
+            let activeStreams =
+                unidirectional
+                ? server.unidirectionalStreams.activeStreamsRemaining()
+                : server.bidirectionalStreams.activeStreamsRemaining()
+            XCTAssertEqual(activeStreams, 3, "Streams opened implicitly below \(streamID) must count as active")
+        }
+
+        stop()
+    }
+
     /// The client sends a request without FIN and resets its send side. The server reads the
     /// request, and responds with data + FIN only after the client has the `RESET_STREAM` ACKed.
     ///
