@@ -30,7 +30,7 @@ extension QUICConnection {
 
     func pathIdentifier(localPort: UInt16) -> MultiplexingPathIdentifier? {
         var found: MultiplexingPathIdentifier?
-        applyToAllPaths { (path: inout QUICPath) in
+        applyToAllPaths { (path: borrowing QUICPath) in
             if found == nil, path.localEndpoint?.port == localPort {
                 found = path.pathIdentifier
             }

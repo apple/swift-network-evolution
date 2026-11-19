@@ -554,7 +554,7 @@ final class SwiftNetworkQUICStackTests: NetTestCase {
                         "Unexpected path count after migration \(pathIndex)"
                     )
                     let currentPathID = clientConnection.currentPathID
-                    clientConnection.applyToAllPaths { (path: inout QUICPath) in
+                    clientConnection.applyToAllPaths { (path: borrowing QUICPath) in
                         guard path.pathIdentifier != currentPathID else { return }
                         XCTAssertTrue(
                             path.isValidated,

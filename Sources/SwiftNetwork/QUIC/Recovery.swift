@@ -1096,7 +1096,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
-        connection.applyToAllPaths { path in
+        connection.applyToAllMutablePaths { path in
             let maxRTT = max(path.rtt.latestRTT, path.rtt.smoothedRTT)
             let lossDelay = withImmutableInnerState(packetNumberSpace: pnSpace) {
                 max(Recovery.timerGranularity, maxRTT + (maxRTT >> $0.timeThreshold))

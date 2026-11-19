@@ -184,9 +184,7 @@ public struct MultiplexedPathEntries<Path: ~Copyable>: ~Copyable {
         _ body: (inout Path) throws(E) -> R
     ) throws(E) -> R? {
         guard let entry = find(pathID) else { return nil }
-        if lastCachedPosition != entry {
-            lastCachedPosition = entry
-        }
+        lastCachedPosition = entry
         return try body(&entries[entry].path!)
     }
 

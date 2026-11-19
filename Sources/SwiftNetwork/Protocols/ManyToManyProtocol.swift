@@ -754,9 +754,18 @@ extension ManyToManyProtocolHandler {
         }
     }
 
-    /// Lends out each path in turn, skipping one that is already being borrowed. The entries are not held
-    /// while `closure` runs.
-    public func applyToAllPaths(_ closure: (inout Path) -> Void) {
+    /// Lends out each path in turn to read, skipping one that is already being borrowed. The entries are not
+    /// held while `closure` runs. Use `applyToAllMutablePaths` to change the paths.
+    public func applyToAllPaths(_ closure: (borrowing Path) -> Void) {
+        var cursor = startPathIteration()
+        while let pathID = nextPathIdentifier(&cursor) {
+            _ = withPath(pathID) { (path: inout Path) in closure(path) }
+        }
+    }
+
+    /// Lends out each path in turn to change, skipping one that is already being borrowed. The entries are not
+    /// held while `closure` runs.
+    public func applyToAllMutablePaths(_ closure: (inout Path) -> Void) {
         var cursor = startPathIteration()
         while let pathID = nextPathIdentifier(&cursor) {
             _ = withPath(pathID, closure)
@@ -774,7 +783,7 @@ extension ManyToManyProtocolHandler {
     }
 
     fileprivate func resetPrimaryPath(newPrimary: MultiplexingPathIdentifier) {
-        applyToAllPaths { (path: inout Path) in
+        applyToAllMutablePaths { (path: inout Path) in
             path.pathIsPrimary = path.pathIdentifier == newPrimary
         }
     }

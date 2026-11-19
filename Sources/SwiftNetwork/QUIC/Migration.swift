@@ -118,7 +118,7 @@ struct Migration: ~Copyable {
         sendPendingChallenges(connection: connection, now: now, in: &eventContext)
 
         var firstChallengeTime: NetworkClock.Instant?
-        connection.applyToAllPaths { (path: inout QUICPath) in
+        connection.applyToAllPaths { (path: borrowing QUICPath) in
             if let nextChallengeTime = path.nextChallengeTime {
                 guard now < nextChallengeTime else {
                     return
@@ -188,7 +188,7 @@ struct Migration: ~Copyable {
         // fired, so report every unusable path, not only the ones that changed just now: if it is
         // the current path, the strategy has to move off it.
         var events = connection.migrationEvents(since: before)
-        connection.applyToAllPaths { (path: inout QUICPath) in
+        connection.applyToAllPaths { (path: borrowing QUICPath) in
             if path.state.isUnusable, !events.contains(.pathChanged(path.pathIdentifier)) {
                 events.append(.pathChanged(path.pathIdentifier))
             }
@@ -280,7 +280,7 @@ struct Migration: ~Copyable {
 
     func probingPathCount(_ connection: QUICConnection) -> Int {
         var probingPaths = 0
-        connection.applyToAllPaths { (path: inout QUICPath) in
+        connection.applyToAllPaths { (path: borrowing QUICPath) in
             if path.state.isProbing {
                 probingPaths += 1
             }
@@ -444,7 +444,7 @@ extension QUICConnection {
 
     func logExistingPaths() {
         log.debug("Existing paths:")
-        applyToAllPaths { (path: inout QUICPath) in
+        applyToAllPaths { (path: borrowing QUICPath) in
             log.debug(
                 "Path \(path.pathIdentifier) \(path.state) over \(path.interface?.description ?? "nil")"
             )
@@ -455,7 +455,7 @@ extension QUICConnection {
         var currentSnapshot: MigrationContext.PathSnapshot?
         var otherPaths: [MigrationContext.PathSnapshot] = []
         otherPaths.reserveCapacity(pathCount)
-        applyToAllPaths { (path: inout QUICPath) in
+        applyToAllPaths { (path: borrowing QUICPath) in
             if path.pathIdentifier == currentPathID {
                 currentSnapshot = path.migrationSnapshot
             } else {
@@ -475,7 +475,7 @@ extension QUICConnection {
     var migrationPathStates: MigrationPathStates {
         var paths: [MigrationContext.PathSnapshot] = []
         paths.reserveCapacity(pathCount)
-        applyToAllPaths { (path: inout QUICPath) in
+        applyToAllPaths { (path: borrowing QUICPath) in
             paths.append(path.migrationSnapshot)
         }
         return MigrationPathStates(currentPathID: currentPathID, paths: paths)
@@ -592,7 +592,7 @@ extension QUICConnection {
         var unusablePathIDs: [MultiplexingPathIdentifier] = []
         let currentPathID = self.currentPathID
         let isServer = self.isServer
-        applyToAllPaths { (path: inout QUICPath) in
+        applyToAllPaths { (path: borrowing QUICPath) in
             if path.state.isUnusable, path.pathIdentifier != currentPathID, isServer || path.pathIsInjected {
                 unusablePathIDs.append(path.pathIdentifier)
             }

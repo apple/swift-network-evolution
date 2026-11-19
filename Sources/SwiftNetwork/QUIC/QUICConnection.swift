@@ -7668,7 +7668,7 @@ extension QUICConnection {
         // The events are delivered once the paths are no longer borrowed, since they reach other protocols
         var notifications:
             [(lower: BaseOutboundDatagramLinkage, identifier: InstanceIdentifier, event: ApplicationEvent)] = []
-        applyToAllPaths { (path: inout QUICPath) in
+        applyToAllMutablePaths { (path: inout QUICPath) in
             let pathIsIdle = isIdle && !path.isProbing && !path.shouldSendPathResponses
             if pathIsIdle && !path.reportedIdleEvent {
                 // Need to report idle
@@ -8041,7 +8041,7 @@ extension QUICConnection {
         }
         var pathIDs: [MultiplexingPathIdentifier] = []
         let currentPathID = self.currentPathID
-        applyToAllPaths { (path: inout QUICPath) in
+        applyToAllPaths { (path: borrowing QUICPath) in
             if path.pathIdentifier != currentPathID, path.state.holdsCID, !path.hasPreAssignedCIDs,
                 retiredCIDs.contains(where: { $0.connectionID == path.dcid })
             {
@@ -8062,7 +8062,7 @@ extension QUICConnection {
     // to get one.
     private func runMigrationStrategyForPathsAwaitingCID(in eventContext: inout NetworkContext.EventContext) {
         var events: [MigrationEvent] = []
-        applyToAllPaths { (path: inout QUICPath) in
+        applyToAllPaths { (path: borrowing QUICPath) in
             if path.state == .routeEstablished {
                 events.append(.pathChanged(path.pathIdentifier))
             }
