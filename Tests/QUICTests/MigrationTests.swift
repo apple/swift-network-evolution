@@ -1297,6 +1297,23 @@ final class MigrationTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
+    // What a packet from the peer says about where the peer is: the newest one counts, an older one does not
+    func testNotePeerPacketReportsWhereThePeerIs() {
+        var migration = Migration(isServer: true)
+        XCTAssertEqual(
+            migration.notePeerPacket(number: 5, on: 1),
+            .peerMovedToPath,
+            "The first packet puts the peer on a path"
+        )
+        XCTAssertEqual(migration.notePeerPacket(number: 6, on: 1), .peerStayedOnPath)
+        XCTAssertEqual(migration.notePeerPacket(number: 7, on: 2), .peerMovedToPath)
+        XCTAssertEqual(migration.peerPathID, 2)
+        // An older packet from the old path does not move the peer back
+        XCTAssertEqual(migration.notePeerPacket(number: 6, on: 1), .olderThanLatest)
+        XCTAssertEqual(migration.notePeerPacket(number: 7, on: 1), .olderThanLatest, "The same number is not newer")
+        XCTAssertEqual(migration.peerPathID, 2)
+    }
+
     // MARK: - Connection IDs
 
     static func cid(_ value: UInt8) -> QUICConnectionID {

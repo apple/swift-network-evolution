@@ -53,7 +53,7 @@ extension QUICConnection {
     @discardableResult
     func addTestPath(_ path: consuming QUICPath) -> MultiplexingPathIdentifier {
         let pathID = path.pathIdentifier
-        insertPath(path, for: pathID)
+        try! insertPath(path, for: pathID)
         return pathID
     }
 

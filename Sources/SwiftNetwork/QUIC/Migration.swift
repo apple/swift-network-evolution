@@ -50,17 +50,28 @@ struct Migration: ~Copyable {
         return peerPathID != pathID
     }
 
-    // Records a non-probing packet from the peer, and reports whether it moved the peer to a different
-    // path. Only the highest-numbered one counts, so an older one is ignored. One look at the state does
-    // what `nonProbingPacketMovesPeer` and `recordNonProbingPacket` do in two.
-    mutating func notePeerPacket(number: PacketNumber, on pathID: MultiplexingPathIdentifier) -> Bool {
+    /// What a non-probing packet from the peer means for where the peer is.
+    enum PeerPacketResult: Equatable {
+        /// The packet is older than the highest-numbered non-probing packet so far, so it says nothing about
+        /// where the peer is now (RFC 9000 9.3).
+        case olderThanLatest
+        /// The packet is the newest, and came from the path the peer was already on.
+        case peerStayedOnPath
+        /// The packet is the newest, and came from a different path than the one the peer was on.
+        case peerMovedToPath
+    }
+
+    // Records a non-probing packet from the peer, and reports what it means for where the peer is. Only the
+    // highest-numbered one counts, so an older one is ignored. One look at the state does what
+    // `nonProbingPacketMovesPeer` and `recordNonProbingPacket` do in two.
+    mutating func notePeerPacket(number: PacketNumber, on pathID: MultiplexingPathIdentifier) -> PeerPacketResult {
         if let largestNonProbingPacketNumber, number <= largestNonProbingPacketNumber {
-            return false
+            return .olderThanLatest
         }
         largestNonProbingPacketNumber = number
         let moved = peerPathID != pathID
         peerPathID = pathID
-        return moved
+        return moved ? .peerMovedToPath : .peerStayedOnPath
     }
 
     // Records a non-probing packet from the peer. An older one than the highest-numbered so far

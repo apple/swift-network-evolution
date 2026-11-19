@@ -126,7 +126,7 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
 
         // The path is reached through the connection's paths, like any other path
         let pathID = path.pathIdentifier
-        connection.insertPath(path, for: pathID)
+        try! connection.insertPath(path, for: pathID)
 
         let data = Data(bytes: start, count: count)
         let frame = Frame(copyBuffer: data.span)

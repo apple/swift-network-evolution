@@ -147,7 +147,7 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
                     }
                     let newPath = QUICPath.makeFromExternalTest(parent: connection)
                     let newPathID = newPath.pathIdentifier
-                    connection.insertPath(newPath, for: newPathID)
+                    try! connection.insertPath(newPath, for: newPathID)
                     connection.fromExternal { eventContext in
                         connection.handlePathChanged(
                             path: newPathID,

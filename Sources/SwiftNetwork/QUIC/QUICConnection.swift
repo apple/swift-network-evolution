@@ -209,8 +209,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     var multiplexedPaths = MultiplexedPathEntries<Path>()
 
-    public func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier) {
-        multiplexedPaths.insert(path, for: pathID)
+    public func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier) throws(NetworkError) {
+        do throws(MultiplexedPathEntriesError) {
+            try multiplexedPaths.insert(path, for: pathID)
+        } catch {
+            throw error.networkError
+        }
     }
 
     // Whether a path is being borrowed from the entries. See `withUnborrowedPaths`.
@@ -2804,7 +2808,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         in eventContext: inout NetworkContext.EventContext
     ) {
         if isNonProbing {
-            if migration.notePeerPacket(number: number, on: pathID) {
+            if migration.notePeerPacket(number: number, on: pathID) == .peerMovedToPath {
                 runMigrationStrategy(events: [.pathChanged(pathID)], in: &eventContext)
                 return
             }

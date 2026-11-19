@@ -245,8 +245,12 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
         return try body(&multiplexedPaths)
     }
 
-    public func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier) {
-        multiplexedPaths.insert(path, for: pathID)
+    public func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier) throws(NetworkError) {
+        do throws(MultiplexedPathEntriesError) {
+            try multiplexedPaths.insert(path, for: pathID)
+        } catch {
+            throw error.networkError
+        }
     }
 
     public func serviceDatagramsToSend(

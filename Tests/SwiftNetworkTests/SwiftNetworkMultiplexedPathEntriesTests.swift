@@ -49,11 +49,11 @@ final class SwiftNetworkMultiplexedPathEntriesTests: XCTestCase {
         entries.withPath(pathID) { (path: inout TestPath) in path.value }
     }
 
-    func testInsertAndBorrow() {
+    func testInsertAndBorrow() throws {
         var entries = MultiplexedPathEntries<TestPath>()
         XCTAssertTrue(entries.isEmpty)
-        entries.insert(TestPath(value: 10), for: 1)
-        entries.insert(TestPath(value: 20), for: 2)
+        try entries.insert(TestPath(value: 10), for: 1)
+        try entries.insert(TestPath(value: 20), for: 2)
         XCTAssertEqual(entries.count, 2)
         XCTAssertEqual(value(&entries, 1), 10)
         XCTAssertEqual(value(&entries, 2), 20)
@@ -65,9 +65,9 @@ final class SwiftNetworkMultiplexedPathEntriesTests: XCTestCase {
     }
 
     // The path is changed where it is, so a change made in one borrow is there in the next
-    func testBorrowChangesThePathInPlace() {
+    func testBorrowChangesThePathInPlace() throws {
         var entries = MultiplexedPathEntries<TestPath>()
-        entries.insert(TestPath(value: 1), for: 7)
+        try entries.insert(TestPath(value: 1), for: 7)
         _ = entries.withPath(7) { (path: inout TestPath) in path.value = 99 }
         XCTAssertEqual(value(&entries, 7), 99)
     }
@@ -80,10 +80,10 @@ final class SwiftNetworkMultiplexedPathEntriesTests: XCTestCase {
         return nil
     }
 
-    func testRemoveHandsBackThePath() {
+    func testRemoveHandsBackThePath() throws {
         let counter = DeinitCounter()
         var entries = MultiplexedPathEntries<TestPath>()
-        entries.insert(TestPath(value: 3, counter: counter), for: 1)
+        try entries.insert(TestPath(value: 3, counter: counter), for: 1)
         var handedBack: Int?
         if let path = entries.remove(1) {
             handedBack = path.value
@@ -97,44 +97,44 @@ final class SwiftNetworkMultiplexedPathEntriesTests: XCTestCase {
     }
 
     // A removed path's entry is reused, and the paths in it are not mixed up
-    func testEntriesAreReused() {
+    func testEntriesAreReused() throws {
         var entries = MultiplexedPathEntries<TestPath>()
-        entries.insert(TestPath(value: 1), for: 1)
-        entries.insert(TestPath(value: 2), for: 2)
+        try entries.insert(TestPath(value: 1), for: 1)
+        try entries.insert(TestPath(value: 2), for: 2)
         _ = entries.remove(1)
-        entries.insert(TestPath(value: 3), for: 3)
+        try entries.insert(TestPath(value: 3), for: 3)
         XCTAssertNil(value(&entries, 1))
         XCTAssertEqual(value(&entries, 2), 2)
         XCTAssertEqual(value(&entries, 3), 3)
         XCTAssertEqual(entries.count, 2)
     }
 
-    func testRemoveAllDestroysEveryPath() {
+    func testRemoveAllDestroysEveryPath() throws {
         let counter = DeinitCounter()
         var entries = MultiplexedPathEntries<TestPath>()
-        for id in 1...5 { entries.insert(TestPath(value: id, counter: counter), for: id) }
+        for id in 1...5 { try entries.insert(TestPath(value: id, counter: counter), for: id) }
         entries.removeAll()
         XCTAssertEqual(counter.count, 5)
         XCTAssertTrue(entries.isEmpty)
         XCTAssertNil(value(&entries, 3))
     }
 
-    func testEntriesDestroyTheirPathsWhenTheyGo() {
+    func testEntriesDestroyTheirPathsWhenTheyGo() throws {
         let counter = DeinitCounter()
         do {
             var entries = MultiplexedPathEntries<TestPath>()
-            for id in 1...3 { entries.insert(TestPath(value: id, counter: counter), for: id) }
+            for id in 1...3 { try entries.insert(TestPath(value: id, counter: counter), for: id) }
             _ = entries.remove(2)
         }
         // The removed path was handed back and dropped by `_`, the other two went with the entries
         XCTAssertEqual(counter.count, 3)
     }
 
-    func testForEachVisitsEveryLivePath() {
+    func testForEachVisitsEveryLivePath() throws {
         var entries = MultiplexedPathEntries<TestPath>()
-        entries.insert(TestPath(value: 1), for: 1)
-        entries.insert(TestPath(value: 2), for: 2)
-        entries.insert(TestPath(value: 3), for: 3)
+        try entries.insert(TestPath(value: 1), for: 1)
+        try entries.insert(TestPath(value: 2), for: 2)
+        try entries.insert(TestPath(value: 3), for: 3)
         _ = entries.remove(2)
         var seen: [Int] = []
         entries.forEachPath { (path: inout TestPath) in seen.append(path.value) }
@@ -144,9 +144,9 @@ final class SwiftNetworkMultiplexedPathEntriesTests: XCTestCase {
     // An iteration covers each live path once, skips one removed before it gets there, visits one that takes
     // the place of a removed path, and does not visit one added past the end it started with. It does not
     // hold the entries between steps.
-    func testIterationSkipsRemovedPathsAndStopsAtItsEnd() {
+    func testIterationSkipsRemovedPathsAndStopsAtItsEnd() throws {
         var entries = MultiplexedPathEntries<TestPath>()
-        for id in 1...4 { entries.insert(TestPath(value: id), for: id) }
+        for id in 1...4 { try entries.insert(TestPath(value: id), for: id) }
         let end = entries.entryCount
         var position = 0
         var seen: [Int] = []
@@ -155,18 +155,18 @@ final class SwiftNetworkMultiplexedPathEntriesTests: XCTestCase {
             // 3 is gone before the iteration reaches it
             if id == 1 { _ = entries.remove(3) }
             // 9 takes the entry 3 left, which is still ahead of the iteration
-            if id == 2 { entries.insert(TestPath(value: 9), for: 9) }
+            if id == 2 { try entries.insert(TestPath(value: 9), for: 9) }
             // 10 goes past the end the iteration started with
-            if id == 4 { entries.insert(TestPath(value: 10), for: 10) }
+            if id == 4 { try entries.insert(TestPath(value: 10), for: 10) }
         }
         XCTAssertEqual(seen, [1, 2, 9, 4])
         XCTAssertEqual(entries.pathIdentifiers.sorted(), [1, 2, 4, 9, 10])
     }
 
     // The entry that was lent out last is looked at first, and a hint that no longer fits is never trusted
-    func testLookupFollowsTheLastPathLentAndSurvivesAStaleHint() {
+    func testLookupFollowsTheLastPathLentAndSurvivesAStaleHint() throws {
         var entries = MultiplexedPathEntries<TestPath>()
-        for id in 1...3 { entries.insert(TestPath(value: id * 10), for: id) }
+        for id in 1...3 { try entries.insert(TestPath(value: id * 10), for: id) }
         XCTAssertEqual(value(&entries, 3), 30)
         XCTAssertEqual(entries.lastCachedPosition, 2)
         XCTAssertEqual(entries.find(3), 2)
@@ -179,7 +179,7 @@ final class SwiftNetworkMultiplexedPathEntriesTests: XCTestCase {
         _ = entries.remove(3)
         XCTAssertNil(value(&entries, 3))
         XCTAssertNil(entries.find(3))
-        entries.insert(TestPath(value: 40), for: 4)
+        try entries.insert(TestPath(value: 40), for: 4)
         XCTAssertEqual(entries.find(4), 2)
         XCTAssertEqual(value(&entries, 4), 40)
         XCTAssertEqual(value(&entries, 2), 20)
@@ -188,7 +188,30 @@ final class SwiftNetworkMultiplexedPathEntriesTests: XCTestCase {
         XCTAssertEqual(entries.lastCachedPosition, 1)
         entries.removeAll()
         XCTAssertNil(entries.find(2))
-        entries.insert(TestPath(value: 5), for: 5)
+        try entries.insert(TestPath(value: 5), for: 5)
         XCTAssertEqual(value(&entries, 5), 5)
+    }
+
+    // A path that cannot be stored is refused, and nothing changes: the entries are as they were and the path is
+    // destroyed rather than kept
+    func testInsertRefusesAnInvalidOrDuplicateIdentifier() throws {
+        let counter = DeinitCounter()
+        var entries = MultiplexedPathEntries<TestPath>()
+        try entries.insert(TestPath(value: 1, counter: counter), for: 1)
+
+        XCTAssertThrowsError(try entries.insert(TestPath(value: 2, counter: counter), for: 1)) { error in
+            XCTAssertEqual(error as? MultiplexedPathEntriesError, .duplicateIdentifier)
+            XCTAssertEqual((error as? MultiplexedPathEntriesError)?.networkError, .posix(EEXIST))
+        }
+        XCTAssertThrowsError(
+            try entries.insert(TestPath(value: 3, counter: counter), for: MultiplexingPathIdentifier.none)
+        ) { error in
+            XCTAssertEqual(error as? MultiplexedPathEntriesError, .invalidIdentifier)
+            XCTAssertEqual((error as? MultiplexedPathEntriesError)?.networkError, .posix(EINVAL))
+        }
+        XCTAssertEqual(counter.count, 2, "A refused path is destroyed")
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.pathIdentifiers, [1])
+        XCTAssertEqual(value(&entries, 1), 1, "The path already stored is untouched")
     }
 }

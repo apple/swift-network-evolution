@@ -27,6 +27,17 @@ internal import os
 
 // MARK: - Many-to-Many Protocol Adoption
 
+@available(Network 0.1.0, *)
+extension MultiplexedPathEntriesError {
+    /// The error a protocol reports when a path cannot be added.
+    public var networkError: NetworkError {
+        switch self {
+        case .invalidIdentifier: return .posix(EINVAL)
+        case .duplicateIdentifier: return .posix(EEXIST)
+        }
+    }
+}
+
 /// A protocol that handles multiple flows over multiple paths.
 ///
 /// Many-to-many protocols have associated types for flows that connect to upper protocols
@@ -63,7 +74,9 @@ public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol whe
     ) throws(E) -> R?
 
     /// Adds a path to the entries. Conformers implement this by inserting into their stored entries.
-    func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier)
+    ///
+    /// - Throws: `NetworkError` if the path cannot be added, because its identifier is not valid or is already in use.
+    func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier) throws(NetworkError)
 
     // MARK: Connection-wide calls to implement
     func setup(
@@ -549,7 +562,7 @@ extension ManyToManyProtocolHandler {
         let newPathID = newPath.pathIdentifier
         let newPathProperties = newPath.pathProperties
         let upperLinkage = newPath.asUpperLinkage()
-        insertPath(newPath, for: newPathID)
+        try insertPath(newPath, for: newPathID)
         do throws(NetworkError) {
             try setup(path: newPathID, remote: remote, local: local, parameters: parameters, path: path)
         } catch {
