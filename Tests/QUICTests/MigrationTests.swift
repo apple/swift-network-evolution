@@ -35,9 +35,7 @@ let migrationTestsLogPrefixer: LogPrefixer = LogPrefixer("[MigrationTests]")
 
 @available(Network 0.1.0, *)
 final class MigrationTests: XCTestCase {
-    var connection = NetworkContext.implicitContext.onQueue {
-        QUICConnection(context: .implicitContext)
-    }
+    var connection: QUICConnection!
     // The base linkages are storage-backed, so lower harnesses have to come from storage
     // rather than being wrapped in a bare linkage.
     let storage = TestNetworkProtocolStorage(context: .implicitContext)
@@ -47,6 +45,10 @@ final class MigrationTests: XCTestCase {
     static let otherCID = QUICConnectionID([0xC1, 0xC2, 0xC3, 0xC4])!
 
     override func setUp() {
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: .implicitContext)
+        }
+
         let expectation = XCTestExpectation()
         connection.context.async {
             self.setUpConnection(parameters: nil)

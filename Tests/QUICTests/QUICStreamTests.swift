@@ -41,11 +41,12 @@ let quicStreamTestsLogPrefixer = LogPrefixer("[QUICStreamTests]")
 @available(Network 0.1.0, *)
 final class QUICStreamTests: XCTestCase {
     var holder: QUICStreamHolder!
-    var connection = NetworkContext.implicitContext.onQueue {
-        QUICConnection(context: NetworkContext.implicitContext)
-    }
+    var connection: QUICConnection!
 
     override func setUp() {
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
         connection.context.onQueue {
             holder = QUICStreamHolder(QUICStreamInstance(parent: connection, inbound: false))
         }
@@ -185,13 +186,14 @@ final class QUICStreamTests: XCTestCase {
 @available(Network 0.1.0, *)
 final class QUICStreamIDStateTests: XCTestCase {
     var streamsState = QUICStreamIDState(.unidirectional)
-    var connection = NetworkContext.implicitContext.onQueue {
-        QUICConnection(context: NetworkContext.implicitContext)
-    }
+    var connection: QUICConnection!
     var holder: QUICStreamHolder!
     var logPrefix = LogPrefixer("[QUICStreamTests]")
 
     override func setUp() {
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
         connection.context.onQueue {
             holder = QUICStreamHolder(QUICStreamInstance(parent: connection, inbound: false))
         }
@@ -236,10 +238,14 @@ final class QUICStreamIDStateTests: XCTestCase {
 
 @available(Network 0.1.0, *)
 final class QUICStreamListTests: XCTestCase {
-    var connection = NetworkContext.implicitContext.onQueue {
-        QUICConnection(context: NetworkContext.implicitContext)
-    }
+    var connection: QUICConnection!
     var logPrefix = LogPrefixer("[QUICStreamListTests]")
+
+    override func setUp() {
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
+    }
 
     override func tearDown() {
         // The connection was built directly rather than attached to a stack, so nothing else
