@@ -83,6 +83,9 @@ struct PMTUDState: ~Copyable {
 
     var timerID: Timer.TimerID? = nil
 
+    /// How long to wait before trying again when the timer fires while a path is borrowed.
+    static let busyPathRetryDelay = NetworkDuration.milliseconds(10)
+
     private var canProbe: Bool {
         get { flags.contains(.canProbe) }
         set {
@@ -156,18 +159,35 @@ struct PMTUDState: ~Copyable {
 
         if timerID == nil {
             let pathID = path.pathIdentifier
-            timerID = connection.timer.insert(
+            // The timer is not told its own identifier, so it learns it once `insert` has returned.
+            var ownTimerID: Timer.TimerID?
+            let insertedTimerID = connection.timer.insert(
                 description: "PMTUD",
                 timerNow: connection.now,
                 in: &eventContext
             ) { firedAt, timerState in
-                // The timer fires with nothing else holding the path, so it is borrowed for the work
-                _ = connection.withPathWork(pathID, replayingSendsIn: &timerState) { (path: inout QUICPath, ctx) in
+                // The timer should fire with nothing else holding the path, so it is borrowed for the work
+                let ran: Void? = connection.withPathWork(pathID, replayingSendsIn: &timerState) {
+                    (path: inout QUICPath, ctx) in
                     path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                         state.timerFired(at: firedAt, path: &path, in: &ctx)
                     }
                 }
+                // Only `timerFired` restarts the search, and it is only rescheduled from the search itself, so
+                // a fire that is dropped because the path is borrowed would end PMTUD on the path. Try
+                // again shortly. If the path is gone there is nothing to restart.
+                if ran == nil, connection.isPathBorrowed, let ownTimerID {
+                    connection.log.debug("PMTUD timer fired while a path was borrowed, retrying")
+                    connection.timer.reschedule(
+                        identifier: ownTimerID,
+                        fromNow: PMTUDState.busyPathRetryDelay,
+                        timerNow: connection.now,
+                        in: &timerState
+                    )
+                }
             }
+            ownTimerID = insertedTimerID
+            timerID = insertedTimerID
         }
 
         guard connection.allowPMTUD else { return }

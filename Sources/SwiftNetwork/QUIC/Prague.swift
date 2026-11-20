@@ -296,7 +296,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         state.congestionWindow += increase >> Prague.congestionWindowShift
     }
 
-    private func updatePacerState(state: CongestionControlState, pacer: inout Pacer, smoothedRTT: NetworkDuration) {
+    func updatePacerState(state: CongestionControlState, pacer: inout Pacer, smoothedRTT: NetworkDuration) {
         guard pacer.enabled else {
             return
         }
@@ -630,7 +630,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         // Enter or stay in CWR if new counts are received
         pragueCWR(state: &state, largestAckedSentTime: largestAckedSentTime, mss: mss, qlog: qlog)
 
-        // Update pacer state as cwnd has changed
+        // The pacer is updated for this window change by `CongestionControl.processECN`, since this has no pacer
 
         // Start new round for CWR
         state.largestSentPN = largestSentPN

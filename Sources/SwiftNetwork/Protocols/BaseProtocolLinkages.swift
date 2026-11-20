@@ -95,7 +95,9 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             let attached = try connection.withPath(pathID) { (path: inout QUICPath) throws(NetworkError) in
                 try path.attachLowerProtocol(lowerProtocol)
             }
-            guard let attached else { throw NetworkError.posix(ENOENT) }
+            // `nil` means the path is gone or its entries are borrowed. Either way it cannot be reached now, which is
+            // what the other QUIC branches report as not connected.
+            guard let attached else { throw NetworkError.posix(ENOTCONN) }
             overrideUpperLinkage = attached
         #endif
         #if !NETWORK_EMBEDDED

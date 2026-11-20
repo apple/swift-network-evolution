@@ -2194,6 +2194,19 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 let packetLength = packet.totalLength
                 let receivedTime = self.now
                 let numberSpace = packet.numberSpace
+                // The spin bit is judged against the largest packet number received before this one, which the
+                // packet being added to the ACK state does not change until it is processed. A packet that matches
+                // the path sets it in this borrow too (`handleInboundShortHeader` does so for one that does not).
+                var spinValueToSet: Bool?
+                if !isLongHeader, spinBitEnabled,
+                    let largestReceivedPacketNumber = ack.getLargestReceivedPacketNumber(
+                        packetNumberSpace: .applicationData
+                    ),
+                    packet.number > largestReceivedPacketNumber
+                {
+                    // The server reflects the spin value received, while the client "spins" it after one RTT
+                    spinValueToSet = isServer ? packet.spinValue : !packet.spinValue
+                }
                 let handled =
                     withPath(pathID) { (path: inout QUICPath) -> (ceMarked: Bool, scidMatches: Bool) in
                         let ceMarked = ECN.processIPCodpoint(
@@ -2207,6 +2220,9 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                             return (ceMarked, false)
                         }
                         path.updateBDP(length: packetLength, now: receivedTime)
+                        if let spinValueToSet {
+                            path.spinValue = spinValueToSet
+                        }
                         return (ceMarked, true)
                     }
                 ceMarked = handled?.ceMarked ?? false
@@ -2879,9 +2895,12 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return false
         }
 
-        if let largestReceivePacketNumber = ack.getLargestReceivedPacketNumber(
-            packetNumberSpace: .applicationData
-        ) {
+        // A packet that matched the path has already had its spin value applied, in the borrow that checked it
+        if !matchesPath,
+            let largestReceivePacketNumber = ack.getLargestReceivedPacketNumber(
+                packetNumberSpace: .applicationData
+            )
+        {
             if spinBitEnabled && packet.number > largestReceivePacketNumber {
                 // The server reflects the spin value received, while the client "spins" it after one RTT.
                 let spinValue = packet.spinValue
@@ -3934,7 +3953,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
 
             // Trigger PMTUD if necessary. Most sends are not asked: only a search in progress has a probe to send.
-            if path.pmtudState.isSearching {
+            if path.pmtudIsSearching {
                 path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                     state.sendProbe(
                         on: &path,
@@ -5138,7 +5157,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     ) -> NetworkUniqueDeque<SentPacketRecord> {
         if let pmtudProbeMSS = packet.transmittedItems.pmtudProbeMSS {
             _ = withPathWorkFromRecovery(packet.sentPath) { (path: inout QUICPath) in
-                guard path.pmtudState.enabled else { return }
+                guard path.pmtudIsEnabled else { return }
                 path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                     state.probeLost(
                         on: &path,
@@ -6578,7 +6597,7 @@ extension QUICConnection {
         var sentPackets = NetworkUniqueDeque<SentPacketRecord>()
         // Only a probe that is waiting needs the path for work, which is not the case for nearly every ACK
         let probeWaiting =
-            withPath(pathID) { (path: inout QUICPath) in path.pmtudState.hasPendingTransmission } ?? false
+            withPath(pathID) { (path: inout QUICPath) in path.pmtudHasPendingTransmission } ?? false
         if probeWaiting {
             _ = withPathWorkFromRecovery(pathID) { (path: inout QUICPath) in
                 path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
@@ -6796,8 +6815,15 @@ extension QUICConnection {
         }
 
         var pendingFrame: Frame? = outFrame
-        _ = withPath(pathID) { (path: inout QUICPath) in
+        let enqueued: Void? = withPath(pathID) { (path: inout QUICPath) in
             path.enqueueOutboundDatagram(pendingFrame.take()!)
+        }
+        guard enqueued != nil else {
+            if var leftover = pendingFrame.take() {
+                leftover.finalize(success: false)
+            }
+            log.error("Failed to enqueue version negotiation packet, path unavailable")
+            return
         }
         serviceLowerSendQueue(path: pathID, in: &eventContext)
         log.info("Sent version negotiation packet")
@@ -6865,8 +6891,15 @@ extension QUICConnection {
             return false
         }
         var pendingFrame: Frame? = outFrame
-        _ = withPath(pathID) { (path: inout QUICPath) in
+        let enqueued: Void? = withPath(pathID) { (path: inout QUICPath) in
             path.enqueueOutboundDatagram(pendingFrame.take()!)
+        }
+        guard enqueued != nil else {
+            if var leftover = pendingFrame.take() {
+                leftover.finalize(success: false)
+            }
+            log.error("Failed to enqueue version negotiation packet, path unavailable")
+            return false
         }
         serviceLowerSendQueue(path: pathID, in: &eventContext)
         log.info("Sent retry packet")
@@ -7473,7 +7506,7 @@ extension QUICConnection {
         // Acknowledging the probe can set the path's MSS and start another probe, which sends
         // packets, so the path is borrowed for work.
         _ = withPathWorkFromRecovery(pathID) { (path: inout QUICPath) in
-            guard path.pmtudState.enabled else { return }
+            guard path.pmtudIsEnabled else { return }
             path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                 state.probeAcked(
                     on: &path,

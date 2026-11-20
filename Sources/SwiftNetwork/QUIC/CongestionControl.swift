@@ -405,7 +405,8 @@ struct CongestionControl: ~Copyable {
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
         smoothedRTT: NetworkDuration,
-        now: NetworkClock.Instant
+        now: NetworkClock.Instant,
+        pacer: inout Pacer
     ) -> Bool {
         switch algorithm {
         case .cubic(var cubic):
@@ -417,6 +418,9 @@ struct CongestionControl: ~Copyable {
                 smoothedRTT: smoothedRTT,
                 now: now
             )
+            // The loss has cut the congestion window, so the pacer has to follow it now rather than at the
+            // next ACK, which may be several ACKs away.
+            cubic.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .cubic(algorithm: cubic)
             return reducedCongestionWindow
         #if !NETWORK_EMBEDDED
@@ -429,6 +433,9 @@ struct CongestionControl: ~Copyable {
                 smoothedRTT: smoothedRTT,
                 now: now
             )
+            // The loss has cut the congestion window, so the pacer has to follow it now rather than at the
+            // next ACK, which may be several ACKs away.
+            ledbat.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .ledbat(algorithm: ledbat)
             return reducedCongestionWindow
         case .prague(var prague):
@@ -440,6 +447,9 @@ struct CongestionControl: ~Copyable {
                 smoothedRTT: smoothedRTT,
                 now: now
             )
+            // The loss has cut the congestion window, so the pacer has to follow it now rather than at the
+            // next ACK, which may be several ACKs away.
+            prague.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .prague(algorithm: prague)
             return reducedCongestionWindow
         #endif
@@ -455,6 +465,7 @@ struct CongestionControl: ~Copyable {
         mss: Int,
         smoothedRTT: NetworkDuration,
         now: NetworkClock.Instant,
+        pacer: inout Pacer,
         qlog: QLog? = nil
     ) {
         switch algorithm {
@@ -471,6 +482,8 @@ struct CongestionControl: ~Copyable {
                 now: now,
                 qlog: qlog
             )
+            // Congestion experienced shrinks the window, and the pacer has to follow it.
+            cubic.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .cubic(algorithm: cubic)
         #if !NETWORK_EMBEDDED
         case .ledbat(var ledbat):
@@ -486,6 +499,8 @@ struct CongestionControl: ~Copyable {
                 now: now,
                 qlog: qlog
             )
+            // Congestion experienced shrinks the window, and the pacer has to follow it.
+            ledbat.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .ledbat(algorithm: ledbat)
         case .prague(var prague):
             prague.processECN(
@@ -500,6 +515,8 @@ struct CongestionControl: ~Copyable {
                 now: now,
                 qlog: qlog
             )
+            // Congestion experienced shrinks the window, and the pacer has to follow it.
+            prague.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .prague(algorithm: prague)
         #endif
         }
@@ -611,11 +628,17 @@ protocol CongestionControlProtocol: PrefixedLoggable {
         qlog: QLog?
     ) -> Bool
     mutating func persistentCongestion(state: inout CongestionControlState, mss: Int, qlog: QLog?)
+    /// Sets the pacer's rate and burst size from the current congestion window. Called after anything that
+    /// changes the window, so that the pacer never runs ahead of it.
+    func updatePacerState(state: CongestionControlState, pacer: inout Pacer, smoothedRTT: NetworkDuration)
     func filloutDataTransferSnapshot(state: CongestionControlState, dataTransferSnapshot: inout DataTransferSnapshot)
 }
 
 @available(Network 0.1.0, *)
 extension CongestionControlProtocol {
+    /// Algorithms that do not pace leave the pacer alone.
+    func updatePacerState(state: CongestionControlState, pacer: inout Pacer, smoothedRTT: NetworkDuration) {}
+
     mutating func packetSent(state: inout CongestionControlState, bytesSent: Int, qlog: QLog? = nil) {
         state.packetSent(bytesSent: bytesSent, log: log, qlog: qlog)
     }

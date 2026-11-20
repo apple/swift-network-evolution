@@ -562,11 +562,21 @@ extension ManyToManyProtocolHandler {
         let newPathID = newPath.pathIdentifier
         let newPathProperties = newPath.pathProperties
         let upperLinkage = newPath.asUpperLinkage()
+        // `insertPath` consumes the path and cannot hand it back, and the path has already registered its event
+        // manager and attached the lower protocol. Check the identifier first so that it can be destroyed here.
+        if newPathID == MultiplexingPathIdentifier.none {
+            newPath.destroy(in: &eventContext)
+            throw MultiplexedPathEntriesError.invalidIdentifier.networkError
+        }
+        if hasPath(newPathID) {
+            newPath.destroy(in: &eventContext)
+            throw MultiplexedPathEntriesError.duplicateIdentifier.networkError
+        }
         try insertPath(newPath, for: newPathID)
         do throws(NetworkError) {
             try setup(path: newPathID, remote: remote, local: local, parameters: parameters, path: path)
         } catch {
-            _ = removePath(newPathID)
+            if var removed = removePath(newPathID) { removed.destroy(in: &eventContext) }
             throw error
         }
         // Bind the lower protocol's upper side before announcing the path. Announcing it can take
@@ -2448,7 +2458,20 @@ extension ManyToManyProtocolHandler {
         in eventContext: inout NetworkContext.EventContext
     ) {
         do { try validate(lowerOfPath: instance, #function) } catch { return }
-        guard let pathProperties = withPath(pathID, { (path: inout Path) in path.pathProperties }) else { return }
+        let pathProperties: MultiplexingPathProperties
+        if let properties = withPath(pathID, { (path: inout Path) in path.pathProperties }) {
+            pathProperties = properties
+        } else if withUnborrowedPaths({ (entries: inout MultiplexedPathEntries<Path>) in entries.contains(pathID) })
+            == false
+        {
+            // The path is gone, so there is nothing to connect.
+            return
+        } else {
+            // The path is borrowed, for example by a lower protocol that connects synchronously inside the
+            // borrow. The connection still has to learn it is connected, so do not drop the event.
+            Logger.proto.error("Path \(pathID) is borrowed during connected event, using default path properties")
+            pathProperties = MultiplexingPathProperties(isPrimary: false, isInjected: false)
+        }
         if canCallConnect(requested: false, in: &eventContext) {
             connect(in: &eventContext)
         }
@@ -2828,28 +2851,38 @@ extension ManyToManyOutboundDatagramProtocol where Path: AutomaticLowerDatagramP
         path pathID: MultiplexingPathIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        // The lower protocol is called with nothing borrowed, since it can call back. Which lower protocol and
+        // identifier the path has does not change while it is read, so they are copied out once. If the path goes
+        // away mid-loop, the borrow that takes the datagrams finds it gone and the loop ends.
+        guard let (lower, identifier) = withPath(pathID, { (path: inout Path) in (path.lower, path.identifier) })
+        else { return }
         var readCount = 0
         repeat {
-            // What the read left: how many datagrams it brought, and whether the receive queue holds any, which
-            // can include some from before. `nil` means the lower protocol failed the read.
-            let read = withPath(pathID) { (path: inout Path) -> (count: Int, hasQueued: Bool)? in
-                do throws(NetworkError) {
-                    let datagrams = try path.lower.invokeReceiveDatagrams(
-                        maximumDatagramCount: Int.max,
-                        for: path.identifier,
-                        in: &eventContext
-                    )
-                    var count = 0
-                    if let datagrams = consume datagrams {
-                        count = datagrams.count
-                        path.lowerReceiveQueue.add(frames: datagrams)
-                    }
-                    return (count, !path.lowerReceiveQueue.isEmpty)
-                } catch {
-                    return nil
-                }
+            var received: FrameArray?
+            do throws(NetworkError) {
+                received = try lower.invokeReceiveDatagrams(
+                    maximumDatagramCount: Int.max,
+                    for: identifier,
+                    in: &eventContext
+                )
+            } catch {
+                return
             }
-            guard let read, let (count, hasQueued) = read else { return }
+            // What the read left: how many datagrams it brought, and whether the receive queue holds any, which
+            // can include some from before. `nil` means the path went away while the lower protocol read.
+            let read = withPath(pathID) { (path: inout Path) -> (count: Int, hasQueued: Bool) in
+                var count = 0
+                if let datagrams = received.take() {
+                    count = datagrams.count
+                    path.lowerReceiveQueue.add(frames: datagrams)
+                }
+                return (count, !path.lowerReceiveQueue.isEmpty)
+            }
+            // A frame that is dropped while it holds a buffer traps, so fail what a vanished path cannot take.
+            if var unclaimed = received.take() {
+                unclaimed.finalizeAllFramesAsFailed()
+            }
+            guard let (count, hasQueued) = read else { return }
             readCount = count
             // Servicing is not asked for when there is nothing to service: it is a whole pass over the
             // received datagrams, ACKs and all.

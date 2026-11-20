@@ -237,7 +237,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         }
     }
 
-    private func updatePacerState(state: CongestionControlState, pacer: inout Pacer, smoothedRTT: NetworkDuration) {
+    func updatePacerState(state: CongestionControlState, pacer: inout Pacer, smoothedRTT: NetworkDuration) {
         guard pacer.enabled else {
             return
         }
@@ -428,7 +428,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             return
         }
         congestionEvent(state: &state, sentTime: largestAckedSentTime, mss: mss, now: now, qlog: qlog)
-        // Update pacer state as congestionWindow has changed
+        // The pacer is updated for this window change by `CongestionControl.processECN`, since this has no pacer
         // Start new round for CWR
         state.largestSentPN = largestSentPN
     }

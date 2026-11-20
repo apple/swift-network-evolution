@@ -245,6 +245,17 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
 
         mutating func reset(connection: QUICConnection?) {
+            reset(connection: connection) { (pathID: MultiplexingPathIdentifier, bytes: Int) in
+                connection?.refundCongestionControlCharge(bytes: bytes, on: pathID)
+            }
+        }
+
+        /// Resets the state, handing each discarded in-flight packet to `refund` to be taken out of the congestion
+        /// control of the path it was sent on.
+        mutating func reset(
+            connection: QUICConnection?,
+            refund: (_ pathID: MultiplexingPathIdentifier, _ bytes: Int) -> Void
+        ) {
             iterateSentPacketEntries { entry in
                 guard entry.packet.isInFlightEligible, entry.lostTime == .zero else {
                     return true
@@ -257,10 +268,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
                 let sentLength = entry.packet.totalLength
                 connection.log.datapath("Discarding packet of length \(sentLength)")
-                let qLog = connection.qLog
-                _ = connection.withPath(sentPathID) { (sentPath: inout QUICPath) in
-                    sentPath.congestionControlPacketDiscarded(bytesSent: sentLength, qlog: qLog)
-                }
+                refund(sentPathID, sentLength)
                 return true
             }
             outstandingPackets.removeAll()
@@ -1577,7 +1585,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         }
 
         if discardInitialRecoveryState {
-            self.resetPNSpace(packetNumberSpace: .initial, connection: connection)
+            self.resetPNSpace(packetNumberSpace: .initial, connection: connection, borrowedPath: &path)
             self.resetPTOCount(path: &path)
         }
         guard sentPTO else {
@@ -1825,6 +1833,30 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         withMutableInnerState(packetNumberSpace: packetNumberSpace) {
             innerState in
             innerState.reset(connection: connection)
+            Recovery.logAckElicitingPacketsInFlight(
+                packetCount: innerState.ackElicitingPacketsInFlight,
+                connection: connection
+            )
+        }
+    }
+
+    /// Like `resetPNSpace(packetNumberSpace:connection:)`, for a caller that has `borrowedPath` borrowed. No
+    /// other path can be looked up while one is borrowed, so what was sent on that path is refunded directly.
+    mutating func resetPNSpace(
+        packetNumberSpace: PacketNumberSpace,
+        connection: QUICConnection,
+        borrowedPath: inout QUICPath
+    ) {
+        withMutableInnerState(packetNumberSpace: packetNumberSpace) {
+            innerState in
+            let qLog = connection.qLog
+            innerState.reset(connection: connection) { (pathID: MultiplexingPathIdentifier, bytes: Int) in
+                if pathID == borrowedPath.pathIdentifier {
+                    borrowedPath.congestionControlPacketDiscarded(bytesSent: bytes, qlog: qLog)
+                } else {
+                    connection.refundCongestionControlCharge(bytes: bytes, on: pathID)
+                }
+            }
             Recovery.logAckElicitingPacketsInFlight(
                 packetCount: innerState.ackElicitingPacketsInFlight,
                 connection: connection

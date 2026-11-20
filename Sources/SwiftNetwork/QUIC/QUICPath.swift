@@ -195,7 +195,47 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
 
     var pacer: Pacer
 
-    var pmtudState = PMTUDState()
+    private var storedPMTUDState = PMTUDState()
+
+    /// Whether `withPMTUDState` has moved the state out and not yet put it back, in which case
+    /// `storedPMTUDState` is a blank placeholder.
+    private var pmtudStateLent = false
+
+    /// The PMTUD state. Not available while `withPMTUDState` has it lent out: the stored value is then a
+    /// placeholder, so a read would see defaults and a write would be overwritten when the state comes back.
+    var pmtudState: PMTUDState {
+        _read {
+            assert(!pmtudStateLent, "pmtudState accessed inside withPMTUDState; use the state it was given")
+            yield storedPMTUDState
+        }
+        _modify {
+            assert(!pmtudStateLent, "pmtudState accessed inside withPMTUDState; use the state it was given")
+            yield &storedPMTUDState
+        }
+    }
+    /// Whether a send has anything to ask PMTUD about. Read here, on the stored state, rather than through
+    /// `pmtudState`: that accessor is a coroutine, and calling it out of line from inside a borrow of the path
+    /// makes the compiler copy the whole path to the stack first.
+    @inline(always)
+    var pmtudIsSearching: Bool {
+        assert(!pmtudStateLent, "pmtudState accessed inside withPMTUDState; use the state it was given")
+        return storedPMTUDState.isSearching
+    }
+
+    /// Whether PMTUD is enabled. See `pmtudIsSearching`.
+    @inline(always)
+    var pmtudIsEnabled: Bool {
+        assert(!pmtudStateLent, "pmtudState accessed inside withPMTUDState; use the state it was given")
+        return storedPMTUDState.enabled
+    }
+
+    /// Whether a PMTUD probe is waiting to be sent. See `pmtudIsSearching`.
+    @inline(always)
+    var pmtudHasPendingTransmission: Bool {
+        assert(!pmtudStateLent, "pmtudState accessed inside withPMTUDState; use the state it was given")
+        return storedPMTUDState.hasPendingTransmission
+    }
+
     var recoveryState = Recovery.PathState()
     var ecnState = ECNPathState()
     var pathStatistics = Statistics()
@@ -455,17 +495,23 @@ public struct QUICPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatag
     /// Lends out the path's PMTUD state alongside the rest of the path.
     ///
     /// PMTUD looks at the path as it works, and the state is part of the path, so the two cannot be
-    /// borrowed at once. The state is moved out for the duration of `body` and put back after.
+    /// borrowed at once. The state is moved out for the duration of `body` and put back after, so `body` must
+    /// use the state it is given: it must not read `pmtudState` or call `withPMTUDState` again.
     mutating func withPMTUDState<R>(_ body: (inout PMTUDState, inout QUICPath) -> R) -> R {
+        assert(!pmtudStateLent, "withPMTUDState call overlaps")
         var state = PMTUDState()
-        swap(&state, &pmtudState)
-        defer { swap(&state, &pmtudState) }
+        swap(&state, &storedPMTUDState)
+        pmtudStateLent = true
+        defer {
+            pmtudStateLent = false
+            swap(&state, &storedPMTUDState)
+        }
         return body(&state, &self)
     }
 
     deinit {
         // Ensure PMTUD timers are removed
-        pmtudState.removeTimer(from: base.parentProtocol)
+        storedPMTUDState.removeTimer(from: base.parentProtocol)
     }
 
     private mutating func setup(sharedInterfaceMSS: (mss: Int, pathIdentifier: MultiplexingPathIdentifier)?) {
@@ -984,7 +1030,8 @@ extension QUICPath {
             largestLostSentTime: largestLostSentTime,
             mss: mss,
             smoothedRTT: smoothedRTT,
-            now: parentProtocol.now
+            now: parentProtocol.now,
+            pacer: &pacer
         )
     }
 
@@ -1043,6 +1090,7 @@ extension QUICPath {
             mss: mss,
             smoothedRTT: smoothedRTT,
             now: parentProtocol.now,
+            pacer: &pacer,
             qlog: qlog
         )
     }

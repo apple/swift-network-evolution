@@ -246,16 +246,24 @@ struct Migration: ~Copyable {
         } else {
             connection.log.error("Path \(pathID) is missing endpoints, not delivering pathCurrent")
         }
-        _ = connection.withPath(pathID) { (path: inout QUICPath) in
+        // The application was called out to above, so the path may be borrowed or gone by now.
+        let spinReset: Void? = connection.withPath(pathID) { (path: inout QUICPath) in
             path.spinValue = initialSpinValue
+        }
+        if spinReset == nil {
+            connection.log.fault("Path \(pathID) is busy or gone, spin value not reset")
         }
         connection.recovery.resetTimer(now: connection.now, connection: connection, in: &eventContext)
         // PMTUD sends probes, so the new current path is borrowed for work while it starts
-        _ = connection.withPathWork(pathID, replayingSendsIn: &eventContext) { (path: inout QUICPath, ctx) in
+        let pmtudStarted: Void? = connection.withPathWork(pathID, replayingSendsIn: &eventContext) {
+            (path: inout QUICPath, ctx) in
             path.resetPacer()
             path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
                 state.start(on: &path, in: &ctx)
             }
+        }
+        if pmtudStarted == nil {
+            connection.log.fault("Path \(pathID) is busy or gone, pacer not reset and PMTUD not started")
         }
         var cursor = connection.startPathIteration()
         while let otherPathID = connection.nextPathIdentifier(&cursor) {
@@ -377,7 +385,8 @@ extension QUICConnection {
         log.debug("Path \(pathID.description) changed to \(event), primary: \(pathProperties.isPrimary)")
 
         guard hasPath(pathID) else {
-            log.error("Path \(pathID.description) not found, ignoring")
+            // `hasPath` is also false while a path is borrowed, so the path may be busy rather than missing.
+            log.error("Path \(pathID.description) not found or busy, ignoring")
             return
         }
 
@@ -413,7 +422,10 @@ extension QUICConnection {
             }
             return path.isValidated
         }
-        guard let isValidated else { return }
+        guard let isValidated else {
+            log.fault("Path \(pathID.description) is busy or gone, dropping path event \(event)")
+            return
+        }
 
         logExistingPaths()
 

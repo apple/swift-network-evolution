@@ -34,6 +34,10 @@ struct CurrentPathState {
 @available(Network 0.1.0, *)
 extension QUICPath {
     /// What flow control asks about the path. Cheap to read, so it is read each time it is asked for.
+    ///
+    /// Inlined so the path is read where it is stored. Called out of line from inside a borrow of the path,
+    /// the whole path is copied to the stack first, which costs far more than reading three fields.
+    @inline(always)
     var snapshot: CurrentPathState {
         CurrentPathState(
             mss: mss,
@@ -43,7 +47,8 @@ extension QUICPath {
     }
 
     /// All of the state, including the probe timeout Recovery arms its timer with. Worked out only when the
-    /// state is being held for a path that is about to be unreachable.
+    /// state is being held for a path that is about to be unreachable. Inlined for the same reason as `snapshot`.
+    @inline(always)
     var fullSnapshot: CurrentPathState {
         var state = self.snapshot
         state.probeTimeout = Recovery.computedPTO(rtt: rtt)

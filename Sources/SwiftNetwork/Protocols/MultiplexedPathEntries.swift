@@ -78,6 +78,7 @@ public struct MultiplexedPathEntries<Path: ~Copyable>: ~Copyable {
     /// Time: O(1) for a path that matches the last cached position, otherwise average O(p) for p paths
     @inline(always)
     public func find(_ pathID: MultiplexingPathIdentifier) -> Int? {
+        guard pathID != MultiplexingPathIdentifier.none else { return nil }
         let end = entries.count
         let hint = lastCachedPosition
         if hint < end, entries[hint].identifier == pathID { return hint }

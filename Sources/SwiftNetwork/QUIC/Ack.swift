@@ -874,7 +874,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             return false
         }
         guard let connection else { return false }
-        return connection.withCurrentPath { (path: inout QUICPath) in
+        let result: Bool? = connection.withCurrentPath { (path: inout QUICPath) in
             processPending(
                 on: &path,
                 connectionWindow: connectionWindow,
@@ -883,7 +883,14 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 ecn: ecn,
                 in: &eventContext
             )
-        } ?? false
+        }
+        // There is no current path, or it is borrowed. The ACKs are still owed, so make sure a timer will send them.
+        guard let result else {
+            log.datapath("No current path available; scheduling delayed ACK")
+            scheduleDelayedAck(in: &eventContext)
+            return false
+        }
+        return result
     }
 
     mutating func acknowledged(
