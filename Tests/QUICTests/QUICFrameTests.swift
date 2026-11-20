@@ -61,6 +61,18 @@ extension FrameDatagram {
 }
 
 @available(Network 0.1.0, *)
+extension QUICConnection {
+    /// Advertises DATAGRAM support, which a connection built outside a protocol stack doesn't.
+    fileprivate func setLocalMaxDatagramFrameSizeFromExternalTest(_ size: UInt16) {
+        let options = QUICProtocol.options()
+        options.modifyPerProtocolOptions { streamOptions in
+            streamOptions.modifyQUICConnectionOptions { $0.maxDatagramFrameSize = size }
+        }
+        setupLocalTransportParameters(quicOptions: options)
+    }
+}
+
+@available(Network 0.1.0, *)
 class QUICFrameTests: XCTestCase {
 
     var stats: Statistics!
@@ -68,7 +80,9 @@ class QUICFrameTests: XCTestCase {
 
     override func setUp() {
         connection = NetworkContext.implicitContext.onQueue {
-            QUICConnection(context: NetworkContext.implicitContext)
+            let connection = QUICConnection(context: NetworkContext.implicitContext)
+            connection.setLocalMaxDatagramFrameSizeFromExternalTest(65535)
+            return connection
         }
         stats = Statistics()
     }
@@ -3648,7 +3662,9 @@ class QUICFrameTests: XCTestCase {
 
     func testDatagramBadLengthParsing() throws {
         let connection = NetworkContext.implicitContext.onQueue {
-            QUICConnection(context: NetworkContext.implicitContext)
+            let connection = QUICConnection(context: NetworkContext.implicitContext)
+            connection.setLocalMaxDatagramFrameSizeFromExternalTest(65535)
+            return connection
         }
         defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
 
@@ -3684,6 +3700,40 @@ class QUICFrameTests: XCTestCase {
         XCTAssertTrue(threwError, "Expected thrown error")
     }
 
+    // RFC 9221, Section 3: max_datagram_frame_size covers the frame type, length and payload, so a frame of
+    // exactly that size is accepted. The flow ID counts towards it too.
+    func testDatagramOfExactlyTheMaximumFrameSizeIsAccepted() throws {
+        let connection = NetworkContext.implicitContext.onQueue {
+            let connection = QUICConnection(context: NetworkContext.implicitContext)
+            connection.setLocalMaxDatagramFrameSizeFromExternalTest(100)
+            return connection
+        }
+        defer { connection.context.onQueue { connection.destroyFromExternalTest() } }
+
+        // Type (1) + length (2) + payload (97) = 100.
+        let withoutFlowID: [UInt8] = [0x31, 0x40, 0x61] + [UInt8](repeating: 0xAA, count: 97)
+        // Type (1) + length (2) + flow ID (2) + payload (95) = 100.
+        let withFlowID: [UInt8] = [0x31, 0x40, 0x61, 0x40, 0x4d] + [UInt8](repeating: 0xAA, count: 95)
+
+        for (bytes, useFlowID, payloadLength) in [(withoutFlowID, false, 97), (withFlowID, true, 95)] {
+            try connection.context.onQueue {
+                var frame = Frame(copyBuffer: bytes)
+                defer {
+                    frame.finalize(success: true)
+                }
+                var quicFrame = try FrameDatagram(
+                    frame: &frame,
+                    useFlowID: useFlowID,
+                    useContextID: false,
+                    connection: connection,
+                    stats: &connection.stats,
+                    in: &connection.context.eventContext
+                )
+                XCTAssertEqual(quicFrame.length, payloadLength)
+                quicFrame.frame.finalize(success: true)
+            }
+        }
+    }
     func testIsAckEliciting() throws {
         // padding, acks and close frames are not ack eliciting
         XCTAssertFalse(
