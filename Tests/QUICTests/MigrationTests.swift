@@ -57,8 +57,12 @@ final class MigrationTests: XCTestCase {
 
     // These connections never run a handshake, so most tests confirm it straight away: the
     // migration strategy does not run before then.
-    private func setUpConnection(parameters: Parameters?, handshakeConfirmed: Bool = true) {
-        try? self.connection.setup(remote: nil, local: nil, parameters: parameters, path: nil)
+    private func setUpConnection(
+        parameters: Parameters?,
+        path: PathProperties? = nil,
+        handshakeConfirmed: Bool = true
+    ) {
+        try? self.connection.setup(remote: nil, local: nil, parameters: parameters, path: path)
         self.connection.recovery = Recovery(logPrefixer: migrationTestsLogPrefixer)
         self.connection.recovery.connection = self.connection
         if handshakeConfirmed {
@@ -78,18 +82,18 @@ final class MigrationTests: XCTestCase {
     // Replaces the connection `setUp` made with a fresh one. The old connection holds itself through
     // its metadata handlers and its recovery, and only closing it breaks those cycles, so it is torn
     // down here. `tearDown` does the same for whichever connection the test ends with.
-    private func replaceConnection(parameters: Parameters?, handshakeConfirmed: Bool) {
+    private func replaceConnection(parameters: Parameters?, path: PathProperties? = nil, handshakeConfirmed: Bool) {
         connection.destroyFromExternalTest()
         connection = QUICConnection(context: .implicitContext)
-        setUpConnection(parameters: parameters, handshakeConfirmed: handshakeConfirmed)
+        setUpConnection(parameters: parameters, path: path, handshakeConfirmed: handshakeConfirmed)
     }
 
     // Replaces the client connection `setUp` made with a server one. Must be called before any
     // path is made.
-    private func becomeServer(handshakeConfirmed: Bool = true) {
+    private func becomeServer(path: PathProperties? = nil, handshakeConfirmed: Bool = true) {
         var parameters = Parameters(context: .implicitContext)
         parameters.isServer = true
-        replaceConnection(parameters: parameters, handshakeConfirmed: handshakeConfirmed)
+        replaceConnection(parameters: parameters, path: path, handshakeConfirmed: handshakeConfirmed)
     }
 
     override func tearDown() {
@@ -1062,6 +1066,72 @@ final class MigrationTests: XCTestCase {
                 "Path the peer moved to torn down"
             )
             XCTAssertTrue(self.connection.currentPath === currentPath, "Current path changed")
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // Over a companion link, a server the peer has given no spare CID follows the peer by reusing the
+    // current path's CID. The CID stays while either path holds it, and the last one to give it up
+    // retires it.
+    func testServerReusesTheCurrentCIDOverACompanionLink() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            var companionPath = PathProperties(parameters: Parameters(context: .implicitContext))
+            companionPath.directInterface = Interface(index: 1, name: "companion0", type: .other, subtype: .companion)
+            self.becomeServer(path: companionPath)
+            let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
+            let newPath = self.makePath(
+                dcid: Self.newCID,
+                sequenceNumber: 2,
+                validated: false,
+                assignCID: false,
+                registerCID: false
+            )
+            self.connection.currentPath = oldPath
+            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
+            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+
+            self.peerSentPacket(number: 10, on: newPath)
+            XCTAssertEqual(newPath.dcid, Self.oldCID, "Current path's CID not reused")
+            XCTAssertTrue(self.connection.currentPath === newPath, "Did not follow the peer")
+
+            self.peerSentPacket(number: 11, on: oldPath)
+            XCTAssertTrue(self.connection.currentPath === oldPath, "Did not follow the peer back")
+            XCTAssertNil(self.connection.multiplexingPaths[newPath.pathIdentifier], "Kept the path the peer left")
+            XCTAssertNotNil(self.connection.remoteCIDs.find(connectionID: Self.oldCID), "Retired a CID still held")
+
+            oldPath.state = .routeUnavailable
+            XCTAssertNil(self.connection.remoteCIDs.find(connectionID: Self.oldCID), "Last holder did not retire it")
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // A peer that chose a zero-length CID has no others to issue, so a server follows it onto a new
+    // path with the zero-length CID, on any link.
+    func testServerUsesTheZeroLengthCIDOnANewPath() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            self.becomeServer()
+            let zeroLengthCID = QUICConnectionID([])!
+            let oldPath = self.makePath(dcid: zeroLengthCID, sequenceNumber: 0, validated: true, registerCID: false)
+            let newPath = self.makePath(
+                dcid: Self.newCID,
+                sequenceNumber: 1,
+                validated: false,
+                assignCID: false,
+                registerCID: false
+            )
+            self.connection.currentPath = oldPath
+            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
+            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+
+            self.peerSentPacket(number: 10, on: newPath)
+            XCTAssertEqual(newPath.dcid, zeroLengthCID, "Zero-length CID not used on the new path")
+            XCTAssertTrue(self.connection.currentPath === newPath, "Did not follow the peer")
 
             expectation.fulfill()
         }
