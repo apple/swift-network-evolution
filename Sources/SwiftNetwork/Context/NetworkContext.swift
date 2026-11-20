@@ -151,6 +151,14 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         #endif
 
         internal var protocolEventStates = NetworkGappyArray<ProtocolEventManagerState>()
+        private var standaloneState: StandaloneState?
+        internal var standalone: StandaloneState {
+            _read { yield standaloneState! }
+            _modify {
+                if standaloneState == nil { standaloneState = StandaloneState() }
+                yield &standaloneState!
+            }
+        }
         internal mutating func registerProtocolEventState() -> NetworkStateIndex {
             protocolEventStates.insert(.init())
         }
