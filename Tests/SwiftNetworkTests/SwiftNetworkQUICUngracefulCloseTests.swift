@@ -153,6 +153,70 @@ final class SwiftNetworkQUICUngracefulCloseTests: NetTestCase {
         )
     }
 
+    // The client loses its only path with stream data still to send. Nothing is in flight, so PTO never
+    // fires, and with no idle timeout only the path recovery timer closes the connection.
+    func testQUICClientWithQueuedDataClosesWhenItsPathGoesAway() throws {
+        let clientOptions = QUICProtocol.options()
+        clientOptions.modifyConnectionOptions {
+            $0.idleTimeout = .zero
+            $0.pathRecoveryTimeout = .seconds(2)
+        }
+        let serverOptions = QUICProtocol.options()
+        serverOptions.modifyConnectionOptions { $0.idleTimeout = .zero }
+
+        QUICTestHarness().runQUICTest(
+            dataBlock: Array("Hello World!".utf8),
+            sendFIN: false,
+            clientOptions: clientOptions,
+            serverOptions: serverOptions,
+            afterData: { harness in
+                guard let client = harness.state?.clientInstance,
+                    let clientStream = harness.state?.clientHarness.upperHarnesses.first
+                else {
+                    XCTFail("No client connection or stream")
+                    return
+                }
+                harness.wait(
+                    until: { client.recovery.totalAckElicitingPacketsInFlight == 0 },
+                    timeout: 5.0,
+                    "client data to be acknowledged"
+                )
+
+                harness.onContext {
+                    guard let path = client.currentPath else {
+                        XCTFail("No client path")
+                        return
+                    }
+                    client.fromExternal { eventContext in
+                        client.handlePathChanged(
+                            path: path.pathIdentifier,
+                            event: .unavailable,
+                            pathProperties: path.pathProperties,
+                            in: &eventContext
+                        )
+                    }
+                    XCTAssertTrue(clientStream.write(Array("Still queued".utf8)))
+                }
+                harness.flush()
+
+                harness.onContext {
+                    XCTAssertTrue(client.applicationPendingItems.hasUnsentApplicationData, "Data not queued")
+                    XCTAssertEqual(client.recovery.totalAckElicitingPacketsInFlight, 0, "Data sent without a path")
+                    XCTAssertTrue(client.isPathRecoveryTimerArmed, "Path recovery timer not armed")
+                }
+
+                var reportedError: NetworkError?
+                harness.onContext {
+                    harness.state?.clientHarness.waitForError { error in
+                        reportedError = error
+                    }
+                }
+                harness.wait(until: { reportedError != nil }, timeout: 5.0, "client path recovery timeout")
+                XCTAssertEqual(reportedError, NetworkError.posix(ETIMEDOUT))
+            }
+        )
+    }
+
     func testQUICServerApplicationCloseBeforeHandshakeComplete() throws {
         // Drop all packets to the server after the first. The client completes the handshake, but the
         // server never sees the client's Finished, so it closes while its key state is still .handshake
