@@ -45,7 +45,12 @@ struct NetworkStateIndex: Hashable {
     }
 
     // The position this index refers to, for use as a `NetworkGappyArray` offset.
-    fileprivate var slot: Int { Int(index) }
+    var slot: Int { Int(index) }
+
+    init(rawValue: UInt64) {
+        self.index = UInt32(truncatingIfNeeded: rawValue)
+        self.generation = UInt32(truncatingIfNeeded: rawValue >> 32)
+    }
 
     // The absence of an index. Never equal to an index issued by a `NetworkGappyArray`.
     static let none = NetworkStateIndex()
@@ -105,6 +110,11 @@ struct NetworkGappyArray<Element: ~Copyable>: ~Copyable {
         mutating _read {
             yield elements[position.slot]!
         }
+    }
+
+    func isPresent(_ index: NetworkStateIndex) -> Bool {
+        let slot = index.slot
+        return slot < elements.count && elements[slot] != nil
     }
 
     var count: Int { elements.count - freeSlots.count }
