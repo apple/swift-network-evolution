@@ -6927,6 +6927,7 @@ extension QUICConnection {
             // The stream is fully set up before it joins the flow table, where it can only be
             // borrowed from then on.
             let newStreamInstance = newStream.identifier
+
             let newStreamMetadata = newStream.streamMetadata(messageIdentifier: inboundStreamMessageIdentifier)
             insertFlow(newStream, for: newFlowIdentifier)
 
