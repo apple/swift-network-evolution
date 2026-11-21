@@ -63,7 +63,7 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case demux(NetworkStateIndex)
         case datagramEndpointFlow(ProtocolInstanceBox<DatagramEndpointFlowProtocol>)
         #if !NETWORK_NO_SWIFT_QUIC
-        case quicPath(ProtocolInstanceBox<QUICPath>)
+        case quicPath(QUICConnection, MultiplexingPathIdentifier)
         #endif
         // A protocol from outside the framework, reached through one class call.
         #if !NETWORK_EMBEDDED
@@ -91,9 +91,14 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
             var flow = box.instance
             overrideUpperLinkage = try flow.attachLowerProtocol(lowerProtocol)
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            var path = box.instance
-            overrideUpperLinkage = try path.attachLowerProtocol(lowerProtocol)
+        case .quicPath(let connection, let pathID):
+            let attached = try connection.withPath(pathID) { (path: inout QUICPath) throws(NetworkError) in
+                try path.attachLowerProtocol(lowerProtocol)
+            }
+            // `nil` means the path is gone or its entries are borrowed. Either way it cannot be reached now, which is
+            // what the other QUIC branches report as not connected.
+            guard let attached else { throw NetworkError.posix(ENOTCONN) }
+            overrideUpperLinkage = attached
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -134,8 +139,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case .datagramEndpointFlow(let box):
             box.instance.handleConnectedEvent(for: instance, in: &eventContext)
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            box.instance.handleConnectedEvent(for: instance, in: &eventContext)
+        case .quicPath(let connection, let pathID):
+            connection.handleConnectedEvent(path: pathID, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external): external.handleConnectedEvent(for: instance, in: &eventContext)
@@ -163,8 +168,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case .datagramEndpointFlow(let box):
             box.instance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            box.instance.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        case .quicPath(let connection, let pathID):
+            connection.handleDisconnectedEvent(path: pathID, error: error, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -193,9 +198,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case .datagramEndpointFlow(let box):
             box.instance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            var protocolInstance = box.instance
-            protocolInstance.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        case .quicPath(let connection, let pathID):
+            connection.handleNetworkProtocolEvent(path: pathID, event: event, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -223,9 +227,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case .datagramEndpointFlow(let box):
             box.instance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            var protocolInstance = box.instance
-            protocolInstance.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+        case .quicPath(let connection, let pathID):
+            connection.handleInboundDataAvailableEvent(path: pathID, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -253,9 +256,8 @@ public struct BaseInboundDatagramLinkage: InboundDatagramLinkage {
         case .datagramEndpointFlow(let box):
             box.instance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         #if !NETWORK_NO_SWIFT_QUIC
-        case .quicPath(let box):
-            var protocolInstance = box.instance
-            protocolInstance.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+        case .quicPath(let connection, let pathID):
+            connection.handleOutboundRoomAvailableEvent(path: pathID, for: instance, in: &eventContext)
         #endif
         #if !NETWORK_EMBEDDED
         case .external(let external):
@@ -3264,8 +3266,8 @@ extension BaseOutboundDatagramLinkage {
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 extension BaseInboundDatagramLinkage {
-    public init(quicPath: QUICPath) {
-        self.init(identifier: quicPath.identifier, storage: nil, protocolType: .quicPath(.init(quicPath)))
+    public init(quicConnection: QUICConnection, path: MultiplexingPathIdentifier, identifier: InstanceIdentifier) {
+        self.init(identifier: identifier, storage: nil, protocolType: .quicPath(quicConnection, path))
     }
 }
 #endif

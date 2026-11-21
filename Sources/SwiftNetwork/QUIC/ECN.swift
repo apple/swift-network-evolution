@@ -158,12 +158,12 @@ struct ECN: ~Copyable, PrefixedLoggable {
 
     static func processIPCodpoint(
         ecn: borrowing ECN,
-        path: QUICPath,
+        ecnState: inout ECNPathState,
         stats: inout Statistics,
         packetNumberSpace: PacketNumberSpace,
         flag: IPProtocol.ECN
     ) -> Bool {
-        path.ecnState.processIPCodepoint(
+        ecnState.processIPCodepoint(
             ecn: ecn,
             stats: &stats,
             packetNumberSpace: packetNumberSpace,

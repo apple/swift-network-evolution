@@ -88,7 +88,9 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                     }
                     // Keep the server's view of the client's ACK delay consistent, otherwise
                     // its PTO fires while the ACK is held and the probe forces an immediate ACK.
-                    harness.state?.serverInstance.currentPath?.rtt.remoteMaxAckDelay = .seconds(30)
+                    _ = harness.state?.serverInstance.withCurrentPath { (path: inout QUICPath) in
+                        path.rtt.remoteMaxAckDelay = .seconds(30)
+                    }
                 }
             },
             afterData: { harness in
@@ -98,7 +100,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                     XCTAssertNotNil(client, "Client instance needs to be present to proceed")
                     if let client {
                         XCTAssertFalse(
-                            client.currentPath?.reportedIdleEvent ?? true,
+                            (client.withCurrentPath { (path: inout QUICPath) in path.reportedIdleEvent } ?? true),
                             "Client should not have reported idle before the application marks idle"
                         )
 
@@ -114,7 +116,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                             "Client should still owe the peer a delayed ACK"
                         )
                         XCTAssertFalse(
-                            client.currentPath?.reportedIdleEvent ?? true,
+                            (client.withCurrentPath { (path: inout QUICPath) in path.reportedIdleEvent } ?? true),
                             "Client should not have reported idle while an ACK is owed to the peer"
                         )
 
@@ -130,7 +132,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                             "Client should not owe the peer an ACK once the delayed ACK has been sent"
                         )
                         XCTAssertTrue(
-                            client.currentPath?.reportedIdleEvent ?? false,
+                            (client.withCurrentPath { (path: inout QUICPath) in path.reportedIdleEvent } ?? false),
                             "Client should have reported idle once the owed ACK has been sent"
                         )
 
@@ -138,7 +140,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                             upperHarness.invokeConnectionReusedEvent()
                         }
                         XCTAssertFalse(
-                            client.currentPath?.reportedIdleEvent ?? true,
+                            (client.withCurrentPath { (path: inout QUICPath) in path.reportedIdleEvent } ?? true),
                             "Client should not have reported idle after the application reuses the connection"
                         )
                     }
@@ -168,7 +170,9 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                             }
                         }
                     }
-                    harness.state?.serverInstance.currentPath?.rtt.remoteMaxAckDelay = .seconds(30)
+                    _ = harness.state?.serverInstance.withCurrentPath { (path: inout QUICPath) in
+                        path.rtt.remoteMaxAckDelay = .seconds(30)
+                    }
                 }
             },
             afterData: { harness in
@@ -182,7 +186,9 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                         upperHarness.invokeConnectionIdleEvent()
                     }
                     XCTAssertGreaterThan(client.ack.unackedPacketCount, 0, "the client owes an ACK")
-                    XCTAssertFalse(client.currentPath?.reportedIdleEvent ?? true)
+                    XCTAssertFalse(
+                        (client.withCurrentPath { (path: inout QUICPath) in path.reportedIdleEvent } ?? true)
+                    )
 
                     // The ACK for what arrives next is due at once, but the batch holds it.
                     state.clientHarness.invokeApplicationEvent(.outboundDataBatchStart)
@@ -197,12 +203,15 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                 harness.onContext {
                     let client = state.clientInstance
                     XCTAssertTrue(client.applicationPendingItems.isAckOnly, "only an ACK is waiting")
-                    XCTAssertFalse(client.currentPath?.reportedIdleEvent ?? true, "an ACK is owed")
+                    XCTAssertFalse(
+                        (client.withCurrentPath { (path: inout QUICPath) in path.reportedIdleEvent } ?? true),
+                        "an ACK is owed"
+                    )
 
                     state.clientHarness.invokeApplicationEvent(.outboundDataBatchEnd)
                     XCTAssertFalse(client.applicationPendingItems.hasPendingItems, "the batch's end sends the ACK")
                     XCTAssertTrue(
-                        client.currentPath?.reportedIdleEvent ?? false,
+                        (client.withCurrentPath { (path: inout QUICPath) in path.reportedIdleEvent } ?? false),
                         "the connection reports idle once the batch's end has sent the last ACK it owed"
                     )
                 }
@@ -232,7 +241,7 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
                 harness.onContext {
                     let client = harness.state?.clientInstance
                     XCTAssertNotNil(client, "Client instance needs to be present to proceed")
-                    if let client, let path = client.currentPath {
+                    if let client, let pathID = client.currentPathID {
                         XCTAssertGreaterThan(
                             client.ack.unackedPacketCount,
                             0,
@@ -241,16 +250,24 @@ final class SwiftNetworkQUICIdleTests: NetTestCase {
 
                         // Acknowledge a probe short of the path maximum, which leaves the
                         // next probe due on the next transmission.
-                        let ipUDPHeaderSize = path.pmtudState.currentPathMTU - path.mss
+                        let ipUDPHeaderSize =
+                            client.withPath(pathID) { (path: inout QUICPath) in
+                                path.pmtudState.currentPathMTU - path.mss
+                            } ?? 0
                         client.fromExternal { eventContext in
                             client.acknowledgedPMTUDProbe(
-                                on: path,
+                                on: pathID,
                                 packetNumber: client.protector.getPacketNumber(for: .applicationData),
                                 mss: 1492 - ipUDPHeaderSize,
                                 in: &eventContext
                             )
                         }
-                        let canSendProbe = path.pmtudState.canSendProbe(on: path, hasPendingItems: false)
+                        let canSendProbe =
+                            client.withPath(pathID) { (path: inout QUICPath) -> Bool in
+                                path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
+                                    state.canSendProbe(on: &path, hasPendingItems: false)
+                                }
+                            } ?? false
                         XCTAssertTrue(
                             canSendProbe,
                             "Client should have a PMTUD probe ready to send alongside the delayed ACK"

@@ -588,7 +588,7 @@ final class SwiftNetworkQUICPacketParsingTests: NetTestCase {
         harness.onContext {
             guard
                 let sender = fromClient ? harness.state?.clientInstance : harness.state?.serverInstance,
-                let destinationConnectionID = sender.currentPath?.dcid
+                let destinationConnectionID = sender.withCurrentPath({ (path: inout QUICPath) in path.dcid }) ?? nil
             else {
                 XCTFail("Sender is missing after the handshake")
                 return

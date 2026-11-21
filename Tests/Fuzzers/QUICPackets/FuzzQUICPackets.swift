@@ -98,7 +98,7 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
     }
 
     context.queue.sync {
-        let path = QUICPath.makeFromExternalTest(parent: connection)
+        var path = QUICPath.makeFromExternalTest(parent: connection)
         // What `setup` does to the state, without the timers and metadata handlers it registers,
         // which the teardown below does not take down again. Then through the handshake states to
         // connected, without running the handshake.
@@ -124,6 +124,10 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
             count -= cidLength
         }
 
+        // The path is reached through the connection's paths, like any other path
+        let pathID = path.pathIdentifier
+        try! connection.insertPath(path, for: pathID)
+
         let data = Data(bytes: start, count: count)
         let frame = Frame(copyBuffer: data.span)
         connection.fromExternal(frame) { eventContext, frame in
@@ -131,7 +135,8 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
             var packetParser = PacketParser(logPrefixer: connection.logPrefixer)
             connection.handleInbound(
                 frame: &frame,
-                from: path,
+                from: pathID,
+                unvalidatedPath: false,
                 inConnectedState: true,
                 isServerConnection: false,
                 packetParser: &packetParser,
@@ -158,8 +163,8 @@ public func fuzzPacketParser(_ start: UnsafePointer<UInt8>, _ count: Int) -> Int
             connection.withMultiplexedSecondaryFlows { $0.removeAll() }
             connection.identifier.discardPendingEventsForUpperProtocol(in: &eventContext)
         }
-        path.destroyFromExternalTest()
         connection.fromExternal { eventContext in
+            connection.destroyAllPaths(in: &eventContext)
             connection.unregisterEventManager(in: &eventContext)
         }
     }

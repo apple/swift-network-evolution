@@ -606,7 +606,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     mutating func assemble(
-        for path: QUICPath,
+        for path: inout QUICPath,
         delayExponent: Int,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
@@ -658,7 +658,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     private mutating func schedulePending(
-        on path: QUICPath,
+        on path: inout QUICPath,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
         ecn: borrowing ECN,
@@ -667,7 +667,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         // N.B.: sent() is called by the connection once the ACK is actually
         // written into a packet.
         let shouldSend = assemble(
-            for: path,
+            for: &path,
             delayExponent: localDelayExponent,
             isAckSet: isAckSet,
             setAckFrame: setAckFrame,
@@ -688,15 +688,16 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         guard let connection else {
             return false
         }
-        let shouldSend = connection.withCurrentPath { path in
-            schedulePending(
-                on: path,
-                isAckSet: isAckSet,
-                setAckFrame: setAckFrame,
-                ecn: ecn,
-                now: now
-            )
-        }
+        let shouldSend =
+            connection.withCurrentPath { (path: inout QUICPath) in
+                schedulePending(
+                    on: &path,
+                    isAckSet: isAckSet,
+                    setAckFrame: setAckFrame,
+                    ecn: ecn,
+                    now: now
+                )
+            } ?? false
         if timerScheduled, let timerID = timerID {
             connection.timer.reschedule(
                 identifier: timerID,
@@ -820,7 +821,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     }
 
     private mutating func processPending(
-        on path: QUICPath,
+        on path: inout QUICPath,
         connectionWindow: Int,
         isAckSet: (PacketNumberSpace) -> Bool,
         setAckFrame: (PacketNumberSpace, consuming QUICFrame, Bool) -> Void,
@@ -852,7 +853,7 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         } else {
             log.datapath("Sending ACKs immediately")
             return schedulePending(
-                on: path,
+                on: &path,
                 isAckSet: isAckSet,
                 setAckFrame: setAckFrame,
                 ecn: ecn,
@@ -873,9 +874,9 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             return false
         }
         guard let connection else { return false }
-        return connection.withCurrentPath { path in
+        let result: Bool? = connection.withCurrentPath { (path: inout QUICPath) in
             processPending(
-                on: path,
+                on: &path,
                 connectionWindow: connectionWindow,
                 isAckSet: isAckSet,
                 setAckFrame: setAckFrame,
@@ -883,6 +884,13 @@ struct Ack: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 in: &eventContext
             )
         }
+        // There is no current path, or it is borrowed. The ACKs are still owed, so make sure a timer will send them.
+        guard let result else {
+            log.datapath("No current path available; scheduling delayed ACK")
+            scheduleDelayedAck(in: &eventContext)
+            return false
+        }
+        return result
     }
 
     mutating func acknowledged(

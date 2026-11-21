@@ -137,15 +137,17 @@ extension XCTestCase {
                 quicPath.assignDCID(peerConnectionID, in: &eventContext)
             }
             _ = try? quicPath.attachLowerProtocol(lowerLinkage.base)
+            let upperLinkage = quicPath.asUpperLinkage()
+            // The path is reached through the connection's paths, so it is in the entries before its
+            // lower protocol is given the linkage that leads back to it
+            connection.installCurrentPath(quicPath)
             try? lowerLinkage.base.invokeAttachUpperProtocol(
-                quicPath.asUpperLinkage(),
+                upperLinkage,
                 remote: remote,
                 local: local,
                 parameters: parameters,
                 path: path
             )
-            connection.currentPath = quicPath
-            connection.multiplexingPaths[quicPath.pathIdentifier] = quicPath
 
             // The peer's transport parameters arrive with its handshake data, so the connection
             // has them before verification finishes.
@@ -199,11 +201,7 @@ extension XCTestCase {
             if !connection.identifier.isNone {
                 connection.destroyFromExternalTest()
             }
-            connection.currentPath = nil
-            for path in connection.multiplexingPaths.values where !path.identifier.isNone {
-                path.destroyFromExternalTest()
-            }
-            connection.multiplexingPaths.removeAll()
+            connection.currentPathID = nil
             stack.storage.releaseHeldInstances()
         }
     }

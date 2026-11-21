@@ -354,7 +354,7 @@ struct CongestionControl: ~Copyable {
 
     mutating func ackEnd(
         rtt: borrowing RTT,
-        path: QUICPath?,
+        pacer: inout Pacer,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -362,14 +362,38 @@ struct CongestionControl: ~Copyable {
     ) {
         switch algorithm {
         case .cubic(var cubic):
-            cubic.ackEnd(state: &state, rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
+            cubic.ackEnd(
+                state: &state,
+                rtt: rtt,
+                pacer: &pacer,
+                mss: mss,
+                packetsLost: packetsLost,
+                now: now,
+                qlog: qlog
+            )
             algorithm = .cubic(algorithm: cubic)
         #if !NETWORK_EMBEDDED
         case .ledbat(var ledbat):
-            ledbat.ackEnd(state: &state, rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
+            ledbat.ackEnd(
+                state: &state,
+                rtt: rtt,
+                pacer: &pacer,
+                mss: mss,
+                packetsLost: packetsLost,
+                now: now,
+                qlog: qlog
+            )
             algorithm = .ledbat(algorithm: ledbat)
         case .prague(var prague):
-            prague.ackEnd(state: &state, rtt: rtt, path: path, mss: mss, packetsLost: packetsLost, now: now, qlog: qlog)
+            prague.ackEnd(
+                state: &state,
+                rtt: rtt,
+                pacer: &pacer,
+                mss: mss,
+                packetsLost: packetsLost,
+                now: now,
+                qlog: qlog
+            )
             algorithm = .prague(algorithm: prague)
         #endif
         }
@@ -377,49 +401,55 @@ struct CongestionControl: ~Copyable {
 
     @discardableResult
     mutating func packetsLost(
-        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
         smoothedRTT: NetworkDuration,
-        now: NetworkClock.Instant
+        now: NetworkClock.Instant,
+        pacer: inout Pacer
     ) -> Bool {
         switch algorithm {
         case .cubic(var cubic):
             let reducedCongestionWindow = cubic.packetLost(
                 state: &state,
-                path: path,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
                 smoothedRTT: smoothedRTT,
                 now: now
             )
+            // The loss has cut the congestion window, so the pacer has to follow it now rather than at the
+            // next ACK, which may be several ACKs away.
+            cubic.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .cubic(algorithm: cubic)
             return reducedCongestionWindow
         #if !NETWORK_EMBEDDED
         case .ledbat(var ledbat):
             let reducedCongestionWindow = ledbat.packetLost(
                 state: &state,
-                path: path,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
                 smoothedRTT: smoothedRTT,
                 now: now
             )
+            // The loss has cut the congestion window, so the pacer has to follow it now rather than at the
+            // next ACK, which may be several ACKs away.
+            ledbat.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .ledbat(algorithm: ledbat)
             return reducedCongestionWindow
         case .prague(var prague):
             let reducedCongestionWindow = prague.packetLost(
                 state: &state,
-                path: path,
                 bytesLost: bytesLost,
                 largestLostSentTime: largestLostSentTime,
                 mss: mss,
                 smoothedRTT: smoothedRTT,
                 now: now
             )
+            // The loss has cut the congestion window, so the pacer has to follow it now rather than at the
+            // next ACK, which may be several ACKs away.
+            prague.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .prague(algorithm: prague)
             return reducedCongestionWindow
         #endif
@@ -427,7 +457,6 @@ struct CongestionControl: ~Copyable {
     }
 
     mutating func processECN(
-        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,
@@ -436,13 +465,13 @@ struct CongestionControl: ~Copyable {
         mss: Int,
         smoothedRTT: NetworkDuration,
         now: NetworkClock.Instant,
+        pacer: inout Pacer,
         qlog: QLog? = nil
     ) {
         switch algorithm {
         case .cubic(var cubic):
             cubic.processECN(
                 state: &state,
-                path: path,
                 ceCount: ceCount,
                 packetsAcked: packetsAcked,
                 largestSentPN: largestSentPN,
@@ -453,12 +482,13 @@ struct CongestionControl: ~Copyable {
                 now: now,
                 qlog: qlog
             )
+            // Congestion experienced shrinks the window, and the pacer has to follow it.
+            cubic.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .cubic(algorithm: cubic)
         #if !NETWORK_EMBEDDED
         case .ledbat(var ledbat):
             ledbat.processECN(
                 state: &state,
-                path: path,
                 ceCount: ceCount,
                 packetsAcked: packetsAcked,
                 largestSentPN: largestSentPN,
@@ -469,11 +499,12 @@ struct CongestionControl: ~Copyable {
                 now: now,
                 qlog: qlog
             )
+            // Congestion experienced shrinks the window, and the pacer has to follow it.
+            ledbat.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .ledbat(algorithm: ledbat)
         case .prague(var prague):
             prague.processECN(
                 state: &state,
-                path: path,
                 ceCount: ceCount,
                 packetsAcked: packetsAcked,
                 largestSentPN: largestSentPN,
@@ -484,6 +515,8 @@ struct CongestionControl: ~Copyable {
                 now: now,
                 qlog: qlog
             )
+            // Congestion experienced shrinks the window, and the pacer has to follow it.
+            prague.updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
             algorithm = .prague(algorithm: prague)
         #endif
         }
@@ -563,7 +596,7 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     mutating func ackEnd(
         state: inout CongestionControlState,
         rtt: borrowing RTT,
-        path: QUICPath?,
+        pacer: inout Pacer,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -575,7 +608,6 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     mutating func enterRecovery(state: inout CongestionControlState, mss: Int, now: NetworkClock.Instant, qlog: QLog?)
     mutating func processECN(
         state: inout CongestionControlState,
-        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,
@@ -588,7 +620,6 @@ protocol CongestionControlProtocol: PrefixedLoggable {
     )
     mutating func packetLost(
         state: inout CongestionControlState,
-        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -597,11 +628,17 @@ protocol CongestionControlProtocol: PrefixedLoggable {
         qlog: QLog?
     ) -> Bool
     mutating func persistentCongestion(state: inout CongestionControlState, mss: Int, qlog: QLog?)
+    /// Sets the pacer's rate and burst size from the current congestion window. Called after anything that
+    /// changes the window, so that the pacer never runs ahead of it.
+    func updatePacerState(state: CongestionControlState, pacer: inout Pacer, smoothedRTT: NetworkDuration)
     func filloutDataTransferSnapshot(state: CongestionControlState, dataTransferSnapshot: inout DataTransferSnapshot)
 }
 
 @available(Network 0.1.0, *)
 extension CongestionControlProtocol {
+    /// Algorithms that do not pace leave the pacer alone.
+    func updatePacerState(state: CongestionControlState, pacer: inout Pacer, smoothedRTT: NetworkDuration) {}
+
     mutating func packetSent(state: inout CongestionControlState, bytesSent: Int, qlog: QLog? = nil) {
         state.packetSent(bytesSent: bytesSent, log: log, qlog: qlog)
     }

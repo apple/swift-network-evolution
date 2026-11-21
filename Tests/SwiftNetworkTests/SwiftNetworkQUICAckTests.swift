@@ -55,7 +55,9 @@ final class SwiftNetworkQUICAckTests: NetTestCase {
                     )
                 }
             }
-            harness.state?.serverInstance.currentPath?.rtt.remoteMaxAckDelay = Self.maxAckDelay
+            _ = harness.state?.serverInstance.withCurrentPath { (path: inout QUICPath) in
+                path.rtt.remoteMaxAckDelay = Self.maxAckDelay
+            }
         }
     }
 

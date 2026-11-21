@@ -118,10 +118,13 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             clientOptions: clientOptions,
             afterData: { harness in
                 harness.onContext {
-                    let path = harness.state?.clientInstance.currentPath
-                    XCTAssertEqual(path?.l4sEnabled, true, "Client path should have L4S enabled")
-                    XCTAssertEqual(path?.congestionControlName, "PRAGUE", "L4S should use Prague")
-                    XCTAssertEqual(path?.pacer.enabled, true, "Prague always paces")
+                    let state = harness.state?.clientInstance.withCurrentPath {
+                        (path: inout QUICPath) -> (l4s: Bool, name: String, paced: Bool) in
+                        (path.l4sEnabled, path.congestionControlName, path.pacer.enabled)
+                    }
+                    XCTAssertEqual(state?.l4s, true, "Client path should have L4S enabled")
+                    XCTAssertEqual(state?.name, "PRAGUE", "L4S should use Prague")
+                    XCTAssertEqual(state?.paced, true, "Prague always paces")
                 }
             }
         )
@@ -143,24 +146,29 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
                         return
                     }
                     let newPath = QUICPath.makeFromExternalTest(parent: connection)
-                    connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+                    let newPathID = newPath.pathIdentifier
+                    try! connection.insertPath(newPath, for: newPathID)
                     connection.fromExternal { eventContext in
                         connection.handlePathChanged(
-                            path: newPath.pathIdentifier,
+                            path: newPathID,
                             event: .available(local: nil, remote: nil, path: nil, parameters: nil),
                             pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: false),
                             in: &eventContext
                         )
                     }
                     XCTAssertNotEqual(
-                        newPath.pathIdentifier,
-                        connection.currentPath?.pathIdentifier,
+                        newPathID,
+                        connection.currentPathID,
                         "Test needs a path other than the initial one"
                     )
-                    XCTAssertEqual(newPath.l4sEnabled, true, "Second path should have L4S enabled")
-                    XCTAssertEqual(newPath.congestionControlName, "PRAGUE", "Second path should use Prague")
-                    XCTAssertEqual(newPath.pacer.enabled, true, "Second path should be paced")
-                    XCTAssertEqual(newPath.pacePackets, true, "Second path should honor the pacing option")
+                    let state = connection.withPath(newPathID) {
+                        (path: inout QUICPath) -> (l4s: Bool, name: String, paced: Bool, pacePackets: Bool) in
+                        (path.l4sEnabled, path.congestionControlName, path.pacer.enabled, path.pacePackets)
+                    }
+                    XCTAssertEqual(state?.l4s, true, "Second path should have L4S enabled")
+                    XCTAssertEqual(state?.name, "PRAGUE", "Second path should use Prague")
+                    XCTAssertEqual(state?.paced, true, "Second path should be paced")
+                    XCTAssertEqual(state?.pacePackets, true, "Second path should honor the pacing option")
                 }
             }
         )
@@ -171,9 +179,12 @@ final class SwiftNetworkQUICECNTests: NetTestCase {
             dataBlock: Array("Hello World!".utf8),
             afterData: { harness in
                 harness.onContext {
-                    let path = harness.state?.clientInstance.currentPath
-                    XCTAssertEqual(path?.l4sEnabled, false, "Client path should not have L4S enabled")
-                    XCTAssertEqual(path?.congestionControlName, "CUBIC", "Default should use CUBIC")
+                    let state = harness.state?.clientInstance.withCurrentPath {
+                        (path: inout QUICPath) -> (l4s: Bool, name: String) in
+                        (path.l4sEnabled, path.congestionControlName)
+                    }
+                    XCTAssertEqual(state?.l4s, false, "Client path should not have L4S enabled")
+                    XCTAssertEqual(state?.name, "CUBIC", "Default should use CUBIC")
                 }
             }
         )

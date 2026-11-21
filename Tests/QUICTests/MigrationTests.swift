@@ -93,7 +93,7 @@ final class MigrationTests: XCTestCase {
     }
 
     override func tearDown() {
-        self.connection.currentPath = nil
+        self.connection.currentPathID = nil
         // The paths built by `makePath` outlive the test body, and migration only destroys the
         // one it migrated away from. Destroying the connection releases whatever is left.
         self.connection.context.onQueue {
@@ -114,7 +114,7 @@ final class MigrationTests: XCTestCase {
         assignCID: Bool = true,
         registerCID: Bool = true,
         injected: Bool = true
-    ) -> QUICPath {
+    ) -> MultiplexingPathIdentifier {
         makePathWithLower(
             dcid: dcid,
             sequenceNumber: sequenceNumber,
@@ -132,7 +132,7 @@ final class MigrationTests: XCTestCase {
         assignCID: Bool = true,
         registerCID: Bool = true,
         injected: Bool = true
-    ) -> (path: QUICPath, lower: DatagramLowerHarness<TestDatagramLinkageFamily>) {
+    ) -> (path: MultiplexingPathIdentifier, lower: DatagramLowerHarness<TestDatagramLinkageFamily>) {
         let (lower, lowerLinkage) = storage.createDatagramLowerHarness(
             identifier: "\(sequenceNumber)",
             context: .implicitContext
@@ -157,15 +157,19 @@ final class MigrationTests: XCTestCase {
         // The path is a framework protocol, so it is bound through the base form of the
         // harness's linkage.
         _ = try? path.attachLowerProtocol(lowerLinkage.base)
+        let upperLinkage = path.asUpperLinkage()
+        // The path is reached through the connection's paths, so it is in the entries before its lower
+        // protocol is given the linkage that leads back to it
+        let pathID = connection.addTestPath(path)
         try? lowerLinkage.base.invokeAttachUpperProtocol(
-            path.asUpperLinkage(),
+            upperLinkage,
             remote: nil,
             local: nil,
             parameters: nil,
             path: nil
         )
         guard registerCID else {
-            return (path, lower)
+            return (pathID, lower)
         }
         try? connection.remoteCIDs.insert(
             sequenceNumber: sequenceNumber,
@@ -175,7 +179,7 @@ final class MigrationTests: XCTestCase {
         if assignCID, let managedCID = connection.remoteCIDs.first(where: { $0.connectionID == dcid }) {
             connection.remoteCIDs.markUsed(managedCID)
         }
-        return (path, lower)
+        return (pathID, lower)
     }
 
     // A path whose lower protocol disconnects (e.g. its netif was destroyed) is marked unavailable, but
@@ -184,14 +188,17 @@ final class MigrationTests: XCTestCase {
         let expectation = XCTestExpectation()
         connection.context.async {
             let (path, lower) = self.makePathWithLower(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
-            self.connection.currentPath = path
-            self.connection.multiplexingPaths[path.pathIdentifier] = path
+            self.connection.currentPathID = path
 
             lower.deliverDisconnectedEvent(error: .posix(ENOTCONN))
 
-            XCTAssertEqual(path.state, .routeUnavailable, "Disconnected path not marked unavailable")
-            XCTAssertEqual(self.connection.currentPath?.identifier, path.identifier, "Current path changed")
-            XCTAssertNotNil(self.connection.multiplexingPaths[path.pathIdentifier], "Current path removed")
+            XCTAssertEqual(
+                self.connection.testPath(path) { $0.state },
+                .routeUnavailable,
+                "Disconnected path not marked unavailable"
+            )
+            XCTAssertEqual(self.connection.currentPathID, path, "Current path changed")
+            XCTAssertTrue(self.connection.hasPath(path), "Current path removed")
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -203,23 +210,24 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             self.connection.disableActiveMigrationFromExternalTest()
             let (path, lower) = self.makePathWithLower(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
-            self.connection.currentPath = path
-            self.connection.multiplexingPaths[path.pathIdentifier] = path
+            self.connection.currentPathID = path
 
             lower.deliverDisconnectedEvent(error: .posix(ENOTCONN))
 
-            XCTAssertEqual(path.state, .routeUnavailable, "Disconnected path not marked unavailable")
-            XCTAssertEqual(self.connection.currentPath?.identifier, path.identifier, "Current path changed")
+            XCTAssertEqual(
+                self.connection.testPath(path) { $0.state },
+                .routeUnavailable,
+                "Disconnected path not marked unavailable"
+            )
+            XCTAssertEqual(self.connection.currentPathID, path, "Current path changed")
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
     }
 
     // Makes `oldPath` current and `newPath` another path, then migrates to `newPath`.
-    private func migrate(from oldPath: QUICPath, to newPath: QUICPath) {
-        connection.currentPath = oldPath
-        connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
-        connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+    private func migrate(from oldPath: MultiplexingPathIdentifier, to newPath: MultiplexingPathIdentifier) {
+        connection.currentPathID = oldPath
         connection.fromExternal { eventContext in
             self.connection.migration.migrate(to: newPath, connection: self.connection, in: &eventContext)
         }
@@ -234,18 +242,16 @@ final class MigrationTests: XCTestCase {
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
             let probedPath = self.makePath(dcid: Self.otherCID, sequenceNumber: 3, validated: false)
-            probedPath.state = .probing
-            self.connection.currentPath = oldPath
-            for path in [oldPath, newPath, probedPath] {
-                self.connection.multiplexingPaths[path.pathIdentifier] = path
-            }
+            self.connection.testPath(probedPath) { $0.state = .probing }
+            self.connection.currentPathID = oldPath
+            for _ in [oldPath, newPath, probedPath] {}
 
             self.peerSentPacket(number: 10, on: newPath)
 
             for (path, cid) in [(oldPath, Self.oldCID), (probedPath, Self.otherCID)] {
-                XCTAssertNil(
-                    self.connection.multiplexingPaths[path.pathIdentifier],
-                    "Path \(path.pathIdentifier) not removed"
+                XCTAssertFalse(
+                    self.connection.hasPath(path),
+                    "Path \(path) not removed"
                 )
                 XCTAssertNil(
                     self.connection.remoteCIDs.retire(connectionID: cid),
@@ -255,13 +261,13 @@ final class MigrationTests: XCTestCase {
 
             // Only the new path remains, and it is now the current path.
             XCTAssertEqual(
-                self.connection.multiplexingPaths.count,
+                self.connection.pathCount,
                 1,
                 "Unexpected path count"
             )
             XCTAssertEqual(
-                self.connection.currentPath?.identifier,
-                newPath.identifier,
+                self.connection.currentPathID,
+                newPath,
                 "Current path not switched"
             )
 
@@ -270,7 +276,7 @@ final class MigrationTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
-    private func peerSentPacket(number: PacketNumber, isNonProbing: Bool = true, on path: QUICPath) {
+    private func peerSentPacket(number: PacketNumber, isNonProbing: Bool = true, on path: MultiplexingPathIdentifier) {
         connection.fromExternal { eventContext in
             self.connection.peerSentPacket(number: number, isNonProbing: isNonProbing, on: path, in: &eventContext)
         }
@@ -284,16 +290,14 @@ final class MigrationTests: XCTestCase {
             self.becomeServer()
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let probedPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false, assignCID: false)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[probedPath.pathIdentifier] = probedPath
-            XCTAssertEqual(probedPath.state, .routeEstablished)
+            self.connection.currentPathID = currentPath
+            XCTAssertEqual(self.connection.testPath(probedPath) { $0.state }, .routeEstablished)
 
             self.peerSentPacket(number: 10, isNonProbing: false, on: probedPath)
 
-            XCTAssertEqual(probedPath.dcid, Self.newCID, "Probed path not given a CID")
-            XCTAssertTrue(probedPath.isProbing, "Probed path not validated")
-            XCTAssertTrue(self.connection.currentPath === currentPath, "Moved on a probing packet")
+            XCTAssertEqual(self.connection.testPath(probedPath) { $0.dcid }, Self.newCID, "Probed path not given a CID")
+            XCTAssertTrue(self.connection.testPath(probedPath) { $0.isProbing }, "Probed path not validated")
+            XCTAssertEqual(self.connection.currentPathID, currentPath, "Moved on a probing packet")
 
             expectation.fulfill()
         }
@@ -309,17 +313,15 @@ final class MigrationTests: XCTestCase {
             let firstPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let peerPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
             let stalePath = self.makePath(dcid: Self.otherCID, sequenceNumber: 3, validated: true)
-            self.connection.currentPath = firstPath
-            for path in [firstPath, peerPath, stalePath] {
-                self.connection.multiplexingPaths[path.pathIdentifier] = path
-            }
+            self.connection.currentPathID = firstPath
+            for _ in [firstPath, peerPath, stalePath] {}
 
             // The peer's path is not validated yet, so the server keeps every other path.
             self.peerSentPacket(number: 10, on: peerPath)
-            XCTAssertTrue(self.connection.currentPath === peerPath, "Did not follow the peer")
+            XCTAssertEqual(self.connection.currentPathID, peerPath, "Did not follow the peer")
 
             self.peerSentPacket(number: 5, on: stalePath)
-            XCTAssertTrue(self.connection.currentPath === peerPath, "Followed an older packet")
+            XCTAssertEqual(self.connection.currentPathID, peerPath, "Followed an older packet")
 
             expectation.fulfill()
         }
@@ -334,18 +336,16 @@ final class MigrationTests: XCTestCase {
             self.becomeServer()
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = oldPath
-            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+            self.connection.currentPathID = oldPath
 
             self.peerSentPacket(number: 10, on: newPath)
-            XCTAssertTrue(newPath.isProbing, "Peer path not validated")
-            XCTAssertTrue(self.connection.currentPath === newPath, "Did not follow the peer")
+            XCTAssertTrue(self.connection.testPath(newPath) { $0.isProbing }, "Peer path not validated")
+            XCTAssertEqual(self.connection.currentPathID, newPath, "Did not follow the peer")
 
             self.peerSentPacket(number: 11, on: oldPath)
-            XCTAssertTrue(self.connection.currentPath === oldPath, "Did not follow the peer back")
-            XCTAssertNil(
-                self.connection.multiplexingPaths[newPath.pathIdentifier],
+            XCTAssertEqual(self.connection.currentPathID, oldPath, "Did not follow the peer back")
+            XCTAssertFalse(
+                self.connection.hasPath(newPath),
                 "Server kept the path the peer left"
             )
 
@@ -363,28 +363,26 @@ final class MigrationTests: XCTestCase {
             self.becomeServer()
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false, assignCID: false)
-            self.connection.currentPath = oldPath
-            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+            self.connection.currentPathID = oldPath
 
             self.peerSentPacket(number: 10, on: newPath)
-            XCTAssertEqual(newPath.dcid, Self.newCID, "Peer path not given a CID")
-            XCTAssertTrue(newPath.isProbing, "Peer path not validated")
-            XCTAssertTrue(self.connection.currentPath === newPath, "Did not move to the peer path")
+            XCTAssertEqual(self.connection.testPath(newPath) { $0.dcid }, Self.newCID, "Peer path not given a CID")
+            XCTAssertTrue(self.connection.testPath(newPath) { $0.isProbing }, "Peer path not validated")
+            XCTAssertEqual(self.connection.currentPathID, newPath, "Did not move to the peer path")
             XCTAssertTrue(
-                self.connection.multiplexingPaths[oldPath.pathIdentifier] === oldPath,
+                self.connection.hasPath(oldPath),
                 "Server dropped the validated path before the new one validated"
             )
 
             let challenge = PendingChallenge(sentTime: self.connection.now)
-            newPath.pendingOutboundChallenges.append(challenge)
+            self.connection.testPath(newPath) { $0.pendingOutboundChallenges.append(challenge) }
             self.connection.fromExternal { eventContext in
-                newPath.handlePathChallengeResponse(challenge.data, in: &eventContext)
+                self.connection.handlePathChallengeResponse(path: newPath, data: challenge.data, in: &eventContext)
             }
 
-            XCTAssertTrue(self.connection.currentPath === newPath, "Left the validated peer path")
-            XCTAssertNil(
-                self.connection.multiplexingPaths[oldPath.pathIdentifier],
+            XCTAssertEqual(self.connection.currentPathID, newPath, "Left the validated peer path")
+            XCTAssertFalse(
+                self.connection.hasPath(oldPath),
                 "Server kept the path it left"
             )
 
@@ -402,12 +400,10 @@ final class MigrationTests: XCTestCase {
             self.becomeServer()
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = oldPath
-            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+            self.connection.currentPathID = oldPath
 
             self.peerSentPacket(number: 10, on: newPath)
-            XCTAssertTrue(self.connection.currentPath === newPath, "Did not follow the peer")
+            XCTAssertEqual(self.connection.currentPathID, newPath, "Did not follow the peer")
 
             // Use up the challenges, then build one more packet, which marks the path unreachable.
             // Following the peer may already have sent the first challenge, at the connection's
@@ -417,18 +413,20 @@ final class MigrationTests: XCTestCase {
                 now = now.advanced(by: .seconds(60))
                 var pendingItems = PendingItems(packetNumberSpace: .applicationData)
                 self.connection.fromExternal { eventContext in
-                    newPath.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    self.connection.testPath(newPath) {
+                        $0.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    }
                 }
             }
-            XCTAssertEqual(newPath.state, .unreachable)
-            XCTAssertTrue(self.connection.currentPath === newPath, "Moved while building a packet")
+            XCTAssertEqual(self.connection.testPath(newPath) { $0.state }, .unreachable)
+            XCTAssertEqual(self.connection.currentPathID, newPath, "Moved while building a packet")
 
             self.connection.fromExternal { eventContext in
                 self.connection.migration.timerFired(at: now, connection: self.connection, in: &eventContext)
             }
-            XCTAssertTrue(self.connection.currentPath === oldPath, "Did not go back to the validated path")
-            XCTAssertNil(
-                self.connection.multiplexingPaths[newPath.pathIdentifier],
+            XCTAssertEqual(self.connection.currentPathID, oldPath, "Did not go back to the validated path")
+            XCTAssertFalse(
+                self.connection.hasPath(newPath),
                 "Server kept the path that failed validation"
             )
 
@@ -449,15 +447,19 @@ final class MigrationTests: XCTestCase {
             }
             let handshakePath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
             let otherPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = handshakePath
-            self.connection.multiplexingPaths[handshakePath.pathIdentifier] = handshakePath
-            self.connection.multiplexingPaths[otherPath.pathIdentifier] = otherPath
-            XCTAssertEqual(handshakePath.state, .cidAssigned)
+            self.connection.currentPathID = handshakePath
+            XCTAssertEqual(self.connection.testPath(handshakePath) { $0.state }, .cidAssigned)
 
             self.confirmHandshake()
 
-            XCTAssertTrue(handshakePath.isValidated, "Handshake path left in \(handshakePath.state)")
-            XCTAssertFalse(otherPath.isValidated, "Validated a path that was not probed")
+            XCTAssertTrue(
+                self.connection.testPath(handshakePath) { $0.isValidated },
+                "Handshake path left in \(self.connection.testPath(handshakePath) { $0.state })"
+            )
+            XCTAssertFalse(
+                self.connection.testPath(otherPath) { $0.isValidated },
+                "Validated a path that was not probed"
+            )
 
             expectation.fulfill()
         }
@@ -479,36 +481,39 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             self.becomeServer(handshakeConfirmed: false)
             let handshakePath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
-            self.connection.currentPath = handshakePath
-            self.connection.multiplexingPaths[handshakePath.pathIdentifier] = handshakePath
+            self.connection.currentPathID = handshakePath
             self.confirmHandshake()
 
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
             self.peerSentPacket(number: 10, on: newPath)
-            XCTAssertTrue(self.connection.currentPath === newPath, "Did not follow the peer")
+            XCTAssertEqual(self.connection.currentPathID, newPath, "Did not follow the peer")
             XCTAssertTrue(
-                self.connection.multiplexingPaths[handshakePath.pathIdentifier] === handshakePath,
+                self.connection.hasPath(handshakePath),
                 "Server dropped the handshake path before the new one validated"
             )
-            XCTAssertTrue(handshakePath.isValidated, "Server probed the handshake path again")
+            XCTAssertTrue(
+                self.connection.testPath(handshakePath) { $0.isValidated },
+                "Server probed the handshake path again"
+            )
 
             var now = self.connection.now
             for _ in 0...QUICPath.maximumPendingChallenges {
                 now = now.advanced(by: .seconds(60))
                 var pendingItems = PendingItems(packetNumberSpace: .applicationData)
                 self.connection.fromExternal { eventContext in
-                    newPath.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    self.connection.testPath(newPath) {
+                        $0.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    }
                 }
             }
-            XCTAssertEqual(newPath.state, .unreachable)
+            XCTAssertEqual(self.connection.testPath(newPath) { $0.state }, .unreachable)
 
             self.connection.fromExternal { eventContext in
                 self.connection.migration.timerFired(at: now, connection: self.connection, in: &eventContext)
             }
-            XCTAssertTrue(self.connection.currentPath === handshakePath, "Did not go back to the handshake path")
-            XCTAssertNil(
-                self.connection.multiplexingPaths[newPath.pathIdentifier],
+            XCTAssertEqual(self.connection.currentPathID, handshakePath, "Did not go back to the handshake path")
+            XCTAssertFalse(
+                self.connection.hasPath(newPath),
                 "Server kept the path that failed validation"
             )
 
@@ -527,36 +532,55 @@ final class MigrationTests: XCTestCase {
             self.becomeServer()
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = oldPath
-            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
-            XCTAssertEqual(oldPath.state, .cidAssigned)
+            self.connection.currentPathID = oldPath
+            XCTAssertEqual(self.connection.testPath(oldPath) { $0.state }, .cidAssigned)
             XCTAssertNil(
-                self.connection.currentPathAmplificationBudget(on: oldPath, alreadySent: 0),
+                self.connection.testPath(oldPath) {
+                    self.connection.currentPathAmplificationBudget(on: $0, alreadySent: 0)
+                },
                 "Handshake path limited"
             )
 
-            newPath.pathStatistics.increment(.rxBytes, by: 100)
-            newPath.pathStatistics.increment(.txBytes, by: 50)
+            self.connection.testPath(newPath) { $0.pathStatistics.increment(.rxBytes, by: 100) }
+            self.connection.testPath(newPath) { $0.pathStatistics.increment(.txBytes, by: 50) }
             XCTAssertNil(
-                self.connection.currentPathAmplificationBudget(on: newPath, alreadySent: 0),
+                self.connection.testPath(newPath) {
+                    self.connection.currentPathAmplificationBudget(on: $0, alreadySent: 0)
+                },
                 "Limited a path that is not current"
             )
 
             self.peerSentPacket(number: 10, on: newPath)
-            XCTAssertTrue(self.connection.currentPath === newPath, "Did not follow the peer")
-            XCTAssertTrue(newPath.isProbing)
-            XCTAssertEqual(self.connection.currentPathAmplificationBudget(on: newPath, alreadySent: 0), 250)
-            XCTAssertEqual(self.connection.currentPathAmplificationBudget(on: newPath, alreadySent: 200), 50)
-            XCTAssertEqual(self.connection.currentPathAmplificationBudget(on: newPath, alreadySent: 400), 0)
+            XCTAssertEqual(self.connection.currentPathID, newPath, "Did not follow the peer")
+            XCTAssertTrue(self.connection.testPath(newPath) { $0.isProbing })
+            XCTAssertEqual(
+                self.connection.testPath(newPath) {
+                    self.connection.currentPathAmplificationBudget(on: $0, alreadySent: 0)
+                },
+                250
+            )
+            XCTAssertEqual(
+                self.connection.testPath(newPath) {
+                    self.connection.currentPathAmplificationBudget(on: $0, alreadySent: 200)
+                },
+                50
+            )
+            XCTAssertEqual(
+                self.connection.testPath(newPath) {
+                    self.connection.currentPathAmplificationBudget(on: $0, alreadySent: 400)
+                },
+                0
+            )
 
             let challenge = PendingChallenge(sentTime: self.connection.now)
-            newPath.pendingOutboundChallenges.append(challenge)
+            self.connection.testPath(newPath) { $0.pendingOutboundChallenges.append(challenge) }
             self.connection.fromExternal { eventContext in
-                newPath.handlePathChallengeResponse(challenge.data, in: &eventContext)
+                self.connection.handlePathChallengeResponse(path: newPath, data: challenge.data, in: &eventContext)
             }
             XCTAssertNil(
-                self.connection.currentPathAmplificationBudget(on: newPath, alreadySent: 0),
+                self.connection.testPath(newPath) {
+                    self.connection.currentPathAmplificationBudget(on: $0, alreadySent: 0)
+                },
                 "Limited a validated path"
             )
 
@@ -569,10 +593,13 @@ final class MigrationTests: XCTestCase {
         let expectation = XCTestExpectation()
         connection.context.async {
             let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
-            path.state = .probing
-            self.connection.currentPath = path
-            self.connection.multiplexingPaths[path.pathIdentifier] = path
-            XCTAssertNil(self.connection.currentPathAmplificationBudget(on: path, alreadySent: 0))
+            self.connection.testPath(path) { $0.state = .probing }
+            self.connection.currentPathID = path
+            XCTAssertNil(
+                self.connection.testPath(path) {
+                    self.connection.currentPathAmplificationBudget(on: $0, alreadySent: 0)
+                }
+            )
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 5.0)
@@ -588,15 +615,15 @@ final class MigrationTests: XCTestCase {
             self.migrate(from: oldPath, to: newPath)
 
             XCTAssertEqual(
-                self.connection.currentPath?.identifier,
-                newPath.identifier,
+                self.connection.currentPathID,
+                newPath,
                 "Current path not switched"
             )
             XCTAssertTrue(
-                self.connection.multiplexingPaths[oldPath.pathIdentifier] === oldPath,
+                self.connection.hasPath(oldPath),
                 "Old path removed"
             )
-            XCTAssertTrue(oldPath.isValidated, "Old path no longer validated")
+            XCTAssertTrue(self.connection.testPath(oldPath) { $0.isValidated }, "Old path no longer validated")
             XCTAssertNotNil(
                 self.connection.remoteCIDs.retire(connectionID: Self.oldCID),
                 "Old path CID retired"
@@ -614,31 +641,29 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = oldPath
-            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
-            newPath.pathIsPrimary = true
+            self.connection.currentPathID = oldPath
+            self.connection.testPath(newPath) { $0.pathIsPrimary = true }
 
             self.connection.fromExternal { eventContext in
                 self.connection.handlePathChanged(
-                    path: newPath.pathIdentifier,
+                    path: newPath,
                     event: .established,
                     pathProperties: MultiplexingPathProperties(isPrimary: true, isInjected: true),
                     in: &eventContext
                 )
             }
-            XCTAssertTrue(newPath.isProbing, "New primary path not probed")
-            XCTAssertTrue(self.connection.currentPath === oldPath, "Migrated before validation")
+            XCTAssertTrue(self.connection.testPath(newPath) { $0.isProbing }, "New primary path not probed")
+            XCTAssertEqual(self.connection.currentPathID, oldPath, "Migrated before validation")
 
             let challenge = PendingChallenge(sentTime: self.connection.now)
-            newPath.pendingOutboundChallenges.append(challenge)
+            self.connection.testPath(newPath) { $0.pendingOutboundChallenges.append(challenge) }
             self.connection.fromExternal { eventContext in
-                newPath.handlePathChallengeResponse(challenge.data, in: &eventContext)
+                self.connection.handlePathChallengeResponse(path: newPath, data: challenge.data, in: &eventContext)
             }
 
-            XCTAssertTrue(self.connection.currentPath === newPath, "Did not migrate to validated primary path")
+            XCTAssertEqual(self.connection.currentPathID, newPath, "Did not migrate to validated primary path")
             XCTAssertTrue(
-                self.connection.multiplexingPaths[oldPath.pathIdentifier] === oldPath,
+                self.connection.hasPath(oldPath),
                 "Validated old path removed"
             )
 
@@ -655,23 +680,28 @@ final class MigrationTests: XCTestCase {
             self.replaceConnection(parameters: nil, handshakeConfirmed: false)
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = oldPath
-            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
-            newPath.pathIsPrimary = true
+            self.connection.currentPathID = oldPath
+            self.connection.testPath(newPath) { $0.pathIsPrimary = true }
 
             self.connection.fromExternal { eventContext in
                 self.connection.handlePathChanged(
-                    path: newPath.pathIdentifier,
+                    path: newPath,
                     event: .established,
                     pathProperties: MultiplexingPathProperties(isPrimary: true, isInjected: true),
                     in: &eventContext
                 )
             }
-            XCTAssertEqual(newPath.state, .cidAssigned, "Path probed during the handshake")
+            XCTAssertEqual(
+                self.connection.testPath(newPath) { $0.state },
+                .cidAssigned,
+                "Path probed during the handshake"
+            )
 
             self.confirmHandshake()
-            XCTAssertTrue(newPath.isProbing, "Path not probed once the handshake was confirmed")
+            XCTAssertTrue(
+                self.connection.testPath(newPath) { $0.isProbing },
+                "Path not probed once the handshake was confirmed"
+            )
 
             expectation.fulfill()
         }
@@ -684,19 +714,24 @@ final class MigrationTests: XCTestCase {
             self.replaceConnection(parameters: nil, handshakeConfirmed: false)
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = oldPath
-            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
-            newPath.pathIsPrimary = true
+            self.connection.currentPathID = oldPath
+            self.connection.testPath(newPath) { $0.pathIsPrimary = true }
 
             self.connection.isHandlingPacket = true
             self.confirmHandshake()
-            XCTAssertEqual(newPath.state, .cidAssigned, "Strategy ran in the middle of the packet")
+            XCTAssertEqual(
+                self.connection.testPath(newPath) { $0.state },
+                .cidAssigned,
+                "Strategy ran in the middle of the packet"
+            )
 
             self.connection.fromExternal { eventContext in
                 self.connection.finishHandlingPacket(in: &eventContext)
             }
-            XCTAssertTrue(newPath.isProbing, "Path not probed once the packet was handled")
+            XCTAssertTrue(
+                self.connection.testPath(newPath) { $0.isProbing },
+                "Path not probed once the packet was handled"
+            )
             XCTAssertFalse(self.connection.isHandlingPacket)
             XCTAssertTrue(self.connection.pendingMigrationEvents.isEmpty)
 
@@ -710,21 +745,19 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let oldPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            newPath.state = .probing
-            self.connection.currentPath = oldPath
-            self.connection.multiplexingPaths[oldPath.pathIdentifier] = oldPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
-            newPath.pathIsPrimary = true
+            self.connection.testPath(newPath) { $0.state = .probing }
+            self.connection.currentPathID = oldPath
+            self.connection.testPath(newPath) { $0.pathIsPrimary = true }
 
             self.connection.isHandlingPacket = true
             self.validate(newPath)
-            XCTAssertTrue(newPath.isValidated)
-            XCTAssertTrue(self.connection.currentPath === oldPath, "Migrated in the middle of the packet")
+            XCTAssertTrue(self.connection.testPath(newPath) { $0.isValidated })
+            XCTAssertEqual(self.connection.currentPathID, oldPath, "Migrated in the middle of the packet")
 
             self.connection.fromExternal { eventContext in
                 self.connection.finishHandlingPacket(in: &eventContext)
             }
-            XCTAssertTrue(self.connection.currentPath === newPath, "Did not migrate once the packet was handled")
+            XCTAssertEqual(self.connection.currentPathID, newPath, "Did not migrate once the packet was handled")
 
             expectation.fulfill()
         }
@@ -736,31 +769,29 @@ final class MigrationTests: XCTestCase {
     private func checkPathThatGoesAwayIsTornDown() {
         let currentPath = makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
         let otherPath = makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
-        connection.currentPath = currentPath
-        connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-        connection.multiplexingPaths[otherPath.pathIdentifier] = otherPath
+        connection.currentPathID = currentPath
 
         connection.fromExternal { eventContext in
             self.connection.handlePathChanged(
-                path: otherPath.pathIdentifier,
+                path: otherPath,
                 event: .unavailable,
                 pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: true),
                 in: &eventContext
             )
         }
-        XCTAssertNil(connection.multiplexingPaths[otherPath.pathIdentifier], "Unavailable path kept")
+        XCTAssertFalse(connection.hasPath(otherPath), "Unavailable path kept")
 
         // The current path is kept even when it goes away, since there is nothing to move to.
         connection.fromExternal { eventContext in
             self.connection.handlePathChanged(
-                path: currentPath.pathIdentifier,
+                path: currentPath,
                 event: .unavailable,
                 pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: true),
                 in: &eventContext
             )
         }
         XCTAssertTrue(
-            connection.multiplexingPaths[currentPath.pathIdentifier] === currentPath,
+            connection.hasPath(currentPath),
             "Current path removed"
         )
     }
@@ -803,22 +834,16 @@ final class MigrationTests: XCTestCase {
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let systemPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true, injected: false)
             let injectedPath = self.makePath(dcid: Self.otherCID, sequenceNumber: 3, validated: true)
-            self.connection.currentPath = currentPath
-            for path in [currentPath, systemPath, injectedPath] {
-                self.connection.multiplexingPaths[path.pathIdentifier] = path
-            }
+            self.connection.currentPathID = currentPath
 
             for path in [systemPath, injectedPath] {
                 self.sendPathEvent(.unavailable, on: path)
             }
 
-            XCTAssertTrue(
-                self.connection.multiplexingPaths[systemPath.pathIdentifier] === systemPath,
-                "System path torn down"
-            )
-            XCTAssertEqual(systemPath.state, .routeUnavailable)
-            XCTAssertNil(self.connection.multiplexingPaths[injectedPath.pathIdentifier], "Injected path kept")
-            XCTAssertTrue(self.connection.currentPath === currentPath)
+            XCTAssertTrue(self.connection.hasPath(systemPath), "System path torn down")
+            XCTAssertEqual(self.connection.testPath(systemPath) { $0.state }, .routeUnavailable)
+            XCTAssertFalse(self.connection.hasPath(injectedPath), "Injected path kept")
+            XCTAssertEqual(self.connection.currentPathID, currentPath)
 
             expectation.fulfill()
         }
@@ -832,29 +857,26 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let systemPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false, injected: false)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[systemPath.pathIdentifier] = systemPath
-            systemPath.state = .probing
+            self.connection.currentPathID = currentPath
+            self.connection.testPath(systemPath) { $0.state = .probing }
 
             var now = self.connection.now
             for _ in 0...QUICPath.maximumPendingChallenges {
                 now = now.advanced(by: .seconds(60))
                 var pendingItems = PendingItems(packetNumberSpace: .applicationData)
                 self.connection.fromExternal { eventContext in
-                    systemPath.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    self.connection.testPath(systemPath) {
+                        $0.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    }
                 }
             }
-            XCTAssertEqual(systemPath.state, .unreachable)
+            XCTAssertEqual(self.connection.testPath(systemPath) { $0.state }, .unreachable)
 
             self.connection.fromExternal { eventContext in
                 self.connection.migration.timerFired(at: now, connection: self.connection, in: &eventContext)
             }
-            XCTAssertTrue(
-                self.connection.multiplexingPaths[systemPath.pathIdentifier] === systemPath,
-                "System path torn down"
-            )
-            XCTAssertTrue(self.connection.currentPath === currentPath)
+            XCTAssertTrue(self.connection.hasPath(systemPath), "System path torn down")
+            XCTAssertEqual(self.connection.currentPathID, currentPath)
 
             expectation.fulfill()
         }
@@ -867,17 +889,12 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let systemPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true, injected: false)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[systemPath.pathIdentifier] = systemPath
-            systemPath.state = .unreachable
+            self.connection.currentPathID = currentPath
+            self.connection.testPath(systemPath) { $0.state = .unreachable }
 
             self.sendPathEvent(.available(local: nil, remote: nil, path: nil, parameters: nil), on: systemPath)
-            XCTAssertEqual(systemPath.state, .unreachable)
-            XCTAssertTrue(
-                self.connection.multiplexingPaths[systemPath.pathIdentifier] === systemPath,
-                "System path torn down"
-            )
+            XCTAssertEqual(self.connection.testPath(systemPath) { $0.state }, .unreachable)
+            XCTAssertTrue(self.connection.hasPath(systemPath), "System path torn down")
 
             expectation.fulfill()
         }
@@ -891,13 +908,11 @@ final class MigrationTests: XCTestCase {
             self.becomeServer()
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let systemPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true, injected: false)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[systemPath.pathIdentifier] = systemPath
+            self.connection.currentPathID = currentPath
 
             self.sendPathEvent(.unavailable, on: systemPath)
-            XCTAssertNil(self.connection.multiplexingPaths[systemPath.pathIdentifier], "System path kept")
-            XCTAssertTrue(self.connection.currentPath === currentPath)
+            XCTAssertFalse(self.connection.hasPath(systemPath), "System path kept")
+            XCTAssertEqual(self.connection.currentPathID, currentPath)
 
             expectation.fulfill()
         }
@@ -908,10 +923,18 @@ final class MigrationTests: XCTestCase {
         let expectation = XCTestExpectation()
         connection.context.async {
             let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true, injected: false)
-            XCTAssertEqual(path.pathProperties, MultiplexingPathProperties(isPrimary: false, isInjected: false))
-            path.pathIsPrimary = true
-            path.pathIsInjected = true
-            XCTAssertEqual(path.pathProperties, MultiplexingPathProperties(isPrimary: true, isInjected: true))
+            XCTAssertEqual(
+                self.connection.testPath(path) { $0.pathProperties },
+                MultiplexingPathProperties(isPrimary: false, isInjected: false)
+            )
+            self.connection.testPath(path) { (path: inout QUICPath) in
+                path.pathIsPrimary = true
+                path.pathIsInjected = true
+            }
+            XCTAssertEqual(
+                self.connection.testPath(path) { $0.pathProperties },
+                MultiplexingPathProperties(isPrimary: true, isInjected: true)
+            )
 
             expectation.fulfill()
         }
@@ -919,12 +942,13 @@ final class MigrationTests: XCTestCase {
     }
 
     // Reports `event` on `path` the way the path itself does.
-    private func sendPathEvent(_ event: MultiplexingPathEvent, on path: QUICPath) {
+    private func sendPathEvent(_ event: MultiplexingPathEvent, on path: MultiplexingPathIdentifier) {
+        let properties = connection.testPath(path) { $0.pathProperties }
         connection.fromExternal { eventContext in
             self.connection.handlePathChanged(
-                path: path.pathIdentifier,
+                path: path,
                 event: event,
-                pathProperties: path.pathProperties,
+                pathProperties: properties,
                 in: &eventContext
             )
         }
@@ -939,31 +963,29 @@ final class MigrationTests: XCTestCase {
             self.becomeServer()
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let failedPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            failedPath.state = .probing
-            failedPath.state = .unreachable
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[failedPath.pathIdentifier] = failedPath
+            self.connection.testPath(failedPath) { $0.state = .probing }
+            self.connection.testPath(failedPath) { $0.state = .unreachable }
+            self.connection.currentPathID = currentPath
 
-            self.connection.receivingPathID = failedPath.pathIdentifier
+            self.connection.receivingPathID = failedPath
             self.peerSentPacket(number: 10, on: failedPath)
             XCTAssertTrue(
-                self.connection.multiplexingPaths[failedPath.pathIdentifier] === failedPath,
+                self.connection.hasPath(failedPath),
                 "Path torn down while its datagrams were being handled"
             )
-            XCTAssertEqual(self.connection.deferredTeardownPathIDs, [failedPath.pathIdentifier])
-            XCTAssertTrue(self.connection.currentPath === currentPath, "Moved to an unusable path")
+            XCTAssertEqual(self.connection.deferredTeardownPathIDs, [failedPath])
+            XCTAssertEqual(self.connection.currentPathID, currentPath, "Moved to an unusable path")
 
             self.connection.fromExternal { eventContext in
                 self.connection.finishReceiving(in: &eventContext)
             }
             XCTAssertNil(self.connection.receivingPathID)
             XCTAssertTrue(self.connection.deferredTeardownPathIDs.isEmpty)
-            XCTAssertNil(
-                self.connection.multiplexingPaths[failedPath.pathIdentifier],
+            XCTAssertFalse(
+                self.connection.hasPath(failedPath),
                 "Unusable path kept after its datagrams were handled"
             )
-            XCTAssertTrue(self.connection.currentPath === currentPath, "Current path changed")
+            XCTAssertEqual(self.connection.currentPathID, currentPath, "Current path changed")
 
             expectation.fulfill()
         }
@@ -972,17 +994,18 @@ final class MigrationTests: XCTestCase {
 
     // Makes `currentPath` current with the peer on it, and asks for every other path to be torn
     // down while datagrams received on `receivingPath` are being handled.
-    private func deferTearingDown(_ receivingPath: QUICPath, keeping currentPath: QUICPath) {
-        connection.currentPath = currentPath
-        connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-        connection.multiplexingPaths[receivingPath.pathIdentifier] = receivingPath
-        connection.receivingPathID = receivingPath.pathIdentifier
+    private func deferTearingDown(
+        _ receivingPath: MultiplexingPathIdentifier,
+        keeping currentPath: MultiplexingPathIdentifier
+    ) {
+        connection.currentPathID = currentPath
+        connection.receivingPathID = receivingPath
         peerSentPacket(number: 10, on: currentPath)
         XCTAssertTrue(
-            connection.multiplexingPaths[receivingPath.pathIdentifier] === receivingPath,
+            connection.hasPath(receivingPath),
             "Path torn down while its datagrams were being handled"
         )
-        XCTAssertEqual(connection.deferredTeardownPathIDs, [receivingPath.pathIdentifier])
+        XCTAssertEqual(connection.deferredTeardownPathIDs, [receivingPath])
     }
 
     // A path the server no longer wants is torn down once its datagrams have been handled, even
@@ -998,8 +1021,8 @@ final class MigrationTests: XCTestCase {
             self.connection.fromExternal { eventContext in
                 self.connection.finishReceiving(in: &eventContext)
             }
-            XCTAssertNil(self.connection.multiplexingPaths[otherPath.pathIdentifier], "Unwanted path kept")
-            XCTAssertTrue(self.connection.currentPath === currentPath, "Current path changed")
+            XCTAssertFalse(self.connection.hasPath(otherPath), "Unwanted path kept")
+            XCTAssertEqual(self.connection.currentPathID, currentPath, "Current path changed")
 
             expectation.fulfill()
         }
@@ -1017,17 +1040,17 @@ final class MigrationTests: XCTestCase {
             self.deferTearingDown(otherPath, keeping: currentPath)
 
             self.peerSentPacket(number: 11, on: otherPath)
-            XCTAssertTrue(self.connection.currentPath === otherPath, "Did not follow the peer")
+            XCTAssertEqual(self.connection.currentPathID, otherPath, "Did not follow the peer")
 
             self.connection.fromExternal { eventContext in
                 self.connection.finishReceiving(in: &eventContext)
             }
             XCTAssertTrue(
-                self.connection.multiplexingPaths[otherPath.pathIdentifier] === otherPath,
+                self.connection.hasPath(otherPath),
                 "Current path torn down"
             )
-            XCTAssertTrue(self.connection.currentPath === otherPath, "Current path changed")
-            XCTAssertNil(self.connection.multiplexingPaths[currentPath.pathIdentifier], "Path the peer left kept")
+            XCTAssertEqual(self.connection.currentPathID, otherPath, "Current path changed")
+            XCTAssertFalse(self.connection.hasPath(currentPath), "Path the peer left kept")
 
             expectation.fulfill()
         }
@@ -1051,17 +1074,21 @@ final class MigrationTests: XCTestCase {
             self.deferTearingDown(otherPath, keeping: currentPath)
 
             self.peerSentPacket(number: 11, on: otherPath)
-            XCTAssertEqual(otherPath.state, .routeEstablished, "Path got a CID the peer never issued")
-            XCTAssertTrue(self.connection.currentPath === currentPath)
+            XCTAssertEqual(
+                self.connection.testPath(otherPath) { $0.state },
+                .routeEstablished,
+                "Path got a CID the peer never issued"
+            )
+            XCTAssertEqual(self.connection.currentPathID, currentPath)
 
             self.connection.fromExternal { eventContext in
                 self.connection.finishReceiving(in: &eventContext)
             }
             XCTAssertTrue(
-                self.connection.multiplexingPaths[otherPath.pathIdentifier] === otherPath,
+                self.connection.hasPath(otherPath),
                 "Path the peer moved to torn down"
             )
-            XCTAssertTrue(self.connection.currentPath === currentPath, "Current path changed")
+            XCTAssertEqual(self.connection.currentPathID, currentPath, "Current path changed")
 
             expectation.fulfill()
         }
@@ -1074,18 +1101,17 @@ final class MigrationTests: XCTestCase {
         let expectation = XCTestExpectation()
         connection.context.async {
             let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
-            self.connection.multiplexingPaths[path.pathIdentifier] = path
-            self.connection.currentPath = nil
+            self.connection.currentPathID = nil
 
             self.connection.fromExternal { eventContext in
                 self.connection.handlePathChanged(
-                    path: path.pathIdentifier,
+                    path: path,
                     event: .unavailable,
                     pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: true),
                     in: &eventContext
                 )
             }
-            XCTAssertTrue(self.connection.multiplexingPaths[path.pathIdentifier] === path, "Path torn down")
+            XCTAssertTrue(self.connection.hasPath(path), "Path torn down")
 
             expectation.fulfill()
         }
@@ -1101,17 +1127,19 @@ final class MigrationTests: XCTestCase {
             self.becomeServer()
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false, assignCID: false)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
+            self.connection.currentPathID = currentPath
             self.connection.state = .closing
 
             self.peerSentPacket(number: 10, on: newPath)
 
-            XCTAssertTrue(self.connection.currentPath === currentPath, "Migrated while closing")
-            XCTAssertEqual(newPath.state, .routeEstablished, "Path probed while closing")
-            XCTAssertTrue(self.connection.multiplexingPaths[currentPath.pathIdentifier] === currentPath)
-            XCTAssertTrue(self.connection.multiplexingPaths[newPath.pathIdentifier] === newPath)
+            XCTAssertEqual(self.connection.currentPathID, currentPath, "Migrated while closing")
+            XCTAssertEqual(
+                self.connection.testPath(newPath) { $0.state },
+                .routeEstablished,
+                "Path probed while closing"
+            )
+            XCTAssertTrue(self.connection.hasPath(currentPath))
+            XCTAssertTrue(self.connection.hasPath(newPath))
 
             expectation.fulfill()
         }
@@ -1125,22 +1153,20 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let newPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[newPath.pathIdentifier] = newPath
-            newPath.pathIsPrimary = true
+            self.connection.currentPathID = currentPath
+            self.connection.testPath(newPath) { $0.pathIsPrimary = true }
             self.connection.state = .draining
 
             self.connection.fromExternal { eventContext in
                 self.connection.handlePathChanged(
-                    path: newPath.pathIdentifier,
+                    path: newPath,
                     event: .established,
                     pathProperties: MultiplexingPathProperties(isPrimary: true, isInjected: true),
                     in: &eventContext
                 )
             }
 
-            XCTAssertTrue(self.connection.currentPath === currentPath, "Migrated while draining")
+            XCTAssertEqual(self.connection.currentPathID, currentPath, "Migrated while draining")
 
             expectation.fulfill()
         }
@@ -1154,22 +1180,20 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let lostPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let standbyPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
-            self.connection.currentPath = lostPath
-            self.connection.multiplexingPaths[lostPath.pathIdentifier] = lostPath
-            self.connection.multiplexingPaths[standbyPath.pathIdentifier] = standbyPath
-            standbyPath.pathIsPrimary = true
+            self.connection.currentPathID = lostPath
+            self.connection.testPath(standbyPath) { $0.pathIsPrimary = true }
 
             self.connection.fromExternal { eventContext in
                 self.connection.handlePathChanged(
-                    path: lostPath.pathIdentifier,
+                    path: lostPath,
                     event: .unavailable,
                     pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: true),
                     in: &eventContext
                 )
             }
 
-            XCTAssertTrue(self.connection.currentPath === standbyPath, "Did not fail over")
-            XCTAssertNil(self.connection.multiplexingPaths[lostPath.pathIdentifier], "Lost path kept")
+            XCTAssertEqual(self.connection.currentPathID, standbyPath, "Did not fail over")
+            XCTAssertFalse(self.connection.hasPath(lostPath), "Lost path kept")
 
             expectation.fulfill()
         }
@@ -1184,17 +1208,21 @@ final class MigrationTests: XCTestCase {
         let expectation = XCTestExpectation()
         connection.context.async {
             let path = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
-            self.connection.currentPath = path
-            self.connection.multiplexingPaths[path.pathIdentifier] = path
-            path.state = .probing
+            self.connection.currentPathID = path
+            self.connection.testPath(path) { $0.state = .probing }
 
             // Send the first challenge, which sets the next challenge deadline and arms the timer.
             let base = NetworkClock.Instant.testBase
             var pendingItems = PendingItems(packetNumberSpace: .applicationData)
             self.connection.fromExternal { eventContext in
-                path.addPathChallenge(to: &pendingItems, now: base, in: &eventContext)
+                self.connection.testPath(path) {
+                    $0.addPathChallenge(to: &pendingItems, now: base, in: &eventContext)
+                    self.connection.forwardMigrationTimerResetRequest(from: &$0)
+                }
+                // The path asks for the migration timer to be armed once it is no longer borrowed
+                self.connection.resetMigrationTimerIfPending(in: &eventContext)
             }
-            guard let nextChallengeTime = path.nextChallengeTime else {
+            guard let nextChallengeTime = (self.connection.testPath(path) { $0.nextChallengeTime }) else {
                 XCTFail("First challenge did not schedule a follow-up")
                 expectation.fulfill()
                 return
@@ -1222,6 +1250,70 @@ final class MigrationTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
+    // A reset of the migration timer after a packet sends the challenges that are due. If that is more than a
+    // probing path may send, the path becomes unreachable, and when it is the current path the
+    // strategy has to be told, or the connection stays on a dead path with the timer disarmed.
+    func testTimerResetAfterAPacketReportsAPathItMadeUnreachable() {
+        let expectation = XCTestExpectation()
+        connection.context.async {
+            let deadPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: false)
+            let standbyPath = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: true)
+            self.connection.currentPathID = deadPath
+            self.connection.testPath(deadPath) { $0.state = .probing }
+            self.connection.testPath(standbyPath) { $0.pathIsPrimary = true }
+
+            // Use up every challenge the path may send, and then ask for one more, which is what the send
+            // inside the timer reset does: the path gives up and becomes unreachable. The send builds
+            // packets, where the strategy cannot run, so nothing has reported it.
+            var now = self.connection.now
+            for _ in 0...QUICPath.maximumPendingChallenges {
+                now = now.advanced(by: .seconds(60))
+                var pendingItems = PendingItems(packetNumberSpace: .applicationData)
+                self.connection.fromExternal { eventContext in
+                    self.connection.testPath(deadPath) {
+                        $0.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    }
+                }
+            }
+            XCTAssertEqual(self.connection.testPath(deadPath) { $0.state }, .unreachable)
+            XCTAssertEqual(self.connection.currentPathID, deadPath)
+
+            // The timer reset that follows a packet has to report the dead path
+            now = now.advanced(by: .seconds(60))
+            self.connection.migrationWork.migrationTimerResetPending = true
+            self.connection.migrationWork.migrationTimerResetNow = now
+            self.connection.fromExternal { eventContext in
+                self.connection.resetMigrationTimerIfPending(in: &eventContext)
+            }
+
+            XCTAssertEqual(
+                self.connection.currentPathID,
+                standbyPath,
+                "Stayed on a path the timer reset made unreachable"
+            )
+
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    // What a packet from the peer says about where the peer is: the newest one counts, an older one does not
+    func testNotePeerPacketReportsWhereThePeerIs() {
+        var migration = Migration(isServer: true)
+        XCTAssertEqual(
+            migration.notePeerPacket(number: 5, on: 1),
+            .peerMovedToPath,
+            "The first packet puts the peer on a path"
+        )
+        XCTAssertEqual(migration.notePeerPacket(number: 6, on: 1), .peerStayedOnPath)
+        XCTAssertEqual(migration.notePeerPacket(number: 7, on: 2), .peerMovedToPath)
+        XCTAssertEqual(migration.peerPathID, 2)
+        // An older packet from the old path does not move the peer back
+        XCTAssertEqual(migration.notePeerPacket(number: 6, on: 1), .olderThanLatest)
+        XCTAssertEqual(migration.notePeerPacket(number: 7, on: 1), .olderThanLatest, "The same number is not newer")
+        XCTAssertEqual(migration.peerPathID, 2)
+    }
+
     // MARK: - Connection IDs
 
     static func cid(_ value: UInt8) -> QUICConnectionID {
@@ -1246,11 +1338,11 @@ final class MigrationTests: XCTestCase {
         return result
     }
 
-    private func validate(_ path: QUICPath) {
+    private func validate(_ path: MultiplexingPathIdentifier) {
         let challenge = PendingChallenge(sentTime: connection.now)
-        path.pendingOutboundChallenges.append(challenge)
+        connection.testPath(path) { $0.pendingOutboundChallenges.append(challenge) }
         connection.fromExternal { eventContext in
-            path.handlePathChallengeResponse(challenge.data, in: &eventContext)
+            self.connection.handlePathChallengeResponse(path: path, data: challenge.data, in: &eventContext)
         }
     }
 
@@ -1274,26 +1366,26 @@ final class MigrationTests: XCTestCase {
                 let cid = Self.cid(UInt8(sequence))
                 let path = self.makePath(dcid: cid, sequenceNumber: sequence, validated: false)
                 if transition.from != .cidAssigned {
-                    path.state = .probing
+                    self.connection.testPath(path) { $0.state = .probing }
                 }
                 if transition.from == .validated {
-                    path.state = .validated
+                    self.connection.testPath(path) { $0.state = .validated }
                 }
-                XCTAssertEqual(path.state, transition.from)
+                XCTAssertEqual(self.connection.testPath(path) { $0.state }, transition.from)
                 XCTAssertTrue(self.queuedRetirements.isEmpty, "Retired a CID while holding it")
 
-                path.state = transition.to
+                self.connection.testPath(path) { $0.state = transition.to }
                 let label = "\(transition.from) -> \(transition.to)"
                 XCTAssertEqual(self.queuedRetirements, [sequence], label)
-                XCTAssertNil(path.dcid, label)
+                XCTAssertNil(self.connection.testPath(path) { $0.dcid }, label)
                 XCTAssertNil(self.connection.remoteCIDs.find(connectionID: cid), label)
 
                 // The CID is gone, so leaving the next state retires nothing more.
-                path.state = .routeUnavailable
+                self.connection.testPath(path) { $0.state = .routeUnavailable }
                 XCTAssertEqual(self.queuedRetirements, [sequence], label)
 
                 self.connection.queuedRetireConnectionIDSequences.removeAll()
-                path.destroyFromExternalTest()
+                if let removed = self.connection.removePath(path) { removed.destroyFromExternalTest() }
             }
             expectation.fulfill()
         }
@@ -1307,20 +1399,20 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let currentPath = self.makePath(dcid: Self.oldCID, sequenceNumber: 1, validated: true)
             let path = self.makePath(dcid: Self.newCID, sequenceNumber: 2, validated: false)
-            self.connection.currentPath = currentPath
-            self.connection.multiplexingPaths[currentPath.pathIdentifier] = currentPath
-            self.connection.multiplexingPaths[path.pathIdentifier] = path
-            path.state = .probing
+            self.connection.currentPathID = currentPath
+            self.connection.testPath(path) { $0.state = .probing }
 
             var now = self.connection.now
             for _ in 0...QUICPath.maximumPendingChallenges {
                 now = now.advanced(by: .seconds(60))
                 var pendingItems = PendingItems(packetNumberSpace: .applicationData)
                 self.connection.fromExternal { eventContext in
-                    path.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    self.connection.testPath(path) {
+                        $0.addPathChallenge(to: &pendingItems, now: now, in: &eventContext)
+                    }
                 }
             }
-            XCTAssertEqual(path.state, .unreachable)
+            XCTAssertEqual(self.connection.testPath(path) { $0.state }, .unreachable)
             XCTAssertEqual(self.queuedRetirements, [2])
             XCTAssertNil(self.connection.remoteCIDs.find(connectionID: Self.newCID))
 
@@ -1342,21 +1434,19 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let wifi = self.makePath(dcid: Self.cid(1), sequenceNumber: 1, validated: true)
             let cell = self.makePath(dcid: Self.cid(2), sequenceNumber: 2, validated: true)
-            self.connection.currentPath = wifi
-            self.connection.multiplexingPaths[wifi.pathIdentifier] = wifi
-            self.connection.multiplexingPaths[cell.pathIdentifier] = cell
+            self.connection.currentPathID = wifi
 
             for (to, from) in [(cell, wifi), (wifi, cell), (cell, wifi), (wifi, cell)] {
-                from.pathIsPrimary = false
-                to.pathIsPrimary = true
+                self.connection.testPath(from) { $0.pathIsPrimary = false }
+                self.connection.testPath(to) { $0.pathIsPrimary = true }
                 self.connection.fromExternal { eventContext in
-                    self.connection.runMigrationStrategy(events: [.pathChanged(to.pathIdentifier)], in: &eventContext)
+                    self.connection.runMigrationStrategy(events: [.pathChanged(to)], in: &eventContext)
                 }
-                XCTAssertTrue(self.connection.currentPath === to, "Did not move to path \(to.pathIdentifier)")
-                XCTAssertTrue(from.isValidated, "Path left behind lost its validation")
+                XCTAssertEqual(self.connection.currentPathID, to, "Did not move to path \(to)")
+                XCTAssertTrue(self.connection.testPath(from) { $0.isValidated }, "Path left behind lost its validation")
             }
-            XCTAssertEqual(wifi.dcid, Self.cid(1))
-            XCTAssertEqual(cell.dcid, Self.cid(2))
+            XCTAssertEqual(self.connection.testPath(wifi) { $0.dcid }, Self.cid(1))
+            XCTAssertEqual(self.connection.testPath(cell) { $0.dcid }, Self.cid(2))
             XCTAssertTrue(self.queuedRetirements.isEmpty, "Retired a CID")
             XCTAssertEqual(self.connection.remoteCIDs.count, 2)
 
@@ -1379,40 +1469,46 @@ final class MigrationTests: XCTestCase {
                 assignCID: false,
                 registerCID: false
             )
-            self.connection.currentPath = wifi
-            for path in [wifi, cell, newWifi] {
-                self.connection.multiplexingPaths[path.pathIdentifier] = path
-            }
-            wifi.pathIsPrimary = false
-            newWifi.pathIsPrimary = true
+            self.connection.currentPathID = wifi
+            for _ in [wifi, cell, newWifi] {}
+            self.connection.testPath(wifi) { $0.pathIsPrimary = false }
+            self.connection.testPath(newWifi) { $0.pathIsPrimary = true }
 
             self.connection.fromExternal { eventContext in
-                self.connection.runMigrationStrategy(events: [.pathChanged(newWifi.pathIdentifier)], in: &eventContext)
+                self.connection.runMigrationStrategy(events: [.pathChanged(newWifi)], in: &eventContext)
             }
-            XCTAssertEqual(newWifi.state, .routeEstablished, "Path got a CID the peer never issued")
-            XCTAssertTrue(self.connection.currentPath === wifi)
+            XCTAssertEqual(
+                self.connection.testPath(newWifi) { $0.state },
+                .routeEstablished,
+                "Path got a CID the peer never issued"
+            )
+            XCTAssertEqual(self.connection.currentPathID, wifi)
 
             self.connection.fromExternal { eventContext in
                 self.connection.handlePathChanged(
-                    path: wifi.pathIdentifier,
+                    path: wifi,
                     event: .unavailable,
                     pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: true),
                     in: &eventContext
                 )
             }
             XCTAssertEqual(self.queuedRetirements, [1], "Lost path did not give up its CID")
-            XCTAssertEqual(newWifi.state, .routeEstablished)
+            XCTAssertEqual(self.connection.testPath(newWifi) { $0.state }, .routeEstablished)
 
             // The peer replaces the retired CID.
             XCTAssertTrue(self.newConnectionID(sequence: 4))
-            XCTAssertEqual(newWifi.dcid, Self.cid(4), "Waiting path did not get the new CID")
-            XCTAssertTrue(newWifi.isProbing, "Waiting path not probed")
+            XCTAssertEqual(
+                self.connection.testPath(newWifi) { $0.dcid },
+                Self.cid(4),
+                "Waiting path did not get the new CID"
+            )
+            XCTAssertTrue(self.connection.testPath(newWifi) { $0.isProbing }, "Waiting path not probed")
 
             self.validate(newWifi)
-            XCTAssertTrue(self.connection.currentPath === newWifi, "Did not move to the new primary path")
-            XCTAssertNil(self.connection.multiplexingPaths[wifi.pathIdentifier], "Lost path kept")
-            XCTAssertTrue(cell.isValidated, "Kept path lost its validation")
-            XCTAssertEqual(cell.dcid, Self.cid(2))
+            XCTAssertEqual(self.connection.currentPathID, newWifi, "Did not move to the new primary path")
+            XCTAssertFalse(self.connection.hasPath(wifi), "Lost path kept")
+            XCTAssertTrue(self.connection.testPath(cell) { $0.isValidated }, "Kept path lost its validation")
+            XCTAssertEqual(self.connection.testPath(cell) { $0.dcid }, Self.cid(2))
 
             expectation.fulfill()
         }
@@ -1431,18 +1527,26 @@ final class MigrationTests: XCTestCase {
                 connectionID: Self.cid(3),
                 token: QUICStatelessResetToken(Array(repeating: 3, count: 16))!
             )
-            self.connection.currentPath = wifi
-            self.connection.multiplexingPaths[wifi.pathIdentifier] = wifi
-            self.connection.multiplexingPaths[cell.pathIdentifier] = cell
+            self.connection.currentPathID = wifi
 
             XCTAssertTrue(self.newConnectionID(sequence: 4, retirePriorTo: 3))
 
             let newCIDs = [Self.cid(3), Self.cid(4)]
-            XCTAssertTrue(wifi.isValidated)
-            XCTAssertTrue(cell.isValidated, "Kept path lost its validation")
-            XCTAssertTrue(newCIDs.contains { $0 == wifi.dcid }, "Current path kept a retired CID")
-            XCTAssertTrue(newCIDs.contains { $0 == cell.dcid }, "Kept path kept a retired CID")
-            XCTAssertNotEqual(wifi.dcid, cell.dcid, "Two paths share a CID")
+            XCTAssertTrue(self.connection.testPath(wifi) { $0.isValidated })
+            XCTAssertTrue(self.connection.testPath(cell) { $0.isValidated }, "Kept path lost its validation")
+            XCTAssertTrue(
+                newCIDs.contains { $0 == self.connection.testPath(wifi) { $0.dcid } },
+                "Current path kept a retired CID"
+            )
+            XCTAssertTrue(
+                newCIDs.contains { $0 == self.connection.testPath(cell) { $0.dcid } },
+                "Kept path kept a retired CID"
+            )
+            XCTAssertNotEqual(
+                self.connection.testPath(wifi) { $0.dcid },
+                self.connection.testPath(cell) { $0.dcid },
+                "Two paths share a CID"
+            )
             XCTAssertTrue(self.queuedRetirements.isEmpty, "Retired a CID the peer already retired")
 
             expectation.fulfill()
@@ -1457,27 +1561,33 @@ final class MigrationTests: XCTestCase {
         connection.context.async {
             let wifi = self.makePath(dcid: Self.cid(1), sequenceNumber: 1, validated: true)
             let cell = self.makePath(dcid: Self.cid(2), sequenceNumber: 2, validated: true)
-            self.connection.currentPath = wifi
-            self.connection.multiplexingPaths[wifi.pathIdentifier] = wifi
-            self.connection.multiplexingPaths[cell.pathIdentifier] = cell
+            self.connection.currentPathID = wifi
 
             XCTAssertTrue(self.newConnectionID(sequence: 3, retirePriorTo: 3))
 
-            XCTAssertEqual(wifi.dcid, Self.cid(3), "Current path not given the new CID")
-            XCTAssertEqual(cell.state, .routeEstablished)
-            XCTAssertNil(cell.dcid)
+            XCTAssertEqual(
+                self.connection.testPath(wifi) { $0.dcid },
+                Self.cid(3),
+                "Current path not given the new CID"
+            )
+            XCTAssertEqual(self.connection.testPath(cell) { $0.state }, .routeEstablished)
+            XCTAssertNil(self.connection.testPath(cell) { $0.dcid })
             XCTAssertTrue(self.queuedRetirements.isEmpty, "Retired a CID the peer already retired")
 
             // The next CID goes to it. It is not primary, so the client does not probe it.
             XCTAssertTrue(self.newConnectionID(sequence: 4))
-            XCTAssertEqual(cell.state, .routeEstablished, "Client brought up a path that is not primary")
-            cell.pathIsPrimary = true
-            wifi.pathIsPrimary = false
+            XCTAssertEqual(
+                self.connection.testPath(cell) { $0.state },
+                .routeEstablished,
+                "Client brought up a path that is not primary"
+            )
+            self.connection.testPath(cell) { $0.pathIsPrimary = true }
+            self.connection.testPath(wifi) { $0.pathIsPrimary = false }
             self.connection.fromExternal { eventContext in
-                self.connection.runMigrationStrategy(events: [.pathChanged(cell.pathIdentifier)], in: &eventContext)
+                self.connection.runMigrationStrategy(events: [.pathChanged(cell)], in: &eventContext)
             }
-            XCTAssertEqual(cell.dcid, Self.cid(4))
-            XCTAssertTrue(cell.isProbing)
+            XCTAssertEqual(self.connection.testPath(cell) { $0.dcid }, Self.cid(4))
+            XCTAssertTrue(self.connection.testPath(cell) { $0.isProbing })
 
             expectation.fulfill()
         }

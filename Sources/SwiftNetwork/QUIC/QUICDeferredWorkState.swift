@@ -14,10 +14,10 @@
 
 #if !NETWORK_NO_SWIFT_QUIC
 
-/// Decides when the connection may do work that has to look at its flow tables or its send path,
-/// and remembers the work that had to defer.
+/// Decides when the connection may do work that has to look at its flow tables, its paths or its send
+/// path, and remembers the work that had to defer.
 ///
-/// This state machine answers two questions:
+/// This state machine answers three questions:
 ///
 /// 1.   Is a stream or datagram flow borrowed from its flow table? A flow lives inline in the
 ///    table, so working on one means borrowing it for the duration of a closure, and the table is
@@ -27,6 +27,9 @@
 /// 2.   Is the send path active? `sendFrames` and the code that claims the send path around it
 ///    (the timers, `sendFramesFromRecovery`, receiving an ACK) are not re-entrant. A send that
 ///    comes in while one is running has to wait for it to finish.
+/// 3.   Is a path borrowed for work? A path lives in the connection's path entries, and a long piece of work
+///    on one (probing the path MTU, a probe timeout) borrows it there and passes it along. A send needs
+///    the current path, so it cannot run while any path is being worked on.
 ///
 /// Either one blocks a send, so they live here together:
 ///
@@ -50,7 +53,7 @@
 /// The connection handles replaying the work, in
 /// `runDeferredStreamWork` and `replayDeferredSends`.
 ///
-/// The state is two bytes, so each check or transition is one small access.
+/// The state is three bytes, so each check or transition is one small access.
 @available(Network 0.1.0, *)
 struct QUICDeferredWorkState {
     // The bits of `status`: which send blockers are set and which requests are waiting.
@@ -104,7 +107,7 @@ struct QUICDeferredWorkState {
 
     /// A send on one path that had to wait.
     struct PathSend {
-        let path: QUICPath
+        let path: MultiplexingPathIdentifier
         var ignoreCongestionWindow: Bool
         var retransmission: Bool
     }
@@ -128,6 +131,9 @@ struct QUICDeferredWorkState {
     }
 
     private var status: Status = []
+    // How many paths are being worked on. A count rather than a flag because work on one
+    // path can start work on another.
+    private var pathCheckouts: UInt8 = 0
     private var pathSends: [MultiplexingPathIdentifier: PathSend] = [:]
 
     // MARK: Send blockers
@@ -144,10 +150,28 @@ struct QUICDeferredWorkState {
         status.contains(.sendActive)
     }
 
-    /// Whether a send has to wait, because a flow is borrowed or the send path is claimed.
+    /// Whether a send has to wait, because a flow is borrowed, a path is being worked on, or the send path
+    /// is claimed.
     @inline(always)
     var isSendBlocked: Bool {
-        !status.isDisjoint(with: .sendBlockers)
+        !status.isDisjoint(with: .sendBlockers) || pathCheckouts != 0
+    }
+
+    /// Notes that work on a path began.
+    @inline(always)
+    mutating func beginPathCheckout() {
+        pathCheckouts &+= 1
+    }
+
+    /// Notes that a path was put back. Returns whether sends that waited are now ready to replay: they
+    /// are not while another path is still out, a flow is borrowed (the flow borrow reports them when
+    /// it ends) or the send path is claimed (the claim replays them when it is released).
+    @inline(always)
+    @discardableResult
+    mutating func endPathCheckout() -> Bool {
+        if pathCheckouts > 0 { pathCheckouts &-= 1 }
+        return pathCheckouts == 0 && status.isDisjoint(with: .sendBlockers)
+            && !status.isDisjoint(with: .pendingSends)
     }
 
     /// Starts borrowing a flow table, and defers the work that must wait for the borrow. Returns
@@ -174,7 +198,8 @@ struct QUICDeferredWorkState {
         endTableBorrow(table)
         guard !wasFlowBorrowed else { return nil }
         let requests = status.intersection(.afterBorrow)
-        let replaysSends = !status.contains(.sendActive) && !status.isDisjoint(with: .pendingSends)
+        let replaysSends =
+            !status.contains(.sendActive) && pathCheckouts == 0 && !status.isDisjoint(with: .pendingSends)
         status.subtract([.afterBorrow, .flowBorrowed])
         guard !requests.isEmpty || replaysSends else { return nil }
         return ReadyWork(requests: requests, replaysSends: replaysSends)
@@ -217,7 +242,7 @@ struct QUICDeferredWorkState {
     /// path is claimed or a flow is borrowed, in which case the caller defers its send instead.
     @inline(always)
     mutating func claimSendPathIfFree() -> Bool {
-        guard status.isDisjoint(with: .sendBlockers) else { return false }
+        guard status.isDisjoint(with: .sendBlockers), pathCheckouts == 0 else { return false }
         status.insert(.sendActive)
         return true
     }
@@ -241,7 +266,7 @@ struct QUICDeferredWorkState {
     mutating func releaseSendPath(wasActive: Bool) -> Bool {
         guard !wasActive else { return false }
         status.remove(.sendActive)
-        return !status.contains(.flowBorrowed) && !status.isDisjoint(with: .pendingSends)
+        return !status.contains(.flowBorrowed) && pathCheckouts == 0 && !status.isDisjoint(with: .pendingSends)
     }
 
     // MARK: Sends that waited
@@ -314,17 +339,17 @@ struct QUICDeferredWorkState {
 @available(Network 0.1.0, *)
 extension QUICConnection {
     /// Remembers a send on one path that has to wait. Sends on the same path merge their flags.
-    func deferPathSend(_ path: QUICPath, ignoreCongestionWindow: Bool, retransmission: Bool) {
+    func deferPathSend(_ path: MultiplexingPathIdentifier, ignoreCongestionWindow: Bool, retransmission: Bool) {
         // This function just edits an entry in deferredWork's pathSends dictionary.
         // It does not just edit it directly on the keyed value for performance reason.
         var sends: [MultiplexingPathIdentifier: QUICDeferredWorkState.PathSend] = [:]
         deferredWork.exchangePathSends(with: &sends)
         var send =
-            sends[path.pathIdentifier]
+            sends[path]
             ?? QUICDeferredWorkState.PathSend(path: path, ignoreCongestionWindow: false, retransmission: false)
         send.ignoreCongestionWindow = send.ignoreCongestionWindow || ignoreCongestionWindow
         send.retransmission = send.retransmission || retransmission
-        sends[path.pathIdentifier] = send
+        sends[path] = send
         deferredWork.exchangePathSends(with: &sends)
         deferredWork.requestPathSends()
     }
