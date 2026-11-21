@@ -1,0 +1,7 @@
+{
+  "mallocCountTotal" : 81988,
+  "objectAllocCount" : 48645,
+  "releaseCount" : 428067,
+  "retainCount" : 348652,
+  "writeSyscalls" : 0
+}
