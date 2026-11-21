@@ -18,8 +18,8 @@ internal import Synchronization
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol PerProtocolMetadata: Equatable {
-    func isEqual(to: Self, for: ProtocolCompareMode) -> Bool
+public protocol PerProtocolMetadata: ~Copyable, Equatable {
+    func isEqual(to: borrowing Self, for: ProtocolCompareMode) -> Bool
     #if NETWORK_PRIVATE
     var cProtocolDefinition: nw_protocol_definition_t? { get }
     #endif
@@ -61,39 +61,86 @@ public class AbstractProtocolMetadata: PerProtocolMetadata {
 @available(Network 0.1.0, *)
 public final class ProtocolMetadata<P: NetworkProtocol>: AbstractProtocolMetadata, @unchecked Sendable {
     private let lock = NetworkMutex(())
+    // Used for running blocks of work in perProtocolMetadata
+    private let executionLock = NetworkMutex(())
     private var _perProtocolMetadata: P.Metadata? = nil
-    public var perProtocolMetadata: P.Metadata? {
-        get {
-            lock.withLock { _ in
-                _perProtocolMetadata
-            }
-        }
-        set {
-            lock.withLock { _ in
-                _perProtocolMetadata = newValue
-            }
-        }
+    public func withPerProtocolMetadata<R>(_ body: (borrowing P.Metadata?) -> R) -> R {
+        lock.withLock { _ in body(_perProtocolMetadata) }
+    }
+
+    public func executeLocked(_ body: () -> Void) {
+        executionLock.withLock { _ in body() }
+    }
+
+    public func mutablePerProtocolMetadata<R>(_ body: (inout P.Metadata?) -> R) -> R {
+        lock.withLock { _ in body(&_perProtocolMetadata) }
     }
 
     #if NETWORK_PRIVATE
-    public override var cProtocolDefinition: nw_protocol_definition_t? { perProtocolMetadata?.cProtocolDefinition }
+    public override var cProtocolDefinition: nw_protocol_definition_t? {
+        withPerProtocolMetadata { metadata in
+            switch metadata {
+            case .none: return nil
+            case .some(let protocolMetadata): return protocolMetadata.cProtocolDefinition
+            }
+        }
+    }
     #endif
 
-    init(protocolIdentifier: ProtocolIdentifier, perProtocolMetadata: P.Metadata?, messageIdentifier: SystemUUID) {
+    init(
+        protocolIdentifier: ProtocolIdentifier,
+        perProtocolMetadata: consuming P.Metadata?,
+        messageIdentifier: SystemUUID
+    ) {
         _perProtocolMetadata = perProtocolMetadata
         super.init(protocolIdentifier: protocolIdentifier, messageIdentifier: messageIdentifier)
     }
 
     public func isEqual(to other: ProtocolMetadata, for compareMode: ProtocolCompareMode) -> Bool {
+        if self === other { return true }
+
         guard self.protocolIdentifier == other.protocolIdentifier else {
             return false
         }
-        if let lh = self.perProtocolMetadata, let rh = other.perProtocolMetadata {
-            return lh.isEqual(to: rh, for: compareMode)
-        } else if self.perProtocolMetadata == nil, other.perProtocolMetadata == nil {
-            return true
+
+        let selfId = ObjectIdentifier(self)
+        let otherId = ObjectIdentifier(other)
+        // Evaluate the object identifiers to reverse the order if two metadata object evaluate at the same time on different threads
+        if selfId < otherId {
+            return withPerProtocolMetadata { lhMetadata in
+                other.withPerProtocolMetadata { rhMetadata in
+                    switch lhMetadata {
+                    case .some(let lhVal):
+                        switch rhMetadata {
+                        case .some(let rhVal): return lhVal.isEqual(to: rhVal, for: compareMode)
+                        case .none: return false
+                        }
+                    case .none:
+                        switch rhMetadata {
+                        case .some: return false
+                        case .none: return true
+                        }
+                    }
+                }
+            }
+        } else {
+            return other.withPerProtocolMetadata { rhMetadata in
+                withPerProtocolMetadata { lhMetadata in
+                    switch lhMetadata {
+                    case .some(let lhVal):
+                        switch rhMetadata {
+                        case .some(let rhVal): return lhVal.isEqual(to: rhVal, for: compareMode)
+                        case .none: return false
+                        }
+                    case .none:
+                        switch rhMetadata {
+                        case .some: return false
+                        case .none: return true
+                        }
+                    }
+                }
+            }
         }
-        return false
     }
 
     public override func isEqual(to other: AbstractProtocolMetadata, for compareMode: ProtocolCompareMode) -> Bool {
@@ -112,5 +159,16 @@ public final class ProtocolMetadata<P: NetworkProtocol>: AbstractProtocolMetadat
             return false
         }
         return lhs == rhs
+    }
+}
+
+@_spi(Essentials)
+@available(Network 0.1.0, *)
+extension ProtocolMetadata where P.Metadata: Copyable {
+    /// A copy of the per-protocol metadata. Non-copyable metadata is reached through
+    /// `withPerProtocolMetadata` and `mutablePerProtocolMetadata`.
+    public var perProtocolMetadata: P.Metadata? {
+        get { withPerProtocolMetadata { $0 } }
+        set { mutablePerProtocolMetadata { $0 = newValue } }
     }
 }

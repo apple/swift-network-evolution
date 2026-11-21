@@ -479,11 +479,43 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             }
         }
 
+        /// Bytes acked on one path during an ACK frame, reported to its congestion controller in one
+        /// call instead of one per packet. The path is the one the ACK arrived on; packets sent on
+        /// any other path are not added, see `packetAcked`.
+        struct AckedBytesBatch {
+            let path: QUICPath
+            private var bytesAcked = 0
+            private var creditedBytes = 0
+
+            init(path: QUICPath) {
+                self.path = path
+            }
+
+            /// Whether a packet grows the window depends on its sent time against the recovery start
+            /// time, which a spurious-loss undo can change mid-ACK, so it is read for every packet.
+            mutating func add(bytes: Int, sentTime: NetworkClock.Instant) {
+                bytesAcked += bytes
+                if sentTime > path.congestionControlRecoveryStartTime {
+                    creditedBytes += bytes
+                }
+            }
+
+            /// Must run before anything that can read or change the controller mid-ACK, and before
+            /// the ACK bracket closes.
+            mutating func flush() {
+                guard bytesAcked != 0 || creditedBytes != 0 else { return }
+                path.congestionControlPacketsAcked(bytesAcked: bytesAcked, creditedBytes: creditedBytes)
+                bytesAcked = 0
+                creditedBytes = 0
+            }
+        }
+
         // `sentPath` is nil when the path the packet was sent on has since been torn down, for
         // example after a migration. The packet is still retired, but there is no path to credit.
         mutating func packetAcked(
             sentPath: QUICPath?,
             sentEntry: borrowing PacketContainerEntry,
+            ackedBytes: inout AckedBytesBatch,
             connection: QUICConnection,
             in eventContext: inout NetworkContext.EventContext
         ) {
@@ -508,10 +540,21 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
 
                     log.datapath("Non-Ack eliciting packet \(number) acked")
                 }
-                sentPath?.congestionControlPacketsAcked(
-                    bytesAcked: sentEntry.packet.isInFlightEligible ? sentEntry.packet.totalLength : 0,
-                    sentTime: sentEntry.sentTime
-                )
+                if let sentPath {
+                    let bytes = sentEntry.packet.isInFlightEligible ? sentEntry.packet.totalLength : 0
+                    if sentPath === ackedBytes.path {
+                        ackedBytes.add(bytes: bytes, sentTime: sentEntry.sentTime)
+                    } else {
+                        // An ACK is expected to cover only packets sent on the path it arrived on. If
+                        // that ever changes, credit the other path directly and continue on.
+                        sentPath.congestionControlPacketsAcked(bytesAcked: bytes, sentTime: sentEntry.sentTime)
+                    }
+                }
+            }
+
+            // A PMTUD probe ack checks congestion control, so it has to see the bytes already acked.
+            if sentEntry.packet.transmittedItems.pmtudProbeMSS != nil {
+                ackedBytes.flush()
             }
 
             // Acknowledge the data sent with the packet
@@ -609,6 +652,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         ) -> Bool {
             let packetNumberSpace = ackFrame.packetNumberSpace
             var newlyECTAcked: UInt64 = 0
+            var ackedBytes = AckedBytesBatch(path: path)
 
             let newlyAckedPacketNumbers = findNewlyAckedPackets(ackFrame: ackFrame, path: path)
 
@@ -653,6 +697,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                         log.datapath(
                             "Spurious loss of \(lostPacketNumber) undoes the congestion window reduction on path \(sentPath.pathIdentifier)"
                         )
+                        // The undo restores the recovery start time that later packets are judged by.
+                        ackedBytes.flush()
                         sentPath.congestionControlSpuriousRetransmit(qlog: connection.qLog)
                     }
                 }
@@ -660,10 +706,12 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 packetAcked(
                     sentPath: sentPath,
                     sentEntry: ackedEntry,
+                    ackedBytes: &ackedBytes,
                     connection: connection,
                     in: &eventContext
                 )
             }
+            ackedBytes.flush()
 
             // Process ECN after packet_acked.
             // Update the total acked packets that were sent with ECT
@@ -1281,7 +1329,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
     func getEarliestTime(
         earliestTimeType: EarliestTimeType,
         connection: QUICConnection
-    ) -> (NetworkClock.Instant, PacketNumberSpace) {
+    ) -> (time: NetworkClock.Instant, space: PacketNumberSpace) {
         var earliestTime: NetworkClock.Instant = .zero
         var pnSpace: PacketNumberSpace = .initial
         let handshakeCompleted = connection.state == .connected
@@ -1296,6 +1344,31 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 ) ?? (earliestTime, pnSpace)
         }
         return (earliestTime, pnSpace)
+    }
+
+    /// The space with ack-eliciting packets in flight whose last ack-eliciting packet was sent earliest.
+    /// RFC 9002 Section 6.2.4 requires the probe in a space that is waiting for an acknowledgment, and
+    /// a space whose packets were all acknowledged has no probe to send. The application data space
+    /// is skipped until the handshake is complete. Returns `nil` when no space is eligible, for example
+    /// when only application data is in flight before the handshake completes.
+    func spaceToProbeWithPacketsInFlight(connection: QUICConnection) -> PacketNumberSpace? {
+        let handshakeCompleted = connection.state == .connected
+        var earliestTime: NetworkClock.Instant = .zero
+        var earliestSpace: PacketNumberSpace?
+        applyToAllInnerStatesImmutable { innerState, packetNumberSpace in
+            guard innerState.ackElicitingPacketsInFlight > 0 else {
+                return
+            }
+            if packetNumberSpace == .applicationData && !handshakeCompleted {
+                return
+            }
+            let sentTime = innerState.timeOfLastSentAckElicitingPacket
+            if earliestSpace == nil || sentTime < earliestTime {
+                earliestTime = sentTime
+                earliestSpace = packetNumberSpace
+            }
+        }
+        return earliestSpace
     }
 
     func setTimer(
@@ -1430,9 +1503,17 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             // requires an anti-deadlock packet to unblock the server.
             // The PING is padded when it goes out in an initial packet.
             connection.log.datapath("Sending a PING as PTO")
-            let packetNumberSpace =
-                !connection.receivedHandshakePacket
-                ? PacketNumberSpace.initial : PacketNumberSpace.applicationData
+            // With packets in flight the probe goes in the space with the earliest ack-eliciting send time.
+            // With none in flight, or none in an eligible space (RFC 9002 Section 6.2.2.1), a client sends a
+            // Handshake packet if it has Handshake keys, and otherwise a padded Initial packet.
+            let packetNumberSpace: PacketNumberSpace
+            if let spaceWithPacketsInFlight = spaceToProbeWithPacketsInFlight(connection: connection) {
+                packetNumberSpace = spaceWithPacketsInFlight
+            } else if connection.protector.sealKeyReady(for: .handshake) {
+                packetNumberSpace = .handshake
+            } else {
+                packetNumberSpace = .initial
+            }
             connection.withPendingItems(for: packetNumberSpace) { item in
                 item.ping = true
             }

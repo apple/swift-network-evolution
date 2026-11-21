@@ -57,30 +57,34 @@ enum QUICPathState: CustomStringConvertible, CaseIterable {
         self = state
     }
 
-    func isValidStateChange(to newState: QUICPathState) -> Bool {
+    func canTransition(to newState: QUICPathState) -> Bool {
         switch (self, newState) {
-        case (.invalid, .routeAvailable),
-            (.invalid, .routeEstablished),
-            (.routeAvailable, .routeEstablished),
-            (.routeAvailable, .routeUnavailable),
-            (.routeEstablished, .cidAssigned),
-            (.routeEstablished, .routeUnavailable),
-            (.cidAssigned, .probing),
-            (.cidAssigned, .routeEstablished),
-            (.cidAssigned, .routeUnavailable),
-            (.probing, .validated),
-            (.probing, .unreachable),
-            (.probing, .routeEstablished),
-            (.probing, .routeUnavailable),
-            (.validated, .unreachable),
-            (.validated, .probing),
-            (.validated, .closing),
-            (.validated, .routeEstablished),
-            (.validated, .routeUnavailable),
-            (.unreachable, .closing),
-            (.unreachable, .routeUnavailable),
-            (.closing, .routeUnavailable):
+        // Route bring-up, as the path manager reports it.
+        case (.invalid, .routeAvailable),  // route available
+            (.invalid, .routeEstablished),  // initial path, its route already established
+            (.routeAvailable, .routeEstablished):  // route established
             return true
+
+        // Path validation (RFC 9000 §8.2).
+        case (.routeEstablished, .cidAssigned),  // peer connection ID assigned
+            (.cidAssigned, .probing),  // snd PATH_CHALLENGE
+            (.validated, .probing),  // revalidate
+            (.probing, .validated),  // rcv PATH_RESPONSE
+            (.probing, .unreachable),  // challenges exhausted
+            (.validated, .unreachable),
+            (.validated, .routeEstablished),  // route re-established, needs a new connection ID
+            (.cidAssigned, .routeEstablished),  // connection ID retired, none to replace it
+            (.probing, .routeEstablished):  // connection ID retired, none to replace it
+            return true
+
+        // Teardown: a validated or unreachable path closes, and the path manager can take away
+        // the route of a path in any state: one that was never set up, because the connection was
+        // torn down before its lower protocol connected, or one whose route is already gone.
+        case (.validated, .closing),
+            (.unreachable, .closing),
+            (_, .routeUnavailable):
+            return true
+
         default:
             return false
         }
@@ -146,7 +150,17 @@ public final class QUICPath: MultiplexingDatagramPath<
 
     static let slowInitialProbeInterval: NetworkDuration = .seconds(1)
 
-    private(set) var state: QUICPathState = QUICPathState()
+    var state: QUICPathState = QUICPathState() {
+        didSet {
+            log.debug("Path state change: \(oldValue) -> \(state)")
+            if !oldValue.canTransition(to: state) {
+                log.fault("Invalid path transition: \(oldValue) -> \(state)")
+            }
+            if oldValue.holdsCID && !state.holdsCID {
+                releaseDCID()
+            }
+        }
+    }
     var priority: Int = 0  // Relative priority to other paths, used to gate migration decisions
     var interface: Interface?
     var localEndpoint: Endpoint?
@@ -187,8 +201,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         }
         var rawValue: UInt16
         static let pacePackets = Flags(rawValue: 1 << 0)
-        static let isInitialPath = Flags(rawValue: 1 << 1)
-        static let isPrimaryPath = Flags(rawValue: 1 << 2)
+        static let isInitial = Flags(rawValue: 1 << 1)
         static let spinValue = Flags(rawValue: 1 << 3)
         static let useSlowProbeInterval = Flags(rawValue: 1 << 4)
         static let isPreferredAddress = Flags(rawValue: 1 << 5)
@@ -204,13 +217,9 @@ public final class QUICPath: MultiplexingDatagramPath<
         get { flags.contains(.pacePackets) }
         set { if newValue { flags.insert(.pacePackets) } else { flags.remove(.pacePackets) } }
     }
-    var isInitialPath: Bool {
-        get { flags.contains(.isInitialPath) }
-        set { if newValue { flags.insert(.isInitialPath) } else { flags.remove(.isInitialPath) } }
-    }
-    var isPrimaryPath: Bool {
-        get { flags.contains(.isPrimaryPath) }
-        set { if newValue { flags.insert(.isPrimaryPath) } else { flags.remove(.isPrimaryPath) } }
+    var isInitial: Bool {
+        get { flags.contains(.isInitial) }
+        set { if newValue { flags.insert(.isInitial) } else { flags.remove(.isInitial) } }
     }
     var spinValue: Bool {
         get { flags.contains(.spinValue) }
@@ -224,7 +233,6 @@ public final class QUICPath: MultiplexingDatagramPath<
         get { flags.contains(.isPreferredAddress) }
         set { if newValue { flags.insert(.isPreferredAddress) } else { flags.remove(.isPreferredAddress) } }
     }
-
     var isLossy: Bool {
         get { flags.contains(.isLossy) }
         set { if newValue { flags.insert(.isLossy) } else { flags.remove(.isLossy) } }
@@ -275,19 +283,6 @@ public final class QUICPath: MultiplexingDatagramPath<
         block(&self.ecnState)
     }
 
-    func changeState(to newState: QUICPathState) {
-        guard state.isValidStateChange(to: newState) else {
-            log.fault("Invalid path transition: \(state) -> \(newState)")
-            return
-        }
-        log.debug("Path state change: \(state) -> \(newState)")
-        let releasesCID = state.holdsCID && !newState.holdsCID
-        state = newState
-        if releasesCID {
-            releaseDCID()
-        }
-    }
-
     // Gives the peer's CID back once the path can no longer send with it. The connection retires
     // it, unless the peer already has. A zero-length CID is not something the peer can run out
     // of, and a pre-assigned one belongs to the path, so those are kept.
@@ -304,7 +299,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         priority: Int,
         isInitial: Bool,
     ) {
-        self.isInitialPath = isInitial
+        self.isInitial = isInitial
         self.priority = priority
         self.interface = interface
 
@@ -383,7 +378,7 @@ public final class QUICPath: MultiplexingDatagramPath<
             PMTUDState.minimumMTU - (IPProtocol.ipv6HeaderLength + UDPProtocol.headerLength)
 
         self.mss = parentProtocol.initialMSS
-        if !self.isInitialPath, let interface {
+        if !self.isInitial, let interface {
             // Search for other paths that share the same interface that have calculated another MSS
             var foundMSS = false
             parentProtocol.applyToAllPaths { otherPath in
@@ -424,7 +419,7 @@ public final class QUICPath: MultiplexingDatagramPath<
     func assignDCID(_ dcid: QUICConnectionID, in eventContext: inout NetworkContext.EventContext) {
         self.dcid = dcid
         if case .routeEstablished = state {
-            changeState(to: .cidAssigned)
+            state = .cidAssigned
             if let localEndpoint, let remoteEndpoint,
                 case .address(let localAddress) = localEndpoint.type,
                 case .address(let remoteAddress) = remoteEndpoint.type
@@ -636,7 +631,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         // Allowed to start probing in CID-Assigned (or Validated state if required)
         if state == .cidAssigned || (!ifNecessary && state == .validated) {
             // The path has a CID assigned. Time to start probing.
-            changeState(to: .probing)
+            state = .probing
             pendingOutboundChallenges.removeAll()
             challengesSent = 0
             lastChallengeSentTime = .zero
@@ -651,8 +646,8 @@ public final class QUICPath: MultiplexingDatagramPath<
         guard state == .cidAssigned else {
             return
         }
-        changeState(to: .probing)
-        changeState(to: .validated)
+        state = .probing
+        state = .validated
     }
 
     var shouldSendPathResponses: Bool {
@@ -694,7 +689,7 @@ public final class QUICPath: MultiplexingDatagramPath<
 
         guard challengesSent < QUICPath.maximumPendingChallenges else {
             // Exceeded limit, move to unreachable, which gives up the CID
-            changeState(to: .unreachable)
+            state = .unreachable
             if let localEndpoint, let remoteEndpoint,
                 case .address(let localAddress) = localEndpoint.type,
                 case .address(let remoteAddress) = remoteEndpoint.type
@@ -764,7 +759,7 @@ public final class QUICPath: MultiplexingDatagramPath<
         pendingOutboundChallenges.removeAll()
         challengesSent = 0
         lastChallengeSentTime = .zero
-        changeState(to: .validated)
+        state = .validated
         // Initialize RTT based on the PATH_RESPONSE duration so that we have a proper RTT estimate when we reset the timers.
         rtt.processNewSample(ackDuration: responseDuration, packetAckedTime: now, ackDelay: .zero)
         parentProtocol.migration.resetTimer(now: now, connection: parentProtocol, in: &eventContext)
@@ -843,6 +838,18 @@ extension QUICPath {
     @inline(always)
     func congestionControlPacketsAcked(bytesAcked: Int, sentTime: NetworkClock.Instant) {
         congestionControl.packetsAcked(bytesAcked: bytesAcked, sentTime: sentTime)
+    }
+
+    /// Reports the packets acked since the last flush in one call, within the ack bracket.
+    @inline(always)
+    func congestionControlPacketsAcked(bytesAcked: Int, creditedBytes: Int) {
+        congestionControl.packetsAcked(bytesAcked: bytesAcked, creditedBytes: creditedBytes)
+    }
+
+    /// Packets sent at or before this time do not grow the window.
+    @inline(always)
+    var congestionControlRecoveryStartTime: NetworkClock.Instant {
+        congestionControl.state.recoveryStartTime
     }
 
     @inline(always)

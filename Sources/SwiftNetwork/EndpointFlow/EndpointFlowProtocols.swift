@@ -45,10 +45,34 @@ struct EndpointFlowPendingEvents {
     /// Only inbound flow handlers record these; see `InboundEndpointFlowProtocol`.
     var inboundFlows: [PendingInboundFlow] = []
 
+    var stackSignals: EndpointFlowStackSignals = []
+
+    var handshakeReports: [ProtocolEstablishmentReport] = []
+
+    var delayStartChildFlow: Bool? = nil
+
     var isEmpty: Bool {
         self.connected == nil && self.inboundDataAvailable == nil && !self.outputRoomAvailable
-            && self.disconnected == nil && self.inboundFlows.isEmpty
+            && self.disconnected == nil && self.inboundFlows.isEmpty && self.stackSignals.isEmpty
+            && self.handshakeReports.isEmpty && self.delayStartChildFlow == nil
     }
+
+    mutating func record(stackEvent event: NetworkProtocolEvent) -> Bool {
+        switch event.internalEvent {
+        case .handshakeComplete(let report): self.handshakeReports.append(report)
+        case .doNotReuse: self.stackSignals.insert(.doNotReuse)
+        case .delayStartChildFlow(let delay): self.delayStartChildFlow = delay
+        default: return false
+        }
+        return true
+    }
+}
+
+@available(Network 0.1.0, *)
+struct EndpointFlowStackSignals: OptionSet, Sendable {
+    let rawValue: UInt8
+
+    static let doNotReuse = EndpointFlowStackSignals(rawValue: 1 << 0)
 }
 
 /// A flow the peer opened, waiting for the connection to hand it to the application.
@@ -79,6 +103,12 @@ class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtoco
         _ record: (inout EndpointFlowPendingEvents) -> Void
     ) {
         record(&self.pending)
+        self.wakeFlow?(&eventContext)
+    }
+
+    private func recordStackEvent(_ event: NetworkProtocolEvent, in eventContext: inout NetworkContext.EventContext) {
+        guard self.pending.record(stackEvent: event) else { return }
+        log.debug("Received stack event: \(event)")
         self.wakeFlow?(&eventContext)
     }
 
@@ -113,29 +143,6 @@ class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtoco
         self.identifier = .init(context: context, eventManager: &self.eventManager)
     }
 
-    /// The establishment reports of the protocols beneath the flow, lowest first. This is an external
-    /// entry point; see `protocolEstablishmentReports(in:)`.
-    func protocolEstablishmentReports() -> [ProtocolEstablishmentReport] {
-        fromExternal { eventContext in
-            protocolEstablishmentReports(in: &eventContext)
-        }
-    }
-
-    /// The same, using an event context the caller already holds.
-    func protocolEstablishmentReports(
-        in eventContext: inout NetworkContext.EventContext
-    ) -> [ProtocolEstablishmentReport] {
-        let metrics = lower.invokeGetMetrics(
-            requestedNetworkMetric: .protocolEstablishmentReports,
-            for: identifier,
-            in: &eventContext
-        )
-        guard case .protocolEstablishmentReports(let reports)? = metrics else {
-            return []
-        }
-        return reports
-    }
-
     func handleConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
         log.debug("Received connected event")
         recordEvent(in: &eventContext) { $0.connected = .some(nil) }
@@ -166,6 +173,13 @@ class EndpointFlowProtocol<LinkageFamily: DataLinkageFamily>: TopDatapathProtoco
     ) {
         log.debug("Received outbound room available event")
         recordEvent(in: &eventContext) { $0.outputRoomAvailable = true }
+    }
+
+    func handleNetworkProtocolEvent(
+        _ event: NetworkProtocolEvent,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        recordStackEvent(event, in: &eventContext)
     }
 
     public func start() {
@@ -494,6 +508,12 @@ final class PassthroughStreamEndpointFlowProtocol: OneToOneStreamProtocol {
         self.wakeFlow?(&eventContext)
     }
 
+    private func recordStackEvent(_ event: NetworkProtocolEvent, in eventContext: inout NetworkContext.EventContext) {
+        guard self.pending.record(stackEvent: event) else { return }
+        log.debug("Received stack event: \(event)")
+        self.wakeFlow?(&eventContext)
+    }
+
     // MARK: Driven by the owning flow
 
     func start() {
@@ -534,27 +554,6 @@ final class PassthroughStreamEndpointFlowProtocol: OneToOneStreamProtocol {
         fromExternal { eventContext in
             lower.invokeGetMetadata(for: identifier, in: &eventContext)
         }
-    }
-
-    /// The establishment reports of the protocols beneath this flow, lowest first. This is an external entry
-    /// point; see `protocolEstablishmentReports(in:)`.
-    func protocolEstablishmentReports() -> [ProtocolEstablishmentReport] {
-        fromExternal { eventContext in
-            protocolEstablishmentReports(in: &eventContext)
-        }
-    }
-
-    func protocolEstablishmentReports(
-        in eventContext: inout NetworkContext.EventContext
-    ) -> [ProtocolEstablishmentReport] {
-        guard
-            case .protocolEstablishmentReports(let reports)? = lower.invokeGetMetrics(
-                requestedNetworkMetric: .protocolEstablishmentReports,
-                for: identifier,
-                in: &eventContext
-            )
-        else { return [] }
-        return reports
     }
 
     /// Detaches from the stack below, and hands this instance's event state back.
@@ -644,8 +643,9 @@ final class PassthroughStreamEndpointFlowProtocol: OneToOneStreamProtocol {
         _ event: NetworkProtocolEvent,
         in eventContext: inout NetworkContext.EventContext
     ) -> HandleNetworkEventResult {
-        // With nothing above, there is nowhere to send it
-        upper.isDetached ? .consumed : .unconsumed
+        recordStackEvent(event, in: &eventContext)
+        if case .delayStartChildFlow = event.internalEvent { return .consumed }
+        return upper.isDetached ? .consumed : .unconsumed
     }
 
     // MARK: Data from above, passed down
@@ -748,6 +748,12 @@ final class PassthroughDatagramEndpointFlowProtocol: OneToOneDatagramProtocol {
         self.wakeFlow?(&eventContext)
     }
 
+    private func recordStackEvent(_ event: NetworkProtocolEvent, in eventContext: inout NetworkContext.EventContext) {
+        guard self.pending.record(stackEvent: event) else { return }
+        log.debug("Received stack event: \(event)")
+        self.wakeFlow?(&eventContext)
+    }
+
     // MARK: Driven by the owning flow
 
     func start() {
@@ -781,27 +787,6 @@ final class PassthroughDatagramEndpointFlowProtocol: OneToOneDatagramProtocol {
         fromExternal { eventContext in
             lower.invokeGetMetadata(for: identifier, in: &eventContext)
         }
-    }
-
-    /// The establishment reports of the protocols beneath this flow, lowest first. This is an external entry
-    /// point; see `protocolEstablishmentReports(in:)`.
-    func protocolEstablishmentReports() -> [ProtocolEstablishmentReport] {
-        fromExternal { eventContext in
-            protocolEstablishmentReports(in: &eventContext)
-        }
-    }
-
-    func protocolEstablishmentReports(
-        in eventContext: inout NetworkContext.EventContext
-    ) -> [ProtocolEstablishmentReport] {
-        guard
-            case .protocolEstablishmentReports(let reports)? = lower.invokeGetMetrics(
-                requestedNetworkMetric: .protocolEstablishmentReports,
-                for: identifier,
-                in: &eventContext
-            )
-        else { return [] }
-        return reports
     }
 
     /// Detaches from the stack below, and hands this instance's event state back.
@@ -879,8 +864,9 @@ final class PassthroughDatagramEndpointFlowProtocol: OneToOneDatagramProtocol {
         _ event: NetworkProtocolEvent,
         in eventContext: inout NetworkContext.EventContext
     ) -> HandleNetworkEventResult {
-        // With nothing above, there is nowhere to send it
-        upper.isDetached ? .consumed : .unconsumed
+        recordStackEvent(event, in: &eventContext)
+        if case .delayStartChildFlow = event.internalEvent { return .consumed }
+        return upper.isDetached ? .consumed : .unconsumed
     }
 
     // MARK: Data from above, passed down
@@ -977,6 +963,12 @@ where LinkageFamily.Listener.PairedUpperLinkage == LinkageFamily.InboundFlow {
         self.wakeFlow?(&eventContext)
     }
 
+    private func recordStackEvent(_ event: NetworkProtocolEvent, in eventContext: inout NetworkContext.EventContext) {
+        guard self.pending.record(stackEvent: event) else { return }
+        log.debug("Received stack event: \(event)")
+        self.wakeFlow?(&eventContext)
+    }
+
     func attachLowerProtocol(
         _ lowerProtocol: LowerProtocol
     ) throws(NetworkError) -> LowerProtocol.PairedUpperLinkage? {
@@ -1015,6 +1007,7 @@ where LinkageFamily.Listener.PairedUpperLinkage == LinkageFamily.InboundFlow {
         in eventContext: inout NetworkContext.EventContext
     ) {
         log.debug("Received network protocol event: \(event)")
+        recordStackEvent(event, in: &eventContext)
     }
 
     func handleNewInboundFlowEvent(

@@ -43,9 +43,26 @@ public enum ServerAccurateECNState: UInt32, Equatable, Sendable {
     case ecnNegotiationSuccessECTBleachingDetected = 10
 }
 
+/// Which protocol a report came from, the way a protocol's options name the protocol they were attached to.
+@available(Network 0.1.0, *)
+enum ProtocolEstablishmentSource: Equatable, Sendable {
+    case instance(InstanceIdentifier)
+    #if !NETWORK_EMBEDDED
+    case legacyHandle(UInt)
+    #endif
+
+    #if !NETWORK_EMBEDDED
+    init(handle: UnsafeRawPointer) {
+        self = .legacyHandle(UInt(bitPattern: handle))
+    }
+    #endif
+}
+
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
 public struct ProtocolEstablishmentReport: Equatable, Sendable {
+    var source: ProtocolEstablishmentSource? = nil
+
     public let handshakeDuration: NetworkDuration
     public let handshakeRTT: NetworkDuration
     public let protocolIdentifier: ProtocolIdentifier
@@ -76,7 +93,7 @@ public struct ProtocolEstablishmentReport: Equatable, Sendable {
         static let quicStatelessResetReceived = Flags(rawValue: 1 << 2)
         static let quicStatelessResetDuringPathProbe = Flags(rawValue: 1 << 3)
     }
-    private var flags = Flags()
+    fileprivate var flags = Flags()
     public var l4sEnabled: Bool {
         get { flags.contains(.l4sEnabled) }
         set { if newValue { flags.insert(.l4sEnabled) } else { flags.remove(.l4sEnabled) } }
@@ -100,5 +117,21 @@ public struct ProtocolEstablishmentReport: Equatable, Sendable {
                 flags.remove(.quicStatelessResetDuringPathProbe)
             }
         }
+    }
+}
+
+@available(Network 0.1.0, *)
+extension ProtocolEstablishmentReport {
+    public static func == (lhs: ProtocolEstablishmentReport, rhs: ProtocolEstablishmentReport) -> Bool {
+        lhs.handshakeDuration == rhs.handshakeDuration && lhs.handshakeRTT == rhs.handshakeRTT
+            && lhs.protocolIdentifier == rhs.protocolIdentifier
+            && lhs.clientAccurateECNState == rhs.clientAccurateECNState
+            && lhs.serverAccurateECNState == rhs.serverAccurateECNState && lhs.flags == rhs.flags
+    }
+
+    func tagged(_ source: ProtocolEstablishmentSource) -> ProtocolEstablishmentReport {
+        var copy = self
+        copy.source = source
+        return copy
     }
 }
