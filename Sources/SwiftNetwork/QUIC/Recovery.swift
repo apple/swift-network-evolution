@@ -1656,8 +1656,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                     sendPTO(connection: connection, path: &path, in: &eventContext)
                 }
                 if sentPTO == nil {
-                    // The timer is armed again below, so the probe is retried
-                    connection.log.fault("PTO timer fired while the current path was busy")
+                    connection.log.error("PTO timer fired after the current path was released")
                 }
             }
         }

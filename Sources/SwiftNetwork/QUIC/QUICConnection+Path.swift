@@ -93,7 +93,7 @@ extension QUICConnection {
             path.congestionControlPacketDiscarded(bytesSent: bytes, qlog: qLog)
         }
         if refunded == nil {
-            log.fault("Could not refund \(bytes) bytes charged to path \(pathID): the path is busy or gone")
+            log.error("Not refunding \(bytes) bytes to path \(pathID): the path is gone")
         }
     }
 
