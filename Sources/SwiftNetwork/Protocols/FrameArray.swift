@@ -194,7 +194,7 @@ public struct FrameArray: ~Copyable {
             if !enumerator(index, frames[index]) {
                 return
             }
-            index += 1
+            index &+= 1
         }
     }
 

@@ -66,6 +66,16 @@ internal import DequeModule
 #endif
 #endif
 
+#if canImport(Darwin)
+// `timingsafe.h` is not part of the Darwin module. Calls nest: while an outer scope has the timing-safe
+// features enabled, an inner enable has nothing left to switch on and its restore leaves them on.
+@_silgen_name("timingsafe_enable_if_supported")
+private func timingsafe_enable_if_supported() -> UInt64
+
+@_silgen_name("timingsafe_restore_if_supported")
+private func timingsafe_restore_if_supported(_ token: UInt64)
+#endif
+
 // Availability due to Swift's `InlineArray` (`[12 of UInt8]`)
 @available(anyAppleOS 26, *)
 typealias ProtectorNonce = [12 of UInt8]
@@ -923,24 +933,15 @@ struct Protector: ~Copyable, PrefixedLoggable {
         // 1. left-pad the packet number with the path_id to make it the same size as
         // the IV
         // 2. XOR the result with the right IV to form the nonce
-        let pn = packetNumber.value
-        let nonce: ProtectorNonce = [
-            iv[0],
-            iv[1],
-            iv[2],
-            iv[3],
-            // Set the 8-right bytes to the packet number.
-            // Note that we assume the packet number is in little-endian and
-            // convert it to big-endian.
-            iv[4] ^ UInt8((pn >> 56) & 0xff),
-            iv[5] ^ UInt8((pn >> 48) & 0xff),
-            iv[6] ^ UInt8((pn >> 40) & 0xff),
-            iv[7] ^ UInt8((pn >> 32) & 0xff),
-            iv[8] ^ UInt8((pn >> 24) & 0xff),
-            iv[9] ^ UInt8((pn >> 16) & 0xff),
-            iv[10] ^ UInt8((pn >> 8) & 0xff),
-            iv[11] ^ UInt8(pn & 0xff),
-        ]
+        // Start from the IV and XOR the big-endian packet number into its right 8 bytes with a
+        // single 64-bit operation, instead of building the nonce one byte at a time.
+        let packetNumberBytes = UInt64(truncatingIfNeeded: packetNumber.value).bigEndian
+        var nonce: ProtectorNonce = iv
+        var nonceSpan = nonce.mutableSpan
+        nonceSpan.withUnsafeMutableBytes { bytes in
+            let right = bytes.loadUnaligned(fromByteOffset: 4, as: UInt64.self)
+            bytes.storeBytes(of: right ^ packetNumberBytes, toByteOffset: 4, as: UInt64.self)
+        }
         return nonce
     }
 
@@ -1038,6 +1039,54 @@ struct Protector: ~Copyable, PrefixedLoggable {
             break
         #endif
         }
+    }
+
+    /// Advances the next packet number past `packet` without sealing it, for a packet whose
+    /// seal is deferred to `sealBatch`. Later packets built before the batch is sealed must not reuse its number.
+    mutating func reservePacketNumber(after packet: borrowing Packet) {
+        sequenceNumber[packet.numberSpace] = packet.number + 1
+    }
+
+    /// Seals a batch of built packets in place, in order, and hands the sealed frames back in `sealed`.
+    ///
+    /// `packets` and `frames` hold the same number of elements in the same order. The batch runs inside
+    /// one constant-time scope, so the per-call enable and restore that each AES-GCM operation makes
+    /// nest inside it and do no work. A failure to seal is fatal to the connection, so sealing stops at the
+    /// first failure: that packet and every packet after it is dropped and its frame is finalized as failed.
+    /// When every packet seals, `frames` itself becomes `sealed` without touching each frame.
+    ///
+    /// - Returns: The number of packets that were dropped, which is zero when every packet sealed.
+    mutating func sealBatch(
+        packets: inout NetworkUniqueDeque<Packet>,
+        frames: inout FrameArray,
+        sealed: inout FrameArray
+    ) -> Int {
+        #if canImport(Darwin)
+        let timingSafeToken = timingsafe_enable_if_supported()
+        defer { timingsafe_restore_if_supported(timingSafeToken) }
+        #endif
+        let total = frames.count
+        var sealedCount = 0
+        frames.iterateMutableFrames { frame in
+            let signpostInterval = QUICSignpost.sealBegin(
+                keyState: packets[sealedCount].keyState.description,
+                packetNumber: packets[sealedCount].number
+            )
+            defer { QUICSignpost.sealEnd(signpostInterval) }
+            do throws(QUICError) {
+                let keyStateIndex = packets[sealedCount].keyState.rawValue
+                try Self.sealInner(&packets[sealedCount], frame: &frame, keys: writeFramer[keyStateIndex])
+            } catch {
+                return false
+            }
+            sealedCount += 1
+            return true
+        }
+        packets.removeAll()
+        // Frames that sealed move on together; any that did not are dropped.
+        sealed = frames.drainArray(maximumFrameCount: sealedCount)
+        frames.finalizeAllFramesAsFailed()
+        return total - sealedCount
     }
 
     mutating func seal(_ packet: inout Packet, frame: inout Frame) throws(QUICError) {

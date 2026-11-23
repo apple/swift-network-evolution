@@ -1558,6 +1558,106 @@ final class ProtectorTests: XCTestCase {
         }
     }
 
+    // An Initial server packet from RFC 9001 Appendix A, built with `packetNumber` and ready to be sealed.
+    private func makeUnsealedInitialPacket(packetNumber: PacketNumber) -> Packet {
+        var packet = Packet(number: packetNumber, lastAcked: 0, keyState: .initial)
+        packet.overrideSentNumberSize = .twoBytes
+        packet.headerLength = 17
+        packet.payloadLength = 98
+        packet.tagLength = 16
+        packet.packetNumberLength = 2
+        return packet
+    }
+
+    private func makeUnsealedInitialFrame() -> Frame {
+        let payload: [UInt8] = [
+            0xc1, 0xff, 0x00, 0x00, 0x15, 0x05, 0xf0, 0x67, 0xa5, 0x50, 0x2a, 0x42,
+            0x62, 0xb5, 0x00, 0x40, 0x74, 0x00, 0x01, 0x0d, 0x00, 0x00, 0x00, 0x00,
+            0x18, 0x41, 0x0a, 0x02, 0x00, 0x00, 0x56, 0x03, 0x03, 0xee, 0xfc, 0xe7,
+            0xf7, 0xb3, 0x7b, 0xa1, 0xd1, 0x63, 0x2e, 0x96, 0x67, 0x78, 0x25, 0xdd,
+            0xf7, 0x39, 0x88, 0xcf, 0xc7, 0x98, 0x25, 0xdf, 0x56, 0x6d, 0xc5, 0x43,
+            0x0b, 0x9a, 0x04, 0x5a, 0x12, 0x00, 0x13, 0x01, 0x00, 0x00, 0x2e, 0x00,
+            0x33, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20, 0x9d, 0x3c, 0x94, 0x0d, 0x89,
+            0x69, 0x0b, 0x84, 0xd0, 0x8a, 0x60, 0x99, 0x3c, 0x14, 0x4e, 0xca, 0x68,
+            0x4d, 0x10, 0x81, 0x28, 0x7c, 0x83, 0x4d, 0x53, 0x11, 0xbc, 0xf3, 0x2b,
+            0xb9, 0xda, 0x1a, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00,
+        ]
+        return Frame(copyBuffer: payload)
+    }
+
+    private func bytes(of frame: borrowing Frame) throws -> Data {
+        guard let span = frame.span else {
+            throw XCTSkip("Frame has no bytes")
+        }
+        return span.withUnsafeBytes { Data($0) }
+    }
+
+    private func makeServerInitialProtector() -> Protector {
+        let cid = QUICConnectionID([0x59, 0x26, 0xf7, 0x05, 0xd0, 0xe0, 0x97, 0x98])!
+        return Protector(isClient: false, destinationCID: cid, logPrefixer: protectorTestsLogPrefixer)
+    }
+
+    func testSealBatchMatchesIndividualSeals() throws {
+        var single = makeServerInitialProtector()
+        var batched = makeServerInitialProtector()
+
+        var expected: [Data] = []
+        var batchPackets = NetworkUniqueDeque<Packet>()
+        var batchFrames = FrameArray()
+        for number in [pnOne, pnTwo] {
+            var packet = makeUnsealedInitialPacket(packetNumber: number)
+            var frame = makeUnsealedInitialFrame()
+            try single.seal(&packet, frame: &frame)
+            expected.append(try bytes(of: frame))
+            frame.finalize(success: true)
+
+            let batchPacket = makeUnsealedInitialPacket(packetNumber: number)
+            batched.reservePacketNumber(after: batchPacket)
+            batchPackets.append(batchPacket)
+            batchFrames.add(frame: makeUnsealedInitialFrame())
+        }
+        XCTAssertEqual(batched.getPacketNumber(for: .initial), single.getPacketNumber(for: .initial))
+
+        var sealed = FrameArray()
+        let dropped = batched.sealBatch(packets: &batchPackets, frames: &batchFrames, sealed: &sealed)
+        XCTAssertEqual(dropped, 0)
+        XCTAssertTrue(batchPackets.isEmpty)
+        XCTAssertTrue(batchFrames.isEmpty)
+        XCTAssertEqual(sealed.count, 2)
+        for expectedBytes in expected {
+            var frame = sealed.removeFirst()
+            XCTAssertEqual(try bytes(of: frame), expectedBytes)
+            frame.finalize(success: true)
+        }
+    }
+
+    func testSealBatchStopsAtFirstFailure() throws {
+        var protector = makeServerInitialProtector()
+        var packets = NetworkUniqueDeque<Packet>()
+        var frames = FrameArray()
+        // The second frame has already been finalized, so there is nothing to seal. The third packet is
+        // sealable, but must still be dropped because it follows a failure.
+        for (index, number) in [pnOne, pnTwo, PacketNumber(3)].enumerated() {
+            var frame = makeUnsealedInitialFrame()
+            if index == 1 {
+                frame.finalize(success: false)
+            }
+            packets.append(makeUnsealedInitialPacket(packetNumber: number))
+            frames.add(frame: frame)
+        }
+
+        var sealed = FrameArray()
+        let dropped = protector.sealBatch(packets: &packets, frames: &frames, sealed: &sealed)
+        XCTAssertEqual(dropped, 2)
+        XCTAssertTrue(packets.isEmpty)
+        XCTAssertTrue(frames.isEmpty)
+        XCTAssertEqual(sealed.count, 1, "Only the packet sealed before the failure is kept")
+        var frame = sealed.removeFirst()
+        frame.finalize(success: true)
+    }
+
     func testPacketNumber() throws {
         let cid = QUICConnectionID([0x59, 0x26, 0xf7, 0x05, 0xd0, 0xe0, 0x97, 0x98])!
         var protector = Protector(
