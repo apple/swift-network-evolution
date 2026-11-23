@@ -139,6 +139,30 @@ public struct FrameArray: ~Copyable {
         }
     }
 
+    /// Runs `enumerator` on each frame from `startIndex` to the end, in place, until it returns `false`.
+    @_optimize(speed)
+    mutating func iterateMutableFrames(startingAt startIndex: Int, _ enumerator: (inout Frame) -> Bool) {
+        let count = frames.count
+        var index = startIndex
+        while index < count {
+            if !enumerator(&frames[index]) {
+                return
+            }
+            index &+= 1
+        }
+    }
+
+    /// Removes the frames from `startIndex` to the end, finalizing each one as failed.
+    mutating func finalizeAndRemoveFrames(startingAt startIndex: Int) {
+        let count = frames.count
+        var index = startIndex
+        while index < count {
+            frames[index].finalize(success: false)
+            index &+= 1
+        }
+        frames.removeLast(count - startIndex)
+    }
+
     public enum FrameIterationResult: ~Copyable {
         case continueIterating
         case stopIterating

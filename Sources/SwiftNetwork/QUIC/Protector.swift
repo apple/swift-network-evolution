@@ -1047,27 +1047,27 @@ struct Protector: ~Copyable, PrefixedLoggable {
         sequenceNumber[packet.numberSpace] = packet.number + 1
     }
 
-    /// Seals a batch of built packets in place, in order, and hands the sealed frames back in `sealed`.
+    /// Seals a batch of built packets in place, in order.
     ///
-    /// `packets` and `frames` hold the same number of elements in the same order. The batch runs inside
-    /// one constant-time scope, so the per-call enable and restore that each AES-GCM operation makes
-    /// nest inside it and do no work. A failure to seal is fatal to the connection, so sealing stops at the
-    /// first failure: that packet and every packet after it is dropped and its frame is finalized as failed.
-    /// When every packet seals, `frames` itself becomes `sealed` without touching each frame.
+    /// `packets` describes the last `packets.count` frames of `frames`, in the same order, which were queued
+    /// for sending when they were built. The batch runs inside one constant-time scope, so the per-call enable
+    /// and restore that each AES-GCM operation makes nest inside it and do no work. A failure to seal is fatal
+    /// to the connection, so sealing stops at the first failure: that packet and every packet after it is
+    /// removed from `frames` and its frame is finalized as failed. `packets` is emptied but keeps its capacity.
     ///
     /// - Returns: The number of packets that were dropped, which is zero when every packet sealed.
     mutating func sealBatch(
         packets: inout NetworkUniqueDeque<Packet>,
-        frames: inout FrameArray,
-        sealed: inout FrameArray
+        frames: inout FrameArray
     ) -> Int {
         #if canImport(Darwin)
         let timingSafeToken = timingsafe_enable_if_supported()
         defer { timingsafe_restore_if_supported(timingSafeToken) }
         #endif
-        let total = frames.count
+        let total = packets.count
+        let firstFrame = frames.count - total
         var sealedCount = 0
-        frames.iterateMutableFrames { frame in
+        frames.iterateMutableFrames(startingAt: firstFrame) { frame in
             let signpostInterval = QUICSignpost.sealBegin(
                 keyState: packets[sealedCount].keyState.description,
                 packetNumber: packets[sealedCount].number
@@ -1083,9 +1083,9 @@ struct Protector: ~Copyable, PrefixedLoggable {
             return true
         }
         packets.removeAll()
-        // Frames that sealed move on together; any that did not are dropped.
-        sealed = frames.drainArray(maximumFrameCount: sealedCount)
-        frames.finalizeAllFramesAsFailed()
+        if sealedCount < total {
+            frames.finalizeAndRemoveFrames(startingAt: firstFrame + sealedCount)
+        }
         return total - sealedCount
     }
 

@@ -3559,6 +3559,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     // Storage for the packets recorded by a single sendFrames() call.
     private var sentPackets = NetworkUniqueDeque<SentPacketRecord>(minimumCapacity: 10)
+    // Storage for `DeferredSealBatch.packets`, kept between bursts so each burst reuses it instead of allocating.
+    private var deferredSealPackets = NetworkUniqueDeque<Packet>(minimumCapacity: 10)
 
     private func capacityForPacketNumberSpace(applicationPendingItems: inout PendingItems) -> Int {
         let packetNumberSpace = PacketNumberSpace.fromKeyState(keyState: self.keyState)
@@ -4143,7 +4145,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         return datagramBatch
     }
 
-    // Seals the packets built for a burst and hands their datagrams to the path in one go.
+    // Seals the packets built for a burst. Their frames are already in the path's send queue, which nothing
+    // sends from until the burst is over, so they are sealed where they lie.
     //
     // A packet that cannot be sealed means the connection's crypto state is broken, so the connection is
     // closed with an internal error rather than carrying on with packets that never reached the wire.
@@ -4153,17 +4156,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         protector: inout Protector,
         path: QUICPath
     ) -> Bool {
-        guard !sealBatch.frames.isEmpty else {
+        guard !sealBatch.packets.isEmpty else {
             return true
         }
-        var sealed = FrameArray()
-        let dropped = protector.sealBatch(
-            packets: &sealBatch.packets,
-            frames: &sealBatch.frames,
-            sealed: &sealed
-        )
-        var sendPath = path
-        try? sendPath.enqueueOutboundDatagrams(sealed)
+        let dropped = protector.sealBatch(packets: &sealBatch.packets, frames: &path.lowerSendQueue)
         if dropped > 0 {
             log.error("Failed to seal packet, dropped \(dropped) packets")
         }
@@ -4219,6 +4215,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         // Seal the whole burst together once it is built, rather than packet by packet. Callers that run
         // while `recovery` is borrowed seal inline instead, because a failure there could not close the connection.
         var sealBatch = DeferredSealBatch(isEnabled: batchSeals)
+        swap(&sealBatch.packets, &deferredSealPackets)
         while applicationPendingItems.hasPendingItems {
             guard
                 buildSinglePacketForKeyState(
@@ -4290,6 +4287,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         if !flushDeferredSeals(&sealBatch, protector: &protector, path: path) {
             sealFailed = true
         }
+        swap(&sealBatch.packets, &deferredSealPackets)
     }
 
     // Used to send only application data
@@ -5020,8 +5018,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         } while testSendingShortPackets
 
         if deferSeal {
+            // Queued now, sealed in place when the burst ends
             QUICSignpost.outbound(id: signpostID, length: totalBytesWrittenInFrame)
-            sealBatch.frames.add(frame: outFrame)
+            var sendPath = path
+            sendPath.enqueueOutboundDatagram(outFrame)
             return true
         }
 
@@ -8037,7 +8037,8 @@ extension QUICConnection {
     }
 }
 
-/// Packets that have been built but not yet sealed, and the frames that hold them, in the order they were built.
+/// The packets of a burst that have been built and queued for sending but not yet sealed, in the order they
+/// were built. Their frames are the last frames of the path's send queue.
 ///
 /// A burst builds its packets into the batch and `QUICConnection` seals them together. When the batch is
 /// not enabled, each packet is sealed as soon as it is built.
@@ -8045,7 +8046,6 @@ extension QUICConnection {
 struct DeferredSealBatch: ~Copyable {
     let isEnabled: Bool
     var packets = NetworkUniqueDeque<Packet>()
-    var frames = FrameArray()
 
     init(isEnabled: Bool) {
         self.isEnabled = isEnabled

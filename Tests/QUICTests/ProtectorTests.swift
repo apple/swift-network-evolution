@@ -1605,7 +1605,9 @@ final class ProtectorTests: XCTestCase {
 
         var expected: [Data] = []
         var batchPackets = NetworkUniqueDeque<Packet>()
-        var batchFrames = FrameArray()
+        var queue = FrameArray()
+        // A frame already in the queue is not part of the batch and must be left alone.
+        queue.add(frame: Frame(copyBuffer: [0xAA, 0xBB]))
         for number in [pnOne, pnTwo] {
             var packet = makeUnsealedInitialPacket(packetNumber: number)
             var frame = makeUnsealedInitialFrame()
@@ -1616,18 +1618,19 @@ final class ProtectorTests: XCTestCase {
             let batchPacket = makeUnsealedInitialPacket(packetNumber: number)
             batched.reservePacketNumber(after: batchPacket)
             batchPackets.append(batchPacket)
-            batchFrames.add(frame: makeUnsealedInitialFrame())
+            queue.add(frame: makeUnsealedInitialFrame())
         }
         XCTAssertEqual(batched.getPacketNumber(for: .initial), single.getPacketNumber(for: .initial))
 
-        var sealed = FrameArray()
-        let dropped = batched.sealBatch(packets: &batchPackets, frames: &batchFrames, sealed: &sealed)
+        let dropped = batched.sealBatch(packets: &batchPackets, frames: &queue)
         XCTAssertEqual(dropped, 0)
         XCTAssertTrue(batchPackets.isEmpty)
-        XCTAssertTrue(batchFrames.isEmpty)
-        XCTAssertEqual(sealed.count, 2)
+        XCTAssertEqual(queue.count, 3)
+        var untouched = queue.removeFirst()
+        XCTAssertEqual(try bytes(of: untouched), Data([0xAA, 0xBB]))
+        untouched.finalize(success: true)
         for expectedBytes in expected {
-            var frame = sealed.removeFirst()
+            var frame = queue.removeFirst()
             XCTAssertEqual(try bytes(of: frame), expectedBytes)
             frame.finalize(success: true)
         }
@@ -1636,7 +1639,7 @@ final class ProtectorTests: XCTestCase {
     func testSealBatchStopsAtFirstFailure() throws {
         var protector = makeServerInitialProtector()
         var packets = NetworkUniqueDeque<Packet>()
-        var frames = FrameArray()
+        var queue = FrameArray()
         // The second frame has already been finalized, so there is nothing to seal. The third packet is
         // sealable, but must still be dropped because it follows a failure.
         for (index, number) in [pnOne, pnTwo, PacketNumber(3)].enumerated() {
@@ -1645,16 +1648,14 @@ final class ProtectorTests: XCTestCase {
                 frame.finalize(success: false)
             }
             packets.append(makeUnsealedInitialPacket(packetNumber: number))
-            frames.add(frame: frame)
+            queue.add(frame: frame)
         }
 
-        var sealed = FrameArray()
-        let dropped = protector.sealBatch(packets: &packets, frames: &frames, sealed: &sealed)
+        let dropped = protector.sealBatch(packets: &packets, frames: &queue)
         XCTAssertEqual(dropped, 2)
         XCTAssertTrue(packets.isEmpty)
-        XCTAssertTrue(frames.isEmpty)
-        XCTAssertEqual(sealed.count, 1, "Only the packet sealed before the failure is kept")
-        var frame = sealed.removeFirst()
+        XCTAssertEqual(queue.count, 1, "Only the packet sealed before the failure stays queued")
+        var frame = queue.removeFirst()
         frame.finalize(success: true)
     }
 
