@@ -1084,7 +1084,7 @@ struct Protector: ~Copyable, PrefixedLoggable {
         }
         packets.removeAll()
         if sealedCount < total {
-            frames.finalizeAndRemoveFrames(startingAt: firstFrame + sealedCount)
+            frames.finalizeFramesAsFailed(startingAt: firstFrame + sealedCount)
         }
         return total - sealedCount
     }
