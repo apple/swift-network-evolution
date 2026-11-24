@@ -40,6 +40,10 @@ public struct InstanceIdentifier: Hashable, Sendable {
         eventStateIndex = .none
     }
 
+    init(eventStateIndex: NetworkStateIndex) {
+        self.eventStateIndex = eventStateIndex
+    }
+
     public init(context: NetworkContext, eventManager: inout ProtocolEventManager) {
         self.eventStateIndex = eventManager.register(in: &context.eventContext)
     }
