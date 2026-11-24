@@ -285,12 +285,18 @@ public final class QUICPath: MultiplexingDatagramPath<
 
     // Gives the peer's CID back once the path can no longer send with it. The connection retires
     // it, unless the peer already has. A zero-length CID is not something the peer can run out
-    // of, and a pre-assigned one belongs to the path, so those are kept.
+    // of, and a pre-assigned one belongs to the path, so those are kept. Over a companion link
+    // another path can share the CID, and it is retired only once the last path gives it up.
     private func releaseDCID() {
         guard let dcid, dcid.length > 0, !hasPreAssignedCIDs else {
             return
         }
-        parentProtocol.retireOutboundCID(dcid)
+        let isSharedWithAnotherPath =
+            parentProtocol.overCompanion
+            && parentProtocol.multiplexingPaths.values.contains { $0 !== self && $0.dcid == dcid }
+        if !isSharedWithAnotherPath {
+            parentProtocol.retireOutboundCID(dcid)
+        }
         self.dcid = nil
     }
 

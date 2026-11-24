@@ -445,6 +445,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // MARK: Flags
 
     private(set) var isServer = false
+    private(set) var overCompanion = false
     private(set) var isCancelled = false
     var hasSentDataBlocked = false
     private(set) var versionReceived = false
@@ -569,6 +570,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.migration = Migration(isServer: isServer)
         self.logPrefixer.log.logPrefix = self.log.logPrefix
         self.initialInterface = path?.directInterface ?? nil
+        #if NETWORK_PRIVATE || NETWORK_DRIVERKIT
+        self.overCompanion = path?.usesCompanion ?? false
+        #else
+        self.overCompanion = path?.usesInterfaceSubtype(subtype: .companion) ?? false
+        #endif
         self.logPrefixer.logIDString = ""
 
         state = .idle
@@ -2687,6 +2693,15 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     @discardableResult
     func assignNewDCID(to path: QUICPath, in eventContext: inout NetworkContext.EventContext) -> Bool {
+        // A peer that chose a zero-length CID is reached with it on every path
+        if isServer, let currentPath, path !== currentPath, let currentDCID = currentPath.dcid,
+            currentDCID.length == 0
+        {
+            log.notice("Using zero length CIDs during migration")
+            path.assignDCID(currentDCID, in: &eventContext)
+            return true
+        }
+
         var eligibleCID: ManagedConnectionID?
 
         // Look for the preferred address CID if applicable
@@ -2712,6 +2727,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
 
         guard let eligibleCID else {
+            if overCompanion, let currentPath, path !== currentPath, let currentDCID = currentPath.dcid,
+                !path.isPreferredAddress, path.state == .routeEstablished || path.state.holdsCID,
+                path.dcid.flatMap({ remoteCIDs.find(connectionID: $0) }) == nil
+            {
+                log.notice("Reusing CID \(currentDCID) on path \(path.pathIdentifier)")
+                path.assignDCID(currentDCID, in: &eventContext)
+                return true
+            }
             log.error("No available DCIDs to assign")
             return false
         }
