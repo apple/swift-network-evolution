@@ -1590,7 +1590,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             findLostPacket(timeNow: timeNow, connection: connection, in: &eventContext)
         } else {
             log.datapath("Recovery timer fired, PTO")
-            if let firstPTOTimestamp {
+            if connection.maxPTODuration > .zero, let firstPTOTimestamp {
                 let ptoDuration = firstPTOTimestamp.duration(to: timeNow)
                 if ptoDuration >= connection.maxPTODuration {
                     log.error("PTO limit reached after \(ptoDuration), closing connection")
@@ -1719,7 +1719,7 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
                 // The limit is only checked when the timer fires, so do not let the backoff carry the timer past
                 // it: the connection closes when the limit is reached, not at the first backed-off PTO after it.
                 // A zero delay cancels the timer, so keep the delay at least a timer granularity.
-                if let firstPTOTimestamp {
+                if connection.maxPTODuration > .zero, let firstPTOTimestamp {
                     let untilLimit = now.duration(to: firstPTOTimestamp.advanced(by: connection.maxPTODuration))
                     computedTimeout = min(computedTimeout, max(untilLimit, Recovery.timerGranularity))
                 }

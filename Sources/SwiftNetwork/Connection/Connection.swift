@@ -1176,6 +1176,7 @@ public struct QUIC: MultiplexProtocol, @unchecked Sendable {
     private var rawPrivateKey: [UInt8]?
     private var idleTimeout: Int?
     private var maxPTODuration: Int?
+    private var pathRecoveryTimeout: Int?
     private var maxUDPPayloadSize: Int?
     private var initialMaxData: Int?
     private var initialMaxStreamDataBidirectionalRemote: Int?
@@ -1202,6 +1203,7 @@ public struct QUIC: MultiplexProtocol, @unchecked Sendable {
         if let rawPrivateKey { tlsOptions.rawPrivateKey = rawPrivateKey }
         if let idleTimeout { connectionOptions.idleTimeout = .milliseconds(idleTimeout) }
         if let maxPTODuration { connectionOptions.maxPTODuration = .milliseconds(maxPTODuration) }
+        if let pathRecoveryTimeout { connectionOptions.pathRecoveryTimeout = .milliseconds(pathRecoveryTimeout) }
         if let maxUDPPayloadSize { connectionOptions.maxUDPPayloadSize = UInt16(maxUDPPayloadSize) }
         if let initialMaxData { connectionOptions.initialMaxData = UInt64(initialMaxData) }
         if let initialMaxStreamDataBidirectionalRemote {
@@ -1275,12 +1277,24 @@ public struct QUIC: MultiplexProtocol, @unchecked Sendable {
     ///
     /// If the peer does not acknowledge any of the probes the connection sends
     /// for this long, the QUIC connection will be closed with `ETIMEDOUT`.
-    /// The default is two minutes; use a shorter limit to give up on an unresponsive peer sooner.
+    /// The default is 20 seconds; use a shorter limit to give up on an unresponsive peer sooner.
     ///
-    /// - Parameter duration: The longest time to stay in PTO recovery, in milliseconds.
+    /// - Parameter duration: The longest time to stay in PTO recovery, in milliseconds,
+    ///   or 0 to disable the limit.
     public func maxPTODuration(_ duration: Int) -> Self {
         var mutableSelf = self
         mutableSelf.maxPTODuration = duration
+        return mutableSelf
+    }
+
+    /// Set how long a QUIC client may wait for a usable path while it has data to send, in milliseconds.
+    ///
+    /// If no usable path comes back within this time, the QUIC connection will be closed with `ETIMEDOUT`.
+    ///
+    /// - Parameter timeout: The path recovery timeout, in milliseconds, or 0 to disable it.
+    public func pathRecoveryTimeout(_ timeout: Int) -> Self {
+        var mutableSelf = self
+        mutableSelf.pathRecoveryTimeout = timeout
         return mutableSelf
     }
 

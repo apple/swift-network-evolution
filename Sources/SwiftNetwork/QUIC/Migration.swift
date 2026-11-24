@@ -20,6 +20,7 @@ struct Migration: ~Copyable {
     static let defaultKeepaliveThreshold = 2
 
     var timerID: Timer.TimerID?
+    var pathRecoveryTimerID: Timer.TimerID?
 
     var primaryPathID: MultiplexingPathIdentifier = .none
 
@@ -157,6 +158,36 @@ struct Migration: ~Copyable {
             }
         }
         connection.runMigrationStrategy(events: events, in: &eventContext)
+    }
+
+    // Arms the path recovery timer while a client has data queued and no usable path
+    func evaluatePathRecoveryTimer(connection: QUICConnection, in eventContext: inout NetworkContext.EventContext) {
+        let timeout = connection.pathRecoveryTimeout
+        guard !connection.isServer, connection.state == .connected, timeout > .zero, let pathRecoveryTimerID else {
+            return
+        }
+        if let currentPath = connection.currentPath, !currentPath.state.isUnusable {
+            guard connection.isPathRecoveryTimerArmed else { return }
+            connection.isPathRecoveryTimerArmed = false
+            connection.timer.reschedule(
+                identifier: pathRecoveryTimerID,
+                fromNow: .zero,
+                timerNow: connection.now,
+                in: &eventContext
+            )
+            connection.log.notice("Current path usable again, cancelling path recovery timer")
+        } else {
+            guard !connection.isPathRecoveryTimerArmed, connection.applicationPendingItems.hasUnsentApplicationData
+            else { return }
+            connection.isPathRecoveryTimerArmed = true
+            connection.timer.reschedule(
+                identifier: pathRecoveryTimerID,
+                fromNow: timeout,
+                timerNow: connection.now,
+                in: &eventContext
+            )
+            connection.log.notice("Unsent data and no usable path, arming path recovery timer for \(timeout)")
+        }
     }
 
     func migrate(
@@ -398,6 +429,7 @@ extension QUICConnection {
         if currentPath != nil, !state.isTerminal {
             tearDownUnusablePaths(in: &eventContext)
         }
+        migration.evaluatePathRecoveryTimer(connection: self, in: &eventContext)
     }
 
     // Called once a packet's frames have been handled.
