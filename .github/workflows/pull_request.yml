@@ -10,7 +10,7 @@ on:
 jobs:
   tests:
     name: Test
-    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.18
+    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.19
     with:
       name: tests
       swift_flags: "-Xswiftc -warnings-as-errors"
@@ -46,7 +46,7 @@ jobs:
   tests-nightly-main:
     # Keep this separate so that it can be disabled if the nightly compiler shows any issue.
     name: Test (nightly-main)
-    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.18
+    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.19
     with:
       name: tests-nightly-main
       swift_nightly_flags: "-Xswiftc -warnings-as-errors"
@@ -66,6 +66,32 @@ jobs:
       enable_embedded_wasm_sdk_build: false
       enable_cxx_interop: false
       enable_freebsd: false
+
+  benchmarks-linux:
+    # `SWIFT_DETERMINISTIC_HASHING` fixes the hash seed; otherwise retain and release counts vary
+    # from run to run and cannot hold a threshold.
+    name: Benchmarks (Linux)
+    uses: swiftlang/github-workflows/.github/workflows/benchmarks.yml@0.0.18
+    with:
+      name: benchmarks-linux
+      benchmark_package_paths: '["Benchmarks"]'
+      swift_package_arguments: "--disable-sandbox"
+      linux_swift_versions: '["6.4", "nightly-release", "nightly-main"]'
+      linux_env_vars: '{"SWIFT_DETERMINISTIC_HASHING": "1"}'
+
+  benchmarks-macos:
+    # The threshold path has no operating-system component, so this job is named by Xcode version
+    # to keep its directory apart from the Linux jobs'.
+    name: Benchmarks (macOS)
+    uses: swiftlang/github-workflows/.github/workflows/benchmarks.yml@0.0.18
+    with:
+      name: benchmarks-macos
+      benchmark_package_paths: '["Benchmarks"]'
+      swift_package_arguments: "--disable-sandbox"
+      enable_linux: false
+      enable_macos: true
+      macos_xcode_versions: '["latest-beta"]'
+      macos_env_vars: '{"SWIFT_DETERMINISTIC_HASHING": "1"}'
 
   soundness:
     name: Soundness
