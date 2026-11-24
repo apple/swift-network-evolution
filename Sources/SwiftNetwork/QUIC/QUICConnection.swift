@@ -6927,17 +6927,53 @@ extension QUICConnection {
             // The stream is fully set up before it joins the flow table, where it can only be
             // borrowed from then on.
             let newStreamInstance = newStream.identifier
-            let newStreamMetadata = newStream.streamMetadata(messageIdentifier: inboundStreamMessageIdentifier)
+
+            // An inline application (see `UpperProtocolLinkage.deliversInline`) gets its side of the
+            // stream now, so the stream has its upper before it can raise an event.
+            var inlineUpperLinkage: BaseInboundStreamLinkage?
+            // A new inline stream is reported, then connected as the application's connect would,
+            // while it is still ours to borrow: the stream is not pending, nothing is queued for its
+            // upper, and the events only reach the application's queue, so none of the lookups
+            // `connectStream` makes to find the stream again are needed. Before the connection is
+            // established the connect waits with the connection, as `connectStream` does. The
+            // application is told the stream ID, so no metadata object is made for it.
+            var connectedInline = false
+            if inboundFlowLinkage.deliversInline,
+                let inlineUpper = inboundFlowLinkage.makeInlineFlow(
+                    flowInstance: newStreamInstance,
+                    flowTag: newStreamID.value,
+                    lower: newStream.asLowerLinkage(),
+                    in: &eventContext
+                )
+            {
+                newStream.upper = inlineUpper
+                inlineUpperLinkage = inlineUpper
+                if isConnected(in: &eventContext) {
+                    if newStreamInstance.canCallConnect(requested: true, in: &eventContext) {
+                        newStream.deliverConnectedEvent(in: &eventContext)
+                    }
+                    connectedInline = true
+                }
+            }
+            // Without an inline application, the new-flow event carries the stream's metadata.
+            let newStreamMetadata: AbstractProtocolMetadata? =
+                inlineUpperLinkage == nil
+                ? newStream.streamMetadata(messageIdentifier: inboundStreamMessageIdentifier) : nil
             insertFlow(newStream, for: newFlowIdentifier)
 
-            // The message identifier names a message; a stream's metadata is not one, so inbound
-            // streams share one, which saves the locked counter a fresh insecure identifier takes.
-            let abstractMetadata: AbstractProtocolMetadata = newStreamMetadata
-            deliverNewInboundFlowEvent(
-                newStreamInstance,
-                flowMetadata: abstractMetadata,
-                in: &eventContext
-            )
+            if let inlineUpperLinkage {
+                if !connectedInline {
+                    connectStream(flow: newFlowIdentifier, for: inlineUpperLinkage.identifier, in: &eventContext)
+                }
+            } else {
+                // The message identifier names a message; a stream's metadata is not one, so inbound
+                // streams share one, which saves the locked counter a fresh insecure identifier takes.
+                deliverNewInboundFlowEvent(
+                    newStreamInstance,
+                    flowMetadata: newStreamMetadata,
+                    in: &eventContext
+                )
+            }
 
             log.debug(
                 "Set stream \(newStreamID.description) for flow \(newFlowIdentifier.debugDescription)"
