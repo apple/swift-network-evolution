@@ -1,0 +1,6 @@
+{
+  "mallocCountTotal" : 13000,
+  "objectAllocCount" : 0,
+  "releaseCount" : 16000,
+  "retainCount" : 0
+}
