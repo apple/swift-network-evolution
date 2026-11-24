@@ -561,16 +561,8 @@ final class SwiftNetworkSwiftTLSRecordTests: NetTestCase {
         var serverReports: [ProtocolEstablishmentReport] = []
         let collected = XCTestExpectation(description: "Wait for the establishment reports")
         state.context.async {
-            if case .protocolEstablishmentReports(let reports)? = state.clientApplicationLayer.getMetrics(
-                requestedNetworkMetric: .protocolEstablishmentReports
-            ) {
-                clientReports = reports
-            }
-            if case .protocolEstablishmentReports(let reports)? = state.serverApplicationLayer.getMetrics(
-                requestedNetworkMetric: .protocolEstablishmentReports
-            ) {
-                serverReports = reports
-            }
+            clientReports = state.clientApplicationLayer.getProtocolEstablishmentReports() ?? []
+            serverReports = state.serverApplicationLayer.getProtocolEstablishmentReports() ?? []
             collected.fulfill()
         }
         wait(for: [collected], timeout: 5.0)

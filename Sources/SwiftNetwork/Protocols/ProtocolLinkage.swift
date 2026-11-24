@@ -272,7 +272,7 @@ public protocol ListenerLinkage: LowerProtocolLinkage where PairedUpperLinkage: 
 
 @_spi(ProtocolProvider)
 @available(Network 0.1.0, *)
-public protocol LowerProtocolLinkage: ProtocolLinkage {
+public protocol LowerProtocolLinkage: ProtocolLinkage, NetworkMetricsProviding {
     /// The upper linkage this lower linkage attaches to.
     associatedtype PairedUpperLinkage: UpperProtocolLinkage
 
@@ -308,11 +308,6 @@ public protocol LowerProtocolLinkage: ProtocolLinkage {
         for instance: InstanceIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) -> ProtocolMetadata<P>?
-    func getMetrics(
-        requestedNetworkMetric: RequestedNetworkMetrics,
-        for instance: InstanceIdentifier,
-        in eventContext: inout NetworkContext.EventContext
-    ) -> NetworkMetrics?
 }
 
 @_spi(ProtocolProvider)
