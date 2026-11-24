@@ -73,7 +73,7 @@ jobs:
     with:
       license_header_check_project_name: "Swift"
       api_breakage_check_container_image: "swift:6.4-jammy"
-      docs_check_enabled: false
+      docs_check_container_image: "swift:6.4-noble"
 
   fuzz-smoke:
     # Quick smoke check that the fuzz targets still build and don't crash
