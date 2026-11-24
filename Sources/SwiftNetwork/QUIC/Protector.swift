@@ -1060,7 +1060,7 @@ struct Protector: ~Copyable, PrefixedLoggable {
         packets: inout NetworkUniqueDeque<Packet>,
         frames: inout FrameArray
     ) -> Int {
-        #if canImport(Darwin)
+        #if canImport(Darwin) && !targetEnvironment(simulator)
         let timingSafeToken = timingsafe_enable_if_supported()
         defer { timingsafe_restore_if_supported(timingSafeToken) }
         #endif
