@@ -10,7 +10,7 @@ on:
 jobs:
   tests:
     name: Test
-    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.18
+    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.19
     with:
       name: tests
       swift_flags: "-Xswiftc -warnings-as-errors"
@@ -46,7 +46,7 @@ jobs:
   tests-nightly-main:
     # Keep this separate so that it can be disabled if the nightly compiler shows any issue.
     name: Test (nightly-main)
-    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.18
+    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.19
     with:
       name: tests-nightly-main
       swift_nightly_flags: "-Xswiftc -warnings-as-errors"
