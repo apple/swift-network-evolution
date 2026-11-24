@@ -70,35 +70,24 @@ extension IPv4Address {
 
 @available(Network 0.1.0, *)
 extension IPv6Address {
-    /// Whether this is a 6to4 address (`2002::/16`).
-    var is6to4: Bool {
-        var firstChunk = self.address.0
-        return withUnsafeBytes(of: &firstChunk) { $0[0] == 0x20 && $0[1] == 0x02 }
-    }
-
     /// Whether this is a Teredo address (`2001:0000::/32`).
     var isTeredo: Bool {
-        var firstChunk = self.address.0
+        var firstChunk = self.addressValue.0
         return withUnsafeBytes(of: &firstChunk) {
             $0[0] == 0x20 && $0[1] == 0x01 && $0[2] == 0x00 && $0[3] == 0x00
         }
     }
 
-    /// Whether this is a unique local address (`fc00::/7`).
-    var isUniqueLocal: Bool {
-        var firstChunk = self.address.0
-        return withUnsafeBytes(of: &firstChunk) { ($0[0] & 0xfe) == 0xfc }
-    }
-
     /// Whether this is an IPv4-compatible address (`::/96`), which excludes the unspecified
     /// (`::`) and loopback (`::1`) addresses.
     var isV4Compat: Bool {
-        address.0 == 0 && address.1 == 0 && address.2 == 0 && !isUnspecified && !isLoopback
+        addressValue.0 == 0 && addressValue.1 == 0 && addressValue.2 == 0
+            && !isUnspecified && !isLoopback
     }
 
     /// Whether this is a 6bone address (`3ffe::/16`).
     var is6bone: Bool {
-        var firstChunk = self.address.0
+        var firstChunk = self.addressValue.0
         return withUnsafeBytes(of: &firstChunk) { $0[0] == 0x3f && $0[1] == 0xfe }
     }
 
