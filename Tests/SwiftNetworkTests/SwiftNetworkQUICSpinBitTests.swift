@@ -124,8 +124,12 @@ final class SwiftNetworkQUICSpinBitTests: NetTestCase {
             serverOptions: serverOptions,
             afterData: { harness in
                 harness.onContext {
-                    let clientSpinBit = harness.state?.clientInstance.currentPath?.spinValue ?? false
-                    let serverSpinBit = harness.state?.serverInstance.currentPath?.spinValue ?? false
+                    let clientSpinBit =
+                        harness.state?.clientInstance.withCurrentPath { (path: inout QUICPath) in path.spinValue }
+                        ?? false
+                    let serverSpinBit =
+                        harness.state?.serverInstance.withCurrentPath { (path: inout QUICPath) in path.spinValue }
+                        ?? false
                     XCTAssertFalse(clientSpinBit, "Client should have the spin bit set to false")
                     XCTAssertFalse(serverSpinBit, "Server should have the spin bit set to true")
                 }

@@ -2349,21 +2349,29 @@ class QUICTestHarness {
 
         var initialMaximumSegmentSize = 0
         onContext {
-            initialMaximumSegmentSize = clientConnection.currentPath?.mss ?? 0
+            initialMaximumSegmentSize = clientConnection.withCurrentPath { (path: inout QUICPath) in path.mss } ?? 0
         }
 
         if startingSizeIsPathMaximum {
             onContext {
                 clientConnection.fromExternal { eventContext in
-                    guard let path = clientConnection.currentPath else {
+                    guard let currentPathID = clientConnection.currentPathID,
+                        clientConnection.withPathWorkFromRecovery(
+                            currentPathID,
+                            { (path: inout QUICPath) in
+                                path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
+                                    state.packetTooBigReceived(
+                                        on: &path,
+                                        nextMTU: state.currentPathMTU,
+                                        in: &eventContext
+                                    )
+                                }
+                            }
+                        ) != nil
+                    else {
                         XCTFail("Client path missing")
                         return
                     }
-                    path.pmtudState.packetTooBigReceived(
-                        on: path,
-                        nextMTU: path.pmtudState.currentPathMTU,
-                        in: &eventContext
-                    )
                 }
             }
         }
@@ -2426,7 +2434,7 @@ class QUICTestHarness {
 
         var finalMaximumSegmentSize = 0
         onContext {
-            finalMaximumSegmentSize = clientConnection.currentPath?.mss ?? 0
+            finalMaximumSegmentSize = clientConnection.withCurrentPath { (path: inout QUICPath) in path.mss } ?? 0
         }
         stop()
         return (initialMaximumSegmentSize, finalMaximumSegmentSize)
@@ -2854,7 +2862,8 @@ class QUICTestHarness {
             clientConnection.fromExternal { eventContext in
                 defer { attempted = true }
                 guard let flowID = clientConnection.someFlowIdentifier,
-                    let path = clientConnection.currentPath
+                    let currentPathID = clientConnection.currentPathID,
+                    clientConnection.hasPath(currentPathID)
                 else {
                     return
                 }
@@ -2873,11 +2882,13 @@ class QUICTestHarness {
                 }
 
                 var discardInitialRecoveryState = false
-                clientConnection.sendFramesFromRecovery(
-                    on: path,
-                    discardInitialRecoveryState: &discardInitialRecoveryState,
-                    in: &eventContext
-                )
+                _ = clientConnection.withPathWorkFromRecovery(currentPathID) { (path: inout QUICPath) in
+                    clientConnection.sendFramesFromRecovery(
+                        on: &path,
+                        discardInitialRecoveryState: &discardInitialRecoveryState,
+                        in: &eventContext
+                    )
+                }
             }
         }
 

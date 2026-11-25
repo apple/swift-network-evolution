@@ -296,8 +296,8 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         state.congestionWindow += increase >> Prague.congestionWindowShift
     }
 
-    private func updatePacerState(state: CongestionControlState, path: QUICPath?, smoothedRTT: NetworkDuration) {
-        guard let path, path.pacer.enabled else {
+    func updatePacerState(state: CongestionControlState, pacer: inout Pacer, smoothedRTT: NetworkDuration) {
+        guard pacer.enabled else {
             return
         }
 
@@ -314,8 +314,8 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
             pacedWindow * System.Time.USEC_PER_SEC / UInt64(smoothedRTTInMicroseconds)
         let burstSize = rateInBytesPerSecond >> burstQueueShift
 
-        path.pacer.setRate(rate: rateInBytesPerSecond)
-        path.pacer.setBurstSize(burstSize: UInt32(truncatingIfNeeded: burstSize))
+        pacer.setRate(rate: rateInBytesPerSecond)
+        pacer.setBurstSize(burstSize: UInt32(truncatingIfNeeded: burstSize))
     }
 
     mutating func enterRecovery(
@@ -494,7 +494,6 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
     @discardableResult
     mutating func packetLost(
         state: inout CongestionControlState,
-        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -510,14 +509,13 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
             now: now,
             qlog: qlog
         )
-        updatePacerState(state: state, path: path, smoothedRTT: smoothedRTT)
         return reducedCongestionWindow
     }
 
     mutating func ackEnd(
         state: inout CongestionControlState,
         rtt: borrowing RTT,
-        path: QUICPath?,
+        pacer: inout Pacer,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -560,13 +558,12 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         if _slowPath(state.congestionWindow < Prague.minCongestionWindow(mss)) {
             state.congestionWindow = Prague.minCongestionWindow(mss)
         }
-        updatePacerState(state: state, path: path, smoothedRTT: smoothedRTT)
+        updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
         state.logUpdate(log: log, qlog: qlog)
     }
 
     mutating func processECN(
         state: inout CongestionControlState,
-        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,
@@ -633,8 +630,7 @@ struct Prague: CongestionControlProtocol, CubicLikeProtocol {
         // Enter or stay in CWR if new counts are received
         pragueCWR(state: &state, largestAckedSentTime: largestAckedSentTime, mss: mss, qlog: qlog)
 
-        // Update pacer state as cwnd has changed
-        updatePacerState(state: state, path: path, smoothedRTT: smoothedRTT)
+        // The pacer is updated for this window change by `CongestionControl.processECN`, since this has no pacer
 
         // Start new round for CWR
         state.largestSentPN = largestSentPN

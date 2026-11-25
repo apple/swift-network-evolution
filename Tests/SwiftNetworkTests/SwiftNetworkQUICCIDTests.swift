@@ -74,7 +74,7 @@ final class SwiftNetworkQUICCIDTests: NetTestCase {
                 harness.onContext {
                     guard let clientInstance = harness.state?.clientInstance,
                         let clientHarness = harness.state?.clientHarness,
-                        let dcid = clientInstance.currentPath?.dcid
+                        let dcid = clientInstance.withCurrentPath({ (path: inout QUICPath) in path.dcid }) ?? nil
                     else {
                         XCTFail("State needs to be present to proceed")
                         return
@@ -157,7 +157,7 @@ final class SwiftNetworkQUICCIDTests: NetTestCase {
                 harness.onContext {
                     guard let clientInstance = harness.state?.clientInstance,
                         let clientHarness = harness.state?.clientHarness,
-                        let currentPath = clientInstance.currentPath
+                        let currentPathID = clientInstance.currentPathID
                     else {
                         XCTFail("State needs to be present to proceed")
                         return
@@ -169,10 +169,15 @@ final class SwiftNetworkQUICCIDTests: NetTestCase {
                     )
 
                     let switched = clientInstance.fromExternal { eventContext in
-                        clientInstance.assignNewDCID(to: currentPath, in: &eventContext)
+                        clientInstance.withPath(currentPathID) { (path: inout QUICPath) in
+                            clientInstance.assignNewDCID(to: &path, in: &eventContext)
+                        } ?? false
                     }
                     XCTAssertTrue(switched, "Client should switch to the new connection ID")
-                    XCTAssertEqual(currentPath.dcid, laterConnectionID)
+                    XCTAssertEqual(
+                        clientInstance.withPath(currentPathID) { (path: inout QUICPath) in path.dcid } ?? nil,
+                        laterConnectionID
+                    )
                     XCTAssertEqual(clientInstance.remoteCIDs.find(connectionID: laterConnectionID)?.used, true)
 
                     clientHarness.waitForError { error in
@@ -233,7 +238,10 @@ final class SwiftNetworkQUICCIDTests: NetTestCase {
                     let unusedCID = clientInstance.remoteCIDs.find(connectionID: unusedConnectionID)
                     XCTAssertEqual(unusedCID?.token, unusedToken)
                     XCTAssertEqual(unusedCID?.used, false, "The client must not have switched to the new connection ID")
-                    XCTAssertNotEqual(clientInstance.currentPath?.dcid, unusedConnectionID)
+                    XCTAssertNotEqual(
+                        clientInstance.withCurrentPath({ (path: inout QUICPath) in path.dcid }) ?? nil,
+                        unusedConnectionID
+                    )
 
                     clientHarness.waitForError { error in
                         reportedError = error

@@ -48,18 +48,14 @@ final class PacerTests: XCTestCase {
         pacer.rate = 1_000_000
         pacer.burstSize = 0
 
-        let path = connection.context.onQueue {
-            QUICPath.makeFromExternalTest(parent: self.connection)
-        }
-        defer { connection.context.onQueue { path.destroyFromExternalTest() } }
-
         let packetLength: UInt16 = 1000
         var sendTimeAbsolute = NetworkClock.Instant(nanoseconds: 0)
         var sendTimeContinuous = NetworkClock.Instant(nanoseconds: 0)
 
         let timeBefore = NetworkClock.Instant.systemNowAbsolute
         pacer.getSendTime(
-            path: path,
+            now: connection.now,
+            nowAbsolute: connection.nowAbsolute,
             packetLength: packetLength,
             sendTimeAbsolute: &sendTimeAbsolute,
             sendTimeContinuous: &sendTimeContinuous
@@ -92,7 +88,8 @@ final class PacerTests: XCTestCase {
         let previousCurrentSize = pacer.currentSize
         pacer.setBurstSize(burstSize: 2000)
         pacer.getSendTime(
-            path: path,
+            now: connection.now,
+            nowAbsolute: connection.nowAbsolute,
             packetLength: packetLength,
             sendTimeAbsolute: &sendTimeAbsolute,
             sendTimeContinuous: &sendTimeContinuous
@@ -110,7 +107,8 @@ final class PacerTests: XCTestCase {
 
         // Send again now that currentSize >= burstSize
         pacer.getSendTime(
-            path: path,
+            now: connection.now,
+            nowAbsolute: connection.nowAbsolute,
             packetLength: packetLength,
             sendTimeAbsolute: &sendTimeAbsolute,
             sendTimeContinuous: &sendTimeContinuous
@@ -129,23 +127,22 @@ final class PacerTests: XCTestCase {
 
     func testPacerBurstLimit() {
 
-        let path = connection.context.onQueue {
-            QUICPath.makeFromExternalTest(parent: self.connection)
+        let pathID = connection.makeTestPath { path in
+            path.pacePackets = true
+            path.set(interface: nil, priority: 1, isInitial: true)
+            // startupRate is 10 Mbps, this will affect the pacing time
+            path.pacer.setInitialState(10_000_000, 10000)
+            path.pacer.reset()
         }
-        defer { connection.context.onQueue { path.destroyFromExternalTest() } }
-        path.pacePackets = true
-        path.set(interface: nil, priority: 1, isInitial: true)
-        // startupRate is 10 Mbps, this will affect the pacing time
-        path.pacer.setInitialState(10_000_000, 10000)
-        path.pacer.reset()
         var sendTimeAbsolute = NetworkClock.Instant(nanoseconds: 0)
         var sendTimeContinuous = NetworkClock.Instant(nanoseconds: 0)
-        path.pacer.getSendTime(
-            path: path,
-            packetLength: 1500,
-            sendTimeAbsolute: &sendTimeAbsolute,
-            sendTimeContinuous: &sendTimeContinuous
-        )
+        connection.testPath(pathID) {
+            $0.pacedSendTime(
+                packetLength: 1500,
+                sendTimeAbsolute: &sendTimeAbsolute,
+                sendTimeContinuous: &sendTimeContinuous
+            )
+        }
         let currentTime = NetworkClock.Instant.systemNow
         // First packet should be sent out almost immediately
         XCTAssertTrue(
@@ -154,22 +151,24 @@ final class PacerTests: XCTestCase {
 
         let previousAbsoluteTime = sendTimeAbsolute
         // Should not have reached the burst size yet, absolute times should match
-        path.pacer.getSendTime(
-            path: path,
-            packetLength: 1500,
-            sendTimeAbsolute: &sendTimeAbsolute,
-            sendTimeContinuous: &sendTimeContinuous
-        )
-        XCTAssertEqual(sendTimeAbsolute, previousAbsoluteTime)
-        // Invoke the burst behavior
-        let initialBurstAbsoluteTime = sendTimeAbsolute
-        for _ in 0..<6 {
-            path.pacer.getSendTime(
-                path: path,
+        connection.testPath(pathID) {
+            $0.pacedSendTime(
                 packetLength: 1500,
                 sendTimeAbsolute: &sendTimeAbsolute,
                 sendTimeContinuous: &sendTimeContinuous
             )
+        }
+        XCTAssertEqual(sendTimeAbsolute, previousAbsoluteTime)
+        // Invoke the burst behavior
+        let initialBurstAbsoluteTime = sendTimeAbsolute
+        for _ in 0..<6 {
+            connection.testPath(pathID) {
+                $0.pacedSendTime(
+                    packetLength: 1500,
+                    sendTimeAbsolute: &sendTimeAbsolute,
+                    sendTimeContinuous: &sendTimeContinuous
+                )
+            }
         }
         let timeDifference = sendTimeAbsolute - initialBurstAbsoluteTime
         // We should see a pacing time less than maxBurstIntervalKernelPacing (Should be around 1-2ms)

@@ -22,7 +22,7 @@ import XCTest
 @_spi(Essentials) @_spi(ProtocolProvider) @testable import Network
 #endif
 
-/// Helpers that drive a congestion controller directly, with no path to pace.
+/// Helpers that drive a congestion controller directly, with nothing to pace.
 @available(Network 0.1.0, *)
 extension CongestionControlProtocol {
     /// Sends `packets` 1000-byte packets and acknowledges all of them in one ACK.
@@ -41,7 +41,8 @@ extension CongestionControlProtocol {
         for _ in 0..<packets {
             packetsAcked(state: &state, bytesAcked: 1000, sentTime: sentTime)
         }
-        ackEnd(state: &state, rtt: rtt, path: nil, mss: mss, packetsLost: false, now: ackTime, qlog: nil)
+        var unpaced = Pacer()
+        ackEnd(state: &state, rtt: rtt, pacer: &unpaced, mss: mss, packetsLost: false, now: ackTime, qlog: nil)
     }
 
     /// Sends one 1000-byte packet, declares it lost, and then undoes the loss as spurious.
@@ -61,7 +62,6 @@ extension CongestionControlProtocol {
         ackBegin(state: &state)
         let reduced = packetLost(
             state: &state,
-            path: nil,
             bytesLost: 1000,
             largestLostSentTime: sentTime,
             mss: mss,
@@ -70,7 +70,8 @@ extension CongestionControlProtocol {
             qlog: nil
         )
         XCTAssertTrue(reduced, "the loss should open a recovery period", file: file, line: line)
-        ackEnd(state: &state, rtt: rtt, path: nil, mss: mss, packetsLost: true, now: now, qlog: nil)
+        var unpaced = Pacer()
+        ackEnd(state: &state, rtt: rtt, pacer: &unpaced, mss: mss, packetsLost: true, now: now, qlog: nil)
         XCTAssertLessThan(state.congestionWindow, window, file: file, line: line)
         spuriousRetransmit(state: &state, qlog: nil)
     }

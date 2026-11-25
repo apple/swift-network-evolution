@@ -37,12 +37,11 @@ struct Pacer: ~Copyable {
     var currentSize: UInt32 = 0
     let enabled: Bool
 
-    private func getPacketInterval(path: QUICPath, burstLength: UInt32) -> NetworkDuration {
+    // The interval a burst of `burstLength` bytes takes at the current rate. A rate of zero shouldn't
+    // happen: `rateWasZero` reports it, for the caller to log with what it knows about the path.
+    private func getPacketInterval(burstLength: UInt32, rateWasZero: inout Bool) -> NetworkDuration {
         guard rate > 0 else {
-            let startupRate = startupRate
-            Logger.proto.fault(
-                "Pacer rate shouldn't be 0, startup rate = \(startupRate), CCA is \(path.congestionControlName) (cwnd=\(path.congestionControlWindow), smoothed rtt=\(path.smoothedRTT.milliseconds) ms)"
-            )
+            rateWasZero = true
             return Constants.maxBurstIntervalKernelPacing
         }
         let interval = UInt64(burstLength) * System.Time.NSEC_PER_SEC / rate
@@ -53,19 +52,17 @@ struct Pacer: ~Copyable {
         return intervalConverted.time
     }
 
+    /// Works out when a packet should be sent. Returns `true` if the pacing rate was zero, which
+    /// shouldn't happen; the caller logs it.
+    @discardableResult
     mutating func getSendTime(
-        path: QUICPath?,
+        now continuousTime: NetworkClock.Instant,
+        nowAbsolute absoluteTime: NetworkClock.Instant,
         packetLength: UInt16,
         sendTimeAbsolute: inout NetworkClock.Instant,
         sendTimeContinuous: inout NetworkClock.Instant
-    ) {
-
-        guard let path else {
-            return
-        }
-        let continuousTime = path.parentProtocol.now
-        let absoluteTime = path.parentProtocol.nowAbsolute
-
+    ) -> Bool {
+        var rateWasZero = false
         if packetSentTime == .zero {
             packetSentTime = absoluteTime
             currentSize = UInt32(packetLength)
@@ -73,7 +70,7 @@ struct Pacer: ~Copyable {
             if currentSize >= burstSize {
                 // Increment sent time by the pacing interval and
                 // reset size to the curent burst's len
-                let pacingInterval = getPacketInterval(path: path, burstLength: currentSize)
+                let pacingInterval = getPacketInterval(burstLength: currentSize, rateWasZero: &rateWasZero)
                 packetSentTime = packetSentTime + pacingInterval
                 currentSize = UInt32(packetLength)
                 if absoluteTime > packetSentTime {
@@ -88,6 +85,7 @@ struct Pacer: ~Copyable {
         }
         sendTimeAbsolute = packetSentTime
         sendTimeContinuous = packetSentTime + (continuousTime.time - absoluteTime.time)
+        return rateWasZero
     }
 
     // Packet rate determines the outgoing rate and

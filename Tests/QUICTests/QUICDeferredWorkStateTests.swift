@@ -281,13 +281,13 @@ final class QUICDeferredWorkStateTests: XCTestCase {
                 var path = QUICPath(parent: connection, in: &eventContext)
                 let wasFlowBorrowed = connection.deferredWork.beginFlowBorrow(of: .streams)
                 let sent = connection.sendFrames(
-                    on: path,
+                    on: path.pathIdentifier,
                     ignoreCongestionWindow: true,
                     retransmission: false,
                     in: &eventContext
                 )
                 // A second send on the same path merges with the first
-                _ = connection.sendFrames(on: path, retransmission: true, in: &eventContext)
+                _ = connection.sendFrames(on: path.pathIdentifier, retransmission: true, in: &eventContext)
                 let work = connection.deferredWork.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
 
                 XCTAssertFalse(sent)
@@ -308,18 +308,18 @@ final class QUICDeferredWorkStateTests: XCTestCase {
                 var first = QUICPath(parent: connection, in: &eventContext)
                 var second = QUICPath(parent: connection, in: &eventContext)
                 connection.deferredWork.beginFlowBorrow(of: .streams)
-                _ = connection.sendFrames(on: first, ignoreCongestionWindow: true, in: &eventContext)
-                _ = connection.sendFrames(on: second, retransmission: true, in: &eventContext)
+                _ = connection.sendFrames(on: first.pathIdentifier, ignoreCongestionWindow: true, in: &eventContext)
+                _ = connection.sendFrames(on: second.pathIdentifier, retransmission: true, in: &eventContext)
                 _ = connection.deferredWork.endFlowBorrow(of: .streams, wasFlowBorrowed: false)
 
                 let pathSends = connection.takePathSends() ?? []
                 XCTAssertEqual(pathSends.count, 2)
                 for pathSend in pathSends {
-                    if pathSend.path === first {
+                    if pathSend.path == first.pathIdentifier {
                         XCTAssertTrue(pathSend.ignoreCongestionWindow)
                         XCTAssertFalse(pathSend.retransmission)
                     } else {
-                        XCTAssertTrue(pathSend.path === second)
+                        XCTAssertTrue(pathSend.path == second.pathIdentifier)
                         XCTAssertFalse(pathSend.ignoreCongestionWindow)
                         XCTAssertTrue(pathSend.retransmission)
                     }
@@ -378,7 +378,7 @@ final class QUICDeferredWorkStateTests: XCTestCase {
                 var path = QUICPath(parent: connection, in: &eventContext)
                 let wasFlowBorrowed = connection.deferredWork.beginFlowBorrow(of: .streams)
                 _ = connection.sendFrames(ignoreCongestionWindow: true, in: &eventContext)
-                _ = connection.sendFrames(on: path, in: &eventContext)
+                _ = connection.sendFrames(on: path.pathIdentifier, in: &eventContext)
                 connection.close(sendCloseFrame: false, in: &eventContext)
                 guard let work = connection.deferredWork.endFlowBorrow(of: .streams, wasFlowBorrowed: wasFlowBorrowed)
                 else {

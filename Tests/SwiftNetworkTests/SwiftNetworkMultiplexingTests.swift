@@ -175,6 +175,15 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
             let readApplicationData = readApplicationBytes.withUnsafeBytes { [UInt8]($0) }
             XCTAssertEqual(inputPacketData, readApplicationData, "Failed to read expected multiplexed input data")
 
+            // Reading the datagram serviced it once. The read that found nothing more must not service
+            // again: that is a whole pass over the received datagrams for no datagrams.
+            XCTAssertGreaterThan(instance.receivedServicePasses, 0, "The received datagram was never serviced")
+            XCTAssertEqual(
+                instance.emptyReceivedServicePasses,
+                0,
+                "The protocol was asked to service received datagrams when there were none"
+            )
+
             instance.triggerNewFlowCreation()
             XCTAssertEqual(listenerHarness.upperHarnesses.count, 1, "Listener expects to have 1 inbound flows")
 
@@ -251,7 +260,7 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
         instance: TestMultiplexingProtocol,
         lowerHarness: DatagramLowerHarness<TestDatagramLinkageFamily>
     ) {
-        guard let path = instance.multiplexingPaths.values.first else {
+        guard let pathID = instance.somePathIdentifier else {
             XCTFail("Multiplexing protocol has no path")
             return
         }
@@ -259,7 +268,7 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
             XCTFail("Connecting the path reported no change")
             return
         }
-        XCTAssertEqual(established.path, path.pathIdentifier)
+        XCTAssertEqual(established.path, pathID)
         guard case .established = established.event else {
             XCTFail("Connecting the path reported \(established.event)")
             return
@@ -267,7 +276,7 @@ final class SwiftNetworkMultiplexingTests: NetTestCase {
         // The first path is primary.
         XCTAssertEqual(established.properties, MultiplexingPathProperties(isPrimary: true, isInjected: false))
 
-        path.pathIsInjected = true
+        _ = instance.withPath(pathID) { (path: inout TestDatagramPath) in path.pathIsInjected = true }
         lowerHarness.deliverPathIsNotPrimary()
         XCTAssertEqual(
             instance.pathChanges.last?.properties,

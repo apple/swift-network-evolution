@@ -108,12 +108,80 @@ public struct TestDatagramFlow: ~Copyable, MultiplexedDatapathFlow, AutomaticUpp
 
 @_spi(TestHarness)
 @available(Network 0.1.0, *)
-public final class TestDatagramPath: MultiplexingDatagramPath<TestMultiplexingProtocol, TestDatagramLinkageFamily.Lower>
-{
+public struct TestDatagramPath: ~Copyable, MultiplexingDatapathPath, AutomaticLowerDatagramProcessing {
+    public typealias ParentProtocol = TestMultiplexingProtocol
+    public typealias LowerProtocol = TestDatagramLinkageFamily.Lower
+
+    var base: MultiplexingDatagramPath<TestMultiplexingProtocol, TestDatagramLinkageFamily.Lower>
+
+    public init(parent: TestMultiplexingProtocol, in eventContext: inout NetworkContext.EventContext) {
+        base = MultiplexingDatagramPath(parent: parent, in: &eventContext)
+    }
+
+    public var parentProtocol: TestMultiplexingProtocol {
+        get { base.parentProtocol }
+        set { base.parentProtocol = newValue }
+    }
+    public var lower: TestDatagramLinkageFamily.Lower {
+        get { base.lower }
+        set { base.lower = newValue }
+    }
+    public var eventManager: ProtocolEventManager {
+        _read { yield base.eventManager }
+        _modify { yield &base.eventManager }
+    }
+    public var pathIdentifier: MultiplexingPathIdentifier { base.pathIdentifier }
+    public var lowerSendQueue: FrameArray {
+        _read { yield base.lowerSendQueue }
+        _modify { yield &base.lowerSendQueue }
+    }
+    public var lowerReceiveQueue: FrameArray {
+        _read { yield base.lowerReceiveQueue }
+        _modify { yield &base.lowerReceiveQueue }
+    }
+    public var pathIsPrimary: Bool {
+        get { base.pathIsPrimary }
+        set { base.pathIsPrimary = newValue }
+    }
+    public var pathIsInjected: Bool {
+        get { base.pathIsInjected }
+        set { base.pathIsInjected = newValue }
+    }
+    public var pathHasMigrationInfo: Bool {
+        get { base.pathHasMigrationInfo }
+        set { base.pathHasMigrationInfo = newValue }
+    }
+    public var identifier: InstanceIdentifier {
+        get { base.identifier }
+        set { base.identifier = newValue }
+    }
+
+    public mutating func serviceLowerReceiveQueue(in eventContext: inout NetworkContext.EventContext) {
+        base.serviceLowerReceiveQueue(in: &eventContext)
+    }
+
+    public mutating func handleOutboundRoomAvailable(in eventContext: inout NetworkContext.EventContext) {
+        base.handleOutboundRoomAvailable(in: &eventContext)
+    }
+
+    public mutating func handleInboundDataAvailableEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        base.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+    }
+
+    public mutating func handleOutboundRoomAvailableEvent(
+        for instance: InstanceIdentifier,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        base.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+    }
+
     // Hands back a linkage that routes to this path, so its lower protocol can deliver events to
-    // it. The default implementation returns an empty linkage.
-    public override func asUpperLinkage() -> TestInboundDatagramLinkage {
-        TestInboundDatagramLinkage(path: self)
+    // it. The path is found in the protocol's path entries by its identifier.
+    public func asUpperLinkage() -> TestInboundDatagramLinkage {
+        TestInboundDatagramLinkage(multiplexing: parentProtocol, path: pathIdentifier, identifier: identifier)
     }
 }
 
@@ -163,7 +231,27 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
     public func insertFlow(_ flow: consuming Flow, for flowID: MultiplexedFlowIdentifier) {
         multiplexedFlows.insert(flow, for: flowID)
     }
-    public var multiplexingPaths = [MultiplexingPathIdentifier: TestDatagramPath]()
+
+    public var multiplexedPaths = MultiplexedPathEntries<Path>()
+
+    var isPathBorrowed = false
+
+    public func withUnborrowedPaths<R: ~Copyable, E: Error>(
+        _ body: (inout MultiplexedPathEntries<Path>) throws(E) -> R
+    ) throws(E) -> R? {
+        guard !isPathBorrowed else { return nil }
+        isPathBorrowed = true
+        defer { isPathBorrowed = false }
+        return try body(&multiplexedPaths)
+    }
+
+    public func insertPath(_ path: consuming Path, for pathID: MultiplexingPathIdentifier) throws(NetworkError) {
+        do throws(MultiplexedPathEntriesError) {
+            try multiplexedPaths.insert(path, for: pathID)
+        } catch {
+            throw error.networkError
+        }
+    }
 
     public func serviceDatagramsToSend(
         flow: MultiplexedFlowIdentifier,
@@ -184,7 +272,7 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
     }
 
     // The flow is borrowed, so its queue is handed in and nothing here looks a flow up. The datagrams go to
-    // the path, which has a table of its own.
+    // the path, which has its own queues.
     public func serviceDatagramsToSend(
         borrowedFlow flow: MultiplexedFlowIdentifier,
         sendQueue: inout FrameArray,
@@ -210,11 +298,22 @@ public final class TestMultiplexingProtocol: ManyToManyApplicationDatagramProtoc
         try? sendEnqueuedOutboundDatagrams(path: path, in: &eventContext)
     }
 
+    /// How many times the protocol was asked to service the datagrams received on a path, and how many of
+    /// those times there were none to service. A path should only ask when it has something.
+    public private(set) var receivedServicePasses = 0
+    public private(set) var emptyReceivedServicePasses = 0
+
     public func serviceReceivedDatagrams(
         path: MultiplexingPathIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
         log.debug("Multiplexing protocol asked to service received datagrams on path \(path.description)")
+        receivedServicePasses += 1
+        var wasEmpty = false
+        accessReceivedDatagrams(path: path) { frames in wasEmpty = frames.isEmpty }
+        if wasEmpty {
+            emptyReceivedServicePasses += 1
+        }
         guard let flow = someFlowIdentifier else {
             return
         }

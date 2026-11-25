@@ -346,18 +346,21 @@ public struct TestStreamLinkageFamily: StreamLinkageFamily {
 final class TestExternalInboundDatagram: ExternalInboundDatagramLinkage {
     enum Target {
         case harness(DatagramUpperHarness<TestDatagramLinkageFamily>)
-        case path(TestDatagramPath)
+        // A path of a multiplexing protocol, found in its path entries by identifier
+        case path(TestMultiplexingProtocol, MultiplexingPathIdentifier, InstanceIdentifier)
     }
 
     let target: Target
 
     init(harness: DatagramUpperHarness<TestDatagramLinkageFamily>) { self.target = .harness(harness) }
-    init(path: TestDatagramPath) { self.target = .path(path) }
+    init(multiplexing: TestMultiplexingProtocol, path: MultiplexingPathIdentifier, identifier: InstanceIdentifier) {
+        self.target = .path(multiplexing, path, identifier)
+    }
 
     var identifier: InstanceIdentifier {
         switch target {
         case .harness(let harness): return harness.identifier
-        case .path(let path): return path.identifier
+        case .path(_, _, let identifier): return identifier
         }
     }
 
@@ -389,7 +392,8 @@ final class TestExternalInboundDatagram: ExternalInboundDatagramLinkage {
     func handleConnectedEvent(for instance: InstanceIdentifier, in eventContext: inout NetworkContext.EventContext) {
         switch target {
         case .harness(let harness): harness.handleConnectedEvent(for: instance, in: &eventContext)
-        case .path(let path): path.handleConnectedEvent(for: instance, in: &eventContext)
+        case .path(let multiplexing, let pathID, _):
+            multiplexing.handleConnectedEvent(path: pathID, for: instance, in: &eventContext)
         }
     }
 
@@ -400,7 +404,8 @@ final class TestExternalInboundDatagram: ExternalInboundDatagramLinkage {
     ) {
         switch target {
         case .harness(let harness): harness.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
-        case .path(let path): path.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        case .path(let multiplexing, let pathID, _):
+            multiplexing.handleDisconnectedEvent(path: pathID, error: error, for: instance, in: &eventContext)
         }
     }
 
@@ -411,9 +416,8 @@ final class TestExternalInboundDatagram: ExternalInboundDatagramLinkage {
     ) {
         switch target {
         case .harness(let harness): harness.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
-        case .path(let path):
-            var mutablePath = path
-            mutablePath.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        case .path(let multiplexing, let pathID, _):
+            multiplexing.handleNetworkProtocolEvent(path: pathID, event: event, for: instance, in: &eventContext)
         }
     }
 
@@ -423,9 +427,8 @@ final class TestExternalInboundDatagram: ExternalInboundDatagramLinkage {
     ) {
         switch target {
         case .harness(let harness): harness.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
-        case .path(let path):
-            var mutablePath = path
-            mutablePath.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+        case .path(let multiplexing, let pathID, _):
+            multiplexing.handleInboundDataAvailableEvent(path: pathID, for: instance, in: &eventContext)
         }
     }
 
@@ -435,9 +438,8 @@ final class TestExternalInboundDatagram: ExternalInboundDatagramLinkage {
     ) {
         switch target {
         case .harness(let harness): harness.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
-        case .path(let path):
-            var mutablePath = path
-            mutablePath.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+        case .path(let multiplexing, let pathID, _):
+            multiplexing.handleOutboundRoomAvailableEvent(path: pathID, for: instance, in: &eventContext)
         }
     }
 }
@@ -454,7 +456,7 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage {
         case datagramUpperHarness(DatagramUpperHarness<TestDatagramLinkageFamily>)
         // A path on the multiplexing protocol: this is what the path hands back from
         // `asUpperLinkage()` so its lower protocol can deliver events to it.
-        case multiplexingPath(TestDatagramPath)
+        case multiplexingPath(TestMultiplexingProtocol, MultiplexingPathIdentifier)
     }
 
     /// The framework linkage this one is reached through. For a framework protocol it is that
@@ -478,9 +480,15 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage {
         self.protocolType = .datagramUpperHarness(harness)
     }
 
-    public init(path: TestDatagramPath) {
-        self.base = .init(external: TestExternalInboundDatagram(path: path))
-        self.protocolType = .multiplexingPath(path)
+    public init(
+        multiplexing: TestMultiplexingProtocol,
+        path: MultiplexingPathIdentifier,
+        identifier: InstanceIdentifier
+    ) {
+        self.base = .init(
+            external: TestExternalInboundDatagram(multiplexing: multiplexing, path: path, identifier: identifier)
+        )
+        self.protocolType = .multiplexingPath(multiplexing, path)
     }
 
     public var identifier: InstanceIdentifier { base.identifier }
@@ -524,8 +532,8 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
-        case .multiplexingPath(let path):
-            path.handleConnectedEvent(for: instance, in: &eventContext)
+        case .multiplexingPath(let multiplexing, let pathID):
+            multiplexing.handleConnectedEvent(path: pathID, for: instance, in: &eventContext)
         case .datagramUpperHarness(let harness): harness.handleConnectedEvent(for: instance, in: &eventContext)
         case .base: base.handleConnectedEvent(for: instance, in: &eventContext)
         }
@@ -537,8 +545,8 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
-        case .multiplexingPath(let path):
-            path.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
+        case .multiplexingPath(let multiplexing, let pathID):
+            multiplexing.handleDisconnectedEvent(path: pathID, error: error, for: instance, in: &eventContext)
         case .datagramUpperHarness(let harness):
             harness.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
         case .base: base.handleDisconnectedEvent(error: error, for: instance, in: &eventContext)
@@ -551,9 +559,8 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
-        case .multiplexingPath(let path):
-            var path = path
-            path.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
+        case .multiplexingPath(let multiplexing, let pathID):
+            multiplexing.handleNetworkProtocolEvent(path: pathID, event: event, for: instance, in: &eventContext)
         case .datagramUpperHarness(let harness):
             harness.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
         case .base: base.handleNetworkProtocolEvent(event: event, for: instance, in: &eventContext)
@@ -565,9 +572,8 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
-        case .multiplexingPath(let path):
-            var path = path
-            path.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
+        case .multiplexingPath(let multiplexing, let pathID):
+            multiplexing.handleInboundDataAvailableEvent(path: pathID, for: instance, in: &eventContext)
         case .datagramUpperHarness(let harness):
             harness.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
         case .base: base.handleInboundDataAvailableEvent(for: instance, in: &eventContext)
@@ -579,9 +585,8 @@ public struct TestInboundDatagramLinkage: InboundDatagramLinkage {
         in eventContext: inout NetworkContext.EventContext
     ) {
         switch protocolType {
-        case .multiplexingPath(let path):
-            var path = path
-            path.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
+        case .multiplexingPath(let multiplexing, let pathID):
+            multiplexing.handleOutboundRoomAvailableEvent(path: pathID, for: instance, in: &eventContext)
         case .datagramUpperHarness(let harness):
             harness.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)
         case .base: base.handleOutboundRoomAvailableEvent(for: instance, in: &eventContext)

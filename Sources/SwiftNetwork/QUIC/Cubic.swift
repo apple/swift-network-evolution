@@ -237,8 +237,8 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         }
     }
 
-    private func updatePacerState(state: CongestionControlState, path: QUICPath?, smoothedRTT: NetworkDuration) {
-        guard let path, path.pacer.enabled else {
+    func updatePacerState(state: CongestionControlState, pacer: inout Pacer, smoothedRTT: NetworkDuration) {
+        guard pacer.enabled else {
             return
         }
 
@@ -255,14 +255,13 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             pacedWindow * System.Time.USEC_PER_SEC / UInt64(smoothedRTTInMicroseconds)
         let burstSize = rateInBytesPerSecond >> burstQueueShift
 
-        path.pacer.setRate(rate: rateInBytesPerSecond)
-        path.pacer.setBurstSize(burstSize: UInt32(truncatingIfNeeded: burstSize))
+        pacer.setRate(rate: rateInBytesPerSecond)
+        pacer.setBurstSize(burstSize: UInt32(truncatingIfNeeded: burstSize))
     }
 
     @discardableResult
     mutating func packetLost(
         state: inout CongestionControlState,
-        path: QUICPath?,
         bytesLost: Int,
         largestLostSentTime: NetworkClock.Instant,
         mss: Int,
@@ -278,7 +277,6 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             now: now,
             qlog: qlog
         )
-        updatePacerState(state: state, path: path, smoothedRTT: smoothedRTT)
         return reducedCongestionWindow
     }
 
@@ -341,7 +339,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
     mutating func ackEnd(
         state: inout CongestionControlState,
         rtt: borrowing RTT,
-        path: QUICPath?,
+        pacer: inout Pacer,
         mss: Int,
         packetsLost: Bool,
         now: NetworkClock.Instant,
@@ -379,13 +377,12 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
         if _slowPath(state.congestionWindow < Cubic.minCongestionWindow(mss)) {
             state.congestionWindow = Cubic.minCongestionWindow(mss)
         }
-        updatePacerState(state: state, path: path, smoothedRTT: smoothedRTT)
+        updatePacerState(state: state, pacer: &pacer, smoothedRTT: smoothedRTT)
         state.logUpdate(log: log, qlog: qlog)
     }
 
     mutating func processECN(
         state: inout CongestionControlState,
-        path: QUICPath?,
         ceCount: Int,
         packetsAcked: Int,
         largestSentPN: Int64,
@@ -431,8 +428,7 @@ struct Cubic: CongestionControlProtocol, CubicLikeProtocol {
             return
         }
         congestionEvent(state: &state, sentTime: largestAckedSentTime, mss: mss, now: now, qlog: qlog)
-        // Update pacer state as congestionWindow has changed
-        updatePacerState(state: state, path: path, smoothedRTT: smoothedRTT)
+        // The pacer is updated for this window change by `CongestionControl.processECN`, since this has no pacer
         // Start new round for CWR
         state.largestSentPN = largestSentPN
     }

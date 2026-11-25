@@ -50,6 +50,30 @@ struct Migration: ~Copyable {
         return peerPathID != pathID
     }
 
+    /// What a non-probing packet from the peer means for where the peer is.
+    enum PeerPacketResult: Equatable {
+        /// The packet is older than the highest-numbered non-probing packet so far, so it says nothing about
+        /// where the peer is now (RFC 9000 9.3).
+        case olderThanLatest
+        /// The packet is the newest, and came from the path the peer was already on.
+        case peerStayedOnPath
+        /// The packet is the newest, and came from a different path than the one the peer was on.
+        case peerMovedToPath
+    }
+
+    // Records a non-probing packet from the peer, and reports what it means for where the peer is. Only the
+    // highest-numbered one counts, so an older one is ignored. One look at the state does what
+    // `nonProbingPacketMovesPeer` and `recordNonProbingPacket` do in two.
+    mutating func notePeerPacket(number: PacketNumber, on pathID: MultiplexingPathIdentifier) -> PeerPacketResult {
+        if let largestNonProbingPacketNumber, number <= largestNonProbingPacketNumber {
+            return .olderThanLatest
+        }
+        largestNonProbingPacketNumber = number
+        let moved = peerPathID != pathID
+        peerPathID = pathID
+        return moved ? .peerMovedToPath : .peerStayedOnPath
+    }
+
     // Records a non-probing packet from the peer. An older one than the highest-numbered so far
     // is ignored.
     mutating func recordNonProbingPacket(number: PacketNumber, on pathID: MultiplexingPathIdentifier) {
@@ -70,9 +94,13 @@ struct Migration: ~Copyable {
         now: NetworkClock.Instant,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        connection.applyToAllPaths { path in
-            if path.hasPendingItems(now: now) {
-                connection.sendFrames(on: path, in: &eventContext)
+        connection.allPathIdentifiers { pathID in
+            let hasPendingItems =
+                connection.withPath(pathID) { (path: inout QUICPath) -> Bool in
+                    path.hasPendingItems(now: now)
+                } ?? false
+            if hasPendingItems {
+                connection.sendFrames(on: pathID, in: &eventContext)
             }
         }
     }
@@ -90,7 +118,7 @@ struct Migration: ~Copyable {
         sendPendingChallenges(connection: connection, now: now, in: &eventContext)
 
         var firstChallengeTime: NetworkClock.Instant?
-        connection.applyToAllPaths { path in
+        connection.applyToAllPaths { (path: borrowing QUICPath) in
             if let nextChallengeTime = path.nextChallengeTime {
                 guard now < nextChallengeTime else {
                     return
@@ -142,8 +170,17 @@ struct Migration: ~Copyable {
         // The timer must be re-armed even when no challenge is due: `Timer` fires up to
         // `Timer.timerThreshold` early and has already disabled the entry, so an early wakeup would
         // otherwise stall probing. `resetTimer` sends whatever is due before arming.
+        resetTimerAndReportPaths(now: firedAt, connection: connection, in: &eventContext)
+    }
+
+    /// Resets the timer, and runs the migration strategy for what the reset found out.
+    func resetTimerAndReportPaths(
+        now: NetworkClock.Instant,
+        connection: QUICConnection,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         let before = connection.migrationPathStates
-        resetTimer(now: firedAt, connection: connection, in: &eventContext)
+        resetTimer(now: now, connection: connection, in: &eventContext)
 
         // Sending a challenge can find a path has run out of probes and mark it unreachable.
         // That happens while frames are being built, where the strategy cannot run, so report it
@@ -151,7 +188,7 @@ struct Migration: ~Copyable {
         // fired, so report every unusable path, not only the ones that changed just now: if it is
         // the current path, the strategy has to move off it.
         var events = connection.migrationEvents(since: before)
-        connection.applyToAllPaths { path in
+        connection.applyToAllPaths { (path: borrowing QUICPath) in
             if path.state.isUnusable, !events.contains(.pathChanged(path.pathIdentifier)) {
                 events.append(.pathChanged(path.pathIdentifier))
             }
@@ -160,29 +197,44 @@ struct Migration: ~Copyable {
     }
 
     func migrate(
-        to path: QUICPath,
+        to pathID: MultiplexingPathIdentifier,
         connection: QUICConnection,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        guard connection.currentPath != path else {
+        guard connection.currentPathID != pathID else {
+            return
+        }
+
+        let isServer = connection.isServer
+        let initialSpinValue = connection.initialSpinValue
+        // What it takes to decide, taken in one borrow. The path is looked at again later, since
+        // migrating calls out to the application and to the other paths.
+        guard
+            let candidate = connection.withPath(
+                pathID,
+                { (path: inout QUICPath) -> (isValidated: Bool, isProbing: Bool, local: Endpoint?, remote: Endpoint?) in
+                    (path.isValidated, path.isProbing, path.localEndpoint, path.remoteEndpoint)
+                }
+            )
+        else {
             return
         }
 
         // A server follows the peer onto a path while it validates it (RFC 9000 9.3). A client
         // only moves to a path it has validated.
-        guard path.isValidated || (connection.isServer && path.isProbing) else {
-            connection.log.fault("Refusing to migrate to unvalidated path \(path.pathIdentifier)")
+        guard candidate.isValidated || (isServer && candidate.isProbing) else {
+            connection.log.fault("Refusing to migrate to unvalidated path \(pathID)")
             return
         }
 
-        connection.log.notice("Migrating to path \(path.pathIdentifier)")
-        connection.currentPath = path
-        if let localEndpoint = path.localEndpoint, let remoteEndpoint = path.remoteEndpoint,
+        connection.log.notice("Migrating to path \(pathID)")
+        connection.currentPathID = pathID
+        if let localEndpoint = candidate.local, let remoteEndpoint = candidate.remote,
             case .address(let localAddress) = localEndpoint.type,
             case .address(let remoteAddress) = remoteEndpoint.type
         {
             let pathInfo = QUICPathInfo(
-                isValidated: path.isValidated,
+                isValidated: candidate.isValidated,
                 remote: remoteAddress,
                 local: localAddress
             )
@@ -192,15 +244,32 @@ struct Migration: ~Copyable {
                 in: &eventContext
             )
         } else {
-            connection.log.error("Path \(path.pathIdentifier) is missing endpoints, not delivering pathCurrent")
+            connection.log.error("Path \(pathID) is missing endpoints, not delivering pathCurrent")
         }
-        path.spinValue = connection.initialSpinValue
+        // The application was called out to above, so the path may be borrowed or gone by now.
+        let spinReset: Void? = connection.withPath(pathID) { (path: inout QUICPath) in
+            path.spinValue = initialSpinValue
+        }
+        if spinReset == nil {
+            connection.log.fault("Path \(pathID) is busy or gone, spin value not reset")
+        }
         connection.recovery.resetTimer(now: connection.now, connection: connection, in: &eventContext)
-        path.resetPacer()
-        path.pmtudState.start(on: path, in: &eventContext)
-        connection.applyToAllPaths { otherPath in
-            if otherPath != path {
-                otherPath.pmtudState.stop(on: otherPath)
+        // PMTUD sends probes, so the new current path is borrowed for work while it starts
+        let pmtudStarted: Void? = connection.withPathWork(pathID, replayingSendsIn: &eventContext) {
+            (path: inout QUICPath, ctx) in
+            path.resetPacer()
+            path.withPMTUDState { (state: inout PMTUDState, path: inout QUICPath) in
+                state.start(on: &path, in: &ctx)
+            }
+        }
+        if pmtudStarted == nil {
+            connection.log.fault("Path \(pathID) is busy or gone, pacer not reset and PMTUD not started")
+        }
+        var cursor = connection.startPathIteration()
+        while let otherPathID = connection.nextPathIdentifier(&cursor) {
+            if otherPathID == pathID { continue }
+            _ = connection.withPath(otherPathID) { (otherPath: inout QUICPath) in
+                otherPath.pmtudState.stop(connection: connection)
             }
         }
         if !connection.isServer {
@@ -219,7 +288,7 @@ struct Migration: ~Copyable {
 
     func probingPathCount(_ connection: QUICConnection) -> Int {
         var probingPaths = 0
-        connection.applyToAllPaths { path in
+        connection.applyToAllPaths { (path: borrowing QUICPath) in
             if path.state.isProbing {
                 probingPaths += 1
             }
@@ -233,6 +302,52 @@ struct Migration: ~Copyable {
 
     func checkForKeepaliveLoss(outstandingCount: Int) {
         // TODO: pending keepalive loss detection for migration
+    }
+}
+
+/// What waits for the frames of a packet to have been processed.
+///
+/// A path's update cannot look at the other paths or run the migration strategy, and the strategy
+/// must not run in the middle of a packet. The work is noted here and done once the packet is handled.
+/// It is one value so that the per-packet bookkeeping is one look at it, not one for each field.
+@available(Network 0.1.0, *)
+struct PacketMigrationWork {
+    /// Migration events wait for the end of the packet, while this is set
+    var isHandlingPacket = false
+    var pendingMigrationEvents: [MigrationEvent] = []
+    /// A path changed what the migration timer waits for, and the timer is reset at the end of the packet or send.
+    var migrationTimerResetPending = false
+    /// The time the path that asked for the reset was working at, which the reset is measured from
+    var migrationTimerResetNow: NetworkClock.Instant = .zero
+
+    /// Ends a packet whose handling was cut short. Whatever waited for its end is dropped.
+    @inline(always)
+    mutating func abandonPacket() {
+        isHandlingPacket = false
+        if !pendingMigrationEvents.isEmpty {
+            pendingMigrationEvents.removeAll()
+        }
+    }
+
+    /// Ends a packet, and hands back the work that waited for its end, or `nil` if nothing did.
+    @inline(always)
+    mutating func finishPacket() -> (events: [MigrationEvent], timerResetPending: Bool)? {
+        isHandlingPacket = false
+        guard !pendingMigrationEvents.isEmpty || migrationTimerResetPending else { return nil }
+        let events = pendingMigrationEvents
+        if !events.isEmpty {
+            pendingMigrationEvents.removeAll()
+        }
+        return (events, migrationTimerResetPending)
+    }
+
+    /// Takes the request to reset the migration timer, with the time it was made at, if there is one.
+    @inline(always)
+    mutating func takeTimerReset() -> NetworkClock.Instant? {
+        guard migrationTimerResetPending else { return nil }
+        migrationTimerResetPending = false
+        defer { migrationTimerResetNow = .zero }
+        return migrationTimerResetNow
     }
 }
 
@@ -269,27 +384,47 @@ extension QUICConnection {
 
         log.debug("Path \(pathID.description) changed to \(event), primary: \(pathProperties.isPrimary)")
 
-        guard let path = path(for: pathID) else {
-            log.error("Path \(pathID.description) not found, ignoring")
+        guard hasPath(pathID) else {
+            // `hasPath` is also false while a path is borrowed, so the path may be busy rather than missing.
+            log.error("Path \(pathID.description) not found or busy, ignoring")
             return
         }
 
+        // A new path starts out with what the current path has learned about the peer. The current path is
+        // looked at first, since the new path is borrowed for the update.
+        let inheritedRemoteMaxAckDelay = withCurrentPath { (path: inout QUICPath) in path.rtt.remoteMaxAckDelay }
         let before = migrationPathStates
-        switch event {
-        case .available:
-            if path.state.isInvalid {
-                // Set before `set()`, which creates the pacer based on `pacePackets`.
-                path.pacePackets = pacingEnabled
-                path.set(interface: nil, priority: 0, isInitial: false)
-                setupL4S(on: path)
-                path.state = .routeAvailable
+        let pacingEnabled = self.pacingEnabled
+        let isValidated: Bool? = withPath(pathID) { (path: inout QUICPath) -> Bool in
+            switch event {
+            case .available:
+                if path.state.isInvalid {
+                    // Set before `set()`, which creates the pacer based on `pacePackets`.
+                    path.pacePackets = pacingEnabled
+                    path.set(
+                        interface: nil,
+                        priority: 0,
+                        isInitial: false,
+                        inheriting: QUICPath.Inheritance(
+                            remoteMaxAckDelay: inheritedRemoteMaxAckDelay,
+                            sharedInterfaceMSS: nil
+                        )
+                    )
+                    setupL4S(on: &path)
+                    path.state = .routeAvailable
+                }
+            case .established:
+                if !path.isRouteEstablished {
+                    path.state = .routeEstablished
+                }
+            case .unavailable:
+                path.state = .routeUnavailable
             }
-        case .established:
-            if !path.isRouteEstablished {
-                path.state = .routeEstablished
-            }
-        case .unavailable:
-            path.state = .routeUnavailable
+            return path.isValidated
+        }
+        guard let isValidated else {
+            log.fault("Path \(pathID.description) is busy or gone, dropping path event \(event)")
+            return
         }
 
         logExistingPaths()
@@ -301,7 +436,7 @@ extension QUICConnection {
             case .address(let remoteAddress) = remote.type
         {
             let pathInfo = QUICPathInfo(
-                isValidated: path.isValidated,
+                isValidated: isValidated,
                 remote: remoteAddress,
                 local: localAddress
             )
@@ -321,24 +456,28 @@ extension QUICConnection {
 
     func logExistingPaths() {
         log.debug("Existing paths:")
-        applyToAllPaths { path in
+        applyToAllPaths { (path: borrowing QUICPath) in
             log.debug(
                 "Path \(path.pathIdentifier) \(path.state) over \(path.interface?.description ?? "nil")"
             )
         }
     }
 
-    private func migrationContext(currentPath: QUICPath) -> MigrationContext {
+    private func migrationContext(currentPathID: MultiplexingPathIdentifier) -> MigrationContext? {
+        var currentSnapshot: MigrationContext.PathSnapshot?
         var otherPaths: [MigrationContext.PathSnapshot] = []
-        otherPaths.reserveCapacity(multiplexingPaths.count)
-        applyToAllPaths { path in
-            if path !== currentPath {
+        otherPaths.reserveCapacity(pathCount)
+        applyToAllPaths { (path: borrowing QUICPath) in
+            if path.pathIdentifier == currentPathID {
+                currentSnapshot = path.migrationSnapshot
+            } else {
                 otherPaths.append(path.migrationSnapshot)
             }
         }
+        guard let currentSnapshot else { return nil }
         otherPaths.sort { $0.identifier < $1.identifier }
         return MigrationContext(
-            currentPath: currentPath.migrationSnapshot,
+            currentPath: currentSnapshot,
             otherPaths: otherPaths,
             peerPathID: migration.peerPathID
         )
@@ -347,11 +486,11 @@ extension QUICConnection {
     // What the paths look like now, so that `migrationEvents(since:)` can tell what changed.
     var migrationPathStates: MigrationPathStates {
         var paths: [MigrationContext.PathSnapshot] = []
-        paths.reserveCapacity(multiplexingPaths.count)
-        applyToAllPaths { path in
+        paths.reserveCapacity(pathCount)
+        applyToAllPaths { (path: borrowing QUICPath) in
             paths.append(path.migrationSnapshot)
         }
-        return MigrationPathStates(currentPathID: currentPath?.pathIdentifier, paths: paths)
+        return MigrationPathStates(currentPathID: currentPathID, paths: paths)
     }
 
     // The changes made to the connection's paths since `before` was taken.
@@ -395,20 +534,41 @@ extension QUICConnection {
         if !migration.activeMigrationDisabled || isServer {
             applyMigrationStrategy(events: events, in: &eventContext)
         }
-        if currentPath != nil, !state.isTerminal {
+        if currentPathID != nil, !state.isTerminal {
             tearDownUnusablePaths(in: &eventContext)
         }
     }
 
     // Called once a packet's frames have been handled.
     func finishHandlingPacket(in eventContext: inout NetworkContext.EventContext) {
-        isHandlingPacket = false
-        guard !pendingMigrationEvents.isEmpty else {
-            return
+        // Nearly every packet has nothing waiting, which this finds in one look at the state
+        guard let work = migrationWork.finishPacket() else { return }
+        if !work.events.isEmpty {
+            runMigrationStrategy(events: work.events, in: &eventContext)
         }
-        let events = pendingMigrationEvents
-        pendingMigrationEvents.removeAll()
-        runMigrationStrategy(events: events, in: &eventContext)
+        // Running the strategy can ask for a reset too
+        resetMigrationTimerIfPending(in: &eventContext)
+    }
+
+    // A path that sent a challenge, or got the answer to one, changed when the migration timer is due.
+    // The timer looks at every path, which a path cannot do from inside its own update, so the path asks
+    // for the reset and it runs here, once the paths are all back in the entries.
+    func resetMigrationTimerIfPending(in eventContext: inout NetworkContext.EventContext) {
+        guard var resetNow = migrationWork.takeTimerReset() else { return }
+        guard migration.timerID != nil else { return }
+        // Resetting the timer sends the challenges that are due, which can find that a path has run out of
+        // probes, so the strategy is run for that, as it is when the timer fires. It can ask for another reset.
+        var remainingResets = Self.maximumMigrationEvents
+        while true {
+            migration.resetTimerAndReportPaths(
+                now: resetNow == .zero ? now : resetNow,
+                connection: self,
+                in: &eventContext
+            )
+            remainingResets -= 1
+            guard remainingResets > 0, let again = migrationWork.takeTimerReset() else { return }
+            resetNow = again
+        }
     }
 
     private func applyMigrationStrategy(
@@ -418,7 +578,7 @@ extension QUICConnection {
         var events = events
         var remainingEvents = Self.maximumMigrationEvents
         while !events.isEmpty {
-            guard !state.isTerminal, let currentPath else {
+            guard !state.isTerminal, let currentPathID else {
                 return
             }
             guard remainingEvents > 0 else {
@@ -427,7 +587,9 @@ extension QUICConnection {
             }
             remainingEvents -= 1
             let event = events.removeFirst()
-            let context = migrationContext(currentPath: currentPath)
+            guard let context = migrationContext(currentPathID: currentPathID) else {
+                return
+            }
             for decision in migration.strategy.pathEvent(event, now: now, context: context) {
                 let before = migrationPathStates
                 apply(decision, in: &eventContext)
@@ -439,42 +601,51 @@ extension QUICConnection {
     // A client keeps the paths that come from the system and only tears down injected ones. A
     // server's paths follow the peer, so it has no use for unusable ones.
     private func tearDownUnusablePaths(in eventContext: inout NetworkContext.EventContext) {
-        var unusablePaths: [QUICPath] = []
-        applyToAllPaths { path in
-            if path.state.isUnusable, path !== currentPath, isServer || path.pathIsInjected {
-                unusablePaths.append(path)
+        var unusablePathIDs: [MultiplexingPathIdentifier] = []
+        let currentPathID = self.currentPathID
+        let isServer = self.isServer
+        applyToAllPaths { (path: borrowing QUICPath) in
+            if path.state.isUnusable, path.pathIdentifier != currentPathID, isServer || path.pathIsInjected {
+                unusablePathIDs.append(path.pathIdentifier)
             }
         }
-        for path in unusablePaths {
-            tearDownPath(path, in: &eventContext)
+        for pathID in unusablePathIDs {
+            tearDownPath(pathID, in: &eventContext)
         }
     }
 
     private func apply(_ decision: MigrationDecision, in eventContext: inout NetworkContext.EventContext) {
         switch decision {
         case .bringUp(let pathID):
-            guard let path = path(for: pathID), path.state == .routeAvailable else { return }
+            guard withPath(pathID, { (path: inout QUICPath) in path.state == .routeAvailable }) == true else { return }
             log.debug("Bringing up path \(pathID.description)")
             invokeEstablish(path: pathID, in: &eventContext)
         case .assignCID(let pathID):
-            guard let path = path(for: pathID), path.state == .routeEstablished else { return }
-            assignNewDCID(to: path, in: &eventContext)
+            _ = withPath(pathID) { (path: inout QUICPath) in
+                guard path.state == .routeEstablished else { return }
+                assignNewDCID(to: &path, in: &eventContext)
+            }
         // If it succeeds, the migration will get an event.
         case .probe(let pathID):
-            guard let path = path(for: pathID), path.state == .cidAssigned else { return }
+            let isReady = withPath(pathID) { (path: inout QUICPath) -> Bool in
+                guard path.state == .cidAssigned else { return false }
+                path.beginValidation(in: &eventContext)
+                return true
+            }
+            guard isReady == true else { return }
             log.debug("Probing path \(pathID.description)")
-            path.beginValidation(in: &eventContext)
-            sendFrames(on: path, in: &eventContext)
+            sendFrames(on: pathID, in: &eventContext)
             migration.resetTimer(now: now, connection: self, in: &eventContext)
         case .migrateTo(let pathID):
-            guard let path = path(for: pathID), path.isValidated || (isServer && path.isProbing),
-                path !== currentPath
-            else { return }
-            migration.migrate(to: path, connection: self, in: &eventContext)
-            sendFrames(on: path, in: &eventContext)
+            let isEligible = withPath(pathID) { (path: inout QUICPath) -> Bool in
+                path.isValidated || (isServer && path.isProbing)
+            }
+            guard isEligible == true, pathID != currentPathID else { return }
+            migration.migrate(to: pathID, connection: self, in: &eventContext)
+            sendFrames(on: pathID, in: &eventContext)
         case .tearDown(let pathID):
-            guard let path = path(for: pathID), path !== currentPath else { return }
-            tearDownPath(path, in: &eventContext)
+            guard pathID != currentPathID else { return }
+            tearDownPath(pathID, in: &eventContext)
         }
     }
 
@@ -502,25 +673,26 @@ extension QUICConnection {
     // whose datagrams are being handled waits until they have been; then `finishReceiving` asks the
     // strategy again whether it should go.
     func tearDownPath(
-        _ path: QUICPath,
+        _ pathID: MultiplexingPathIdentifier,
         in eventContext: inout NetworkContext.EventContext
     ) {
-        var path = path
-        guard path !== currentPath else {
-            log.fault("Refusing to tear down the current path \(path.pathIdentifier)")
+        guard pathID != currentPathID else {
+            log.fault("Refusing to tear down the current path \(pathID)")
             return
         }
-        guard path.pathIdentifier != receivingPathID else {
-            log.debug("Deferring teardown of path \(path.pathIdentifier) until its datagrams are handled")
-            if !deferredTeardownPathIDs.contains(path.pathIdentifier) {
-                deferredTeardownPathIDs.append(path.pathIdentifier)
+        guard pathID != receivingPathID else {
+            log.debug("Deferring teardown of path \(pathID) until its datagrams are handled")
+            if !deferredTeardownPathIDs.contains(pathID) {
+                deferredTeardownPathIDs.append(pathID)
             }
             return
         }
-        log.notice("Tearing down path \(path.pathIdentifier) (\(path.state))")
+        guard var path = removePath(pathID) else {
+            return
+        }
+        log.notice("Tearing down path \(pathID) (\(path.state))")
         path.state = .routeUnavailable
         path.destroy(in: &eventContext)
-        multiplexingPaths.removeValue(forKey: path.pathIdentifier)
         sendFrames(in: &eventContext)
     }
 
@@ -529,11 +701,11 @@ extension QUICConnection {
         receivingPathID = nil
         let pathIDs = deferredTeardownPathIDs
         deferredTeardownPathIDs.removeAll()
-        guard !pathIDs.isEmpty, !state.isTerminal, let currentPath else {
+        guard !pathIDs.isEmpty, !state.isTerminal, let currentPathID else {
             return
         }
-        var events: [MigrationEvent] = [.pathChanged(currentPath.pathIdentifier)]
-        for pathID in pathIDs where pathID != currentPath.pathIdentifier && path(for: pathID) != nil {
+        var events: [MigrationEvent] = [.pathChanged(currentPathID)]
+        for pathID in pathIDs where pathID != currentPathID && hasPath(pathID) {
             events.append(.pathChanged(pathID))
         }
         runMigrationStrategy(events: events, in: &eventContext)
