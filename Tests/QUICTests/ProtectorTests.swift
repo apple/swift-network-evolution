@@ -1660,6 +1660,29 @@ final class ProtectorTests: XCTestCase {
 
     }
 
+    func testEmptyKeysShareOwnerLogPrefixer() {
+        let cid = QUICConnectionID([0x59, 0x26, 0xf7, 0x05, 0xd0, 0xe0, 0x97, 0x98])!
+        let logPrefixer = LogPrefixer("[EmptyKeys]")
+        var protector = Protector(isClient: true, destinationCID: cid, logPrefixer: logPrefixer)
+
+        // Slots that have not been installed hold empty keys that log through the owner's prefixer.
+        XCTAssertTrue(protector.readFramer[PacketKeyState.phase0.rawValue].isEmpty)
+        XCTAssertTrue(protector.writeFramer[PacketKeyState.phase0.rawValue].isEmpty)
+        XCTAssertTrue(protector.readFramer[PacketKeyState.phase0.rawValue].log === logPrefixer)
+        XCTAssertTrue(protector.writeFramer[PacketKeyState.phase0.rawValue].log === logPrefixer)
+        XCTAssertEqual(protector.readFramer[PacketKeyState.phase0.rawValue].size, 0)
+
+        // Dropping installed keys also leaves empty keys that log through the owner's prefixer.
+        XCTAssertTrue(protector.keysReady(for: .initial))
+        protector.drop(keyState: .initial)
+        XCTAssertFalse(protector.keysReady(for: .initial))
+        XCTAssertTrue(protector.readFramer[PacketKeyState.initial.rawValue].log === logPrefixer)
+        XCTAssertTrue(protector.writeFramer[PacketKeyState.initial.rawValue].log === logPrefixer)
+
+        // The prefix the owner logs with is unchanged.
+        XCTAssertEqual(logPrefixer.logIDString, "[EmptyKeys]")
+    }
+
     func testTagSize() {
         let cid = QUICConnectionID([0x9c, 0xf0, 0xee, 0x39, 0xbf, 0xe7, 0x32, 0x0a])!
         let protector = Protector(

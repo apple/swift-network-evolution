@@ -264,16 +264,18 @@ struct SecFramerKeys: ~Copyable {
     var size: Int {
         key.bitCount
     }
-    // Empty value to represent a blank set of keys
-    static func empty(type: KeyType) -> SecFramerKeys {
-        let emptyKey = SymmetricKey(data: [])
+    // Backing for every empty key set. Never mutated, and `SymmetricKey` copies share it
+    // copy-on-write, so building an empty key set does not allocate it again.
+    static let emptyKey = SymmetricKey(data: [])
+    // Empty value to represent a blank set of keys. The keys log through the owner's prefixer.
+    static func empty(type: KeyType, log: LogPrefixer) -> SecFramerKeys {
         let emptyIv = ProtectorIV(repeating: 0)
         return SecFramerKeys(
             key: emptyKey,
             iv: emptyIv,
             headerProtectionKey: emptyKey,
             type: type,
-            log: LogPrefixer(),
+            log: log,
             isEmpty: true
         )
     }
@@ -745,8 +747,8 @@ struct Protector: ~Copyable, PrefixedLoggable {
         self.log = logPrefixer
         // N.B. right now the Protector only supports AESGCM
         for _ in 0..<5 {
-            writeFramer.append(SecFramerKeys.empty(type: .aesGCM))
-            readFramer.append(SecFramerKeys.empty(type: .aesGCM))
+            writeFramer.append(SecFramerKeys.empty(type: .aesGCM, log: logPrefixer))
+            readFramer.append(SecFramerKeys.empty(type: .aesGCM, log: logPrefixer))
         }
         deriveInitialSecrets(destinationCID: destinationCID)
     }
@@ -1446,8 +1448,8 @@ struct Protector: ~Copyable, PrefixedLoggable {
         log.info("Dropping keys for state: \(keyState.description)")
         let readType: SecFramerKeys.KeyType = keyType(keys: readFramer[keyState.rawValue])
         let writeType: SecFramerKeys.KeyType = keyType(keys: writeFramer[keyState.rawValue])
-        readFramer[keyState.rawValue] = SecFramerKeys.empty(type: readType)
-        writeFramer[keyState.rawValue] = SecFramerKeys.empty(type: writeType)
+        readFramer[keyState.rawValue] = SecFramerKeys.empty(type: readType, log: log)
+        writeFramer[keyState.rawValue] = SecFramerKeys.empty(type: writeType, log: log)
     }
 
     @inline(always)
