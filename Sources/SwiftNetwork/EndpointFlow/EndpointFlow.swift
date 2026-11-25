@@ -211,10 +211,10 @@ struct EndpointFlow: ~Copyable {
     let streamApplicationProtocols: StreamApplicationProtocols
 
     // Owns the protocol instances backing this flow's stack, and hands back the linkages used to
-    // wire them together. Each flow keeps its own storage for now; eventually this should be
-    // shared at a higher level so instances can outlive an individual flow.
+    // wire them together. This is the context's shared storage, so instances can outlive an
+    // individual flow.
     //
-    // A reused flow inherits the storage of the flow it reuses, since it opens another stream on
+    // A reused flow takes the same storage as the flow it reuses, since it opens another stream on
     // that flow's existing connection rather than building a new stack.
     var storage: BaseNetworkProtocolStorage
 
@@ -286,6 +286,7 @@ struct EndpointFlow: ~Copyable {
         self.reuse = true
         self.identifier = EndpointFlow.nextInstanceCounter
         self.storage = flow.storage
+        self.context.acquireProtocolStorage()
         #if !NETWORK_NO_SWIFT_QUIC
         self.quicConnectionInstance = flow.quicConnectionInstance
         self.quicStreamListenerLinkage = flow.quicStreamListenerLinkage
@@ -308,7 +309,7 @@ struct EndpointFlow: ~Copyable {
         self.identifier = EndpointFlow.nextInstanceCounter
         self.reuse = false
         self.adoptedInboundFlowInstance = nil
-        self.storage = BaseNetworkProtocolStorage(context: self.context)
+        self.storage = self.context.acquireProtocolStorage()
     }
 
     init(remoteEndpoint: Endpoint, localEndpoint: Endpoint, parameters: Parameters, uuid: SystemUUID) {
@@ -322,7 +323,11 @@ struct EndpointFlow: ~Copyable {
         self.identifier = EndpointFlow.nextInstanceCounter
         self.reuse = false
         self.adoptedInboundFlowInstance = nil
-        self.storage = BaseNetworkProtocolStorage(context: self.context)
+        self.storage = self.context.acquireProtocolStorage()
+    }
+
+    deinit {
+        context.releaseProtocolStorage()
     }
 
     public var debugDescription: String {

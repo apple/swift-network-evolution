@@ -246,6 +246,52 @@ public final class NetworkContext: NetworkContextProtocol, @unchecked Sendable {
         self.privacyLevel == .silentLogs
     }
 
+    /// Lets the storage cross the lock's closure; it is only used on the contexts that share it.
+    private struct ProtocolStorageBox: @unchecked Sendable {
+        let storage: BaseNetworkProtocolStorage
+    }
+    private struct ProtocolStorageUse {
+        var storage: ProtocolStorageBox?
+        var users = 0
+    }
+    private let _protocolStorage = NetworkMutex<ProtocolStorageUse>(ProtocolStorageUse())
+
+    /// The storage that owns the protocol instances built on this context, for one more user of it.
+    ///
+    /// Shared by every flow on the context, so a flow and the stacks it builds later live in one place.
+    /// Instances are removed from the storage when the last linkage to them is released, so sharing does
+    /// not extend their lifetimes.
+    ///
+    /// The storage refers back to the context, so the context holds it only while it has users; each call is
+    /// paired with `releaseProtocolStorage()`.
+    @discardableResult
+    func acquireProtocolStorage() -> BaseNetworkProtocolStorage {
+        // Flows are created off the context's queue, so this is guarded by a lock rather than asserting on the queue.
+        let box = _protocolStorage.withLock { use -> ProtocolStorageBox in
+            use.users += 1
+            if let storage = use.storage {
+                return storage
+            }
+            let created = ProtocolStorageBox(storage: BaseNetworkProtocolStorage(context: self))
+            use.storage = created
+            return created
+        }
+        return box.storage
+    }
+
+    /// Ends one user's hold on the shared protocol storage; see `acquireProtocolStorage()`.
+    func releaseProtocolStorage() {
+        let released = _protocolStorage.withLock { use -> ProtocolStorageBox? in
+            guard use.users > 0 else { return nil }
+            use.users -= 1
+            guard use.users == 0 else { return nil }
+            let storage = use.storage
+            use.storage = nil
+            return storage
+        }
+        withExtendedLifetime(released) {}
+    }
+
     #if !NETWORK_PRIVATE || NETWORK_STANDALONE
     public func activate() {}
 
