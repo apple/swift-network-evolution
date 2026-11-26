@@ -267,8 +267,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             largestSentPacketNumber = PacketNumber.none
             largestAckedPNSentTime = .zero
             lossTime = .zero
-            currentAckBitstring = AckBitstring()
-            prevAckBitstring = AckBitstring()
+            currentAckBitstring.reset()
+            prevAckBitstring.reset()
             largerPacketCount = 0
 
             // Persistent Congestion Detection Variables.

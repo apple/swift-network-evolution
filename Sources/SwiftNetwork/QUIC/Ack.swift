@@ -1134,6 +1134,14 @@ struct AckBitstring: ~Copyable {
         }
     }
 
+    // Clears every bit and returns to the initial word, keeping the allocated words.
+    mutating func reset() {
+        for index in 0..<bitstring.count {
+            bitstring[index] = 0
+        }
+        initialWord = 0
+    }
+
     mutating func trim() {
         let size = self.size
         let middle = size / 2
