@@ -1,5 +1,5 @@
 {
-  "mallocCountTotal" : 18502,
+  "mallocCountTotal" : 18506,
   "objectAllocCount" : 11001,
   "releaseCount" : 100009,
   "retainCount" : 65008,
