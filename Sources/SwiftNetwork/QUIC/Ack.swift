@@ -1018,8 +1018,8 @@ extension UInt64 {
 @available(Network 0.1.0, *)
 struct AckBitstring: ~Copyable {
     private(set) var initialWord: UInt64 = 0
-    // Store up to 512 packets
-    private(set) var bitstring: NetworkUniqueArray<UInt64> = .init(repeating: 0, count: 64)
+    // Holds no words until the first bit is set; `nset` and `xor` grow it on demand.
+    private(set) var bitstring: NetworkUniqueArray<UInt64> = .init()
     var size: Int { bitstring.count }
 
     init() {}
@@ -1134,6 +1134,14 @@ struct AckBitstring: ~Copyable {
         }
     }
 
+    // Clears every bit and returns to the initial word, keeping the allocated words.
+    mutating func reset() {
+        for index in 0..<bitstring.count {
+            bitstring[index] = 0
+        }
+        initialWord = 0
+    }
+
     mutating func trim() {
         let size = self.size
         let middle = size / 2
@@ -1143,6 +1151,7 @@ struct AckBitstring: ~Copyable {
 
     mutating func resize(to newSize: Int) {
         let size = self.size
+        bitstring.reserveCapacity(newSize)
         for _ in size..<newSize {
             bitstring.append(0)
         }
