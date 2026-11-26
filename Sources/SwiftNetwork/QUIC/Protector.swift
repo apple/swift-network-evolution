@@ -732,8 +732,8 @@ struct Protector: ~Copyable, PrefixedLoggable {
         0x46, 0x15, 0x99, 0xd3, 0x5d, 0x63, 0x2b, 0xf2, 0x23, 0x98, 0x25, 0xbb,
     ]
 
-    private(set) var writeFramer = NetworkRigidArray<SecFramerKeys>(capacity: 5)
-    private(set) var readFramer = NetworkRigidArray<SecFramerKeys>(capacity: 5)
+    private(set) var writeFramer: InlineArray<5, SecFramerKeys>
+    private(set) var readFramer: InlineArray<5, SecFramerKeys>
     private(set) var isClient: Bool
     private var sequenceNumber = NetworkRigidArray<PacketNumber>(
         repeating: PacketNumber.initial,
@@ -744,10 +744,8 @@ struct Protector: ~Copyable, PrefixedLoggable {
         self.isClient = isClient
         self.log = logPrefixer
         // N.B. right now the Protector only supports AESGCM
-        for _ in 0..<5 {
-            writeFramer.append(SecFramerKeys.empty(type: .aesGCM))
-            readFramer.append(SecFramerKeys.empty(type: .aesGCM))
-        }
+        self.writeFramer = InlineArray { _ in SecFramerKeys.empty(type: .aesGCM) }
+        self.readFramer = InlineArray { _ in SecFramerKeys.empty(type: .aesGCM) }
         deriveInitialSecrets(destinationCID: destinationCID)
     }
 
