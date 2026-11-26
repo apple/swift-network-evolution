@@ -83,7 +83,8 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
         var timeThreshold = Constants.timeReorderThreshold
 
         // Entries are always added in order of packet number (larger numbers appended to the end)
-        var outstandingPackets = NetworkUniqueDeque<PacketContainerEntry>(minimumCapacity: 10)
+        var outstandingPackets = NetworkUniqueDeque<PacketContainerEntry>()
+        private static var initialOutstandingPacketsCapacity: Int { 10 }
 
         // Number of entries in `outstandingPackets` that have been declared lost. Lost packets
         // stay for at least one RTT, until the next ACK that newly acknowledges something, so
@@ -116,6 +117,11 @@ struct Recovery: ~Copyable, PrefixedLoggable, NonCopyableTimerUser {
             log.datapath("Adding \(packet.number) in space \(packet.numberSpace)")
             if packet.largerPacket {
                 largerPacketCount += 1
+            }
+            if outstandingPackets.capacity == 0 {
+                // Geometric growth from an empty deque would reallocate several times before
+                // reaching a typical flight size; jump straight to it.
+                outstandingPackets.reserveCapacity(Self.initialOutstandingPacketsCapacity)
             }
             outstandingPackets.append(PacketContainerEntry(packet, sentTime: sentTime))
         }

@@ -1027,11 +1027,10 @@ final class AckTests: XCTestCase {
 
     func testBitstringGrowth() {
         var bitstring = AckBitstring()
-        XCTAssertTrue(bitstring.size == 64, "Bitstring should have an initial size of 64")
-        // Exceed past 64 * 64
+        XCTAssertTrue(bitstring.size == 0, "Bitstring should hold no words until the first bit is set")
+        // Setting a bit in word 70 grows it to the next power of two, 128 words
         bitstring.nset(start: 0, stop: 4480)
-        // The count should now be doubled from the start
-        XCTAssertTrue(bitstring.size == 128, "Bitstring should have an initial size of 128")
+        XCTAssertTrue(bitstring.size == 128, "Bitstring should have grown to 128 words")
         // Exceed again past 128 * 64
         bitstring.nset(start: 0, stop: 13000)
         XCTAssertTrue(bitstring.size == 256, "Bitstring should have an initial size of 256")
