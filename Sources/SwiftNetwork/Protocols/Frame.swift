@@ -172,7 +172,7 @@ public struct Frame: ~Copyable {
     @inline(always)
     public var unclaimedLength: Int {
         if effectiveBufferLength == 0 { return 0 }
-        return effectiveBufferLength - (startOffset + endOffset)
+        return effectiveBufferLength &- (startOffset &+ endOffset)
     }
 
     @inlinable
@@ -183,7 +183,7 @@ public struct Frame: ~Copyable {
             guard isValid else { return nil }
             switch buffer {
             case .bytes:
-                return _bytes.span.extracting(startOffset..<(effectiveBufferLength - endOffset))
+                return _bytes.span.extracting(startOffset..<(effectiveBufferLength &- endOffset))
             default:
                 guard let unsafeUnclaimedBuffer else {
                     return nil
@@ -338,12 +338,12 @@ public struct Frame: ~Copyable {
                 outlinedProtoLogError("Trying to claim bytes at the end of a single-IP aggregate", fromEnd)
                 return false
             }
-            aggregateBufferLength -= fromStart
+            aggregateBufferLength &-= fromStart
         }
 
-        let newStart = startOffset + fromStart
-        let newEnd = endOffset + fromEnd
-        guard newStart <= effectiveBufferLength - newEnd else {
+        let newStart = startOffset &+ fromStart
+        let newEnd = endOffset &+ fromEnd
+        guard newStart <= effectiveBufferLength &- newEnd else {
             let effectiveLength = effectiveBufferLength
             outlinedProtoLogError(
                 "Claiming bytes failed, start is beyond end; start, effective length, end",
@@ -385,8 +385,8 @@ public struct Frame: ~Copyable {
             return false
         }
 
-        startOffset -= fromStart
-        endOffset -= fromEnd
+        startOffset &-= fromStart
+        endOffset &-= fromEnd
         return true
     }
 
@@ -426,11 +426,11 @@ public struct Frame: ~Copyable {
         }
 
         // Reset effective length
-        effectiveBufferLength -= unclaimedLength
+        effectiveBufferLength &-= unclaimedLength
 
         if self.isSingleIPAggregate {
             if aggregateBufferLength >= unclaimedLength {
-                aggregateBufferLength -= unclaimedLength
+                aggregateBufferLength &-= unclaimedLength
             } else {
                 aggregateBufferLength = 0
             }
@@ -1239,6 +1239,7 @@ extension Frame {
     // Copy length bytes from offset in this Frame into destination Frame.
     // checking the source offset, length and destination fit.
     // Return the length that it was able to copy into destination.
+    @_optimize(speed)
     func copyInto(
         _ destination: inout Frame,
         atOffset destinationOffset: Int = 0,
@@ -1259,7 +1260,7 @@ extension Frame {
         guard thisFrameLength > requestedOffset else {
             return 0
         }
-        let remainingLengthInThisFrame = thisFrameLength - requestedOffset
+        let remainingLengthInThisFrame = thisFrameLength &- requestedOffset
         guard var destinationBytes = destination.mutableSpan else {
             return 0
         }

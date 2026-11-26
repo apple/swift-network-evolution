@@ -153,27 +153,27 @@ struct StreamSendBuffer: ~Copyable {
             lastVisitedFrameStartOffset = currentFrameOffset
             // 1. Step past frames that don't include the requested offset
             let currentFrameLength = StreamLength(frame.unclaimedLength)
-            if currentFrameOffset + currentFrameLength <= requestedOffset + totalLengthCopied {
-                currentFrameOffset += currentFrameLength
+            if currentFrameOffset &+ currentFrameLength <= requestedOffset &+ totalLengthCopied {
+                currentFrameOffset &+= currentFrameLength
                 return true
             }
 
             // 2. Offset is within this frame, copy out, up to requestedLength
-            let offsetWithinFrame = requestedOffset + totalLengthCopied - currentFrameOffset
+            let offsetWithinFrame = requestedOffset &+ totalLengthCopied &- currentFrameOffset
             // Just go ahead, copyInto() will check and return what length it could copy
             let lengthCopied = frame.copyInto(
                 &destination,
                 atOffset: Int(destinationOffset),
                 fromOffset: Int(offsetWithinFrame),
-                length: Int(requestedLength - totalLengthCopied)
+                length: Int(requestedLength &- totalLengthCopied)
             )
             // Must be positive and should have been able to copy "something"!
             precondition(lengthCopied > 0)
             precondition(lengthCopied <= currentFrameLength)
             if lengthCopied > 0 {  // Report correctly even if precondition(s) fail
                 // If we fail to copy the expected length, the caller will error handle
-                destinationOffset += StreamOffset(lengthCopied)
-                totalLengthCopied += StreamLength(lengthCopied)
+                destinationOffset &+= StreamOffset(lengthCopied)
+                totalLengthCopied &+= StreamLength(lengthCopied)
             }
             guard lengthCopied > 0 && lengthCopied <= requestedLength
             else {
@@ -186,7 +186,7 @@ struct StreamSendBuffer: ~Copyable {
             }
             // Still didn't hit the requested length, so this frame's remaining
             // unclaimed bytes have been fully consumed; advance past it.
-            currentFrameOffset += StreamOffset(currentFrameLength)
+            currentFrameOffset &+= StreamOffset(currentFrameLength)
             return true
         }
         // Save where we ended so the next call can resume without
@@ -194,7 +194,7 @@ struct StreamSendBuffer: ~Copyable {
         if let index = Int32(exactly: lastVisitedIndex) {
             cursor.previousCursorIndex = index
             cursor.previousCursorFrameStartOffset = lastVisitedFrameStartOffset
-            cursor.previousCursorResumeOffset = requestedOffset + totalLengthCopied
+            cursor.previousCursorResumeOffset = requestedOffset &+ totalLengthCopied
             cursor.previousCursorValid = true
         } else {
             cursor.previousCursorValid = false

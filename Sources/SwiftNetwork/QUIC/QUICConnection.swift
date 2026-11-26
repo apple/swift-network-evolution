@@ -3559,6 +3559,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
     // Storage for the packets recorded by a single sendFrames() call.
     private var sentPackets = NetworkUniqueDeque<SentPacketRecord>(minimumCapacity: 10)
+    // Storage for `DeferredSealBatch.packets`, kept between bursts so each burst reuses it instead of allocating.
+    private var deferredSealPackets = NetworkUniqueDeque<Packet>(minimumCapacity: 10)
 
     private func capacityForPacketNumberSpace(applicationPendingItems: inout PendingItems) -> Int {
         let packetNumberSpace = PacketNumberSpace.fromKeyState(keyState: self.keyState)
@@ -3595,7 +3597,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             // Run when sendFramesFromRecovery holds access to recovery
             while let pathSends = takePathSends() {
                 for pathSend in pathSends {
-                    replayDeferredPathSend(pathSend, in: &eventContext)
+                    replayDeferredPathSend(pathSend, recoveryIsFree: false, in: &eventContext)
                 }
             }
             return
@@ -3611,7 +3613,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             guard let pathSends = takePathSends() else { return }
             for pathSend in pathSends {
-                replayDeferredPathSend(pathSend, in: &eventContext)
+                replayDeferredPathSend(pathSend, recoveryIsFree: true, in: &eventContext)
             }
             // Replaying a path send does not record its packets with Recovery, so do that now. It
             // can also have deferred more sends, which the next time round handles.
@@ -3622,6 +3624,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // Runs a deferred sendFrames on path
     private func replayDeferredPathSend(
         _ pathSend: QUICDeferredWorkState.PathSend,
+        recoveryIsFree: Bool,
         in eventContext: inout NetworkContext.EventContext
     ) {
         let path = pathSend.path
@@ -3630,6 +3633,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
         )
         var discardInitialRecoveryState = false
+        var sealFailed = false
         _ = sendFramesInternal(
             path: path,
             ignoreCongestionWindow: pathSend.ignoreCongestionWindow,
@@ -3639,6 +3643,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             handshakePendingItems: &handshakePendingItems,
             applicationPendingItems: &applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState,
+            batchSeals: recoveryIsFree,
+            sealFailed: &sealFailed,
             in: &eventContext
         )
         if discardInitialRecoveryState {
@@ -3647,6 +3653,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         }
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
         deferredWork.releaseSendPath(wasActive: false)
+        // Only a replay that batched its seals can set this, and it only batches when `recovery` is free
+        if sealFailed {
+            closeAfterSealFailure(in: &eventContext)
+        }
     }
 
     // Makes sure that Recovery always records the sentPackets records for PTO bookkeeping
@@ -3706,6 +3716,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             deferredWork.deferSend(ignoreCongestionWindow: ignoreCongestionWindow, delayedACK: delayedACK)
             return false
         }
+        var sealFailed = false
         let result = sendFrames(
             ignoreCongestionWindow: ignoreCongestionWindow,
             delayedACK: delayedACK,
@@ -3714,9 +3725,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             initialPendingItems: &initialPendingItems,
             handshakePendingItems: &handshakePendingItems,
             applicationPendingItems: &applicationPendingItems,
+            sealFailed: &sealFailed,
             in: &eventContext
         )
-        if deferredWork.releaseSendPath(wasActive: false) {
+        let canReplay = deferredWork.releaseSendPath(wasActive: false)
+        if sealFailed {
+            // Everything the send held is released, so the connection can close here
+            closeAfterSealFailure(in: &eventContext)
+        } else if canReplay {
             replayDeferredSends(in: &eventContext)
         }
         return result
@@ -3731,6 +3747,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         initialPendingItems: inout PendingItems,
         handshakePendingItems: inout PendingItems,
         applicationPendingItems: inout PendingItems,
+        sealFailed: inout Bool,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         addQueuedRetireConnectionIDs(to: &applicationPendingItems)
@@ -3765,6 +3782,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 retransmission: false,
                 sentPackets: &sentPackets,
                 applicationPendingItems: &applicationPendingItems,
+                batchSeals: true,
+                sealFailed: &sealFailed,
                 in: &eventContext
             )
         } else {
@@ -3777,6 +3796,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 handshakePendingItems: &handshakePendingItems,
                 applicationPendingItems: &applicationPendingItems,
                 discardInitialRecoveryState: &discardInitialRecoveryState,
+                batchSeals: true,
+                sealFailed: &sealFailed,
                 in: &eventContext
             )
         }
@@ -3824,6 +3845,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             addQueuedRetireConnectionIDs(to: &applicationPendingItems)
         }
         var discardInitialRecoveryState = false
+        var sealFailed = false
         let success = sendFramesInternal(
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
@@ -3833,6 +3855,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             handshakePendingItems: &handshakePendingItems,
             applicationPendingItems: &applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState,
+            batchSeals: true,
+            sealFailed: &sealFailed,
             in: &eventContext
         )
         recovery.recordSentPackets(&self.sentPackets, connection: self, in: &eventContext)
@@ -3842,7 +3866,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             recovery.resetPTOCount(path: path)
         }
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
-        if deferredWork.releaseSendPath(wasActive: false) {
+        let canReplay = deferredWork.releaseSendPath(wasActive: false)
+        if sealFailed {
+            closeAfterSealFailure(in: &eventContext)
+        } else if canReplay {
             replayDeferredSends(in: &eventContext)
         }
         return success
@@ -3891,6 +3918,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         var sentPackets = NetworkUniqueDeque<SentPacketRecord>(
             minimumCapacity: capacityForPacketNumberSpace(applicationPendingItems: &applicationPendingItems)
         )
+        var sealFailed = false
         _ = sendFramesInternal(
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
@@ -3900,6 +3928,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             handshakePendingItems: &handshakePendingItems,
             applicationPendingItems: &applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState,
+            batchSeals: false,
+            sealFailed: &sealFailed,
             in: &eventContext
         )
         return sentPackets
@@ -3919,6 +3949,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         discardInitialRecoveryState: inout Bool,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
+        var sealFailed = false
         let success = sendFramesInternal(
             path: path,
             ignoreCongestionWindow: ignoreCongestionWindow,
@@ -3928,6 +3959,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             handshakePendingItems: &handshakePendingItems,
             applicationPendingItems: &applicationPendingItems,
             discardInitialRecoveryState: &discardInitialRecoveryState,
+            batchSeals: false,
+            sealFailed: &sealFailed,
             in: &eventContext
         )
         deliverQueuedOutboundRoomAvailableEvents(in: &eventContext)
@@ -4112,6 +4145,35 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         return datagramBatch
     }
 
+    // Seals the packets built for a burst. Their frames are already in the path's send queue, which nothing
+    // sends from until the burst is over, so they are sealed where they lie.
+    //
+    // A packet that cannot be sealed means the connection's crypto state is broken, so the connection is
+    // closed with an internal error rather than carrying on with packets that never reached the wire.
+    // Packets sealed before the failure are still sent.
+    private func flushDeferredSeals(
+        _ sealBatch: inout DeferredSealBatch,
+        protector: inout Protector,
+        path: QUICPath
+    ) -> Bool {
+        guard !sealBatch.packets.isEmpty else {
+            return true
+        }
+        let dropped = protector.sealBatch(packets: &sealBatch.packets, frames: &path.lowerSendQueue)
+        if dropped > 0 {
+            log.error("Failed to seal packet, dropped \(dropped) packets")
+        }
+        return dropped == 0
+    }
+
+    // A packet that cannot be sealed means the connection's crypto state is broken, so the connection is closed
+    // with an internal error. The send functions report that through a `sealFailed` flag, and whichever one
+    // is the outermost owner of the send path closes once everything it held has been released. Sends that run
+    // while `recovery` is borrowed do not batch their seals, so they never set the flag.
+    private func closeAfterSealFailure(in eventContext: inout NetworkContext.EventContext) {
+        close(with: .internalError, "Failed to seal packet", in: &eventContext)
+    }
+
     // Shared by sendApplicationFrames and sendFramesInternal.
     //
     // `probeBurstLimit` is how many datagrams a send that ignores the congestion window may still send;
@@ -4134,6 +4196,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         applicationPendingItems: inout PendingItems,
         totalTxBytes: inout Int,
         totalTxPackets: inout Int,
+        batchSeals: Bool,
+        sealFailed: inout Bool,
         in eventContext: inout NetworkContext.EventContext
     ) {
         var packetBurst = 0
@@ -4148,6 +4212,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             }
             return
         }
+        // Seal the whole burst together once it is built, rather than packet by packet. Callers that run
+        // while `recovery` is borrowed seal inline instead, because a failure there could not close the connection.
+        var sealBatch = DeferredSealBatch(isEnabled: batchSeals)
+        swap(&sealBatch.packets, &deferredSealPackets)
         while applicationPendingItems.hasPendingItems {
             guard
                 buildSinglePacketForKeyState(
@@ -4166,6 +4234,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     ecnState: &ecnState,
                     totalTxBytes: &totalTxBytes,
                     totalTxPackets: &totalTxPackets,
+                    sealBatch: &sealBatch,
                     in: &eventContext
                 )
             else {
@@ -4215,6 +4284,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 break
             }
         }
+        if !flushDeferredSeals(&sealBatch, protector: &protector, path: path) {
+            sealFailed = true
+        }
+        swap(&sealBatch.packets, &deferredSealPackets)
     }
 
     // Used to send only application data
@@ -4224,6 +4297,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         retransmission: Bool = false,
         sentPackets: inout NetworkUniqueDeque<SentPacketRecord>,
         applicationPendingItems: inout PendingItems,
+        batchSeals: Bool,
+        sealFailed: inout Bool,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         // Handle the case of having additional paths at the very beginning of the connection.
@@ -4288,6 +4363,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             applicationPendingItems: &applicationPendingItems,
             totalTxBytes: &totalTxBytes,
             totalTxPackets: &totalTxPackets,
+            batchSeals: batchSeals,
+            sealFailed: &sealFailed,
             in: &eventContext
         )
         recordTxPackets(
@@ -4310,6 +4387,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         handshakePendingItems: inout PendingItems,
         applicationPendingItems: inout PendingItems,
         discardInitialRecoveryState: inout Bool,
+        batchSeals: Bool,
+        sealFailed: inout Bool,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         // Handle the case of having additional paths at the very beginning of the connection.
@@ -4322,6 +4401,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             return drop
         }
 
+        // Initial, Handshake and single-path packets are sealed as they are built.
+        var sealBatch = DeferredSealBatch(isEnabled: false)
         var totalSendBytes: UInt64 = 0
         var totalTxBytes: Int = 0
         var totalTxPackets: Int = 0
@@ -4375,6 +4456,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 totalTxBytes: &totalTxBytes,
                 totalTxPackets: &totalTxPackets,
                 amplificationBudget: amplificationBudget,
+                sealBatch: &sealBatch,
                 in: &eventContext
             )
             recordTxPackets(
@@ -4438,6 +4520,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                         ecnState: &path.ecnState,
                         totalTxBytes: &totalTxBytes,
                         totalTxPackets: &totalTxPackets,
+                        sealBatch: &sealBatch,
                         in: &eventContext
                     )
                 else {
@@ -4491,6 +4574,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     ecnState: &path.ecnState,
                     totalTxBytes: &totalTxBytes,
                     totalTxPackets: &totalTxPackets,
+                    sealBatch: &sealBatch,
                     in: &eventContext
                 )
             else {
@@ -4531,6 +4615,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             applicationPendingItems: &applicationPendingItems,
             totalTxBytes: &totalTxBytes,
             totalTxPackets: &totalTxPackets,
+            batchSeals: batchSeals,
+            sealFailed: &sealFailed,
             in: &eventContext
         )
         recordTxPackets(
@@ -4560,6 +4646,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         totalTxBytes: inout Int,
         totalTxPackets: inout Int,
         amplificationBudget: Int? = nil,
+        sealBatch: inout DeferredSealBatch,
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
 
@@ -4567,6 +4654,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         let pacingActive = isPacing(ecnState: &ecnState)
         let isServer = isServer
         let testSendingShortPackets = testSendingShortPackets
+        // Coalescing several packets into one frame needs each sealed before the next is built.
+        let deferSeal = sealBatch.isEnabled && !testSendingShortPackets
 
         // Server must not send more than 3x the number of bytes received, until
         // the client's address has been validated by receiving a handshake
@@ -4787,7 +4876,16 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             let totalUnclaimed = outFrame.unclaimedLength
             let unclaimedAfterPacket =
                 (totalUnclaimed > totalPacketLength) ? (totalUnclaimed - totalPacketLength) : 0
-            if unclaimedAfterPacket > 0 {
+            if deferSeal {
+                // The frame is sealed later, so trim it to the packet now.
+                if unclaimedAfterPacket > 0 {
+                    guard outFrame.collapse(to: totalPacketLength) else {
+                        self.log.error("Failed to collapse frame to \(totalPacketLength) bytes")
+                        outFrame.finalize(success: false)
+                        return false
+                    }
+                }
+            } else if unclaimedAfterPacket > 0 {
                 guard outFrame.claim(fromStart: 0, fromEnd: unclaimedAfterPacket) else {
                     self.log.error(
                         "Failed to claim \(unclaimedAfterPacket) bytes from end of frame"
@@ -4818,38 +4916,48 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             totalTxBytes += Int(totalPacketLength)
             totalTxPackets += 1
 
-            // Seal packet, incidentally this also effectively takes the packet number!
-            do throws(QUICError) {
-                try protector.seal(&packet, frame: &outFrame)
-            } catch {
-                self.log.error(
-                    "Failed to seal packet: \(error.info.description), code \(error.info.code)"
-                )
-                outFrame.finalize(success: false)
-                return false
-            }
-
-            if unclaimedAfterPacket > 0 {
-                guard outFrame.unclaim(fromStart: 0, fromEnd: unclaimedAfterPacket) else {
+            if deferSeal {
+                // Sealed with the rest of the burst; take the packet number now so the next packet gets its own.
+                protector.reservePacketNumber(after: packet)
+                totalBytesWrittenInFrame += totalPacketLength
+            } else {
+                // Seal packet, incidentally this also effectively takes the packet number!
+                do throws(QUICError) {
+                    try protector.seal(&packet, frame: &outFrame)
+                } catch {
                     self.log.error(
-                        "Failed to unclaim \(unclaimedAfterPacket) bytes from end of frame"
+                        "Failed to seal packet: \(error.info.description), code \(error.info.code)"
                     )
                     outFrame.finalize(success: false)
                     return false
                 }
-            }
 
-            // Claim the total packet length, and update the total written bytes
-            totalBytesWrittenInFrame += totalPacketLength
-            guard outFrame.claim(fromStart: totalPacketLength) else {
-                self.log.error("Failed to claim \(totalPacketLength) bytes from start of frame")
-                outFrame.finalize(success: false)
-                return false
+                if unclaimedAfterPacket > 0 {
+                    guard outFrame.unclaim(fromStart: 0, fromEnd: unclaimedAfterPacket) else {
+                        self.log.error(
+                            "Failed to unclaim \(unclaimedAfterPacket) bytes from end of frame"
+                        )
+                        outFrame.finalize(success: false)
+                        return false
+                    }
+                }
+
+                // Claim the total packet length, and update the total written bytes
+                totalBytesWrittenInFrame += totalPacketLength
+                guard outFrame.claim(fromStart: totalPacketLength) else {
+                    self.log.error("Failed to claim \(totalPacketLength) bytes from start of frame")
+                    outFrame.finalize(success: false)
+                    return false
+                }
+
             }
 
             let longHeader = packet.longHeader
             sentPacketRecord.sentPath = path.pathIdentifier
             log(packet: packet)
+            if deferSeal {
+                sealBatch.packets.append(packet)
+            }
 
             // Read before the record is consumed.
             let carriesAck = sentPacketRecord.transmittedItems.ackFrame != nil
@@ -4908,6 +5016,14 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                 break
             }
         } while testSendingShortPackets
+
+        if deferSeal {
+            // Queued now, sealed in place when the burst ends
+            QUICSignpost.outbound(id: signpostID, length: totalBytesWrittenInFrame)
+            var sendPath = path
+            sendPath.enqueueOutboundDatagram(outFrame)
+            return true
+        }
 
         // We may not have used the entire frame with packets. If not, collapse
         // the frame down and unclaim all written bytes
@@ -7918,6 +8034,21 @@ extension QUICConnection {
         retireConnectionID(sequenceNumber: frame.sequence, in: &eventContext)
 
         return true
+    }
+}
+
+/// The packets of a burst that have been built and queued for sending but not yet sealed, in the order they
+/// were built. Their frames are the last frames of the path's send queue.
+///
+/// A burst builds its packets into the batch and `QUICConnection` seals them together. When the batch is
+/// not enabled, each packet is sealed as soon as it is built.
+@available(Network 0.1.0, *)
+struct DeferredSealBatch: ~Copyable {
+    let isEnabled: Bool
+    var packets = NetworkUniqueDeque<Packet>()
+
+    init(isEnabled: Bool) {
+        self.isEnabled = isEnabled
     }
 }
 

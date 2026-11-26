@@ -130,13 +130,26 @@ public struct FrameArray: ~Copyable {
     }
 
     @_optimize(speed)
-    public mutating func iterateMutableFrames(_ enumerator: (inout Frame) -> Bool) {
+    public mutating func iterateMutableFrames(startingAt startIndex: Int = 0, _ enumerator: (inout Frame) -> Bool) {
         let count = frames.count
-        for index in 0..<count {
+        var index = startIndex
+        while index < count {
             if !enumerator(&frames[index]) {
                 return
             }
+            index &+= 1
         }
+    }
+
+    /// Finalizes the frames from `startIndex` to the end as failed, and removes them.
+    mutating func finalizeFramesAsFailed(startingAt startIndex: Int) {
+        let count = frames.count
+        var index = startIndex
+        while index < count {
+            frames[index].finalize(success: false)
+            index &+= 1
+        }
+        frames.removeLast(count - startIndex)
     }
 
     public enum FrameIterationResult: ~Copyable {
@@ -194,7 +207,7 @@ public struct FrameArray: ~Copyable {
             if !enumerator(index, frames[index]) {
                 return
             }
-            index += 1
+            index &+= 1
         }
     }
 
