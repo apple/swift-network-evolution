@@ -852,7 +852,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.withMutableQUICStreams(unidirectional: false) {
             mutableStreamsState in
             mutableStreamsState.updateLocalMaxStreams(
-                server: self.isServer,
                 newMaxStreams: Int(newMaxStreams),
                 logIDString: self.logPrefixer.logIDString
             )
@@ -876,7 +875,6 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         self.withMutableQUICStreams(unidirectional: true) {
             mutableStreamsState in
             mutableStreamsState.updateLocalMaxStreams(
-                server: self.isServer,
                 newMaxStreams: Int(newMaxStreams),
                 logIDString: self.logPrefixer.logIDString
             )
@@ -1445,12 +1443,10 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         localTransportParameters.append(initialMaxStreamsUnidirectionalParameter)
 
         bidirectionalStreams.updateLocalMaxStreams(
-            server: isServer,
             newMaxStreams: (Int(initialMaxStreamsBidirectional)),
             logIDString: logPrefixer.logIDString
         )
         unidirectionalStreams.updateLocalMaxStreams(
-            server: isServer,
             newMaxStreams: (Int(initialMaxStreamsUnidirectional)),
             logIDString: logPrefixer.logIDString
         )
@@ -5753,39 +5749,18 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
 
                     log.info("New active unidirectional streams: \(activeUnidirectionalStreams)")
 
-                    let window = maximumConcurrentUnidirectionalStreams / 2
-                    let withinThreshold: Bool
-                    if let nextstreamID = unidirectionalStreams.nextInboundStreamID {
-                        withinThreshold = unidirectionalStreams.newStreamIDsAreBlocked(
-                            nextstreamID,
-                            server: isServer,
-                            window: window
-                        )
-                        if withinThreshold {
-                            log.debug(
-                                "Next inbound unidirectional stream is within \(window) of being blocked"
-                            )
-                        }
-                    } else {
-                        withinThreshold = false
-                    }
-
-                    if withinThreshold,
-                        activeUnidirectionalStreams < maximumConcurrentUnidirectionalStreams
-                    {
-                        let additionalStreamsToAllow =
-                            maximumConcurrentUnidirectionalStreams - activeUnidirectionalStreams
-                        let originalMaxStreams = unidirectionalStreams.localMaxStreams
-                        let newMaxStreams = originalMaxStreams + additionalStreamsToAllow
+                    if let newMaxStreams = unidirectionalStreams.localMaxStreamsToAdvertise(
+                        maximumConcurrentStreams: maximumConcurrentUnidirectionalStreams
+                    ) {
+                        log.info("New max unidirectional streams: \(newMaxStreams)")
                         unidirectionalStreams.updateLocalMaxStreams(
-                            server: self.isServer,
                             newMaxStreams: newMaxStreams,
                             logIDString: self.logPrefixer.logIDString
                         )
                         sendMaxStreamsUnidirectional()
                     }
                 }
-            } else if streamID.isLocalBidirectional(server: self.isServer) {
+            } else if streamID.isRemoteBidirectional(server: self.isServer) {
                 if let maximumConcurrentBidirectionalStreams {
                     bidirectionalStreams.decrementActiveStreams()
                     let activeBidirectionalStreams = bidirectionalStreams.activeStreamsRemaining()
@@ -5803,34 +5778,11 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
                     let nextInboundStreamID = bidirectionalStreams.nextInboundStreamID?.value ?? 0
                     log.info("Next inbound bidirectional stream ID: \(nextInboundStreamID)")
 
-                    let window = maximumConcurrentBidirectionalStreams / 2
-                    let withinThreshold: Bool
-                    if let nextstreamID = bidirectionalStreams.nextInboundStreamID {
-                        withinThreshold = bidirectionalStreams.newStreamIDsAreBlocked(
-                            nextstreamID,
-                            server: isServer,
-                            window: window
-                        )
-                        if withinThreshold {
-                            log.debug(
-                                "Next inbound bidirectional stream is within \(window) of being blocked"
-                            )
-                        }
-                    } else {
-                        withinThreshold = false
-                    }
-
-                    if withinThreshold,
-                        activeBidirectionalStreams < maximumConcurrentBidirectionalStreams
-                    {
-                        let additionalStreamsToAllow =
-                            maximumConcurrentBidirectionalStreams - activeBidirectionalStreams
-                        let originalMaxStreams = bidirectionalStreams.localMaxStreams
-                        let newMaxStreams = originalMaxStreams + additionalStreamsToAllow
+                    if let newMaxStreams = bidirectionalStreams.localMaxStreamsToAdvertise(
+                        maximumConcurrentStreams: maximumConcurrentBidirectionalStreams
+                    ) {
                         log.info("New max bidirectional streams: \(newMaxStreams)")
-
                         bidirectionalStreams.updateLocalMaxStreams(
-                            server: self.isServer,
                             newMaxStreams: newMaxStreams,
                             logIDString: self.logPrefixer.logIDString
                         )
@@ -6943,10 +6895,14 @@ extension QUICConnection {
                 "Set stream \(newStreamID.description) for flow \(newFlowIdentifier.debugDescription)"
             )
 
+            // Every stream opened here, including the lower-numbered ones opened implicitly, is
+            // decremented when it closes, so each must be counted against the concurrency limit.
             if streamID.isBidirectional {
                 stats.increment(.inboundBidirectionalStreams)
+                self.bidirectionalStreams.incrementActiveStreams()
             } else {
                 stats.increment(.inboundUnidirectionalStreams)
+                self.unidirectionalStreams.incrementActiveStreams()
             }
             if newStreamID == streamID {
                 log.info("Creating inbound stream \(streamID)")
@@ -6963,10 +6919,8 @@ extension QUICConnection {
         }
         if streamID.isBidirectional {
             self.bidirectionalStreams.nextInboundStreamID = theNextStreamID
-            self.bidirectionalStreams.incrementActiveStreams()
         } else {
             self.unidirectionalStreams.nextInboundStreamID = theNextStreamID
-            self.unidirectionalStreams.incrementActiveStreams()
         }
         return (created: true, checkZombie: false)
     }

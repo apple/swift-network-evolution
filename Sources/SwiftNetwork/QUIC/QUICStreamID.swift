@@ -114,7 +114,8 @@ struct QUICStreamID: Comparable, Hashable {
 
     var isUnidirectional: Bool { (self.value & QUICStreamID.typeMask) != 0 }
 
-    func isLocalBidirectional(server: Bool) -> Bool {
+    // A bidirectional stream the peer opened.
+    func isRemoteBidirectional(server: Bool) -> Bool {
         self.isBidirectional
             && ((!server && self.isServerInitiated) || (server && self.isClientInitiated))
     }
@@ -139,6 +140,12 @@ struct QUICStreamID: Comparable, Hashable {
     }
 
     var quicStreamType: QUICStreamType { self.isBidirectional ? .bidirectional : .unidirectional }
+
+    // The position of this stream among those of its type and initiator: streams of one type
+    // and initiator are four apart, so stream N is the (N + 1)th of them. A peer allowed
+    // max_streams streams may open those at indexes 0 through max_streams - 1 (RFC 9000,
+    // Section 4.6).
+    var indexAmongSameTypeAndInitiator: UInt64 { self.value >> 2 }
 
     func _rawHashValue(seed: Int) -> Int {
         // This is a 'Hashable' fast path which elides the creation of Hasher

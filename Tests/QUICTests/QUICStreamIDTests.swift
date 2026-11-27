@@ -426,6 +426,105 @@ final class QUICStreamIDTests: XCTestCase {
             _ = streamsState.removeAllPending()
         }
     }
+
+    /// The first stream ID of each kind the peer opens, for either role we play.
+    private static let peerFirstStreamIDs: [(description: String, streamType: QUICStreamType, firstStreamID: UInt64)] =
+        [
+            ("server, client bidirectional", .bidirectional, 0),
+            ("client, server bidirectional", .bidirectional, 1),
+            ("server, client unidirectional", .unidirectional, 2),
+            ("client, server unidirectional", .unidirectional, 3),
+        ]
+
+    /// A peer allowed N streams may open exactly its first N streams of the type, whichever
+    /// role it plays. Comparing against a stream ID numbered by our own role instead let a
+    /// client's peer open only N - 1.
+    func testNewStreamIDsAreBlockedAtTheAdvertisedLimit() {
+        for (description, streamType, firstStreamID) in Self.peerFirstStreamIDs {
+            for maxStreams in [1, 2, 3, 50] {
+                var state = QUICStreamIDState(streamType)
+                state.updateLocalMaxStreams(newMaxStreams: maxStreams, logIDString: "")
+                let lastAllowed = QUICStreamID(UInt64(maxStreams - 1) << 2 + firstStreamID)!
+                let firstBlocked = QUICStreamID(UInt64(maxStreams) << 2 + firstStreamID)!
+                XCTAssertFalse(
+                    state.newStreamIDsAreBlocked(QUICStreamID(firstStreamID)!),
+                    "\(description), limit \(maxStreams): first stream"
+                )
+                XCTAssertFalse(
+                    state.newStreamIDsAreBlocked(lastAllowed),
+                    "\(description), limit \(maxStreams): stream \(lastAllowed) is the last allowed"
+                )
+                XCTAssertTrue(
+                    state.newStreamIDsAreBlocked(firstBlocked),
+                    "\(description), limit \(maxStreams): stream \(firstBlocked) is over the limit"
+                )
+                // Within `window` of being blocked means fewer than `window` streams are left.
+                let window = maxStreams / 2
+                if window > 0 {
+                    let lastOutsideWindow = QUICStreamID(UInt64(maxStreams - window - 1) << 2 + firstStreamID)!
+                    let firstInsideWindow = QUICStreamID(UInt64(maxStreams - window) << 2 + firstStreamID)!
+                    XCTAssertFalse(state.newStreamIDsAreBlocked(lastOutsideWindow, window: window), description)
+                    XCTAssertTrue(state.newStreamIDsAreBlocked(firstInsideWindow, window: window), description)
+                }
+            }
+
+            var state = QUICStreamIDState(streamType)
+            state.updateLocalMaxStreams(newMaxStreams: 0, logIDString: "")
+            XCTAssertTrue(
+                state.newStreamIDsAreBlocked(QUICStreamID(firstStreamID)!),
+                "\(description): a limit of zero blocks every stream"
+            )
+        }
+    }
+
+    /// The peer opens every stream the limit allows, then closes some, over and over. After each
+    /// close the advertised limit must never let it hold more than the concurrency cap open, and
+    /// must keep rising so the peer is not starved. Adding the room left under the cap to the old
+    /// limit instead of to the streams opened so far lets the peer go over the cap by the second
+    /// close.
+    func testLocalMaxStreamsToAdvertiseBoundsConcurrency() {
+        for (description, streamType, firstStreamID) in Self.peerFirstStreamIDs {
+            for maximumConcurrentStreams in [1, 2, 5, 8, 100] {
+                let context = "\(description), cap \(maximumConcurrentStreams)"
+                var state = QUICStreamIDState(streamType)
+                state.nextInboundStreamID = QUICStreamID(firstStreamID)
+                state.updateLocalMaxStreams(newMaxStreams: maximumConcurrentStreams, logIDString: "")
+
+                var openedStreams = 0
+                for round in 0..<200 {
+                    // Open everything the limit allows, as stream frames for the highest allowed
+                    // ID would.
+                    while openedStreams < state.localMaxStreams {
+                        openedStreams += 1
+                        state.incrementActiveStreams()
+                    }
+                    state.nextInboundStreamID = QUICStreamID(UInt64(openedStreams) << 2 + firstStreamID)
+                    XCTAssertLessThanOrEqual(
+                        state.activeStreamsRemaining(),
+                        maximumConcurrentStreams,
+                        "\(context), round \(round)"
+                    )
+
+                    // Close one or two streams, letting the limit move after each.
+                    for _ in 0..<min(1 + round % 2, state.activeStreamsRemaining()) {
+                        state.decrementActiveStreams()
+                        if let newMaxStreams = state.localMaxStreamsToAdvertise(
+                            maximumConcurrentStreams: maximumConcurrentStreams
+                        ) {
+                            XCTAssertGreaterThan(newMaxStreams, state.localMaxStreams)
+                            state.updateLocalMaxStreams(newMaxStreams: newMaxStreams, logIDString: "")
+                        }
+                        XCTAssertLessThanOrEqual(
+                            state.activeStreamsRemaining() + state.localMaxStreams - openedStreams,
+                            maximumConcurrentStreams,
+                            "\(context), round \(round): limit \(state.localMaxStreams) lets the peer go over the cap"
+                        )
+                    }
+                }
+                XCTAssertGreaterThanOrEqual(openedStreams, 200, "\(context): the peer was starved of stream credit")
+            }
+        }
+    }
 }
 
 #endif
