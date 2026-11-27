@@ -1216,8 +1216,8 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         // Set the application error code
-        stream.streamMetadata.applicationError = self.code
         stream.inboundApplicationError = self.code
+        stream.updateStreamMetadataApplicationError(self.code)
         connection.deliverInboundAbortedEvent(
             stream: &stream,
             error: NetworkError(quicApplicationError: self.code),
@@ -1412,8 +1412,8 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         if stream.receiveState == .resetReceived {
             streamError = NetworkError.posix(ECONNRESET)
         }
-        stream.streamMetadata.applicationError = self.code
         stream.outboundApplicationError = self.code
+        stream.updateStreamMetadataApplicationError(self.code)
         stream.deliverOutboundAbortedEvent(
             error: NetworkError(quicApplicationError: self.code),
             in: &eventContext
@@ -3123,12 +3123,20 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         var rawType: UInt64 = 0
         var contextID: UInt64 = 0
         var flowID: UInt64 = 0
+        let unclaimedLengthAtFrameStart = frame.unclaimedLength
         var result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
             try read.vle(&rawType)
         }
 
         try validateDeserializationResult(result)
         try validateDatagramType(rawType)
+
+        // RFC 9221, Section 3: an absent or zero max_datagram_frame_size means we don't accept DATAGRAM frames.
+        let localMaxDatagramFrameSize = connection.localTransportParameters.intValue(.maxDatagramFrameSize)
+        guard localMaxDatagramFrameSize > 0 else {
+            connection.close(with: .protocolViolation, "DATAGRAM frame not negotiated", in: &eventContext)
+            throw QUICError.frameParse(FrameParseError.parsingError)
+        }
 
         var rawLength: UInt64 = 0
         if hasLength {
@@ -3190,14 +3198,9 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         try validateDeserializationResult(result)
         try validateType(rawType)
 
-        // In testing scenarios localTransportParameters maxDatagramFrameSize can be 0
-        let tpLocalMaxDatagramFrameSize = connection.localTransportParameters.intValue(
-            .maxDatagramFrameSize
-        )
-        let localMaxDatagramFrameSize =
-            tpLocalMaxDatagramFrameSize == 0
-            ? Constants.maxDatagramFrameSize : tpLocalMaxDatagramFrameSize
-        guard datagramLength <= localMaxDatagramFrameSize else {
+        // RFC 9221, Section 3: the limit covers the whole frame, including the frame type and length.
+        let frameSize = unclaimedLengthAtFrameStart - frame.unclaimedLength + datagramLength
+        guard frameSize <= localMaxDatagramFrameSize else {
             connection.close(with: .protocolViolation, "DATAGRAM frame size too big", in: &eventContext)
             throw QUICError.frameParse(FrameParseError.parsingError)
         }

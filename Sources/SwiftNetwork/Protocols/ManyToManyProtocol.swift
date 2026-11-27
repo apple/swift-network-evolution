@@ -120,7 +120,7 @@ public protocol ManyToManyProtocolHandler: ListenerHandler, LoggableProtocol whe
     func handlePathChanged(
         path pathID: MultiplexingPathIdentifier,
         event: MultiplexingPathEvent,
-        isPrimary: Bool,
+        pathProperties: MultiplexingPathProperties,
         in eventContext: inout NetworkContext.EventContext
     )
     func handleNetworkProtocolEvent(
@@ -305,6 +305,7 @@ public protocol MultiplexedFlow: ~Copyable, LowerProtocolHandler, LoggableProtoc
     var upperReceiveQueue: FrameArray { get set }
     var upperSendQueue: FrameArray { get set }
     func asLowerLinkage() -> UpperProtocol.PairedLowerLinkage
+    var parentAnnouncesHandshake: Bool { get }
 }
 
 @_spi(ProtocolProvider)
@@ -323,6 +324,19 @@ extension MultiplexingPathIdentifier {
 
     init() {
         self = Int.random(in: 1...Int.max)
+    }
+}
+
+@_spi(ProtocolProvider)
+@available(Network 0.1.0, *)
+public struct MultiplexingPathProperties: Equatable, Sendable {
+    public let isPrimary: Bool
+    // Injected paths are added to the protocol explicitly rather than coming from the system.
+    public let isInjected: Bool
+
+    public init(isPrimary: Bool, isInjected: Bool) {
+        self.isPrimary = isPrimary
+        self.isInjected = isInjected
     }
 }
 
@@ -352,6 +366,7 @@ public protocol MultiplexingPath: UpperProtocolHandler {
     var pathIdentifier: MultiplexingPathIdentifier { get }
     init(parent: ParentProtocol, in eventContext: inout NetworkContext.EventContext)
     var pathIsPrimary: Bool { get set }
+    var pathIsInjected: Bool { get set }
     var pathHasMigrationInfo: Bool { get set }
     func asUpperLinkage() -> LowerProtocol.PairedUpperLinkage
 }
@@ -474,7 +489,7 @@ extension ManyToManyProtocolHandler {
     public func handlePathChanged(
         path pathID: MultiplexingPathIdentifier,
         event: MultiplexingPathEvent,
-        isPrimary: Bool,
+        pathProperties: MultiplexingPathProperties,
         in eventContext: inout NetworkContext.EventContext
     ) {}
     public func handleNetworkProtocolEvent(
@@ -524,7 +539,7 @@ extension ManyToManyProtocolHandler {
             handlePathChanged(
                 path: newPath.pathIdentifier,
                 event: .available(local: local, remote: remote, path: path, parameters: parameters),
-                isPrimary: newPath.pathIsPrimary,
+                pathProperties: newPath.pathProperties,
                 in: &eventContext
             )
         }
@@ -1401,6 +1416,8 @@ extension HeterogeneousManyToManyProtocolHandler {
 
 @available(Network 0.1.0, *)
 extension MultiplexedFlow where Self: ~Copyable {
+    public var parentAnnouncesHandshake: Bool { false }
+
     internal func validate(
         upper upperProtocol: InstanceIdentifier,
         _ label: String
@@ -1552,6 +1569,25 @@ extension MultiplexedFlow where Self: ~Copyable {
             inboundAbortedBlock: { _, _, _ in },
             outboundAbortedBlock: { _, _, _ in }
         )
+    }
+
+    func deliverHandshakeComplete(in eventContext: inout NetworkContext.EventContext) {
+        guard let report = parentProtocol.protocolEstablishmentReport else { return }
+        let handshakeEvent = NetworkProtocolEvent.handshakeComplete(report.tagged(.instance(parentProtocol.identifier)))
+        if upper.isDetached {
+            let selfInstance = self.identifier
+            selfInstance.enqueuePendingEventForUpperProtocol(
+                event: .networkProtocolEvent(selfInstance, upper.identifier, event: handshakeEvent, { _, _, _ in }),
+                in: &eventContext
+            )
+        } else {
+            upper.deliverNetworkProtocolEvent(
+                originalInstance: self.identifier,
+                selfInstance: self.identifier,
+                event: handshakeEvent,
+                in: &eventContext
+            )
+        }
     }
 
     func deliverConnectedEvent(in eventContext: inout NetworkContext.EventContext) {
@@ -2212,6 +2248,10 @@ extension MultiplexingPath {
 
     public var context: NetworkContext { parentProtocol.context }
 
+    public var pathProperties: MultiplexingPathProperties {
+        MultiplexingPathProperties(isPrimary: pathIsPrimary, isInjected: pathIsInjected)
+    }
+
     public mutating func attachLowerProtocol(
         _ lowerProtocol: LowerProtocol,
     ) throws(NetworkError) -> LowerProtocol.PairedUpperLinkage? {
@@ -2264,7 +2304,7 @@ extension MultiplexingPath {
         parentProtocol.handlePathChanged(
             path: pathIdentifier,
             event: .established,
-            isPrimary: pathIsPrimary,
+            pathProperties: pathProperties,
             in: &eventContext
         )
     }
@@ -2275,7 +2315,12 @@ extension MultiplexingPath {
         in eventContext: inout NetworkContext.EventContext
     ) {
         do { try validate(lower: instance, #function) } catch { return }
-        parentProtocol.handlePathChanged(path: pathIdentifier, event: .unavailable, isPrimary: false, in: &eventContext)
+        parentProtocol.handlePathChanged(
+            path: pathIdentifier,
+            event: .unavailable,
+            pathProperties: MultiplexingPathProperties(isPrimary: false, isInjected: pathIsInjected),
+            in: &eventContext
+        )
         parentProtocol.handleDisconnectedEvent(path: pathIdentifier, error: error, in: &eventContext)
     }
 
@@ -2298,7 +2343,7 @@ extension MultiplexingPath {
             parentProtocol.handlePathChanged(
                 path: pathIdentifier,
                 event: pathEvent,
-                isPrimary: pathIsPrimary,
+                pathProperties: pathProperties,
                 in: &eventContext
             )
             return
@@ -2368,6 +2413,11 @@ extension ManyToManyProtocolHandler {
                     flow.canCallConnect(requested: false, in: &eventContext)
                 }
                 if canConnect == true {
+                    withFlow(flowID) { (flow: inout Flow) in
+                        if !flow.parentAnnouncesHandshake {
+                            flow.deliverHandshakeComplete(in: &eventContext)
+                        }
+                    }
                     connect(flow: flowID, in: &eventContext)
                 }
             }
@@ -2448,6 +2498,11 @@ extension HeterogeneousManyToManyProtocolHandler {
                     flow.canCallConnect(requested: false, in: &eventContext)
                 }
                 if canConnect == true {
+                    withFlow(flowID) { (flow: inout Flow) in
+                        if !flow.parentAnnouncesHandshake {
+                            flow.deliverHandshakeComplete(in: &eventContext)
+                        }
+                    }
                     connect(flow: flowID, in: &eventContext)
                 }
             }
@@ -2456,6 +2511,11 @@ extension HeterogeneousManyToManyProtocolHandler {
                     flow.canCallConnect(requested: false, in: &eventContext)
                 }
                 if canConnect == true {
+                    withSecondaryFlow(flowID) { (flow: inout SecondaryFlow) in
+                        if !flow.parentAnnouncesHandshake {
+                            flow.deliverHandshakeComplete(in: &eventContext)
+                        }
+                    }
                     connect(flow: flowID, in: &eventContext)
                 }
             }
@@ -2695,8 +2755,9 @@ open class MultiplexingDatagramPath<
     public var lowerSendQueue = FrameArray(capacity: 10)
     public var lowerReceiveQueue = FrameArray()
 
-    public var pathIsPrimary: Bool = false
-    public var pathHasMigrationInfo: Bool = false
+    public var pathIsPrimary = false
+    public var pathIsInjected = false
+    public var pathHasMigrationInfo = false
 
     public var identifier: InstanceIdentifier
 

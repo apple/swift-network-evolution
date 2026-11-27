@@ -349,7 +349,7 @@ extension QUICCrypto {
             )
 
             parentConnection.earlyDataSignalled = true
-            parentConnection.readyAllOutboundStreams(in: &eventContext)
+            parentConnection.readyAllOutboundStreams(announcingHandshake: false, in: &eventContext)
         }
     }
 
