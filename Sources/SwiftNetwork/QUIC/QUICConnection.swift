@@ -1887,7 +1887,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     // The bytes a server may still send before it has validated the client's address. It takes the two
     // counts rather than the whole `Statistics`, which would be copied onto the stack at call sites where
     // this is not inlined.
-    static func antiAmplificationBudget(receivedBytes: Int, sentBytes: Int) -> Int {
+    private static func antiAmplificationBudget(receivedBytes: Int, sentBytes: Int) -> Int {
         max(receivedBytes * Constants.antiAmplificationFactor - sentBytes, 0)
     }
 
