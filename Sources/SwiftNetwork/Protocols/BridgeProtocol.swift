@@ -142,6 +142,10 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
         var localEndpoint: Endpoint?
         var remoteEndpoint: Endpoint?
         private var incomingFrames = FrameArray()
+        // The most datagrams the upper protocol has sent in one call. An array that holds that many
+        // lets the upper protocol keep it as its send queue's storage instead of allocating a
+        // replacement each time it sends.
+        private var largestSentCount = 0
         static nonisolated(unsafe) private var instances = [UInt16: BridgeInstance]()
 
         static private let generatedPort = NetworkMutex<UInt16>(1024)  // Run 1024 through UInt16.max
@@ -284,7 +288,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
             }
 
             let frameSize = min(minimumDatagramSize, self.maximumOutputSize)
-            var frameArray = FrameArray(capacity: maximumDatagramCount)
+            var frameArray = FrameArray(capacity: max(maximumDatagramCount, largestSentCount))
             for _ in 0..<maximumDatagramCount {
                 let frame = Frame(count: frameSize)
                 frameArray.add(frame: frame)
@@ -312,6 +316,7 @@ public struct BridgeDatagramProtocol: NetworkProtocol {
                 datagrams = remainingDatagrams
             }
             log.datapath("forwarding \(datagrams.count) datagrams to port: \(remotePort)")
+            largestSentCount = max(largestSentCount, datagrams.count)
             if let observeFirstByteHandler {
                 datagrams.iterateMutableFrames { frame in
                     if let bytes = frame.bytes, bytes.byteCount > 0 {
