@@ -138,7 +138,7 @@ public struct BonjourEndpoint: EndpointProtocol, EndpointCommonProtocol, Sendabl
             write.fixedLengthUTF8(domain, byteCount: domain.utf8.count + 1)
         }
 
-        let length = UInt8(8 + innerBuffer.count)
+        let length = UInt8(clamping: 8 + innerBuffer.count)
         return Serializer.serialize { write in
             write.uint8(length)
             write.uint8(UInt8(AddressFamily.unspecified.rawValue))

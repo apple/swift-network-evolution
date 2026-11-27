@@ -1201,10 +1201,37 @@ extension Parameters {
 @_spi(Essentials)
 @available(Network 0.1.0, *)
 public final class MutableParametersStorage: Hashable, CustomStringConvertible {
-    internal var p: Parameters
+    final class Box {
+        var parameters: Parameters
+        init(_ parameters: Parameters) { self.parameters = parameters }
+    }
+
+    private var box: Box
+
+    internal var p: Parameters {
+        get { box.parameters }
+        set {
+            makeUnique()
+            box.parameters = newValue
+        }
+        _modify {
+            makeUnique()
+            yield &box.parameters
+        }
+    }
 
     public init(_ parameters: Parameters) {
-        self.p = parameters
+        self.box = Box(parameters)
+    }
+
+    init(sharing other: MutableParametersStorage) {
+        self.box = other.box
+    }
+
+    private func makeUnique() {
+        if !isKnownUniquelyReferenced(&box) {
+            box = Box(box.parameters)
+        }
     }
 
     public var description: String {
