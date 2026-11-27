@@ -90,4 +90,114 @@ struct SwiftNetworkFrameArrayCapacityTests {
         #expect(lengths == [10, 20, 30, 40])
         queue.finalizeAllFramesAsFailed()
     }
+
+    /// Draining into a spare's storage must hand over every frame in order and leave the queue with the spare's
+    /// room; otherwise each batch allocates a replacement.
+    @Test("Draining adopts the spare's storage")
+    func drainingAdoptsSpareStorage() {
+        guard #available(Network 0.1.0, *) else { return }
+
+        var queue = FrameArray()
+        queue.add(frame: Frame(count: 10))
+        queue.add(frame: Frame(count: 20))
+        var spare = FrameArray(capacity: 16)
+        let spareCapacity = spare.capacity
+
+        var drained = queue.drainArray(adoptingStorageOf: &spare)
+
+        let queueIsEmpty = queue.isEmpty
+        #expect(queueIsEmpty)
+        #expect(queue.capacity == spareCapacity)
+        #expect(spare.capacity == 0)
+        var lengths: [Int] = []
+        drained.iterateImmutableFrames { frame in
+            lengths.append(frame.unclaimedLength)
+            return true
+        }
+        #expect(lengths == [10, 20])
+        drained.finalizeAllFramesAsFailed()
+    }
+
+    /// A spare too small for the drained frames must not become the queue's storage; the next drain of that size would
+    /// grow it, which the storage the drain would have allocated avoids.
+    @Test("Draining does not adopt a spare that is too small")
+    func drainingDoesNotAdoptTooSmallSpare() {
+        guard #available(Network 0.1.0, *) else { return }
+
+        var queue = FrameArray()
+        for _ in 0..<8 {
+            queue.add(frame: Frame(count: 16))
+        }
+        var spare = FrameArray(capacity: 2)
+        let spareCapacity = spare.capacity
+
+        var drained = queue.drainArray(adoptingStorageOf: &spare)
+        drained.finalizeAllFramesAsFailed()
+
+        #expect(queue.capacity >= 8)
+        #expect(spare.capacity == spareCapacity)
+    }
+
+    /// A spare that still holds frames must not become the queue's storage; adopting it would drop those frames
+    /// unfinalized, and the send path can hand over a batch the burst loop did not finish.
+    @Test("Draining does not adopt a spare that holds frames")
+    func drainingDoesNotAdoptNonEmptySpare() {
+        guard #available(Network 0.1.0, *) else { return }
+
+        var queue = FrameArray()
+        queue.add(frame: Frame(count: 10))
+        var spare = FrameArray(capacity: 16)
+        spare.add(frame: Frame(count: 5))
+
+        var drained = queue.drainArray(adoptingStorageOf: &spare)
+
+        #expect(drained.count == 1)
+        #expect(spare.count == 1)
+        drained.finalizeAllFramesAsFailed()
+        spare.finalizeAllFramesAsFailed()
+    }
+
+    /// A spare with no room has nothing to hand on, so the drain must still leave the queue able to take the next
+    /// frames without growing from nothing.
+    @Test("Draining with a spare that has no storage keeps the capacity")
+    func drainingWithEmptySpareKeepsCapacity() {
+        guard #available(Network 0.1.0, *) else { return }
+
+        var queue = FrameArray()
+        for _ in 0..<8 {
+            queue.add(frame: Frame(count: 16))
+        }
+        var spare = FrameArray()
+
+        var drained = queue.drainArray(adoptingStorageOf: &spare)
+        drained.finalizeAllFramesAsFailed()
+
+        #expect(queue.capacity >= 8)
+    }
+
+    /// Storage may only be taken from an array that is empty and big enough; taking it from one that still holds
+    /// frames would lose them, and taking too little would make the caller grow it.
+    @Test("Taking empty storage")
+    func takingEmptyStorage() {
+        guard #available(Network 0.1.0, *) else { return }
+
+        var source = FrameArray(capacity: 16)
+        let sourceCapacity = source.capacity
+        let taken = source.takeEmptyStorage(minimumCapacity: 8)
+        #expect(taken.capacity == sourceCapacity)
+        #expect(source.capacity == 0)
+
+        var tooSmall = FrameArray(capacity: 2)
+        let allocated = tooSmall.takeEmptyStorage(minimumCapacity: 8)
+        #expect(allocated.capacity >= 8)
+        #expect(tooSmall.capacity >= 2)
+
+        var occupied = FrameArray(capacity: 16)
+        occupied.add(frame: Frame(count: 10))
+        let separate = occupied.takeEmptyStorage(minimumCapacity: 8)
+        let separateIsEmpty = separate.isEmpty
+        #expect(separateIsEmpty)
+        #expect(occupied.count == 1)
+        occupied.finalizeAllFramesAsFailed()
+    }
 }

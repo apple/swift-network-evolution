@@ -76,9 +76,21 @@ extension AutomaticLowerDatagramProcessing where Self: ~Copyable {
     ///
     /// Drains `lowerSendQueue` to the lower protocol.
     public mutating func serviceLowerSendQueue(in eventContext: inout NetworkContext.EventContext) {
-        guard !lowerSendQueue.isEmpty else { return }
+        var noSpareStorage = FrameArray()
+        serviceLowerSendQueue(adoptingStorageOf: &noSpareStorage, in: &eventContext)
+    }
+
+    /// Drains `lowerSendQueue` to the lower protocol, and makes `spareStorage`, an empty array whose storage would
+    /// otherwise be freed, the storage of the new `lowerSendQueue`. `spareStorage` is left without storage, unless
+    /// `lowerSendQueue` was already empty, held more frames than `spareStorage` has room for, or `spareStorage`
+    /// held frames.
+    public mutating func serviceLowerSendQueue(
+        adoptingStorageOf spareStorage: inout FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
+        if lowerSendQueue.isEmpty { return }
         try? lower.invokeSendDatagrams(
-            lowerSendQueue.drainArrayKeepingCapacity(),
+            lowerSendQueue.drainArray(adoptingStorageOf: &spareStorage),
             from: identifier,
             in: &eventContext
         )
