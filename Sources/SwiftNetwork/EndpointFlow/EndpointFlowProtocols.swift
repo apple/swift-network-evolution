@@ -432,28 +432,25 @@ final class StreamEndpointFlowProtocol: EndpointFlowProtocol<BaseStreamLinkageFa
                     maximumBytes: maximumBytes,
                     for: identifier,
                     in: &eventContext
-                )
+                ),
+                !frames.isEmpty
             else {
                 log.debug("No more stream data available")
                 return nil
             }
-            var returnBuffer: [UInt8]? = nil
+
+            // Every frame returned is consumed, so the total is exactly the size of the result.
+            var returnBuffer = [UInt8]()
+            returnBuffer.reserveCapacity(frames.unclaimedLength)
+
             frames.iterateMutableFrames { frame in
-                var buffer = [UInt8]()
-                let length = frame.unclaimedLength
-                if length > 0 {
-                    _ = Deserializer.deserialize(&frame, claim: false) { read throws(DeserializationError) in
-                        try read.buffer(&buffer, length: length)
-                    }
-                }
-                if returnBuffer == nil {
-                    returnBuffer = buffer
-                } else {
-                    returnBuffer?.append(contentsOf: buffer)
+                if let bytes = frame.bytes {
+                    bytes.withUnsafeBytes { returnBuffer.append(contentsOf: $0) }
                 }
                 frame.finalize(success: true)
                 return true
             }
+
             return returnBuffer
         } catch {
             return nil
