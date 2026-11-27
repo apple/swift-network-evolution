@@ -553,7 +553,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
     }
     @inline(always)
     private(set) var streamID: QUICStreamID? {
-        get { streamIDStorage == .max ? nil : QUICStreamID(streamIDStorage)! }
+        get { streamIDStorage == .max ? nil : QUICStreamID(uncheckedValue: streamIDStorage) }
         set { streamIDStorage = newValue?.value ?? .max }
     }
 
@@ -762,7 +762,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
 
     deinit {
         if let streamID = streamID {
-            log.debug("Deallocating unassigned stream \(streamID.value)")
+            log.debug("Deallocating unassigned stream \(streamID)")
         } else {
             log.debug("Deallocating unassigned stream")
         }
@@ -904,7 +904,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
                 if let streamID {
                     QUICSignpost.dataReceived(
                         id: connection.signpostID,
-                        streamID: streamID.value,
+                        streamID: streamID,
                         nbytes: appendResult.sizeAdded
                     )
                 }
@@ -1133,7 +1133,7 @@ public struct QUICStreamInstance: ~Copyable, AutomaticUpperStreamProcessing, Uni
         }
 
         if let streamID {
-            QUICSignpost.dataDelivered(id: parent.signpostID, streamID: streamID.value, nbytes: bytes)
+            QUICSignpost.dataDelivered(id: parent.signpostID, streamID: streamID, nbytes: bytes)
         }
 
         // If all data has now been read, move to the data read state

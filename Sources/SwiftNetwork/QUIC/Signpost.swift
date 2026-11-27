@@ -67,12 +67,12 @@ struct QUICSignpost {
         signposter.endInterval("outboundProcessing", intervalState)
     }
 
-    static func dataReceived(id: OSSignpostID, streamID: UInt64, nbytes: Int) {
-        signposter.emitEvent("dataReceived", id: id, "Stream \(streamID) received \(nbytes) bytes")
+    static func dataReceived(id: OSSignpostID, streamID: QUICStreamID, nbytes: Int) {
+        signposter.emitEvent("dataReceived", id: id, "Stream \(streamID.value) received \(nbytes) bytes")
     }
 
-    static func dataDelivered(id: OSSignpostID, streamID: UInt64, nbytes: Int) {
-        signposter.emitEvent("dataDelivered", id: id, "Stream \(streamID) read \(nbytes) bytes")
+    static func dataDelivered(id: OSSignpostID, streamID: QUICStreamID, nbytes: Int) {
+        signposter.emitEvent("dataDelivered", id: id, "Stream \(streamID.value) read \(nbytes) bytes")
     }
 
     // Crypto signposts.
@@ -126,8 +126,8 @@ struct QUICSignpost {
     static func outbound(id: Int, length: Int) {}
     static func outboundStarting(id: Int) -> IntervalState { 0 }
     static func outboundStopping(_ intervalState: IntervalState) {}
-    static func dataReceived(id: Int, streamID: UInt64?, nbytes: Int) {}
-    static func dataDelivered(id: Int, streamID: UInt64?, nbytes: Int) {}
+    static func dataReceived(id: Int, streamID: QUICStreamID, nbytes: Int) {}
+    static func dataDelivered(id: Int, streamID: QUICStreamID, nbytes: Int) {}
     static func sealBegin(keyState: String, packetNumber: PacketNumber) -> IntervalState { 0 }
     static func sealEnd(_ intervalState: IntervalState) {}
     static func openBegin(keyState: String, packetNumber: PacketNumber) -> IntervalState { 0 }

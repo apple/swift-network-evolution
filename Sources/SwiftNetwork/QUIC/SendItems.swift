@@ -821,7 +821,7 @@ extension FrameStreamSendMetadata: SendableItem {
             pendingItems.transmittedStreams.append(writtenStream)
             shorthandFrames?.append(
                 toShorthandLogEntry(
-                    id: retransmitStreamStreamID.value,
+                    id: retransmitStreamStreamID,
                     fin: retransmitStreamIsFinal,
                     offset: retransmitStreamOffset,
                     length: retransmitStreamLength
@@ -842,7 +842,7 @@ extension FrameStreamSendMetadata: SendableItem {
             let streamItem = pendingItems.retransmitStreams.popFirst()!
             shorthandFrames?.append(
                 toShorthandLogEntry(
-                    id: streamItem.streamID.value,
+                    id: streamItem.streamID,
                     fin: streamItem.isFinal,
                     offset: streamItem.offset,
                     length: streamItem.length
@@ -923,7 +923,7 @@ extension FrameStreamSendMetadata: SendableItem {
             )
             shorthandFrames?.append(
                 toShorthandLogEntry(
-                    id: writtenStream.streamID.value,
+                    id: writtenStream.streamID,
                     fin: writtenStream.isFinal,
                     offset: writtenStream.offset,
                     length: writtenStream.length
@@ -948,7 +948,7 @@ extension FrameStreamSendMetadata: SendableItem {
             )
             shorthandFrames?.append(
                 toShorthandLogEntry(
-                    id: writtenStream.streamID.value,
+                    id: writtenStream.streamID,
                     fin: writtenStream.isFinal,
                     offset: writtenStream.offset,
                     length: writtenStream.length
@@ -1061,17 +1061,17 @@ extension FrameStreamDataBlocked: SendableItem {
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
         guard let firstFlowID = pendingItems.streamDataBlockedFlows.first,
-            let (streamIDValue, limit) = connection.withStreamBorrowed(
+            let (streamID, limit) = connection.withStreamBorrowed(
                 firstFlowID,
-                { (stream: inout QUICStreamInstance) -> (UInt64, UInt64)? in
+                { (stream: inout QUICStreamInstance) -> (QUICStreamID, UInt64)? in
                     guard let streamID = stream.streamID else { return nil }
-                    return (streamID.value, stream.sendOffset)
+                    return (streamID, stream.sendOffset)
                 }
             ) ?? nil
         else { return }
 
-        try write(frame: &frame, id: streamIDValue, limit: limit, stats: &stats)
-        shorthandFrames?.append(toShorthandLogEntry(id: streamIDValue, limit: limit))
+        try write(frame: &frame, id: streamID, limit: limit, stats: &stats)
+        shorthandFrames?.append(toShorthandLogEntry(id: streamID, limit: limit))
     }
 }
 
@@ -1243,17 +1243,17 @@ extension FrameMaxStreamData: SendableItem {
         shorthandFrames: inout [QUICShorthandFrame]?
     ) throws(QUICError) {
         guard let firstFlowID = pendingItems.maxStreamDataFlows.first,
-            let (streamIDValue, localMaxData) = connection.withStreamBorrowed(
+            let (streamID, localMaxData) = connection.withStreamBorrowed(
                 firstFlowID,
-                { (stream: inout QUICStreamInstance) -> (UInt64, UInt64)? in
+                { (stream: inout QUICStreamInstance) -> (QUICStreamID, UInt64)? in
                     guard let streamID = stream.streamID else { return nil }
-                    return (streamID.value, stream.flowControlState.inboundMaxData)
+                    return (streamID, stream.flowControlState.inboundMaxData)
                 }
             ) ?? nil
         else { return }
 
-        try write(frame: &frame, id: streamIDValue, max: localMaxData)
-        shorthandFrames?.append(toShorthandLogEntry(id: streamIDValue, max: localMaxData))
+        try write(frame: &frame, id: streamID, max: localMaxData)
+        shorthandFrames?.append(toShorthandLogEntry(id: streamID, max: localMaxData))
     }
 }
 
@@ -2914,24 +2914,24 @@ struct PendingItems: ~Copyable {
     }
 
     struct StreamReset {
-        var streamID: UInt64
+        var streamID: QUICStreamID
         var code: UInt64
         var finalSize: UInt64
     }
     var streamResets = Deque<StreamReset>()
 
-    mutating func addStreamReset(streamID: UInt64, code: UInt64, finalSize: UInt64) {
+    mutating func addStreamReset(streamID: QUICStreamID, code: UInt64, finalSize: UInt64) {
         streamResets.append(StreamReset(streamID: streamID, code: code, finalSize: finalSize))
         resetStream = true
     }
 
     struct StreamStopSending {
-        var streamID: UInt64
+        var streamID: QUICStreamID
         var code: UInt64
     }
     var streamStopSendings = Deque<StreamStopSending>()
 
-    mutating func addStreamStopSending(streamID: UInt64, code: UInt64) {
+    mutating func addStreamStopSending(streamID: QUICStreamID, code: UInt64) {
         streamStopSendings.append(StreamStopSending(streamID: streamID, code: code))
         stopSendingFlag = true
     }
@@ -3593,7 +3593,7 @@ struct TransmittedItems: ~Copyable {
 
         if let streamResets {
             for streamReset in streamResets {
-                connection.acknowledgedResetStream(id: streamReset.streamID, in: &eventContext)
+                connection.acknowledgedResetStream(streamID: streamReset.streamID, in: &eventContext)
             }
         }
 

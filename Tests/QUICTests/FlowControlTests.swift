@@ -449,7 +449,7 @@ final class FlowControlTests: XCTestCase {
         _ = stream.processIncomingStream(
             connection: connection,
             frame: FrameStreamReceived(
-                id: 0,
+                id: QUICStreamID(0),
                 offset: 0,
                 data: [UInt8](repeating: 0x41, count: byteCount),
                 isFinal: false

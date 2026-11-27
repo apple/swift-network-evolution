@@ -306,8 +306,8 @@ final class SendItemsTests: XCTestCase {
 
     func testStreamReset_pendingFlagMirrorsDequeAfterPartialDequeue() {
         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
-        pendingItems.addStreamReset(streamID: 0, code: 0, finalSize: 1000)
-        pendingItems.addStreamReset(streamID: 4, code: 0, finalSize: 1000)
+        pendingItems.addStreamReset(streamID: QUICStreamID(0), code: 0, finalSize: 1000)
+        pendingItems.addStreamReset(streamID: QUICStreamID(4), code: 0, finalSize: 1000)
 
         var transmittedItems = TransmittedItems()
         FrameResetStream.addToTransmittedItems(
@@ -326,8 +326,8 @@ final class SendItemsTests: XCTestCase {
 
     func testStopSending_pendingFlagMirrorsDequeAfterPartialDequeue() {
         var pendingItems = PendingItems(packetNumberSpace: .applicationData)
-        pendingItems.addStreamStopSending(streamID: 0, code: 0)
-        pendingItems.addStreamStopSending(streamID: 4, code: 0)
+        pendingItems.addStreamStopSending(streamID: QUICStreamID(0), code: 0)
+        pendingItems.addStreamStopSending(streamID: QUICStreamID(4), code: 0)
 
         var transmittedItems = TransmittedItems()
         FrameStopSending.addToTransmittedItems(
@@ -641,7 +641,7 @@ final class SendItemsTests: XCTestCase {
             configure: { pendingItems, flowID in
                 pendingItems.streamsToService.append(flowID)
                 pendingItems.stream = true
-                pendingItems.addStreamReset(streamID: 4, code: 0, finalSize: 0)
+                pendingItems.addStreamReset(streamID: QUICStreamID(4), code: 0, finalSize: 0)
             },
             inspect: { transmittedItems, _ in
                 streamResets = transmittedItems.streamResets?.count ?? 0

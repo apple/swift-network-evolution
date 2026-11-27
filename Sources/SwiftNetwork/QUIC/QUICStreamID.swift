@@ -68,6 +68,13 @@ struct QUICStreamID: Comparable, Hashable {
         self.value = value
     }
 
+    // For values already known to be in range, such as a stream ID decoded from a
+    // variable-length integer, which cannot exceed 62 bits (RFC9000 16).
+    init(uncheckedValue value: UInt64) {
+        assert(value <= QUICStreamID.maxValid)
+        self.value = value
+    }
+
     init?(_ value: UInt64, serverInitiated: Bool, isUnidirectional: Bool) {
         var streamID = value
         if serverInitiated {
@@ -81,21 +88,6 @@ struct QUICStreamID: Comparable, Hashable {
         self.init(streamID)
     }
 
-    static func setInitiator(value: inout UInt64, isLocal: Bool) {
-        if isLocal {
-            value &= ~QUICStreamID.initiatorMask
-        }
-        value |= QUICStreamID.initiatorMask
-        return
-    }
-    static func setStreamType(value: inout UInt64, isBidir: Bool) {
-        if isBidir {
-            value &= ~QUICStreamID.typeMask
-            return
-        }
-        value |= QUICStreamID.typeMask
-        return
-    }
     static func < (lhs: QUICStreamID, rhs: QUICStreamID) -> Bool {
         lhs.value < rhs.value
     }
@@ -296,8 +288,9 @@ extension QUICStreamID {
         if let remoteMaxStreamID = remoteMaxStreamID,
             newStreamID > remoteMaxStreamID
         {
+            // Interpolate the raw values: os.Logger redacts custom types as <private>.
             Logger.proto.debug(
-                "\(logIDString) new stream ID \(newStreamID) exceeds the unidirectional limit \(remoteMaxStreamID)"
+                "\(logIDString) new stream ID \(newStreamID.value) exceeds the remote limit \(remoteMaxStreamID.value)"
             )
             return nil
         }

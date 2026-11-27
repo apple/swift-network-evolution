@@ -62,7 +62,7 @@ extension FrameResetStream {
     }
     static func toShorthandLogEntry(
         outgoing: Bool = true,
-        id: UInt64,
+        id: QUICStreamID,
         code: UInt64,
         finalSize: UInt64
     ) -> QUICShorthandFrame {
@@ -81,7 +81,7 @@ extension FrameResetStream {
 struct ShorthandFrameResetStream: ShorthandLogEntry {
     let outgoing: Bool
     let type = FrameType.resetStream
-    let id: UInt64
+    let id: QUICStreamID
     let code: UInt64
     let finalSize: UInt64
 
@@ -92,7 +92,7 @@ struct ShorthandFrameResetStream: ShorthandLogEntry {
         finalSize = frame.finalSize
     }
 
-    init(outgoing: Bool, id: UInt64, code: UInt64, finalSize: UInt64) {
+    init(outgoing: Bool, id: QUICStreamID, code: UInt64, finalSize: UInt64) {
         self.outgoing = outgoing
         self.id = id
         self.code = code
@@ -115,7 +115,7 @@ extension FrameStopSending {
     }
     static func toShorthandLogEntry(
         outgoing: Bool = true,
-        id: UInt64,
+        id: QUICStreamID,
         code: UInt64
     ) -> QUICShorthandFrame {
         QUICShorthandFrame.stopSending(
@@ -129,7 +129,7 @@ struct ShorthandFrameStopSending: ShorthandLogEntry {
     let outgoing: Bool
     let type = FrameType.stopSending
     let code: UInt64
-    let id: UInt64
+    let id: QUICStreamID
 
     init(outgoing: Bool, frame: borrowing FrameStopSending) {
         self.outgoing = outgoing
@@ -137,7 +137,7 @@ struct ShorthandFrameStopSending: ShorthandLogEntry {
         id = frame.id
     }
 
-    init(outgoing: Bool, id: UInt64, code: UInt64) {
+    init(outgoing: Bool, id: QUICStreamID, code: UInt64) {
         self.outgoing = outgoing
         self.id = id
         self.code = code
@@ -324,7 +324,7 @@ extension FrameMaxStreamData {
     }
     static func toShorthandLogEntry(
         outgoing: Bool = true,
-        id: UInt64,
+        id: QUICStreamID,
         max: UInt64
     ) -> QUICShorthandFrame {
         QUICShorthandFrame.maxStreamData(
@@ -337,7 +337,7 @@ extension FrameMaxStreamData {
 struct ShorthandFrameMaxStreamData: ShorthandLogEntry {
     var type = FrameType.maxStreamData
     var outgoing: Bool
-    var id: UInt64
+    var id: QUICStreamID
     var max: UInt64
 
     init(outgoing: Bool, frame: borrowing FrameMaxStreamData) {
@@ -347,7 +347,7 @@ struct ShorthandFrameMaxStreamData: ShorthandLogEntry {
         id = frame.id
     }
 
-    init(outgoing: Bool, id: UInt64, max: UInt64) {
+    init(outgoing: Bool, id: QUICStreamID, max: UInt64) {
         self.outgoing = outgoing
         self.max = max
         self.id = id
@@ -476,7 +476,7 @@ extension FrameStreamDataBlocked {
     }
     static func toShorthandLogEntry(
         outgoing: Bool = true,
-        id: UInt64,
+        id: QUICStreamID,
         limit: UInt64
     ) -> QUICShorthandFrame {
         QUICShorthandFrame.streamDataBlocked(
@@ -489,7 +489,7 @@ extension FrameStreamDataBlocked {
 struct ShorthandFrameStreamDataBlocked: ShorthandLogEntry {
     let outgoing: Bool
     let type = FrameType.streamDataBlocked
-    let id: UInt64
+    let id: QUICStreamID
     let limit: UInt64
 
     init(outgoing: Bool, frame: borrowing FrameStreamDataBlocked) {
@@ -498,7 +498,7 @@ struct ShorthandFrameStreamDataBlocked: ShorthandLogEntry {
         limit = frame.limit
     }
 
-    init(outgoing: Bool, id: UInt64, limit: UInt64) {
+    init(outgoing: Bool, id: QUICStreamID, limit: UInt64) {
         self.outgoing = outgoing
         self.id = id
         self.limit = limit
@@ -834,7 +834,7 @@ extension FrameStreamReceived {
 extension FrameStreamSendMetadata {
     static func toShorthandLogEntry(
         outgoing: Bool = true,
-        id: UInt64,
+        id: QUICStreamID,
         fin: Bool,
         offset: UInt64,
         length: UInt64
@@ -856,7 +856,7 @@ extension FrameStreamSendMetadata {
 struct ShorthandFrameStream: ShorthandLogEntry {
     let outgoing: Bool
     let type: FrameType
-    let id: UInt64
+    let id: QUICStreamID
     let fin: Bool
     let offset: UInt64
     let length: UInt64
@@ -869,7 +869,7 @@ struct ShorthandFrameStream: ShorthandLogEntry {
         offset = frame.offset
         length = UInt64(frame.length)
     }
-    init(outgoing: Bool, id: UInt64, fin: Bool, offset: UInt64, length: UInt64) {
+    init(outgoing: Bool, id: QUICStreamID, fin: Bool, offset: UInt64, length: UInt64) {
         self.outgoing = outgoing
         self.fin = fin
         self.id = id
