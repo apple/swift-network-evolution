@@ -4082,8 +4082,20 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         on path: QUICPath,
         in eventContext: inout NetworkContext.EventContext
     ) {
+        var noSpareBatch = FrameArray()
+        sendOutboundFrames(on: path, adoptingStorageOf: &noSpareBatch, in: &eventContext)
+    }
+
+    // `spareBatch` should be empty; one that holds frames is not adopted. Its storage is spent once its frames
+    // have all become packets, and becomes the send queue's storage in place of storage allocated for the next
+    // batch.
+    private func sendOutboundFrames(
+        on path: QUICPath,
+        adoptingStorageOf spareBatch: inout FrameArray,
+        in eventContext: inout NetworkContext.EventContext
+    ) {
         var sendPath = path
-        sendPath.serviceLowerSendQueue(in: &eventContext)
+        sendPath.serviceLowerSendQueue(adoptingStorageOf: &spareBatch, in: &eventContext)
     }
 
     // Shared by sendApplicationFrames and sendFramesInternal to build the datagram batch.
@@ -4296,7 +4308,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             pathStatistics: &path.pathStatistics,
             connectionStatistics: &stats
         )
-        sendOutboundFrames(on: path, in: &eventContext)
+        sendOutboundFrames(on: path, adoptingStorageOf: &datagramBatch, in: &eventContext)
         return true
     }
 
@@ -4539,7 +4551,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
             pathStatistics: &path.pathStatistics,
             connectionStatistics: &stats
         )
-        sendOutboundFrames(on: path, in: &eventContext)
+        sendOutboundFrames(on: path, adoptingStorageOf: &datagramBatch, in: &eventContext)
         return true
     }
 

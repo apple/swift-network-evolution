@@ -205,6 +205,33 @@ public struct FrameArray: ~Copyable {
         return returnArray
     }
 
+    /// Removes and returns every frame. This array takes over the storage of `spareStorage`, which is left without
+    /// storage, so a drain allocates nothing. A `spareStorage` that holds frames, or cannot hold as many frames as
+    /// were drained, is left untouched and this array allocates storage of the drained size instead, as
+    /// `drainArrayKeepingCapacity()` does; adopting it would drop its frames unfinalized, or make the next drain of
+    /// that size grow this array.
+    public mutating func drainArray(adoptingStorageOf spareStorage: inout FrameArray) -> FrameArray {
+        if !spareStorage.isEmpty || spareStorage.capacity < self.count {
+            return drainArrayKeepingCapacity()
+        }
+
+        var returnArray = FrameArray()
+        swap(&returnArray, &self)
+        swap(&self, &spareStorage)
+        return returnArray
+    }
+
+    /// Returns this array's storage if it is empty and holds at least `minimumCapacity` frames, leaving this array
+    /// without storage. Otherwise returns a new array with room for `minimumCapacity` frames.
+    mutating func takeEmptyStorage(minimumCapacity: Int) -> FrameArray {
+        if self.isEmpty, self.capacity >= minimumCapacity {
+            var storage = FrameArray()
+            swap(&storage, &self)
+            return storage
+        }
+        return FrameArray(capacity: minimumCapacity)
+    }
+
     public mutating func drainArray(maximumFrameCount: Int? = nil) -> FrameArray {
         if let maximumFrameCount, self.count > maximumFrameCount {
             var returnArray = FrameArray()
