@@ -81,6 +81,9 @@ let oneKilobytePayload = [UInt8](repeating: 0xAB, count: 1024)
 /// Larger than the path MTU, so a write has to span packets.
 let sixteenKilobytePayload = [UInt8](repeating: 0xCD, count: 16 * 1024)
 
+/// The payload of a TCP segment on a 1500 byte MTU with the timestamp option.
+let tcpSegmentSize = 1448
+
 let benchmarks: @Sendable () -> Void = {
     Benchmark.defaultConfiguration = .init(metrics: quicMetrics)
 
@@ -220,6 +223,31 @@ private func quicBenchmarks() {
         benchmark.stopMeasurement()
 
         loopback.tearDown()
+    }
+
+    // The content form of `receive`, which `QUICStreamEcho_*` bypasses by reading at the QUIC
+    // stream. Delivering the bytes is outside the window. The window holds the `receive` call and one
+    // turn of the scheduler, so the counts include the machinery of `receive` and are meant to be
+    // compared with the recorded thresholds, not with zero.
+    Benchmark(
+        "EndpointFlowContentReceive_16KB",
+        configuration: configuration(
+            scalingFactor: .one,
+            maxDuration: .seconds(30),
+            maxIterations: 200
+        )
+    ) { benchmark in
+        let receiver = try ContentReceiveHarness()
+
+        for _ in benchmark.scaledIterations {
+            try receiver.deliver(sixteenKilobytePayload, frameSize: tcpSegmentSize)
+
+            benchmark.startMeasurement()
+            try receiver.receive(byteCount: sixteenKilobytePayload.count)
+            benchmark.stopMeasurement()
+        }
+
+        receiver.tearDown()
     }
 
     // Needs the virtual clock: ten seconds of idle time passes instantly.
