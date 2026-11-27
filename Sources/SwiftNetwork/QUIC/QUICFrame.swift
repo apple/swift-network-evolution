@@ -1216,15 +1216,15 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
         in eventContext: inout NetworkContext.EventContext
     ) -> Bool {
         // Set the application error code
-        stream.streamMetadata.applicationError = self.code
         stream.inboundApplicationError = self.code
+        stream.updateStreamMetadataApplicationError(self.code)
         connection.deliverInboundAbortedEvent(
             stream: &stream,
             error: NetworkError(quicApplicationError: self.code),
             in: &eventContext
         )
         connection.log.info(
-            "[S\(streamID.value)] received RESET_STREAM; offsets conn (inorder \(stream.receive.state), last \(connection.flowControlState.totalInOrderInboundBytesRead)), stream (inorder \(stream.flowControlState.totalInOrderInboundBytesRead), last \(stream.lastReceivedOffset)), final \(self.finalSize)"
+            "[S\(streamID.value)] received RESET_STREAM; offsets conn (inorder \(stream.receiveState), last \(connection.flowControlState.totalInOrderInboundBytesRead)), stream (inorder \(stream.flowControlState.totalInOrderInboundBytesRead), last \(stream.lastReceivedOffset)), final \(self.finalSize)"
         )
 
         // If the final size of the stream being reset is beyond the total in-order
@@ -1271,13 +1271,13 @@ struct FrameResetStream: ~Copyable, QUICFrameProtocol {
             return false
         }
 
-        if stream.receive.state == .receive || stream.receive.state == .sizeKnown {
-            stream.receive.state = .resetReceived
+        if stream.receiveState == .receive || stream.receiveState == .sizeKnown {
+            stream.receiveState = .resetReceived
             stream.readClosed = true
             // A receiver of RESET_STREAM can discard any data
             // that it already received on that stream.
             if streamID.isReceiveOnly(server: connection.isServer) || stream.receivedStopSending
-                || stream.send.state == .dataSent || stream.send.state.isTerminal
+                || stream.sendState == .dataSent || stream.sendState.isTerminal
             {
                 let error = NetworkError.posix(ECONNRESET)
                 stream.close(errorCode: error, in: &eventContext)
@@ -1409,11 +1409,11 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         stream.updateOutboundFlowControlCredit(connection: connection)
 
         var streamError = NetworkError.posix(ENOTCONN)
-        if stream.receive.state == .resetReceived {
+        if stream.receiveState == .resetReceived {
             streamError = NetworkError.posix(ECONNRESET)
         }
-        stream.streamMetadata.applicationError = self.code
         stream.outboundApplicationError = self.code
+        stream.updateStreamMetadataApplicationError(self.code)
         stream.deliverOutboundAbortedEvent(
             error: NetworkError(quicApplicationError: self.code),
             in: &eventContext
@@ -1421,7 +1421,7 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         // If STOP_SENDING was received the outbound write should be closed
         // An endpoint that receives a STOP_SENDING frame MUST send a
         // RESET_STREAM frame if the stream is in the "Ready" or "Send" state.
-        if stream.send.state == .ready || stream.send.state == .send {
+        if stream.sendState == .ready || stream.sendState == .send {
             connection.disconnect(stream: &stream, direction: .outbound, in: &eventContext)
         }
         //
@@ -1429,8 +1429,8 @@ struct FrameStopSending: ~Copyable, QUICFrameProtocol {
         // a RESET_STREAM frame or a STREAM+FIN frame
         // and the app has read the FIN.
         //
-        if streamID.isSendOnly(server: connection.isServer) || stream.receive.state == .resetReceived
-            || stream.receive.state == .dataRead
+        if streamID.isSendOnly(server: connection.isServer) || stream.receiveState == .resetReceived
+            || stream.receiveState == .dataRead
         {
             stream.close(errorCode: streamError, in: &eventContext)
         }
@@ -3123,12 +3123,20 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         var rawType: UInt64 = 0
         var contextID: UInt64 = 0
         var flowID: UInt64 = 0
+        let unclaimedLengthAtFrameStart = frame.unclaimedLength
         var result = Deserializer.deserialize(&frame, claim: true) { read throws(DeserializationError) in
             try read.vle(&rawType)
         }
 
         try validateDeserializationResult(result)
         try validateDatagramType(rawType)
+
+        // RFC 9221, Section 3: an absent or zero max_datagram_frame_size means we don't accept DATAGRAM frames.
+        let localMaxDatagramFrameSize = connection.localTransportParameters.intValue(.maxDatagramFrameSize)
+        guard localMaxDatagramFrameSize > 0 else {
+            connection.close(with: .protocolViolation, "DATAGRAM frame not negotiated", in: &eventContext)
+            throw QUICError.frameParse(FrameParseError.parsingError)
+        }
 
         var rawLength: UInt64 = 0
         if hasLength {
@@ -3190,14 +3198,9 @@ struct FrameDatagram: ~Copyable, QUICFrameProtocol {
         try validateDeserializationResult(result)
         try validateType(rawType)
 
-        // In testing scenarios localTransportParameters maxDatagramFrameSize can be 0
-        let tpLocalMaxDatagramFrameSize = connection.localTransportParameters.intValue(
-            .maxDatagramFrameSize
-        )
-        let localMaxDatagramFrameSize =
-            tpLocalMaxDatagramFrameSize == 0
-            ? Constants.maxDatagramFrameSize : tpLocalMaxDatagramFrameSize
-        guard datagramLength <= localMaxDatagramFrameSize else {
+        // RFC 9221, Section 3: the limit covers the whole frame, including the frame type and length.
+        let frameSize = unclaimedLengthAtFrameStart - frame.unclaimedLength + datagramLength
+        guard frameSize <= localMaxDatagramFrameSize else {
             connection.close(with: .protocolViolation, "DATAGRAM frame size too big", in: &eventContext)
             throw QUICError.frameParse(FrameParseError.parsingError)
         }

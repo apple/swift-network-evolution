@@ -70,6 +70,10 @@ let package = Package(
             name: "SwiftNetworkTestSupport",
             targets: ["SwiftNetworkTestSupport"]
         ),
+        .library(
+            name: "SwiftNetworkTestHarness",
+            targets: ["SwiftNetworkTestHarness"]
+        ),
     ],
     traits: [
         .trait(
@@ -109,7 +113,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
-        .package(url: "https://github.com/apple/swift-collections.git", .upToNextMinor(from: "1.6.0")),
+        .package(url: "https://github.com/apple/swift-collections.git", from: "1.7.1"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "5.0.0-beta.1"),
         .package(url: "https://github.com/apple/swift-tls.git", .upToNextMinor(from: "0.2.0")),
     ],

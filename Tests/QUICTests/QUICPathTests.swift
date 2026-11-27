@@ -56,7 +56,7 @@ final class QUICPathStateTests: XCTestCase {
 
             (from: .unreachable, to: .closing),
 
-            // The path can disappear at any time. Except when marked invalid (should just be deleted)
+            // The path can disappear at any time.
             (from: .routeAvailable, to: .routeUnavailable),
             (from: .routeEstablished, to: .routeUnavailable),
             (from: .cidAssigned, to: .routeUnavailable),
@@ -64,6 +64,11 @@ final class QUICPathStateTests: XCTestCase {
             (from: .validated, to: .routeUnavailable),
             (from: .closing, to: .routeUnavailable),
             (from: .unreachable, to: .routeUnavailable),
+            // A path that was never set up, when the connection is torn down before its lower
+            // protocol connected.
+            (from: .invalid, to: .routeUnavailable),
+            // Marking it unavailable again, e.g. tearing down a path that already went away.
+            (from: .routeUnavailable, to: .routeUnavailable),
         ]
 
         for (allowedStartState, allowedDestinationState) in allowedQUICPathStateTransitions {
@@ -79,7 +84,7 @@ final class QUICPathStateTests: XCTestCase {
         for startState in QUICPathState.allCases {
             for destinationState in QUICPathState.allCases {
                 let state = QUICPathState(state: startState)
-                let result = state.isValidStateChange(to: destinationState)
+                let result = state.canTransition(to: destinationState)
                 let expected = checkAllowedStateTransitions(from: startState, to: destinationState)
 
                 // If the combination (startState, destinationState) is the allowed list, then the result should be true, otherwise false

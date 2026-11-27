@@ -10,50 +10,97 @@ on:
 jobs:
   tests:
     name: Test
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.16
+    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.19
     with:
+      name: tests
       swift_flags: "-Xswiftc -warnings-as-errors"
       swift_nightly_flags: "-Xswiftc -warnings-as-errors"
-      enable_macos_checks: true
-      macos_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}, {\"xcode_version\": \"swift_6.3\"}]"
-      macos_build_command: bash .github/workflows/scripts/ci-macos.sh
-      enable_ios_checks: true
-      ios_host_exclude_xcode_versions: "[{\"xcode_version\": \"swift_6.1\"}, {\"xcode_version\": \"swift_6.2\"}, {\"xcode_version\": \"swift_6.3\"}]"
-      ios_build_command: bash .github/workflows/scripts/ci-ios.sh
-      enable_linux_checks: true
+
+      # Linux
       linux_swift_versions: '["6.4"]'
+      linux_command: &linux_command |
+        Build: swift build --build-tests
+        Build-Additive-Traits: swift build --build-tests --traits DatapathLogging,QlogOutput,SignpostOutput
+        Build-Reductive-Traits: swift build --build-tests --traits DisableDebugLogging,DisableErrorLogging
+        Test-Debug: swift test
+        Test-Release: swift test -c release
       linux_static_sdk_versions: '["6.4"]'
-      linux_build_command: bash .github/workflows/scripts/ci-linux.sh
-      enable_windows_checks: false
+
+      # Android
       android_sdk_versions: '["6.4"]'
-      enable_android_sdk_build: true
-      enable_android_sdk_checks: true
+
+      # macOS
+      macos_swift_versions: '["6.4"]'
+      macos_command: |
+        Apple: bash .github/workflows/scripts/ci-macos.sh
+        iOS: bash .github/workflows/scripts/ci-ios.sh
+
+      # Not run by this package.
+      enable_windows: false
+      enable_macos_swiftly: false
+      enable_wasm_sdk_build: false
       enable_embedded_wasm_sdk_build: false
-      enable_linux_static_sdk_build: true
+      enable_cxx_interop: false
+      enable_freebsd: false
+
   tests-nightly-main:
     # Keep this separate so that it can be disabled if the nightly compiler shows any issue.
     name: Test (nightly-main)
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.16
+    uses: swiftlang/github-workflows/.github/workflows/package_test.yml@0.0.19
     with:
+      name: tests-nightly-main
       swift_nightly_flags: "-Xswiftc -warnings-as-errors"
-      enable_linux_checks: false
-      linux_swift_versions: '["nightly-main"]'
+
+      # Linux
+      enable_linux: false
       linux_static_sdk_versions: '["nightly-main"]'
-      linux_build_command: bash .github/workflows/scripts/ci-linux.sh
-      enable_macos_checks: false
-      enable_windows_checks: false
+
+      # Android
       android_sdk_versions: '["nightly-main"]'
-      enable_android_sdk_build: true
-      enable_android_sdk_checks: true
+
+      # Not run by this package.
+      enable_macos: false
+      enable_windows: false
+      enable_macos_swiftly: false
+      enable_wasm_sdk_build: false
       enable_embedded_wasm_sdk_build: false
-      enable_linux_static_sdk_build: true
+      enable_cxx_interop: false
+      enable_freebsd: false
+
+  benchmarks-linux:
+    # `SWIFT_DETERMINISTIC_HASHING` fixes the hash seed; otherwise retain and release counts vary
+    # from run to run and cannot hold a threshold.
+    name: Benchmarks (Linux)
+    uses: swiftlang/github-workflows/.github/workflows/benchmarks.yml@0.0.18
+    with:
+      name: benchmarks-linux
+      benchmark_package_paths: '["Benchmarks"]'
+      swift_package_arguments: "--disable-sandbox"
+      linux_swift_versions: '["6.4", "nightly-release", "nightly-main"]'
+      linux_env_vars: '{"SWIFT_DETERMINISTIC_HASHING": "1"}'
+
+  benchmarks-macos:
+    # The threshold path has no operating-system component, so this job is named by Xcode version
+    # to keep its directory apart from the Linux jobs'.
+    name: Benchmarks (macOS)
+    uses: swiftlang/github-workflows/.github/workflows/benchmarks.yml@0.0.18
+    with:
+      name: benchmarks-macos
+      benchmark_package_paths: '["Benchmarks"]'
+      swift_package_arguments: "--disable-sandbox"
+      enable_linux: false
+      enable_macos: true
+      macos_xcode_versions: '["latest-beta"]'
+      macos_env_vars: '{"SWIFT_DETERMINISTIC_HASHING": "1"}'
+
   soundness:
     name: Soundness
     uses: swiftlang/github-workflows/.github/workflows/soundness.yml@main
     with:
       license_header_check_project_name: "Swift"
       api_breakage_check_container_image: "swift:6.4-jammy"
-      docs_check_enabled: false
+      docs_check_container_image: "swift:6.4-noble"
+
   fuzz-smoke:
     # Quick smoke check that the fuzz targets still build and don't crash
     # immediately - not a substitute for the much longer, corpus-persisting

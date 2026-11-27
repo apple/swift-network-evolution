@@ -48,6 +48,14 @@ protocol EndpointFlowParent: AnyObject {
     /// and the call already running drains them on its way out.
     func withFlow<R>(_ body: (inout EndpointFlow) -> R) -> R?
 
+    /// Arranges for the owner to call `flushWrites()` on the flow once the flow call now running
+    /// returns.
+    ///
+    /// Used when a flush task finds the flow in use. The task cannot retry: a scheduler that runs
+    /// deferred work inline runs the task inside the call that holds the flow, so a retry would
+    /// recurse without end.
+    func deferWriteFlush()
+
     /// Asks the owned flow to consume the events the stack has recorded for it.
     func drainFlowEvents(in eventContext: inout NetworkContext.EventContext)
 
@@ -56,12 +64,24 @@ protocol EndpointFlowParent: AnyObject {
     /// Called from the drain, so the flow is still held: an implementation that needs to build
     /// another channel has to defer, because doing so borrows this owner's flow.
     func receiveInboundFlow(_ inboundFlow: PendingInboundFlow)
+
+    func receiveStackSignals(
+        _ signals: EndpointFlowStackSignals,
+        handshakeReports: [ProtocolEstablishmentReport],
+        delayStartChildFlow: Bool?
+    )
 }
 
 @available(Network 0.1.0, *)
 extension EndpointFlowParent {
     /// Only a multiplexing connection receives inbound flows; everything else ignores them.
     func receiveInboundFlow(_ inboundFlow: PendingInboundFlow) {}
+
+    func receiveStackSignals(
+        _ signals: EndpointFlowStackSignals,
+        handshakeReports: [ProtocolEstablishmentReport],
+        delayStartChildFlow: Bool?
+    ) {}
 }
 
 @available(Network 0.1.0, *)
@@ -125,6 +145,7 @@ struct EndpointFlow: ~Copyable {
     var stateUpdateHandler: ((State) -> Void)? = nil
     var cancelRequested = false
     var teardownComplete = false
+    var handshakeReports: [ProtocolEstablishmentReport] = []
     let reuse: Bool
     var _state: State
     var state: State {
@@ -190,10 +211,10 @@ struct EndpointFlow: ~Copyable {
     let streamApplicationProtocols: StreamApplicationProtocols
 
     // Owns the protocol instances backing this flow's stack, and hands back the linkages used to
-    // wire them together. Each flow keeps its own storage for now; eventually this should be
-    // shared at a higher level so instances can outlive an individual flow.
+    // wire them together. This is the context's shared storage, so instances can outlive an
+    // individual flow.
     //
-    // A reused flow inherits the storage of the flow it reuses, since it opens another stream on
+    // A reused flow takes the same storage as the flow it reuses, since it opens another stream on
     // that flow's existing connection rather than building a new stack.
     var storage: BaseNetworkProtocolStorage
 
@@ -265,6 +286,7 @@ struct EndpointFlow: ~Copyable {
         self.reuse = true
         self.identifier = EndpointFlow.nextInstanceCounter
         self.storage = flow.storage
+        self.context.acquireProtocolStorage()
         #if !NETWORK_NO_SWIFT_QUIC
         self.quicConnectionInstance = flow.quicConnectionInstance
         self.quicStreamListenerLinkage = flow.quicStreamListenerLinkage
@@ -287,7 +309,7 @@ struct EndpointFlow: ~Copyable {
         self.identifier = EndpointFlow.nextInstanceCounter
         self.reuse = false
         self.adoptedInboundFlowInstance = nil
-        self.storage = BaseNetworkProtocolStorage(context: self.context)
+        self.storage = self.context.acquireProtocolStorage()
     }
 
     init(remoteEndpoint: Endpoint, localEndpoint: Endpoint, parameters: Parameters, uuid: SystemUUID) {
@@ -301,7 +323,11 @@ struct EndpointFlow: ~Copyable {
         self.identifier = EndpointFlow.nextInstanceCounter
         self.reuse = false
         self.adoptedInboundFlowInstance = nil
-        self.storage = BaseNetworkProtocolStorage(context: self.context)
+        self.storage = self.context.acquireProtocolStorage()
+    }
+
+    deinit {
+        context.releaseProtocolStorage()
     }
 
     public var debugDescription: String {
@@ -349,6 +375,14 @@ struct EndpointFlow: ~Copyable {
             // connect result first, then a wakeup for any outstanding read, then outbound room,
             // then the disconnect itself. `disconnected` is last because it is what moves the flow
             // out of `.ready`, and the earlier steps need to run while it still is.
+            self.handshakeReports.append(contentsOf: events.handshakeReports)
+            if !events.stackSignals.isEmpty || !events.handshakeReports.isEmpty || events.delayStartChildFlow != nil {
+                parent.receiveStackSignals(
+                    events.stackSignals,
+                    handshakeReports: events.handshakeReports,
+                    delayStartChildFlow: events.delayStartChildFlow
+                )
+            }
             if let connectedError = events.connected, self.state == .preparing {
                 self.startCompleted(connectedError, in: &eventContext)
             }
@@ -755,19 +789,16 @@ struct EndpointFlow: ~Copyable {
         guard !isWriteFlushScheduled else { return }
         isWriteFlushScheduled = true
         let context = parameters.context
-        func requestFlush() {
-            context.async {
-                // `withFlow` returns `nil` only while another flow call is running, which cannot
-                // happen between tasks. Retrying means the requests are never stranded regardless.
-                if parent.withFlow({ $0.flushWrites() }) == nil {
-                    requestFlush()
-                }
+        context.async {
+            // An inline scheduler runs this inside the call holding the flow, so `withFlow`
+            // returns `nil` and a retry would recurse; the call flushes as it returns instead.
+            if parent.withFlow({ $0.flushWrites() }) == nil {
+                parent.deferWriteFlush()
             }
         }
-        requestFlush()
     }
 
-    private mutating func flushWrites() {
+    mutating func flushWrites() {
         isWriteFlushScheduled = false
         if state == .ready && !writeRequests.isEmpty {
             write()
@@ -1031,17 +1062,6 @@ struct EndpointFlow: ~Copyable {
                 datagramConnectionFlow?.fromExternal { eventContext in self.teardown(in: &eventContext) }
                 #endif
             }
-        }
-    }
-
-    /// The establishment reports of the protocols this flow's stack is made of, lowest first.
-    mutating func protocolEstablishmentReports() -> [ProtocolEstablishmentReport] {
-        switch self.flowProtocol {
-        case .stream(let flow): return flow.protocolEstablishmentReports()
-        case .datagram(let flow): return flow.protocolEstablishmentReports()
-        case .passthroughStream(let flow): return flow.protocolEstablishmentReports()
-        case .passthroughDatagram(let flow): return flow.protocolEstablishmentReports()
-        case .inboundStream, .inboundDatagram, .none: return []
         }
     }
 

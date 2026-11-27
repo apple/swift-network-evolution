@@ -305,6 +305,97 @@ final class QUICConnectionTests: XCTestCase {
         XCTAssertTrue(stack.harness.receivedConnected, "The pending stream never saw connected")
     }
 
+    /// The handshake is announced to the streams that were waiting on it, once each, and not to a
+    /// stream opened on the connection afterwards: that stream never waited on a handshake, and
+    /// building the connection's report for every stream of a busy connection is pure overhead.
+    func testHandshakeCompleteReportedOnlyToStreamsThatWaitedOnIt() {
+        guard let stack = makeAsynchronousHandshakeStack() else { return }
+        defer { destroy(stack) }
+
+        stack.connection.context.onQueue {
+            XCTAssertTrue(stack.harness.handshakeReports.isEmpty)
+        }
+
+        onAsynchronousHandshakeTurn(stack.connection) { crypto, eventContext in
+            crypto.handleConnectedEvent(in: &eventContext)
+        }
+        XCTAssertTrue(stack.harness.receivedConnected, "The pending stream never saw connected")
+
+        stack.connection.context.onQueue {
+            let reports = stack.harness.handshakeReports
+            XCTAssertEqual(reports.count, 1, "The pending stream should see the handshake exactly once")
+            XCTAssertEqual(reports.first?.protocolIdentifier, QUICConnectionProtocol.identifier)
+        }
+
+        // A stream opened once the connection is established does not get a report of its own.
+        var lateHarness: StreamUpperHarness<TestStreamLinkageFamily>?
+        let attached = XCTestExpectation(description: "late stream attached")
+        stack.connection.context.async {
+            let (harness, harnessLinkage) = stack.storage.createStreamUpperHarness(
+                identifier: "Late",
+                local: stack.local,
+                remote: stack.remote,
+                parameters: stack.parameters,
+                path: stack.path,
+                context: .implicitContext
+            )
+            lateHarness = harness
+            do {
+                try stack.streamListener.invokeAttachUpperProtocolToNewFlow(
+                    harnessLinkage,
+                    remote: stack.remote,
+                    local: stack.local,
+                    parameters: stack.parameters,
+                    path: stack.path
+                )
+            } catch {
+                XCTFail("Failed to attach a late stream: \(error)")
+            }
+            harness.start { _ in }
+            attached.fulfill()
+        }
+        wait(for: [attached], timeout: 5.0)
+
+        stack.connection.context.onQueue {
+            XCTAssertTrue(
+                lateHarness?.handshakeReports.isEmpty ?? false,
+                "A stream opened after the handshake should not be sent the connection's report"
+            )
+            lateHarness?.teardown()
+        }
+    }
+
+    /// A stream that cannot be given a stream ID when the handshake completes, because the peer's
+    /// limit allows none, still belongs to the connection that just handshook, and hears of it once:
+    /// both the connection's readying of its streams and the generic walk over the flows that are
+    /// still waiting see that stream, and only one of them may announce the handshake.
+    func testHandshakeCompleteReportedOnceToStreamWithoutStreamID() {
+        guard let stack = makeAsynchronousHandshakeStack(peerMaxBidirectionalStreams: 0) else { return }
+        defer { destroy(stack) }
+
+        // A flow that asked to connect before the handshake finished is what the generic walk
+        // picks up, so it has to have asked.
+        let started = XCTestExpectation(description: "stream asked to connect")
+        stack.connection.context.async {
+            stack.harness.start { _ in }
+            started.fulfill()
+        }
+        wait(for: [started], timeout: 5.0)
+
+        onAsynchronousHandshakeTurn(stack.connection) { crypto, eventContext in
+            crypto.handleConnectedEvent(in: &eventContext)
+        }
+
+        stack.connection.context.onQueue {
+            XCTAssertFalse(stack.harness.receivedConnected, "The stream cannot be ready without a stream ID")
+            XCTAssertEqual(
+                stack.harness.handshakeReports.count,
+                1,
+                "The stream should be told of the handshake exactly once"
+            )
+        }
+    }
+
     /// An asynchronous certificate verification that *rejects* the peer takes the same turn of its
     /// own, and closing the connection from there has to stay inside the event state that turn
     /// acquired: reaching for it a second time — which the external `async(_:)` entry point does —
@@ -473,7 +564,8 @@ final class QUICConnectionTests: XCTestCase {
         }
 
         connection.context.onQueue {
-            self.connection.state = .connected
+            try? self.connection.setup(remote: nil, local: nil, parameters: nil, path: nil)
+            self.connection.moveToConnectedFromExternalTest()
             self.connection.localCIDLength = 8
             self.connection.protector = Protector(
                 isClient: true,
@@ -486,10 +578,6 @@ final class QUICConnectionTests: XCTestCase {
                 secret: SymmetricKey(size: .bits256),
                 isWrite: false
             )
-            defer {
-                // Teardown must not act on a connection that never finished a handshake.
-                self.connection.state = .invalid
-            }
             var parser = PacketParser(logPrefixer: LogPrefixer("[QUICConnectionTests]"))
             for reset in resets {
                 var frame = Frame(copyBuffer: reset)
@@ -525,6 +613,17 @@ final class QUICConnectionTests: XCTestCase {
             }
             XCTAssertTrue(parser.framesReceived.isEmpty, "No frames must be parsed from a Stateless Reset")
         }
+    }
+}
+
+@available(Network 0.1.0, *)
+extension QUICConnection {
+    /// Takes a client connection that has been set up through the states a handshake moves it
+    /// through, to connected, without running the handshake.
+    func moveToConnectedFromExternalTest() {
+        state = .initialSent
+        state = .handshake
+        state = .connected
     }
 }
 

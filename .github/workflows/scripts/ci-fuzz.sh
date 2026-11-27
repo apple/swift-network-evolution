@@ -35,7 +35,7 @@
 #
 # Every target always runs, even if an earlier one finds a crash - this script
 # only reports the overall failure (via ci_finish's exit code) once they have
-# all had a chance to run, matching ci-linux.sh's "run every step" philosophy.
+# all had a chance to run.
 #
 # Usage: ci-fuzz.sh <target>=<seconds> [<target>=<seconds> ...]
 #

@@ -107,13 +107,13 @@ final class QUICStreamTests: XCTestCase {
         connection.context.onQueue {
             var pending = QUICStreamInstance(parent: self.connection, inbound: false)
             pending.unidirectional = true
-            let metadata = pending.streamMetadata
+            let metadata = pending.streamMetadata()
             XCTAssertEqual(metadata.streamID, 0)
-            XCTAssertEqual(metadata.streamType, .unidirectional, "a pending stream reports the type it will have")
+            XCTAssertEqual(metadata.isUnidirectional, true, "a pending stream reports the type it will have")
 
             pending.setup(streamID: QUICStreamID(2), logPrefixer: quicStreamTestsLogPrefixer)
             XCTAssertEqual(metadata.streamID, 2, "the metadata made earlier follows the stream's ID")
-            XCTAssertEqual(metadata.streamType, .unidirectional)
+            XCTAssertEqual(metadata.isUnidirectional, true)
             pending.destroyFromExternalTest()
         }
     }
