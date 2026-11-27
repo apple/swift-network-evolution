@@ -31,11 +31,13 @@ let connectionIDRotationTestsLogPrefixer: LogPrefixer = LogPrefixer("[Connection
 
 @available(Network 0.1.0, *)
 final class ConnectionIDRotationTests: XCTestCase {
-    var connection = NetworkContext.implicitContext.onQueue {
-        QUICConnection(context: .implicitContext)
-    }
+    var connection: QUICConnection!
 
     override func setUp() {
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: .implicitContext)
+        }
+
         let expectation = XCTestExpectation()
         connection.context.async {
             try? self.connection.setup(remote: nil, local: nil, parameters: nil, path: nil)

@@ -29,8 +29,12 @@ import XCTest
 @available(Network 0.1.0, *)
 final class QUICLayoutTests: XCTestCase {
 
-    var connection = NetworkContext.implicitContext.onQueue {
-        QUICConnection(context: NetworkContext.implicitContext)
+    var connection: QUICConnection!
+
+    override func setUp() {
+        connection = NetworkContext.implicitContext.onQueue {
+            QUICConnection(context: NetworkContext.implicitContext)
+        }
     }
 
     override func tearDown() {
