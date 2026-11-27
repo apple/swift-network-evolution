@@ -1710,6 +1710,38 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(ackElicitingPacketsInFlight(in: .initial), 0)
         XCTAssertFalse(pingIsPending(in: .initial), "The probe was queued in Initial")
     }
+
+    // A Handshake PTO also sends a packet for the application data space, which has a pending ping.
+    // That packet must be recorded in the application data space; otherwise its ACK finds nothing and
+    // its data is never acknowledged.
+    func testPTOProbeForAnotherSpaceIsRecordedInThatSpace() {
+        connection.context.onQueue {
+            for keyState in [TLSEncryptionLevel.handshake, TLSEncryptionLevel.earlyData] {
+                connection.protector.keyUpdate(
+                    for: keyState,
+                    cipherSuite: .aesGCM128SHA256,
+                    secret: SymmetricKey(size: .bits256),
+                    isWrite: true
+                )
+            }
+        }
+        recordBareAckElicitingPacket(space: .handshake, number: 0, sentTime: connection.now)
+        connection.withPendingItems(for: .handshake) { $0.ping = true }
+        connection.withPendingItems(for: .applicationData) { $0.ping = true }
+
+        firePTO()
+
+        XCTAssertEqual(
+            ackElicitingPacketsInFlight(in: .handshake),
+            2,
+            "the Handshake space holds the original packet and its own probe only"
+        )
+        XCTAssertEqual(
+            ackElicitingPacketsInFlight(in: .applicationData),
+            1,
+            "the application data probe must be recorded in the application data space"
+        )
+    }
     #endif
 
     // MARK: - Packet index hints
