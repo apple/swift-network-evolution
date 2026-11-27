@@ -750,6 +750,8 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
         if let qlogConfiguration {
             self.qLog = QLog(configuration: qlogConfiguration, context: context)
             log.info("QLog setup with configuration: \(qlogConfiguration)")
+            // The local parameters are set up before the qlog exists, so log them now.
+            logTransportParameters(owner: .local, transportParameters: localTransportParameters)
         }
         #endif
         log.info("Setup QUIC connection (spin bit \(spinBitEnabled ? "enabled" : "disabled"))")
@@ -1344,7 +1346,7 @@ public final class QUICConnection: ManyToManyApplicationStreamProtocol,
     }
 
     private func logTransportParameters(
-        owner: QLogOwner?,
+        owner: QLogOwner,
         transportParameters: TransportParameters
     ) {
         #if QlogOutput

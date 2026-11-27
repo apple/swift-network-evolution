@@ -38,6 +38,25 @@ final class QLogTests: XCTestCase {
         qlog = QLog(context: NetworkContext(identifier: "QLogTests"))
     }
 
+    // The qlog output for a log with the given events. These tests do not set a QLogConfiguration, so
+    // the vantage point has no name and the trace has no title.
+    func expectedQlog(
+        flow: String = "client",
+        topLevel: String = "",
+        events: [String] = []
+    ) -> String {
+        let trace =
+            "{\"common_fields\":{\"reference_time\":{\"clock_type\":\"monotonic\",\"epoch\":\"unknown\"}},"
+            + "\"event_schemas\":[\"urn:ietf:params:qlog:events:quic-14\"],"
+            + "\"events\":[\(events.joined(separator: ","))],"
+            + "\"implementation\":{\"name\":\"SwiftQUIC\"},"
+            + "\"vantage_point\":{\"type\":\"\(flow)\"}}"
+        return "{\"file_schema\":\"urn:ietf:params:qlog:file:contained\","
+            + "\"serialization_format\":\"application/qlog+json\","
+            + topLevel
+            + "\"traces\":[\(trace)]}"
+    }
+
     func assertStringJSONContent(
         _ result: String,
         expected: String,
@@ -75,19 +94,7 @@ final class QLogTests: XCTestCase {
     }
 
     func testWriteToFile() {
-        let expected_data = """
-            {
-                \"qlog_version\":\"draft-01\",
-                \"traces\":[
-                    {
-                        \"configuration\":{\"time_units\":\"us\"},
-                        \"event_fields\":[\"time\",\"CATEGORY\",\"EVENT_TYPE\",\"DATA\"],
-                        \"events\":[],
-                        \"vantage_point\":{\"flow\":\"client\",\"type\":\"network\"}
-                    }
-                ]
-            }
-            """.filter { $0 != " " && $0 != "\n" && $0 != "\t" }
+        let expected_data = expectedQlog(flow: "client")
 
         let mutableFileName = strdup("/tmp/qlog.XXXXXX")!
         close(mkstemp(mutableFileName))
@@ -113,59 +120,23 @@ final class QLogTests: XCTestCase {
     }
 
     func testClientView() {
-        let expected_data = """
-            {
-                \"qlog_version\":\"draft-01\",
-                \"traces\":[
-                    {
-                        \"configuration\":{\"time_units\":\"us\"},
-                        \"event_fields\":[\"time\",\"CATEGORY\",\"EVENT_TYPE\",\"DATA\"],
-                        \"events\":[],
-                        \"vantage_point\":{\"flow\":\"client\",\"type\":\"network\"}
-                    }
-                ]
-            }
-            """.filter { $0 != " " && $0 != "\n" && $0 != "\t" }
+        let expected_data = expectedQlog(flow: "client")
         let result = qlog.dumpJSONString(forFlowType: .client)!
         XCTAssertEqual(result.count, expected_data.count)
         assertStringJSONContent(result, expected: expected_data)
     }
 
     func testServerView() {
-        let expected_data = """
-            {
-                \"qlog_version\":\"draft-01\",
-                \"traces\":[
-                    {
-                        \"configuration\":{\"time_units\":\"us\"},
-                        \"event_fields\":[\"time\",\"CATEGORY\",\"EVENT_TYPE\",\"DATA\"],
-                        \"events\":[],
-                        \"vantage_point\":{\"flow\":\"server\",\"type\":\"network\"}
-                    }
-                ]
-            }
-            """.filter { $0 != " " && $0 != "\n" && $0 != "\t" }
+        let expected_data = expectedQlog(flow: "server")
         let result = qlog.dumpJSONString(forFlowType: .server)!
         XCTAssertEqual(result.count, expected_data.count)
         assertStringJSONContent(result, expected: expected_data)
     }
 
     func testRTT() {
-        let expected_data = """
-            {
-                \"qlog_version\":\"draft-01\",
-                \"traces\":[
-                    {
-                        \"configuration\":{\"time_units\":\"us\"},
-                        \"event_fields\":[\"time\",\"CATEGORY\",\"EVENT_TYPE\",\"DATA\"],
-                        \"events\":[
-                            [0,\"RECOVERY\",\"METRICS_UPDATED\",{\"latest_rtt\":20,\"min_rtt\":20,\"rtt_variance\":10,\"smoothed_rtt\":20}]
-                        ],
-                        \"vantage_point\":{\"flow\":\"client\",\"type\":\"network\"}
-                    }
-                ]
-            }
-            """.filter { $0 != " " && $0 != "\n" && $0 != "\t" }
+        let expected_data = expectedQlog(events: [
+            "{\"time\":0,\"name\":\"quic:recovery_metrics_updated\",\"data\":{\"latest_rtt\":20,\"min_rtt\":20,\"rtt_variance\":10,\"smoothed_rtt\":20}}"
+        ])
 
         var rtt = RTT(logPrefixer: qlogTestsLogPrefixer)
         rtt.processNewSample(
@@ -186,21 +157,9 @@ final class QLogTests: XCTestCase {
         assertStringJSONContent(result, expected: expected_data)
     }
     func testRecovery() {
-        let expected_data = """
-            {
-                \"qlog_version\":\"draft-01\",
-                \"traces\":[
-                    {
-                        \"configuration\":{\"time_units\":\"us\"},
-                        \"event_fields\":[\"time\",\"CATEGORY\",\"EVENT_TYPE\",\"DATA\"],
-                        \"events\":[
-                            [0,\"RECOVERY\",\"METRICS_UPDATED\",{\"in_recovery\":\"true\",\"pto_count\":44}]
-                        ],
-                        \"vantage_point\":{\"flow\":\"client\",\"type\":\"network\"}
-                    }
-                ]
-            }
-            """.filter { $0 != " " && $0 != "\n" && $0 != "\t" }
+        let expected_data = expectedQlog(events: [
+            "{\"time\":0,\"name\":\"quic:recovery_metrics_updated\",\"data\":{\"in_recovery\":true,\"pto_count\":44}}"
+        ])
         qlog.recoveryUpdated(ptoCount: 44, inRecovery: true, timestamp: .zero)
 
         let result = qlog.dumpJSONString(forFlowType: .client)!
@@ -209,21 +168,9 @@ final class QLogTests: XCTestCase {
     }
 
     func testCC() {
-        let expected_data = """
-            {
-                \"qlog_version\":\"draft-01\",
-                \"traces\":[
-                    {
-                        \"configuration\":{\"time_units\":\"us\"},
-                        \"event_fields\":[\"time\",\"CATEGORY\",\"EVENT_TYPE\",\"DATA\"],
-                        \"events\":[
-                            [0,\"RECOVERY\",\"METRICS_UPDATED\",{\"bytes_in_flight\":1000,\"congestion_window\":44000,\"packets_in_flight\":1,\"ssthresh\":3000}]
-                        ],
-                        \"vantage_point\":{\"flow\":\"client\",\"type\":\"network\"}
-                    }
-                ]
-            }
-            """.filter { $0 != " " && $0 != "\n" && $0 != "\t" }
+        let expected_data = expectedQlog(events: [
+            "{\"time\":0,\"name\":\"quic:recovery_metrics_updated\",\"data\":{\"bytes_in_flight\":1000,\"congestion_window\":44000,\"packets_in_flight\":1,\"ssthresh\":3000}}"
+        ])
 
         qlog.congestionControlUpdated(
             congestionWindow: 44000,
@@ -239,21 +186,9 @@ final class QLogTests: XCTestCase {
     }
 
     func testCongestionState() {
-        let expected_data = """
-            {
-                \"qlog_version\":\"draft-01\",
-                \"traces\":[
-                    {
-                        \"configuration\":{\"time_units\":\"us\"},
-                        \"event_fields\":[\"time\",\"CATEGORY\",\"EVENT_TYPE\",\"DATA\"],
-                        \"events\":[
-                            [0,\"RECOVERY\",\"CONGESTION_STATE_UPDATED\",{\"new\":\"recovery\",\"trigger\":\"ecn\"}]
-                        ],
-                        \"vantage_point\":{\"flow\":\"client\",\"type\":\"network\"}
-                    }
-                ]
-            }
-            """.filter { $0 != " " && $0 != "\n" && $0 != "\t" }
+        let expected_data = expectedQlog(events: [
+            "{\"time\":0,\"name\":\"quic:congestion_state_updated\",\"data\":{\"new\":\"recovery\",\"trigger\":\"ecn\"}}"
+        ])
 
         qlog.logCongestionStateUpdated(
             oldState: nil,
@@ -268,39 +203,9 @@ final class QLogTests: XCTestCase {
     }
 
     func testParameters() {
-        let expected_data = """
-            {
-                \"qlog_version\":\"draft-01\",
-                \"traces\":[
-                    {
-                        \"configuration\":{\"time_units\":\"us\"},
-                        \"event_fields\":[\"time\",\"CATEGORY\",\"EVENT_TYPE\",\"DATA\"],
-                        \"events\":[
-                            [0,\"TRANSPORT\",\"PARAMETERS_SET\",
-                                {
-                                    \"ack_delay_exponent\":3,
-                                    \"active_connection_id_limit\":0,
-                                    \"disable_active_migration\":\"false\",
-                                    \"initial_max_data\":1024,
-                                    \"initial_max_stream_data_bidi_local\":0,
-                                    \"initial_max_stream_data_bidi_remote\":0,
-                                    \"initial_max_stream_data_uni\":0,
-                                    \"initial_max_streams_bidi\":0,
-                                    \"initial_max_streams_uni\":0,
-                                    \"initial_source_connection_id\":\"\",
-                                    \"max_ack_delay\":25,
-                                    \"max_idle_timeout\":0,
-                                    \"max_udp_payload_size\":65527,
-                                    \"original_destination_connection_id\":\"\",
-                                    \"owner\":\"local\",
-                                    \"retry_source_connection_id\":\"\",
-                                    \"tls_cipher\":\"\"}]
-                        ],
-                        \"vantage_point\":{\"flow\":\"client\",\"type\":\"network\"}
-                    }
-                ]
-            }
-            """.filter { $0 != " " && $0 != "\n" && $0 != "\t" }
+        let expected_data = expectedQlog(events: [
+            "{\"time\":0,\"name\":\"quic:parameters_set\",\"data\":{\"ack_delay_exponent\":3,\"active_connection_id_limit\":0,\"disable_active_migration\":false,\"initial_max_data\":1024,\"initial_max_stream_data_bidi_local\":0,\"initial_max_stream_data_bidi_remote\":0,\"initial_max_stream_data_uni\":0,\"initial_max_streams_bidi\":0,\"initial_max_streams_uni\":0,\"initial_source_connection_id\":\"\",\"initiator\":\"local\",\"max_ack_delay\":25,\"max_idle_timeout\":0,\"max_udp_payload_size\":65527,\"original_destination_connection_id\":\"\",\"retry_source_connection_id\":\"\"}}"
+        ])
 
         // Setup default values for TransportParameters
         var transportParameters = TransportParameters(logPrefixer: qlogTestsLogPrefixer)
@@ -352,22 +257,10 @@ final class QLogTests: XCTestCase {
     }
 
     func testMultipleEvents() {
-        let expected_data = """
-            {
-                \"qlog_version\":\"draft-01\",
-                \"traces\":[
-                    {
-                        \"configuration\":{\"time_units\":\"us\"},
-                        \"event_fields\":[\"time\",\"CATEGORY\",\"EVENT_TYPE\",\"DATA\"],
-                        \"events\":[
-                            [0,\"RECOVERY\",\"METRICS_UPDATED\",{\"in_recovery\":\"true\",\"pto_count\":44}],
-                            [0,\"RECOVERY\",\"METRICS_UPDATED\",{\"bytes_in_flight\":1000,\"congestion_window\":44000,\"packets_in_flight\":1,\"ssthresh\":3000}]
-                        ],
-                        \"vantage_point\":{\"flow\":\"client\",\"type\":\"network\"}
-                    }
-                ]
-            }
-            """.filter { $0 != " " && $0 != "\n" && $0 != "\t" }
+        let expected_data = expectedQlog(events: [
+            "{\"time\":0,\"name\":\"quic:recovery_metrics_updated\",\"data\":{\"in_recovery\":true,\"pto_count\":44}}",
+            "{\"time\":0,\"name\":\"quic:recovery_metrics_updated\",\"data\":{\"bytes_in_flight\":1000,\"congestion_window\":44000,\"packets_in_flight\":1,\"ssthresh\":3000}}",
+        ])
 
         qlog.recoveryUpdated(ptoCount: 44, inRecovery: true, timestamp: .zero)
         qlog.congestionControlUpdated(
@@ -384,21 +277,10 @@ final class QLogTests: XCTestCase {
     }
 
     func testSetTopLevelEntry() {
-        let expected_data = """
-            {
-                \"qlog_version\":\"draft-01\",
-                \"title\":\"ClientQLog\",
-                \"description\":\"ClientQLogDescription\",
-                \"traces\":[
-                    {
-                        \"configuration\":{\"time_units\":\"us\"},
-                        \"event_fields\":[\"time\",\"CATEGORY\",\"EVENT_TYPE\",\"DATA\"],
-                        \"events\":[],
-                        \"vantage_point\":{\"flow\":\"client\",\"type\":\"network\"}
-                    }
-                ]
-            }
-            """.filter { $0 != " " && $0 != "\n" && $0 != "\t" }
+        let expected_data = expectedQlog(
+            topLevel: "\"title\":\"ClientQLog\",\"description\":\"ClientQLogDescription\",",
+            events: []
+        )
 
         qlog.setTopLevelObjectEntry("title", to: "ClientQLog")
         qlog.setTopLevelObjectEntry("description", to: "ClientQLogDescription")
