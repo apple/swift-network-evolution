@@ -1724,47 +1724,23 @@ final class RecoveryTests: XCTestCase {
                     isWrite: true
                 )
             }
-
-            var packet = SentPacketRecord()
-            packet.identifier = .init(space: .handshake, number: 0)
-            packet.isInFlightEligible = true
-            packet.isAckEliciting = true
-            packet.totalLength = 20 + 96
-            packet.sentPath = connection.currentPath?.pathIdentifier ?? .none
-            sentPacket(packet, connection: connection)
         }
+        recordBareAckElicitingPacket(space: .handshake, number: 0, sentTime: connection.now)
         connection.withPendingItems(for: .handshake) { $0.ping = true }
         connection.withPendingItems(for: .applicationData) { $0.ping = true }
 
-        let expectation = XCTestExpectation()
-        self.connection.context.async {
-            self.connection.fromExternal { eventContext in
-                self.connection.withCurrentPath { path in
-                    self.connection.recovery.sendPTO(
-                        connection: self.connection,
-                        path: path,
-                        in: &eventContext
-                    )
-                }
-            }
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 5.0)
+        firePTO()
 
-        connection.recovery.withImmutableInnerState(packetNumberSpace: .handshake) { innerState in
-            XCTAssertEqual(
-                innerState.ackElicitingPacketsInFlight,
-                2,
-                "the Handshake space holds the original packet and its own probe only"
-            )
-        }
-        connection.recovery.withImmutableInnerState(packetNumberSpace: .applicationData) { innerState in
-            XCTAssertEqual(
-                innerState.ackElicitingPacketsInFlight,
-                1,
-                "the application data probe must be recorded in the application data space"
-            )
-        }
+        XCTAssertEqual(
+            ackElicitingPacketsInFlight(in: .handshake),
+            2,
+            "the Handshake space holds the original packet and its own probe only"
+        )
+        XCTAssertEqual(
+            ackElicitingPacketsInFlight(in: .applicationData),
+            1,
+            "the application data probe must be recorded in the application data space"
+        )
     }
     #endif
 
